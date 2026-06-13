@@ -15,21 +15,21 @@ $py = Get-Command python -ErrorAction SilentlyContinue
 if (-not $py) {
     Write-Error "Python not found on PATH. Install Python 3.10+ from python.org"
 }
-Write-Host "[1/5] Python: $(python --version)"
+Write-Host "[1/6] Python: $(python --version)"
 
 $venv = Join-Path $Root ".venv"
 if (-not (Test-Path $venv)) {
-    Write-Host "[2/5] Creating virtual environment .venv ..."
+    Write-Host "[2/6] Creating virtual environment .venv ..."
     python -m venv $venv
 } else {
-    Write-Host "[2/5] Using existing .venv"
+    Write-Host "[2/6] Using existing .venv"
 }
 & "$venv\Scripts\Activate.ps1"
 
-Write-Host "[3/5] Upgrading pip ..."
+Write-Host "[3/6] Upgrading pip ..."
 python -m pip install --upgrade pip wheel setuptools
 
-Write-Host "[4/5] Installing Python dependencies ..."
+Write-Host "[4/6] Installing Python dependencies ..."
 python -m pip install -r requirements-live.txt
 
 Write-Host "      Trying optional webrtcvad (may fail without C++ Build Tools) ..."
@@ -44,7 +44,13 @@ if (-not $webrtcOk) {
     Write-Host "      webrtcvad installed."
 }
 
-Write-Host "[5/5] Checking ffmpeg (required for live online feeds) ..."
+Write-Host "[5/6] Downloading model weights (if needed) ..."
+python scripts/download_model.py
+if ($LASTEXITCODE -ne 0) {
+    Write-Error "Model download failed. Set MODEL_DOWNLOAD_URL or see GITHUB.md for manual steps."
+}
+
+Write-Host "[6/6] Checking ffmpeg (required for live online feeds) ..."
 $ffmpeg = Get-Command ffmpeg -ErrorAction SilentlyContinue
 if (-not $ffmpeg) {
     Write-Host "      ffmpeg NOT found."

@@ -40,9 +40,14 @@ Add new airports by creating `airport_configs/<icao>.json` with a `streams` sect
 
 ## Model
 
-Fine-tuned Whisper-small weights are **not stored in this repo** (~922 MB). Download `model.safetensors` separately and place it in `models/whisper-atc/` alongside the included tokenizer/config files.
+Fine-tuned Whisper-small weights are **not stored in this repo** (~922 MB). They are hosted on [GitHub Releases](https://github.com/lawgorithims/ATC_Transcriptions/releases) and **downloaded automatically** when you run `scripts/install.ps1`.
 
-See `GITHUB.md` for download options.
+Manual download or troubleshooting: see `GITHUB.md` and `models/README.md`.
+
+```powershell
+python scripts/download_model.py          # download if missing
+python scripts/download_model.py --check-only   # verify only
+```
 
 ## Project layout
 
@@ -63,7 +68,7 @@ scripts/               # install + run helpers
 - Python 3.10+
 - ffmpeg on PATH (live streams)
 - GPU recommended (`--device cuda`)
-- `model.safetensors` downloaded separately (see `GITHUB.md`)
+- Model weights (~922 MB) — auto-downloaded on install; see `GITHUB.md` if download fails
 
 See `LIVE_PIPELINE_README.md` and `GITHUB.md` for more details.
 

@@ -1,5 +1,8 @@
 # Configuration for live ATC transcription
 
+model:
+  download_url: "https://github.com/lawgorithims/ATC_Transcriptions/releases/download/v1.0.0/model.safetensors"
+
 live_pipeline:
   feed_config: "airport_configs/kdfw.json"
   feed: "lone_star_approach_17c_final"
