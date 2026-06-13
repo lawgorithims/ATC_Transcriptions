@@ -1,0 +1,2 @@
+models/whisper-atc/*.safetensors filter=lfs diff=lfs merge=lfs -text
+models/whisper-atc/model.safetensors filter=lfs diff=lfs merge=lfs -text

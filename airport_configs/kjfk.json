@@ -1,0 +1,40 @@
+{
+  "airport_code": "KJFK",
+  "airport_name": "John F. Kennedy International Airport",
+  "runways": [
+    "4L", "4R", "13L", "13R", "22L", "22R", "31L", "31R"
+  ],
+  "taxiways": [
+    "A", "B", "C", "D", "E", "F", "G", "H", "J", "K", "L", "M", "N", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"
+  ],
+  "frequencies": {
+    "tower": "119.1",
+    "ground": "121.9",
+    "approach": "119.1",
+    "departure": "125.65"
+  },
+  "fixes": [
+    "CANUK", "JFK", "LENDY", "ROBUC", "SHIPP", "WHITE"
+  ],
+  "waypoints": [
+    "CANUK", "LENDY", "ROBUC", "SHIPP", "WHITE"
+  ],
+  "streams": {
+    "tower_primary": {
+      "label": "KJFK Tower",
+      "url": "https://s1-bos.liveatc.net/kjfk_twr",
+      "liveatc_page": "https://www.liveatc.net/hlisten.php?icao=kjfk&mount=kjfk_twr"
+    },
+    "tower_1191": {
+      "label": "KJFK Tower 119.1",
+      "url": "https://s1-bos.liveatc.net/kjfk_twr_1191",
+      "liveatc_page": "https://www.liveatc.net/hlisten.php?mount=kjfk_twr_1191&icao=kjfk"
+    },
+    "tower_2": {
+      "label": "KJFK Tower #2",
+      "url": "https://s1-bos.liveatc.net/kjfk_twr3",
+      "liveatc_page": "https://www.liveatc.net/hlisten.php?mount=kjfk_twr3&icao=kjfk"
+    }
+  }
+}
+

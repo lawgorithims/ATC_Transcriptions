@@ -1,0 +1,64 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+*.egg-info/
+.venv/
+venv/
+env/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
+.env.local
+
+# Training data and local artifacts (not published)
+data/
+processed_atc/
+out_atc/
+results/
+checkpoints/
+agent-tools/
+agent-transcripts/
+
+# Training-only scripts (kept locally, not in repo)
+download_atco2.py
+download_atcosim.py
+train_distil_whisper.py
+evaluate_atco2.py
+evaluate_finetuned.py
+evaluate_jacktol_atc.py
+combine_and_split_atc.py
+split_atco2.py
+preprocess_atc.py
+transcribe_normalize_atc.py
+live_atc_transcribe.py
+realtime_transcribe.py
+compute_normalized_wer.py
+main.py
+test_audio.py
+check_gpu.py
+atc_normalization.py
+
+# Training docs
+WORKSPACE.md
+LIVE_TRANSCRIPTION_README.md
+requirements.txt
+
+# Audio
+*.wav
+*.mp3
+*.flac
+*.ogg
+
+# Model: exclude training checkpoints only; include final whisper-atc weights
+models/whisper-atc/checkpoint-*/
+models/whisper-atc/checkpoint-*/**
+models/whisper-atc/checkpoint-2200/
+models/whisper-atc/checkpoint-2400/

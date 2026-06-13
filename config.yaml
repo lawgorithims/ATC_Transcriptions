@@ -1,0 +1,15 @@
+# Configuration for live ATC transcription
+
+live_pipeline:
+  feed_config: "airport_configs/kdfw.json"
+  feed: "lone_star_approach_17c_final"
+  model_path: "models/whisper-atc"
+  device: "auto"
+  enable_preprocessing: true
+  aggressive_preprocessing: true
+  vad_aggressiveness: 2
+  silence_duration_ms: 700
+  min_speech_duration_ms: 500
+  max_segment_duration_s: 12.0
+  report_interval: 10
+  context_history: 3

@@ -1,0 +1,14 @@
+# Live ATC transcription — minimal dependencies
+# Install: pip install -r requirements-live.txt
+
+torch>=2.0.0
+transformers>=4.35.0
+numpy>=1.24.0
+scipy>=1.11.0
+librosa>=0.10.1
+noisereduce>=3.0.0
+soundfile>=0.12.1
+python-dotenv>=1.0.0
+pyyaml>=6.0.1
+
+# Optional: pip install webrtcvad  (needs C++ Build Tools on Windows)
