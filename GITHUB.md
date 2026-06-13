@@ -18,11 +18,15 @@ This repo is set up for **live inference only** — no training data, no checkpo
 
 3. Authenticate when prompted (GitHub username + personal access token, or Git Credential Manager).
 
-## Model weights (GitHub Release, not in git)
+## Model weights (Hugging Face Hub, not in git)
 
-The fine-tuned model (`models/whisper-atc/model.safetensors`, ~922 MB) is **excluded** from the repository because it blocks git push/LFS uploads.
+The fine-tuned model (`models/whisper-atc/model.safetensors`, ~922 MB) is **excluded** from the repository.
 
-Weights are hosted on **GitHub Releases** and downloaded automatically during install.
+**Why not GitHub?** GitHub blocks individual files over **100 MB** in git. Release assets are also subject to per-file Git LFS limits on your plan, which is why a ~922 MB `model.safetensors` cannot be reliably hosted on GitHub Releases.
+
+**Hugging Face Hub** supports large model files (hard limit **500 GB** per file; ~922 MB is well within limits) and is the standard host for ML weights.
+
+Default model repo: **[lawgorithims/whisper-atc](https://huggingface.co/lawgorithims/whisper-atc)**
 
 ### Clone + install (auto-download)
 
@@ -35,10 +39,20 @@ powershell -ExecutionPolicy Bypass -File scripts/install.ps1
 Install runs `scripts/download_model.py`, which:
 
 - Skips download if `models/whisper-atc/model.safetensors` already exists with the correct size (~922 MB)
-- Otherwise downloads from the default release URL:
-  `https://github.com/lawgorithims/ATC_Transcriptions/releases/download/v1.0.0/model.safetensors`
+- Otherwise downloads `model.safetensors` from Hugging Face Hub (`lawgorithims/whisper-atc` by default)
 
-Override the URL with an environment variable:
+Override the Hugging Face repo:
+
+```powershell
+$env:MODEL_HF_REPO = "your-org/your-model"
+python scripts/download_model.py
+```
+
+Or set `model.hf_repo` in `config.yaml`.
+
+### Direct URL fallback
+
+For mirrors or offline mirrors, set a direct download URL (skips Hugging Face):
 
 ```powershell
 $env:MODEL_DOWNLOAD_URL = "https://example.com/custom/model.safetensors"
@@ -51,29 +65,36 @@ Or set `model.download_url` in `config.yaml`.
 
 If the automatic download fails:
 
-1. Download `model.safetensors` from the [v1.0.0 release](https://github.com/lawgorithims/ATC_Transcriptions/releases/tag/v1.0.0)
+1. Download `model.safetensors` from [Hugging Face](https://huggingface.co/lawgorithims/whisper-atc/tree/main)
 2. Place it at `models/whisper-atc/model.safetensors`
 3. Verify: `python scripts/download_model.py --check-only`
 
-### Maintainers: publish a new release
+### Maintainers: publish weights to Hugging Face
 
-**With GitHub CLI (`gh`):**
+**One-time auth:**
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/publish_model_release.ps1
+pip install huggingface_hub
+huggingface-cli login
 ```
 
-Optional flags: `-Tag v1.0.0`, `-Repo lawgorithims/ATC_Transcriptions`
+Create a write token at https://huggingface.co/settings/tokens if prompted.
 
-**Without `gh` (manual):**
+**Upload:**
 
-1. Open https://github.com/lawgorithims/ATC_Transcriptions/releases/new
-2. Tag: `v1.0.0` (create on publish)
-3. Title: e.g. `Model weights v1.0.0`
-4. Attach `models/whisper-atc/model.safetensors` as release asset (name: `model.safetensors`)
-5. Publish release
+```powershell
+python scripts/publish_model_hf.py
+```
 
-After publishing, update `config.yaml` / default URL in `scripts/download_model.py` if the tag changes.
+Optional flags: `--repo lawgorithims/whisper-atc`, `--private`
+
+This creates the public model repo (if needed) and uploads `models/whisper-atc/model.safetensors`.
+
+After publishing, update `config.yaml` / defaults in `scripts/download_model.py` if the repo id changes.
+
+#### Legacy: GitHub Release (not recommended)
+
+GitHub Releases cannot reliably host ~922 MB assets on free/default plans. `scripts/publish_model_release.ps1` remains for reference only.
 
 Tokenizer and config files in `models/whisper-atc/` are included in git.
 

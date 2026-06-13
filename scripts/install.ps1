@@ -47,7 +47,7 @@ if (-not $webrtcOk) {
 Write-Host "[5/6] Downloading model weights (if needed) ..."
 python scripts/download_model.py
 if ($LASTEXITCODE -ne 0) {
-    Write-Error "Model download failed. Set MODEL_DOWNLOAD_URL or see GITHUB.md for manual steps."
+    Write-Error "Model download failed. Set MODEL_HF_REPO, MODEL_DOWNLOAD_URL, or see GITHUB.md for manual steps."
 }
 
 Write-Host "[6/6] Checking ffmpeg (required for live online feeds) ..."

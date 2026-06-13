@@ -10,5 +10,6 @@ noisereduce>=3.0.0
 soundfile>=0.12.1
 python-dotenv>=1.0.0
 pyyaml>=6.0.1
+huggingface_hub>=0.20.0
 
 # Optional: pip install webrtcvad  (needs C++ Build Tools on Windows)

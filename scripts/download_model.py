@@ -1,10 +1,11 @@
 """
-Download fine-tuned Whisper-ATC model weights from a GitHub Release.
+Download fine-tuned Whisper-ATC model weights from Hugging Face Hub.
 
 Idempotent: skips download when models/whisper-atc/model.safetensors exists
 and matches the expected size (~922 MB).
 
-Override URL via MODEL_DOWNLOAD_URL or config.yaml (model.download_url).
+Primary source: Hugging Face Hub (lawgorithims/whisper-atc by default).
+Fallback: MODEL_DOWNLOAD_URL or config.yaml model.download_url for a direct URL.
 """
 
 from __future__ import annotations
@@ -20,41 +21,65 @@ from pathlib import Path
 # Project root is one level above scripts/
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MODEL_PATH = ROOT / "models" / "whisper-atc" / "model.safetensors"
-DEFAULT_DOWNLOAD_URL = (
-    "https://github.com/lawgorithims/ATC_Transcriptions/releases/download/"
-    "v1.0.0/model.safetensors"
-)
+DEFAULT_HF_REPO = "lawgorithims/whisper-atc"
+DEFAULT_HF_FILENAME = "model.safetensors"
 EXPECTED_BYTES = 966_995_080  # ~922 MB
 SIZE_TOLERANCE_BYTES = 1_048_576  # 1 MB
 
 
-def _load_config_url() -> str | None:
+def _load_config() -> dict:
     config_path = ROOT / "config.yaml"
     if not config_path.is_file():
-        return None
+        return {}
     try:
         import yaml
     except ImportError:
-        return None
+        return {}
     try:
         with config_path.open(encoding="utf-8") as fh:
             data = yaml.safe_load(fh) or {}
     except OSError:
-        return None
-    model_cfg = data.get("model") or {}
-    return model_cfg.get("download_url")
+        return {}
+    return data.get("model") or {}
 
 
-def resolve_download_url(cli_url: str | None) -> str:
+def resolve_hf_repo(cli_repo: str | None) -> str:
+    if cli_repo:
+        return cli_repo
+    env_repo = os.environ.get("MODEL_HF_REPO", "").strip()
+    if env_repo:
+        return env_repo
+    model_cfg = _load_config()
+    hf_repo = model_cfg.get("hf_repo")
+    if hf_repo:
+        return str(hf_repo).strip()
+    return DEFAULT_HF_REPO
+
+
+def resolve_hf_filename(cli_filename: str | None) -> str:
+    if cli_filename:
+        return cli_filename
+    env_filename = os.environ.get("MODEL_HF_FILENAME", "").strip()
+    if env_filename:
+        return env_filename
+    model_cfg = _load_config()
+    hf_filename = model_cfg.get("hf_filename")
+    if hf_filename:
+        return str(hf_filename).strip()
+    return DEFAULT_HF_FILENAME
+
+
+def resolve_download_url(cli_url: str | None) -> str | None:
     if cli_url:
         return cli_url
     env_url = os.environ.get("MODEL_DOWNLOAD_URL", "").strip()
     if env_url:
         return env_url
-    config_url = _load_config_url()
-    if config_url:
-        return str(config_url).strip()
-    return DEFAULT_DOWNLOAD_URL
+    model_cfg = _load_config()
+    download_url = model_cfg.get("download_url")
+    if download_url:
+        return str(download_url).strip()
+    return None
 
 
 def resolve_expected_bytes() -> int:
@@ -146,13 +171,46 @@ def download_file(url: str, dest: Path) -> None:
     partial.replace(dest)
 
 
+def download_from_hf(repo_id: str, filename: str, dest: Path) -> None:
+    try:
+        from huggingface_hub import hf_hub_download
+    except ImportError as exc:
+        raise RuntimeError(
+            "huggingface_hub is not installed. Run: pip install huggingface_hub"
+        ) from exc
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    print(f"Downloading from Hugging Face Hub:\n  {repo_id}/{filename}")
+    print(f"Saving to:\n  {dest}")
+
+    cached_path = hf_hub_download(
+        repo_id=repo_id,
+        filename=filename,
+        local_dir=str(dest.parent),
+        local_dir_use_symlinks=False,
+    )
+    cached = Path(cached_path)
+    if cached.resolve() != dest.resolve():
+        if dest.exists():
+            dest.unlink()
+        cached.replace(dest)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Download whisper-atc model weights from GitHub Releases."
+        description="Download whisper-atc model weights from Hugging Face Hub."
     )
     parser.add_argument(
         "--url",
-        help="Override download URL (default: env MODEL_DOWNLOAD_URL, config, or GitHub release)",
+        help="Override with a direct download URL (skips Hugging Face Hub)",
+    )
+    parser.add_argument(
+        "--repo",
+        help=f"Hugging Face repo id (default: env MODEL_HF_REPO, config, or {DEFAULT_HF_REPO})",
+    )
+    parser.add_argument(
+        "--filename",
+        help=f"File name in the HF repo (default: {DEFAULT_HF_FILENAME})",
     )
     parser.add_argument(
         "--path",
@@ -177,7 +235,9 @@ def main(argv: list[str] | None = None) -> int:
 
     model_path = resolve_model_path(args.path)
     expected_bytes = resolve_expected_bytes()
-    url = resolve_download_url(args.url)
+    direct_url = resolve_download_url(args.url)
+    hf_repo = resolve_hf_repo(args.repo)
+    hf_filename = resolve_hf_filename(args.filename)
 
     if is_valid_model_file(model_path, expected_bytes, SIZE_TOLERANCE_BYTES) and not args.force:
         print(
@@ -204,17 +264,27 @@ def main(argv: list[str] | None = None) -> int:
             )
         else:
             print(f"Would download model to {model_path}")
-        print(f"URL: {url}")
+        if direct_url:
+            print(f"Source: direct URL\n  {direct_url}")
+        else:
+            print(f"Source: Hugging Face Hub\n  {hf_repo}/{hf_filename}")
         print(f"Expected size: ~{format_bytes(expected_bytes)}")
         return 0
 
     try:
-        download_file(url, model_path)
+        if direct_url:
+            download_file(direct_url, model_path)
+        else:
+            download_from_hf(hf_repo, hf_filename, model_path)
     except RuntimeError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         print(
             "Manual fallback: download model.safetensors and place it at "
             f"{model_path}",
+            file=sys.stderr,
+        )
+        print(
+            f"Hugging Face: https://huggingface.co/{hf_repo}/blob/main/{hf_filename}",
             file=sys.stderr,
         )
         return 1

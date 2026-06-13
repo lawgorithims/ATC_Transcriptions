@@ -32,7 +32,7 @@ Or download only the model:
 python scripts/download_model.py
 ```
 
-Default source: [GitHub Release v1.0.0](https://github.com/lawgorithims/ATC_Transcriptions/releases/download/v1.0.0/model.safetensors)
+Default source: [Hugging Face — lawgorithims/whisper-atc](https://huggingface.co/lawgorithims/whisper-atc)
 
 Check without downloading:
 
@@ -40,7 +40,9 @@ Check without downloading:
 python scripts/download_model.py --check-only
 ```
 
-Override URL: `$env:MODEL_DOWNLOAD_URL = "..."` or `model.download_url` in `config.yaml`.
+Override Hugging Face repo: `$env:MODEL_HF_REPO = "..."` or `model.hf_repo` in `config.yaml`.
+
+Direct URL fallback: `$env:MODEL_DOWNLOAD_URL = "..."` or `model.download_url` in `config.yaml`.
 
 Manual fallback: download `model.safetensors` and place it in this directory. See `GITHUB.md`.
 
@@ -53,5 +55,6 @@ python train_distil_whisper.py --data-dir data --train-metadata atc_combined/tra
 After training, publish weights for others:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/publish_model_release.ps1
+huggingface-cli login
+python scripts/publish_model_hf.py
 ```
