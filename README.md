@@ -40,14 +40,9 @@ Add new airports by creating `airport_configs/<icao>.json` with a `streams` sect
 
 ## Model
 
-Fine-tuned Whisper-small weights live in `models/whisper-atc/` (~922 MB, Git LFS).
+Fine-tuned Whisper-small weights are **not stored in this repo** (~922 MB). Download `model.safetensors` separately and place it in `models/whisper-atc/` alongside the included tokenizer/config files.
 
-After cloning:
-
-```bash
-git lfs install
-git lfs pull
-```
+See `GITHUB.md` for download options.
 
 ## Project layout
 
@@ -68,7 +63,7 @@ scripts/               # install + run helpers
 - Python 3.10+
 - ffmpeg on PATH (live streams)
 - GPU recommended (`--device cuda`)
-- Git LFS (for model weights)
+- `model.safetensors` downloaded separately (see `GITHUB.md`)
 
 See `LIVE_PIPELINE_README.md` and `GITHUB.md` for more details.
 

@@ -57,7 +57,9 @@ requirements.txt
 *.flac
 *.ogg
 
-# Model: exclude training checkpoints only; include final whisper-atc weights
+# Model: exclude weights (host separately) and training checkpoints
+models/whisper-atc/model.safetensors
+models/whisper-atc/*.safetensors
 models/whisper-atc/checkpoint-*/
 models/whisper-atc/checkpoint-*/**
 models/whisper-atc/checkpoint-2200/

@@ -6,11 +6,11 @@ Whisper-small fine-tuned on the combined ATCO2 + ATCoSIM training set (8,095 sam
 
 ```
 whisper-atc/
-├── model.safetensors          # Final trained weights (~922 MB)
+├── model.safetensors          # Final trained weights (~922 MB) — NOT in git; download separately
 ├── config.json                # Model config
 ├── tokenizer.json             # Tokenizer
-├── checkpoint-2200/           # Training checkpoint (can delete to save ~2.7 GB)
-└── checkpoint-2400/           # Training checkpoint (can delete to save ~2.7 GB)
+├── checkpoint-2200/           # Training checkpoint (local only, gitignored)
+└── checkpoint-2400/           # Training checkpoint (local only, gitignored)
 ```
 
 Total size: ~6.3 GB (checkpoints include optimizer state).
