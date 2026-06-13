@@ -260,7 +260,8 @@ class LiveATCPipeline:
         print(f"  Model:  whisper-atc (with context)")
         print(f"  Device: {self.transcriber.device}")
         if self.context.build_prompt():
-            print(f"  Context: {self.context.build_prompt()[:120]}...")
+            preview = self.context.build_prompt()[:120]
+            print(f"  Context: {preview}...")
         print("  Press Ctrl+C to stop\n")
 
         self._max_segments = max_segments
