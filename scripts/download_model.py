@@ -4,7 +4,7 @@ Download fine-tuned Whisper-ATC model weights from Hugging Face Hub.
 Idempotent: skips download when models/whisper-atc/model.safetensors exists
 and matches the expected size (~922 MB).
 
-Primary source: Hugging Face Hub (lawgorithims/whisper-atc by default).
+Primary source: Hugging Face Hub (SingularityUS/ATC-whisper-v1 by default).
 Fallback: MODEL_DOWNLOAD_URL or config.yaml model.download_url for a direct URL.
 """
 
@@ -21,7 +21,7 @@ from pathlib import Path
 # Project root is one level above scripts/
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MODEL_PATH = ROOT / "models" / "whisper-atc" / "model.safetensors"
-DEFAULT_HF_REPO = "lawgorithims/whisper-atc"
+DEFAULT_HF_REPO = "SingularityUS/ATC-whisper-v1"
 DEFAULT_HF_FILENAME = "model.safetensors"
 EXPECTED_BYTES = 966_995_080  # ~922 MB
 SIZE_TOLERANCE_BYTES = 1_048_576  # 1 MB

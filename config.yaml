@@ -4,7 +4,7 @@
 
 model:
 
-  hf_repo: "lawgorithims/whisper-atc"
+  hf_repo: "SingularityUS/ATC-whisper-v1"
 
   hf_filename: "model.safetensors"
 

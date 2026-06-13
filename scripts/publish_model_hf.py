@@ -5,7 +5,8 @@ Usage:
     huggingface-cli login          # once per machine
     python scripts/publish_model_hf.py
 
-Requires write access to the target repo (default: lawgorithims/whisper-atc).
+Requires write access to the target repo (default: SingularityUS/ATC-whisper-v1
+under the SingularityUS org).
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MODEL_PATH = ROOT / "models" / "whisper-atc" / "model.safetensors"
-DEFAULT_HF_REPO = "lawgorithims/whisper-atc"
+DEFAULT_HF_REPO = "SingularityUS/ATC-whisper-v1"
 DEFAULT_HF_FILENAME = "model.safetensors"
 EXPECTED_BYTES = 966_995_080
 SIZE_TOLERANCE_BYTES = 1_048_576

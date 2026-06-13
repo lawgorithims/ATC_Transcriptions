@@ -26,7 +26,7 @@ The fine-tuned model (`models/whisper-atc/model.safetensors`, ~922 MB) is **excl
 
 **Hugging Face Hub** supports large model files (hard limit **500 GB** per file; ~922 MB is well within limits) and is the standard host for ML weights.
 
-Default model repo: **[lawgorithims/whisper-atc](https://huggingface.co/lawgorithims/whisper-atc)**
+Default model repo: **[SingularityUS/ATC-whisper-v1](https://huggingface.co/SingularityUS/ATC-whisper-v1)**
 
 ### Clone + install (auto-download)
 
@@ -39,7 +39,7 @@ powershell -ExecutionPolicy Bypass -File scripts/install.ps1
 Install runs `scripts/download_model.py`, which:
 
 - Skips download if `models/whisper-atc/model.safetensors` already exists with the correct size (~922 MB)
-- Otherwise downloads `model.safetensors` from Hugging Face Hub (`lawgorithims/whisper-atc` by default)
+- Otherwise downloads `model.safetensors` from Hugging Face Hub (`SingularityUS/ATC-whisper-v1` by default)
 
 Override the Hugging Face repo:
 
@@ -65,7 +65,7 @@ Or set `model.download_url` in `config.yaml`.
 
 If the automatic download fails:
 
-1. Download `model.safetensors` from [Hugging Face](https://huggingface.co/lawgorithims/whisper-atc/tree/main)
+1. Download `model.safetensors` from [Hugging Face](https://huggingface.co/SingularityUS/ATC-whisper-v1/tree/main)
 2. Place it at `models/whisper-atc/model.safetensors`
 3. Verify: `python scripts/download_model.py --check-only`
 
@@ -86,11 +86,9 @@ Create a write token at https://huggingface.co/settings/tokens if prompted.
 python scripts/publish_model_hf.py
 ```
 
-Optional flags: `--repo lawgorithims/whisper-atc`, `--private`
+Optional flags: `--repo SingularityUS/ATC-whisper-v1`, `--private`
 
-This creates the public model repo (if needed) and uploads `models/whisper-atc/model.safetensors`.
-
-After publishing, update `config.yaml` / defaults in `scripts/download_model.py` if the repo id changes.
+This creates the public model repo (if needed) and uploads `models/whisper-atc/model.safetensors`. Default target is the **SingularityUS** org repo; maintainers need write access to that org.
 
 #### Legacy: GitHub Release (not recommended)
 

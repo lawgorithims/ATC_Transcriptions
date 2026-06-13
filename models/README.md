@@ -32,7 +32,7 @@ Or download only the model:
 python scripts/download_model.py
 ```
 
-Default source: [Hugging Face — lawgorithims/whisper-atc](https://huggingface.co/lawgorithims/whisper-atc)
+Default source: [Hugging Face — SingularityUS/ATC-whisper-v1](https://huggingface.co/SingularityUS/ATC-whisper-v1)
 
 Check without downloading:
 

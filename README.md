@@ -82,7 +82,7 @@ Add new airports by creating `airport_configs/<icao>.json` with a `streams` sect
 
 
 
-Fine-tuned Whisper-small weights are **not stored in this repo** (~922 MB). They are hosted on [Hugging Face Hub](https://huggingface.co/lawgorithims/whisper-atc) and **downloaded automatically** when you run `scripts/install.ps1`.
+Fine-tuned Whisper-small weights are **not stored in this repo** (~922 MB). They are hosted on [Hugging Face Hub](https://huggingface.co/SingularityUS/ATC-whisper-v1) and **downloaded automatically** when you run `scripts/install.ps1`.
 
 
 

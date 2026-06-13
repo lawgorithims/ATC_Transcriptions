@@ -5,8 +5,8 @@ Batch helpers. All scripts `cd` to the project root before running.
 | Script | Purpose |
 |--------|---------|
 | `install.bat` / `install.ps1` | Fresh install: venv, pip deps, model download, ffmpeg check |
-| `download_model.py` | Download `model.safetensors` from Hugging Face Hub (idempotent) |
-| `publish_model_hf.py` | Maintainer: upload weights to Hugging Face Hub |
+| `download_model.py` | Download `model.safetensors` from Hugging Face Hub (`SingularityUS/ATC-whisper-v1`, idempotent) |
+| `publish_model_hf.py` | Maintainer: upload weights to Hugging Face Hub (default: `SingularityUS/ATC-whisper-v1`) |
 | `publish_model_release.ps1` | Legacy: GitHub Release upload via `gh` (not recommended for ~922 MB) |
 | `run_live_pipeline.bat` | Live KDFW Lone Star Approach feed + latency |
 | `run_latency_eval.bat` | Offline latency eval on recorded JFK feed (fast replay) |
