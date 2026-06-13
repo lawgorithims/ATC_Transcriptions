@@ -33,8 +33,12 @@ Write-Host "[4/5] Installing Python dependencies ..."
 python -m pip install -r requirements-live.txt
 
 Write-Host "      Trying optional webrtcvad (may fail without C++ Build Tools) ..."
-python -m pip install webrtcvad
-if ($LASTEXITCODE -ne 0) {
+$prevErrorAction = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
+python -m pip install webrtcvad 2>&1 | Out-Null
+$webrtcOk = ($LASTEXITCODE -eq 0)
+$ErrorActionPreference = $prevErrorAction
+if (-not $webrtcOk) {
     Write-Host "      webrtcvad skipped - live pipeline will use energy-based VAD fallback."
 } else {
     Write-Host "      webrtcvad installed."
