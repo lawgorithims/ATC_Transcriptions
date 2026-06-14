@@ -74,6 +74,44 @@ On Apple Silicon (M-series) Macs, the default `device: "auto"` automatically use
 
 
 
+## Verify the install (proof of life)
+
+
+
+After installing, run the diagnostic to confirm the model loads on this machine's GPU/CPU and transcribes correctly. It auto-detects CUDA (NVIDIA), Metal/MPS (Apple Silicon), or CPU, runs a few short bundled ATC snippets, and prints a PASS/FAIL verdict (exit code `0` on PASS).
+
+
+
+```bash
+
+# Cross-platform:
+
+python scripts/diagnostic.py
+
+
+
+# Or via the platform launcher:
+
+bash scripts/diagnostic.sh                                        # macOS / Linux
+
+powershell -ExecutionPolicy Bypass -File scripts/diagnostic.ps1   # Windows
+
+
+
+# Force a backend, or save a JSON report:
+
+python scripts/diagnostic.py --device cpu
+
+python scripts/diagnostic.py --device mps --json report.json
+
+```
+
+
+
+The snippets and their reference transcripts live in `tests/diagnostic_data/`.
+
+
+
 ## How context works
 
 

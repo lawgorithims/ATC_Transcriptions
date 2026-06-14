@@ -1,0 +1,28 @@
+{
+  "description": "Short labeled ATC snippets used by scripts/diagnostic.py as a proof-of-life check for the fine-tuned Whisper transcriber. Chosen to be brief (~2-4 s each) so the whole diagnostic runs in seconds.",
+  "source": "ATCO2 1h public test set (luigisaetta subset), validation split. Provided for research/diagnostic use under the ATCO2 corpus terms.",
+  "sample_rate": 16000,
+  "channels": 1,
+  "snippets": [
+    {
+      "file": "luigisaetta_00367.wav",
+      "reference": "roger station calling please pass your message"
+    },
+    {
+      "file": "luigisaetta_00270.wav",
+      "reference": "Hotel Echo X-ray number one runway two five"
+    },
+    {
+      "file": "luigisaetta_00460.wav",
+      "reference": "thank you QNH is one zero two three"
+    },
+    {
+      "file": "luigisaetta_00464.wav",
+      "reference": "one six right cleared to land Rex Sixty One Thirty Four"
+    },
+    {
+      "file": "luigisaetta_00550.wav",
+      "reference": "tower Bauhinia Two Zero One Seven established ILS three four left"
+    }
+  ]
+}
