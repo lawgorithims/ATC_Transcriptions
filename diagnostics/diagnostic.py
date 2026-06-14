@@ -16,10 +16,10 @@ NVIDIA/Windows and Apple Silicon -- the only thing that changes is the resolved
 device.
 
 Usage (from project root):
-    python scripts/diagnostic.py                 # auto-detect device
-    python scripts/diagnostic.py --device cpu    # force a backend
-    python scripts/diagnostic.py --device mps    # force Apple Metal
-    python scripts/diagnostic.py --json out.json # also write a machine-readable report
+    python diagnostics/diagnostic.py                 # auto-detect device
+    python diagnostics/diagnostic.py --device cpu    # force a backend
+    python diagnostics/diagnostic.py --device mps    # force Apple Metal
+    python diagnostics/diagnostic.py --json out.json # also write a machine-readable report
 
 Exit code is 0 on PASS, 1 on FAIL (handy for CI / smoke gating).
 """

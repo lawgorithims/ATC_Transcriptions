@@ -57,8 +57,11 @@ requirements.txt
 *.flac
 *.ogg
 
-# Exception: short proof-of-life snippets for scripts/diagnostic.py travel with the repo
+# Exception: short proof-of-life snippets for diagnostics/diagnostic.py travel with the repo
 !tests/diagnostic_data/*.wav
+
+# Benchmark audio bundle (regenerable via diagnostics/build_bundle.py from local data/)
+diagnostics/bundle/
 
 # Model: exclude weights (host separately) and training checkpoints
 models/whisper-atc/model.safetensors

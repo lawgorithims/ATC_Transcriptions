@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Proof-of-life diagnostic for ATC_Transcribe (macOS / Linux)
-# Usage: bash scripts/diagnostic.sh [extra args]
+# Usage: bash diagnostics/diagnostic.sh [extra args]
 #
 # On Apple Silicon, device "auto" resolves to the Metal (MPS) GPU; on a CUDA box
 # it resolves to the NVIDIA GPU; otherwise CPU. Transcribes a few short bundled
@@ -16,4 +16,4 @@ else
     echo "No .venv found - using system python. Run scripts/install.sh first."
 fi
 
-python "$ROOT/scripts/diagnostic.py" "$@"
+python "$ROOT/diagnostics/diagnostic.py" "$@"

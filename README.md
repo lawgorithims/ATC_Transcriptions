@@ -86,23 +86,23 @@ After installing, run the diagnostic to confirm the model loads on this machine'
 
 # Cross-platform:
 
-python scripts/diagnostic.py
+python diagnostics/diagnostic.py
 
 
 
 # Or via the platform launcher:
 
-bash scripts/diagnostic.sh                                        # macOS / Linux
+bash diagnostics/diagnostic.sh                                        # macOS / Linux
 
-powershell -ExecutionPolicy Bypass -File scripts/diagnostic.ps1   # Windows
+powershell -ExecutionPolicy Bypass -File diagnostics/diagnostic.ps1   # Windows
 
 
 
 # Force a backend, or save a JSON report:
 
-python scripts/diagnostic.py --device cpu
+python diagnostics/diagnostic.py --device cpu
 
-python scripts/diagnostic.py --device mps --json report.json
+python diagnostics/diagnostic.py --device mps --json report.json
 
 ```
 

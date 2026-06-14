@@ -1,5 +1,5 @@
 # Proof-of-life diagnostic for ATC_Transcribe (Windows PowerShell)
-# Usage: powershell -ExecutionPolicy Bypass -File scripts/diagnostic.ps1 [-- extra args]
+# Usage: powershell -ExecutionPolicy Bypass -File diagnostics/diagnostic.ps1 [-- extra args]
 #
 # Resolves device "auto" to CUDA on an NVIDIA GPU, else CPU, then transcribes a
 # few short bundled ATC snippets and prints a PASS/FAIL verdict.
@@ -15,5 +15,5 @@ if (-not (Test-Path $python)) {
     $python = "python"
 }
 
-& $python (Join-Path $Root "scripts\diagnostic.py") @args
+& $python (Join-Path $Root "diagnostics\diagnostic.py") @args
 exit $LASTEXITCODE

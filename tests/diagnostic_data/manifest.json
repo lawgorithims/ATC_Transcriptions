@@ -1,5 +1,5 @@
 {
-  "description": "Short labeled ATC snippets used by scripts/diagnostic.py as a proof-of-life check for the fine-tuned Whisper transcriber. Chosen to be brief (~2-4 s each) so the whole diagnostic runs in seconds.",
+  "description": "Short labeled ATC snippets used by diagnostics/diagnostic.py as a proof-of-life check for the fine-tuned Whisper transcriber. Chosen to be brief (~2-4 s each) so the whole diagnostic runs in seconds.",
   "source": "ATCO2 1h public test set (luigisaetta subset), validation split. Provided for research/diagnostic use under the ATCO2 corpus terms.",
   "sample_rate": 16000,
   "channels": 1,
