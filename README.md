@@ -10,6 +10,14 @@ Default feed: **KDFW Lone Star Approach (17/35C Final)** — 127.075 MHz.
 
 
 
+## Pipeline
+
+![ATC_Transcribe production data pipeline](docs/pipeline.svg)
+
+The system listens to ATC radio through one of three input modes — a live microphone feed (`realtime_transcribe.py`), a live ATC web stream (`atc_stream.py` + ffmpeg, orchestrated by `live_atc_pipeline.py`), or replay of a stored recording for proof-of-life tests — and routes all three through a shared front-end: 16 kHz PCM capture followed by WebRTC VAD segmentation. Each speech segment is cleaned by `audio_preprocessing.py`, given an airport-context prompt (`atc_context.py` + `airport_configs/*.json`), and transcribed by the fine-tuned Whisper model in `models/whisper-atc`. Completed transcripts feed back into the rolling context history.
+
+
+
 ## Quick start
 
 
@@ -221,6 +229,19 @@ scripts/               # install + run helpers
 
 
 See `LIVE_PIPELINE_README.md` and `GITHUB.md` for more details.
+
+
+
+## Maintainer notes — code organization
+
+The production pipeline (live inference + proof-of-life) and the model-training tooling currently live in the same directory. A future reorganization will move training code into a separate folder. Before doing that, note these dependencies that cross the production/training boundary (verified against the import graph):
+
+- **`audio_preprocessing.py` is shared — do not move it.** It is imported by every live input mode (`atc_transcriber.py`, `realtime_transcribe.py`, `live_atc_transcribe.py`) and by `diagnostics/diagnostic.py`, as well as by training/eval (`evaluate_atco2.py`). Relocating it breaks both the live pipeline and the proof-of-life check. Keep it in the repo root.
+- **`evaluate_atco2.py` is imported by `main.py`** (the `evaluate` subcommand) and by `evaluate_finetuned.py`. If it moves into a training folder, update `main.py`'s import and move `evaluate_finetuned.py` and `atc_normalization.py` alongside it (`atc_normalization.py` is imported only by `train_distil_whisper.py` and `evaluate_atco2.py`).
+- **`airport_configs/` is referenced by relative path literals** in `live_atc_pipeline.py` (3 sites) and `main.py` (2 sites). If the configs move, update those literals and the examples above, or the default feed and the context prompt will fail to load.
+- **Proof-of-life fixtures are not training data.** `tests/diagnostic_data/` (diagnostic snippets) and `data/live_atc/KJFK-Twr2-Mar-15-2026-0000Z.mp3` (replay sample) must stay where they are — the `scripts/*.bat` launchers and `diagnostics/diagnostic.py` reference them by fixed path.
+
+Two minor issues were fixed directly: the misleading "Training-only scripts" label in `.gitignore` (it is a *local/untracked* list that also includes production files, not a purpose classification), and a dangling reference to a non-existent `evaluate_voxtral_val.py` in `scripts/run_atcosim_250.bat` (now disabled with a note).
 
 
 
