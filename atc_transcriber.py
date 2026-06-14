@@ -4,6 +4,7 @@ Lightweight fine-tuned Whisper transcriber for live ATC with optional context pr
 
 from __future__ import annotations
 
+import os
 from typing import Optional
 
 import numpy as np
@@ -11,6 +12,17 @@ import torch
 from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
 from audio_preprocessing import AudioPreprocessor
+
+
+def _resolve_device(device: str) -> str:
+    """Resolve 'auto' to the best available backend: CUDA, then Apple MPS, then CPU."""
+    if device != "auto":
+        return device
+    if torch.cuda.is_available():
+        return "cuda"
+    if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
 
 
 class ATCTranscriber:
@@ -23,10 +35,12 @@ class ATCTranscriber:
         enable_preprocessing: bool = True,
         aggressive_preprocessing: bool = True,
     ):
-        if device == "auto":
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-        self.device = device
+        self.device = _resolve_device(device)
         self.model_path = model_path
+        # Metal (MPS) lacks a few ops Whisper uses; fall back to CPU per-op
+        # instead of crashing. Keep weights in float32 — fp16 is unstable on MPS.
+        if self.device == "mps":
+            os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 
         print(f"Using device: {self.device}")
         print(f"Loading model: {model_path} ...")

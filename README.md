@@ -14,6 +14,10 @@ Default feed: **KDFW Lone Star Approach (17/35C Final)** — 127.075 MHz.
 
 
 
+**Windows (PowerShell):**
+
+
+
 ```powershell
 
 # 1. Install
@@ -35,6 +39,38 @@ winget install Gyan.FFmpeg
 python live_atc_pipeline.py
 
 ```
+
+
+
+**macOS / Linux (bash):**
+
+
+
+```bash
+
+# 1. Install (creates .venv, installs deps, downloads model weights)
+
+bash scripts/install.sh
+
+source .venv/bin/activate
+
+
+
+# 2. Install ffmpeg (required for live streams)
+
+brew install ffmpeg          # macOS  (Linux: sudo apt-get install ffmpeg)
+
+
+
+# 3. Run
+
+python live_atc_pipeline.py
+
+```
+
+
+
+On Apple Silicon (M-series) Macs, the default `device: "auto"` automatically uses the Metal (MPS) GPU. Override with `--device cpu` or `--device mps` if needed.
 
 
 
