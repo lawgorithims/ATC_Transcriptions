@@ -64,3 +64,4 @@ models/whisper-atc/checkpoint-*/
 models/whisper-atc/checkpoint-*/**
 models/whisper-atc/checkpoint-2200/
 models/whisper-atc/checkpoint-2400/
+models/whisper-atc/training_args.bin
