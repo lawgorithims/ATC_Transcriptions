@@ -183,7 +183,7 @@ python live_atc_pipeline.py --stream-url https://d.liveatc.net/kdfw1_twr1_e --ai
 
 
 
-No third-party dependencies (Python stdlib only). See **[airport_context/README.md](airport_context/README.md)**.
+No third-party dependencies (Python stdlib only). See **[airport_context/README.md](airport_context/README.md)** for the full guide, and **[airport_context/PROCEDURES.md](airport_context/PROCEDURES.md)** for how the FAA d-TPP procedure pipeline works function by function.
 
 
 

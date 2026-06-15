@@ -151,6 +151,7 @@ for debugging and evaluation); `meta` (source cycle, counts). See
 - **Phase 2 procedures — done.** FAA d-TPP ingestion, procedure spoken-name
   generation (approaches/SIDs/STARs/visuals), and frequency-type-aware selection
   (clearance→SIDs, approach→approaches+STARs, tower→a few approaches, ground/ctaf→none).
+  Deep dive: **[PROCEDURES.md](PROCEDURES.md)** — how it works, function by function.
 - **Next:** Phase 3 weather (AWC METAR) · Phase 5 post-transcription
   normalization + evaluation.
 
