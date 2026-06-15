@@ -31,11 +31,10 @@ its final rendering. Request → response (MVP contract):
 // response
 { "airport": "KMSP", "frequency_type": "tower",
   "prompt": "ATC aviation radio audio near KMSP Minneapolis. Frequency type: tower. ...",
-  "prompt_word_count": 172,
+  "prompt_word_count": 205,
   "context_snapshot": { "airport": {…}, "runways": [...], "facility_names": [...],
-                        "fixes": [...], "candidate_callsigns": [...], "phrase_templates": [...],
-                        "procedures": [], "weather_terms": [], "prior_transcript": [...] },
-  "warnings": ["procedures_unavailable"] }
+                        "fixes": [...], "procedures": [...], "candidate_callsigns": [...],
+                        "phrase_templates": [...], "weather_terms": [], "prior_transcript": [...] } }
 ```
 
 ## Architecture
@@ -43,14 +42,14 @@ its final rendering. Request → response (MVP contract):
 ```
 Offline (scheduled)                 Runtime (per prompt)
 ───────────────────                 ────────────────────
-OurAirports CSVs                    request → resolve airport
-   ↓ ingest                                 → fetch local context (runways/freqs/navaids)
+OurAirports + FAA d-TPP             request → resolve airport
+   ↓ ingest                                 → fetch local context (runways/freqs/navaids/procedures)
 SQLite DB  ──────────────────────►          → format candidate callsigns
-(airports, runways,                         → rank · cap · dedupe
+(airports, runways,                         → rank · cap · dedupe (frequency-type aware)
  frequencies, navaids,                      → render prompt (budgeted)
- procedures*, weather*,                      → log context_snapshot
+ procedures, weather*,                       → log context_snapshot
  context_snapshots)                  return { prompt, context_snapshot }
-                                    (*populated in later phases)
+                                    (*weather populated in a later phase)
 ```
 
 ## Quick start
@@ -58,6 +57,7 @@ SQLite DB  ──────────────────────►
 ```bash
 # 1. Build the database (downloads OurAirports CSVs, ~17 MB; US by default)
 python -m airport_context.cli ingest                 # or: --country US,CA  /  --country ALL
+python -m airport_context.cli ingest-procedures      # add FAA d-TPP terminal procedures (~15 MB)
 
 # 2. Build a prompt
 python -m airport_context.cli build --airport KMSP --frequency-type tower \
@@ -102,13 +102,19 @@ Errors are returned, not raised: `airport_not_found`, `ambiguous_airport`
 (with a `candidates` list), `invalid_request`, `database_empty`. Missing
 optional data degrades gracefully via `warnings`.
 
-## Data source
+## Data sources
 
-[OurAirports](https://ourairports.com/data/) — public-domain (CC0), global,
-daily-updated CSVs covering airports, runways, frequencies, and navaids. Every
-row is stamped with a `source_cycle` so a later reconciliation against the
-authoritative **FAA NASR** subscription (per the spec) is mechanical. The
-database and CSV cache live under the git-ignored `data/airport_context/`.
+- **Airports / runways / frequencies / navaids** —
+  [OurAirports](https://ourairports.com/data/), public-domain (CC0), global,
+  daily-updated CSVs. Each row is stamped with a `source_cycle` so a later
+  reconciliation against the authoritative **FAA NASR** subscription is mechanical.
+- **Terminal procedures** (approaches, SIDs, STARs, visuals) —
+  [FAA d-TPP](https://www.faa.gov/air_traffic/flight_info/aeronav/digital_products/dtpp/),
+  the per-cycle digital Terminal Procedures metafile (XML). The current 28-day
+  cycle is auto-detected (override with `--cycle`); only the procedure *names* and
+  metadata are ingested, not the plates.
+
+The database and download caches live under the git-ignored `data/airport_context/`.
 
 ## Spoken-form rules
 
@@ -121,6 +127,9 @@ Generated once at ingestion (runways) or at runtime (callsigns, frequencies):
 | Airline `DAL1234` | `Delta twelve thirty four` · `Delta one two three four` |
 | Regional `SKW5670` | `SkyWest fifty six seventy` · `SkyWest five six seven zero` |
 | Tail `N345AB` | `November three four five alpha bravo` · `five alpha bravo` |
+| Approach `ILS OR LOC RWY 30L` | `ILS or localizer runway three zero left` |
+| Approach `RNAV (GPS) RWY 22` | `RNAV GPS runway two two` |
+| SID `MINNEAPOLIS NINE` / STAR `GOPHER ONE` | `Minneapolis Nine departure` / `Gopher One arrival` |
 
 Airline telephony names live in editable [`data/airlines.json`](data/airlines.json);
 spoken airport-name overrides (e.g. `KJFK` → "Kennedy") in
@@ -128,8 +137,8 @@ spoken airport-name overrides (e.g. `KJFK` → "Kennedy") in
 
 ## Database schema
 
-`airports`, `runways`, `frequencies`, `navaids` (populated now);
-`procedures`, `weather_snapshots` (created, populated in later phases);
+`airports`, `runways`, `frequencies`, `navaids`, `procedures` (populated now);
+`weather_snapshots` (created, populated in a later phase);
 `context_snapshots` (one row per build — input, snapshot, prompt, word count —
 for debugging and evaluation); `meta` (source cycle, counts). See
 [`db.py`](db.py).
@@ -139,11 +148,14 @@ for debugging and evaluation); `meta` (source cycle, counts). See
 - **Phase 1 + callsigns — done.** Resolver, ingestion, spoken forms, phrase
   dictionaries, ranking/caps/dedup, renderer, snapshot logging, candidate
   callsigns.
-- **Next:** Phase 2 procedures (FAA d-TPP XML) · Phase 3 weather (AWC METAR) ·
-  Phase 5 post-transcription normalization + evaluation.
+- **Phase 2 procedures — done.** FAA d-TPP ingestion, procedure spoken-name
+  generation (approaches/SIDs/STARs/visuals), and frequency-type-aware selection
+  (clearance→SIDs, approach→approaches+STARs, tower→a few approaches, ground/ctaf→none).
+- **Next:** Phase 3 weather (AWC METAR) · Phase 5 post-transcription
+  normalization + evaluation.
 
-The empty `procedures`/`weather_terms` snapshot fields and the
-`procedures_unavailable` warning are deliberate placeholders for those phases.
+The empty `weather_terms` snapshot field and the `weather_unavailable` warning
+are deliberate placeholders for Phase 3.
 
 ## Wiring into the live pipeline
 

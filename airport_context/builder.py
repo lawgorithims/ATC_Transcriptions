@@ -48,6 +48,23 @@ def _split_prior(text: str, max_lines: int = 3, max_words: int = 150) -> List[st
     return out
 
 
+# Procedure types surfaced per frequency type, and how many (spec section 13).
+_PROC_TYPES_BY_FREQ = {
+    "clearance": ["DP"],
+    "ground": [],
+    "tower": ["IAP", "CVFP"],
+    "approach": ["IAP", "STAR", "CVFP"],
+    "departure": ["DP", "STAR"],
+    "center": ["STAR"],
+    "ctaf": [],
+    "unknown": ["IAP", "DP", "STAR", "CVFP"],
+}
+_PROC_CAP_BY_FREQ = {
+    "clearance": 10, "ground": 0, "tower": 6, "approach": 16,
+    "departure": 14, "center": 8, "ctaf": 0, "unknown": 12,
+}
+
+
 class AirportContextService:
     """Build airport-mode context snapshots + prompts from request dicts."""
 
@@ -139,10 +156,21 @@ class AirportContextService:
             # these are the fixes ATC actually references ("direct Gopher").
             navaids.sort(key=lambda n: (ranker.NAVAID_TYPE_RANK.get(n.type, 9), n.distance_nm or 9e9))
 
+        # --- procedures (FAA d-TPP), frequency-type aware ---
+        # A transient DB read error must degrade gracefully, never break a request.
+        try:
+            if db.count_procedures(self.conn) == 0:
+                warnings.append("procedures_unavailable")  # d-TPP not ingested
+                selected_procedures = []
+            else:
+                selected_procedures = self._select_procedures(aid, frequency_type)
+        except sqlite3.Error:
+            warnings.append("procedures_unavailable")
+            selected_procedures = []
+
         # --- dynamic / not-yet-ingested context ---
         if request.get("include_weather"):
             warnings.append("weather_unavailable")  # AWC weather is a later phase
-        warnings.append("procedures_unavailable")  # d-TPP procedures are a later phase
 
         # --- callsigns + prior transcript ---
         callsigns = format_callsigns(request.get("candidate_callsigns"))
@@ -175,6 +203,10 @@ class AirportContextService:
                 fix_terms.append(nm)
         fix_terms = ranker.cap(ranker.dedupe(fix_terms), DEFAULT_CAPS["fixes"])
 
+        procedure_terms = ranker.cap(
+            ranker.dedupe([p.spoken for p in selected_procedures]), DEFAULT_CAPS["procedures"]
+        )
+
         callsign_terms: List[str] = []
         for cs in ranker.cap(callsigns, DEFAULT_CAPS["candidate_callsigns"]):
             callsign_terms.extend(cs.spoken[:2])  # best one or two variants each
@@ -187,7 +219,7 @@ class AirportContextService:
             "facility_names": facility_terms,
             "runways": runway_terms,
             "phrase_templates": phrase_terms,
-            "procedures": [],
+            "procedures": procedure_terms,
             "fixes": fix_terms,
             "weather_terms": [],
             "spelling_hints": spelling_terms,
@@ -202,7 +234,7 @@ class AirportContextService:
             "frequency_type": frequency_type,
             "runways": [r.snapshot_dict() for r in runways[: DEFAULT_CAPS["runways"]]],
             "facility_names": facility_terms,
-            "procedures": [],
+            "procedures": [p.snapshot_dict() for p in selected_procedures],
             "fixes": [n.snapshot_dict() for n in navaids[: DEFAULT_CAPS["fixes"]]],
             "weather_terms": [],
             "candidate_callsigns": [cs.snapshot_dict() for cs in callsigns],
@@ -225,6 +257,37 @@ class AirportContextService:
         return result
 
     # ------------------------------------------------------------------ #
+    def _select_procedures(self, aid, frequency_type):
+        """Pick procedures for the frequency type: round-robin across types, de-duped
+        by spoken form so distinct charts that collapse to the same phrase (e.g.
+        'ILS RWY 30L (CAT II)' variants) fill only one slot."""
+        types = _PROC_TYPES_BY_FREQ.get(frequency_type, _PROC_TYPES_BY_FREQ["unknown"])
+        cap = _PROC_CAP_BY_FREQ.get(frequency_type, 12)
+        if not types or cap <= 0:
+            return []
+        buckets = {t: db.get_procedures(self.conn, aid, [t]) for t in types}
+        selected = []
+        seen = set()
+        while len(selected) < cap and any(buckets.values()):
+            progressed = False
+            for t in types:
+                picked = None
+                while buckets[t]:
+                    p = buckets[t].pop(0)
+                    key = (p.spoken or "").strip().lower()
+                    if key and key not in seen:
+                        seen.add(key)
+                        picked = p
+                        break
+                if picked is not None:
+                    selected.append(picked)
+                    progressed = True
+                    if len(selected) >= cap:
+                        break
+            if not progressed:
+                break
+        return selected
+
     def _log_snapshot(self, aid, ft, request, snapshot, prompt, word_count, source_cycle) -> None:
         if not self.log_snapshots:
             return

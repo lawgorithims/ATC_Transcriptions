@@ -1,6 +1,6 @@
 <svg width="760" viewBox="0 0 760 766" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="ATC_Transcribe production data pipeline">
 <title>ATC_Transcribe production data pipeline</title>
-<desc>Three input modes (live microphone, live ATC web stream, stored audio replay) converge into a shared front-end (16 kHz PCM capture, VAD segmentation), then audio preprocessing and fine-tuned Whisper inference with airport context, producing a live transcript that also updates the rolling context history. Airport context is either hand-curated (atc_context.py + JSON) or auto-fetched by the airport_context pipeline from a local database built offline from OurAirports data.</desc>
+<desc>Three input modes (live microphone, live ATC web stream, stored audio replay) converge into a shared front-end (16 kHz PCM capture, VAD segmentation), then audio preprocessing and fine-tuned Whisper inference with airport context, producing a live transcript that also updates the rolling context history. Airport context is either hand-curated (atc_context.py + JSON) or auto-fetched by the airport_context pipeline from a local database built offline from OurAirports and FAA d-TPP data.</desc>
 <style>
 text{font-family:'Segoe UI',-apple-system,Roboto,Helvetica,Arial,sans-serif;}
 .title{font-size:19px;font-weight:600;}
@@ -60,7 +60,7 @@ text{font-family:'Segoe UI',-apple-system,Roboto,Helvetica,Arial,sans-serif;}
 <g>
 <rect x="30" y="372" width="180" height="50" rx="8" fill="#E6EEF6" stroke="#2F5E86" stroke-width="0.5"/>
 <text class="th" x="120" y="390" text-anchor="middle" dominant-baseline="central" fill="#173A57">Airport database</text>
-<text class="ts" x="120" y="407" text-anchor="middle" dominant-baseline="central" fill="#2F5E86">airport_context &#183; OurAirports</text>
+<text class="ts" x="120" y="407" text-anchor="middle" dominant-baseline="central" fill="#2F5E86">OurAirports + FAA d-TPP</text>
 </g>
 <line x1="120" y1="422" x2="120" y2="450" stroke="#5F5E5A" stroke-width="1.5" marker-end="url(#arrow)"/>
 
@@ -100,5 +100,5 @@ text{font-family:'Segoe UI',-apple-system,Roboto,Helvetica,Arial,sans-serif;}
 <rect x="30" y="698" width="14" height="14" rx="3" fill="#FAECE7" stroke="#993C1D" stroke-width="0.5"/>
 <text class="lab" x="52" y="705" dominant-baseline="central" fill="#5F5E5A">Context delivery — airport, frequency, call signs (hand-curated or auto-fetched)</text>
 <rect x="30" y="724" width="14" height="14" rx="3" fill="#E6EEF6" stroke="#2F5E86" stroke-width="0.5"/>
-<text class="lab" x="52" y="731" dominant-baseline="central" fill="#5F5E5A">Offline data — airport database built from OurAirports (airport_context)</text>
+<text class="lab" x="52" y="731" dominant-baseline="central" fill="#5F5E5A">Offline data — airports + procedures (OurAirports + FAA d-TPP via airport_context)</text>
 </svg>

@@ -155,15 +155,17 @@ This biases the model toward correct ATC phraseology, call signs, and local name
 
 
 
-The hand-curated `airport_configs/*.json` above cover a couple of airports. The **`airport_context/`** package builds the same kind of context **automatically** for any U.S. airport from a local database (ingested offline from public-domain OurAirports data), adding spoken-form generation (`runway three zero left`, `Delta twelve thirty four`), frequency-specific ranking, candidate-callsign handling, and per-build snapshot logging.
+The hand-curated `airport_configs/*.json` above cover a couple of airports. The **`airport_context/`** package builds the same kind of context **automatically** for any U.S. airport from a local database (ingested offline from public-domain OurAirports data plus FAA d-TPP terminal procedures), adding spoken-form generation (`runway three zero left`, `Delta twelve thirty four`, `ILS or localizer runway three zero left`), frequency-specific ranking (clearance→SIDs, approach→approaches+STARs), candidate-callsign handling, and per-build snapshot logging.
 
 
 
 ```bash
 
-python -m airport_context.cli ingest                                    # one-time: build the DB
+python -m airport_context.cli ingest                                    # one-time: build the DB (airports/runways/freqs/navaids)
 
-python -m airport_context.cli build --airport KMSP --frequency-type tower --callsigns DAL1234,N345AB
+python -m airport_context.cli ingest-procedures                         # add FAA d-TPP approaches/SIDs/STARs
+
+python -m airport_context.cli build --airport KMSP --frequency-type approach --callsigns DAL1234
 
 ```
 

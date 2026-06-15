@@ -158,6 +158,25 @@ class Navaid:
 
 
 @dataclass
+class Procedure:
+    """A terminal procedure (FAA d-TPP) linked to an airport."""
+
+    procedure_type: str  # IAP | DP | STAR | CVFP | APD | TAKEOFF_MINIMA | ALTERNATE_MINIMA
+    name: str  # raw d-TPP chart_name
+    spoken: str
+    runway_ident: Optional[str] = None
+    chart_code: Optional[str] = None
+
+    def snapshot_dict(self) -> dict:
+        return {
+            "type": self.procedure_type,
+            "name": self.name,
+            "spoken": self.spoken,
+            "runway": self.runway_ident,
+        }
+
+
+@dataclass
 class Callsign:
     """A candidate callsign and its spoken variants (spec section 12)."""
 

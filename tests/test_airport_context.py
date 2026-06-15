@@ -25,6 +25,12 @@ from airport_context.resolver import (  # noqa: E402
     AirportResolver,
     AmbiguousAirport,
 )
+from airport_context.procedures import (  # noqa: E402
+    extract_runway,
+    is_continuation,
+    normalize_type,
+    spoken_name,
+)
 from airport_context.spoken import frequency_spoken, runway_spoken  # noqa: E402
 
 _NOW = "2026-01-01T00:00:00"
@@ -214,6 +220,175 @@ class BuildTests(unittest.TestCase):
         result = self.service.build({"airport_code": "MSP"})
         self.assertEqual(result["frequency_type"], "unknown")
         self.assertIn("Frequency type: unknown", result["prompt"])
+
+
+def seed_procedures(conn, airport_id=1):
+    """Add a few procedures to an existing fixture DB (KMSP = airport_id 1)."""
+    procs = [
+        ("IAP", "ILS OR LOC RWY 30L", "ILS or localizer runway three zero left", "30L", "IAP"),
+        ("IAP", "ILS RWY 30L (CAT II)", "ILS runway three zero left", "30L", "IAP"),
+        # Distinct chart, identical spoken form -> must de-dupe to one slot.
+        ("IAP", "ILS RWY 30L (CAT II - III)", "ILS runway three zero left", "30L", "IAP"),
+        ("IAP", "RNAV (GPS) RWY 22", "RNAV GPS runway two two", "22", "IAP"),
+        ("STAR", "GOPHER ONE", "Gopher One arrival", None, "STR"),
+        ("DP", "MINNEAPOLIS NINE", "Minneapolis Nine departure", None, "DP"),
+    ]
+    conn.executemany(
+        "INSERT INTO procedures(airport_id, procedure_type, procedure_name, spoken_name, "
+        "runway_ident, chart_code, source_cycle) VALUES(?,?,?,?,?,?,?)",
+        [(airport_id, pt, nm, sp, rwy, cc, "test") for pt, nm, sp, rwy, cc in procs],
+    )
+    conn.commit()
+
+
+class ProcedureSpokenTests(unittest.TestCase):
+    def test_normalize_type(self):
+        self.assertEqual(normalize_type("IAP", "ILS OR LOC RWY 30L"), "IAP")
+        self.assertEqual(normalize_type("STR", "GOPHER ONE"), "STAR")
+        self.assertEqual(normalize_type("DP", "MINNEAPOLIS NINE"), "DP")
+        self.assertEqual(normalize_type("ODP", "JOGMO ONE (OBSTACLE)"), "DP")
+        self.assertEqual(normalize_type("IAP", "HIGHWAY VISUAL RWY 25R"), "CVFP")
+        self.assertEqual(normalize_type("MIN", "TAKEOFF MINIMUMS"), "TAKEOFF_MINIMA")
+
+    def test_continuation_detection(self):
+        self.assertTrue(is_continuation("COULT SEVEN, CONT.1"))
+        self.assertFalse(is_continuation("COULT SEVEN"))
+
+    def test_extract_runway(self):
+        self.assertEqual(extract_runway("ILS OR LOC RWY 30L"), "30L")
+        self.assertEqual(extract_runway("RNAV (GPS) RWY 04"), "04")
+        self.assertIsNone(extract_runway("GOPHER ONE"))
+
+    def test_approach_spoken(self):
+        self.assertEqual(spoken_name("IAP", "ILS OR LOC RWY 30L"), "ILS or localizer runway three zero left")
+        self.assertEqual(spoken_name("IAP", "RNAV (GPS) RWY 22"), "RNAV GPS runway two two")
+        self.assertEqual(spoken_name("IAP", "LOC RWY 04"), "localizer runway zero four")
+        self.assertEqual(spoken_name("IAP", "RNAV (GPS)-A"), "RNAV GPS Alpha")
+        self.assertEqual(spoken_name("IAP", "LOC BC RWY 31"), "localizer back course runway three one")
+
+    def test_sid_star_spoken(self):
+        self.assertEqual(spoken_name("DP", "MINNEAPOLIS NINE"), "Minneapolis Nine departure")
+        self.assertEqual(spoken_name("DP", "JOGMO ONE (OBSTACLE) (RNAV)", "DP"), "Jogmo One departure")
+        self.assertEqual(spoken_name("STR", "GOPHER ONE"), "Gopher One arrival")
+        self.assertEqual(spoken_name("STR", "BAINY FOUR (RNAV)"), "Bainy Four arrival")
+
+    def test_no_leftover_tokens(self):
+        for code, name in [("IAP", "ILS OR LOC RWY 30L"), ("DP", "COULT SEVEN"), ("STR", "GOPHER ONE")]:
+            out = spoken_name(code, name)
+            self.assertNotIn("RWY", out)
+            self.assertNotIn("(", out)
+            self.assertTrue(out.strip())
+
+    def test_multi_runway(self):
+        self.assertEqual(extract_runway("RNAV (GPS) RWY 28L/R"), "28L/R")
+        self.assertEqual(extract_runway("ILS OR LOC RWY 16 R/C/L"), "16R/C/L")
+        self.assertEqual(spoken_name("IAP", "RNAV (GPS) RWY 28L/R"), "RNAV GPS runway two eight left right")
+        self.assertEqual(runway_spoken("28L/R"), "runway two eight left right")
+        self.assertEqual(runway_spoken("16 R/C/L"), "runway one six right center left")
+
+    def test_designator_letters_phonetic(self):
+        self.assertIn("Victor", spoken_name("IAP", "ILS V RWY 35"))
+        self.assertIn("Yankee", spoken_name("IAP", "RNAV (GPS) Y RWY 12L"))
+
+    def test_converging_and_hyphen_number(self):
+        self.assertEqual(spoken_name("IAP", "CONVERGING ILS RWY 17C"), "converging ILS runway one seven center")
+        self.assertEqual(spoken_name("IAP", "VOR-1 RWY 14L"), "VOR one runway one four left")
+
+    def test_dp_embedded_runway_and_bare_digit(self):
+        self.assertEqual(spoken_name("DP", "TIN CITY FIVE RWY 17"), "Tin City Five departure runway one seven")
+        self.assertEqual(spoken_name("DP", "DEVLN 1"), "Devln One departure")
+
+    def test_hyphenated_name_titlecase(self):
+        self.assertEqual(spoken_name("DP", "WILKES-BARRE FIVE"), "Wilkes-Barre Five departure")
+
+    def test_case_insensitive_input(self):
+        self.assertEqual(spoken_name("IAP", "ils or loc rwy 30l"), "ILS or localizer runway three zero left")
+
+    def test_three_digit_value_not_split(self):
+        # A 3-digit value must not be matched as a 2-digit runway dropping a digit.
+        self.assertEqual(spoken_name("IAP", "ILS OR LOC RWY 240"), "ILS or localizer runway two four zero")
+
+
+class ProcedureBuildTests(unittest.TestCase):
+    def setUp(self):
+        self.conn = make_db()
+        seed_procedures(self.conn)
+        self.service = AirportContextService(conn=self.conn)
+
+    def tearDown(self):
+        self.conn.close()
+
+    def test_approach_includes_procedures(self):
+        result = self.service.build({"airport_code": "KMSP", "frequency_type": "approach"})
+        self.assertNotIn("procedures_unavailable", result.get("warnings", []))
+        prompt = result["prompt"]
+        self.assertIn("Gopher One arrival", prompt)
+        self.assertIn("ILS or localizer runway three zero left", prompt)
+        self.assertTrue(result["context_snapshot"]["procedures"])
+
+    def test_equivalent_approaches_dedupe(self):
+        # 'ILS OR LOC RWY 30L' and 'ILS RWY 30L (CAT II)' have distinct spoken forms;
+        # but exact-duplicate spoken forms must not repeat in the prompt.
+        result = self.service.build({"airport_code": "KMSP", "frequency_type": "tower"})
+        prompt = result["prompt"]
+        self.assertEqual(prompt.count("ILS or localizer runway three zero left"), 1)
+
+    def test_ground_excludes_procedures(self):
+        result = self.service.build({"airport_code": "KMSP", "frequency_type": "ground"})
+        self.assertEqual(result["context_snapshot"]["procedures"], [])
+
+    def test_clearance_uses_departures(self):
+        result = self.service.build({"airport_code": "KMSP", "frequency_type": "clearance"})
+        self.assertIn("Minneapolis Nine departure", result["prompt"])
+
+    def test_snapshot_no_duplicate_spoken(self):
+        # Two distinct charts collapse to 'ILS runway three zero left' — must appear once.
+        result = self.service.build({"airport_code": "KMSP", "frequency_type": "tower"})
+        spokens = [p["spoken"] for p in result["context_snapshot"]["procedures"]]
+        self.assertEqual(len(spokens), len(set(spokens)))
+
+    def test_build_degrades_on_db_error(self):
+        # A transient DB read error must degrade gracefully, not raise.
+        import airport_context.builder as B
+
+        original = B.db.count_procedures
+
+        def boom(_conn):
+            raise sqlite3.OperationalError("database is locked")
+
+        B.db.count_procedures = boom
+        try:
+            result = self.service.build({"airport_code": "KMSP", "frequency_type": "approach"})
+        finally:
+            B.db.count_procedures = original
+        self.assertNotIn("error", result)
+        self.assertIn("procedures_unavailable", result.get("warnings", []))
+
+
+class IngestGuardTests(unittest.TestCase):
+    def test_empty_airports_refuses_to_wipe_procedures(self):
+        from airport_context import ingest_dtpp
+
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        db.init_db(conn)  # no airports inserted
+        conn.execute(
+            "INSERT INTO procedures(airport_id, procedure_type, procedure_name, spoken_name, "
+            "source_cycle) VALUES(1,'IAP','X','x','t')"
+        )
+        conn.commit()
+        with self.assertRaises(RuntimeError):
+            ingest_dtpp.load(conn, "does-not-exist.xml", "2606")
+        # Existing procedures must survive the refused ingest.
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM procedures").fetchone()[0], 1)
+        conn.close()
+
+    def test_cycle_math(self):
+        from airport_context import ingest_dtpp
+
+        self.assertEqual(ingest_dtpp.compute_cycle(__import__("datetime").date(2026, 6, 14)), "2606")
+        self.assertEqual(ingest_dtpp.cycle_add("2613", 1), "2701")
+        self.assertEqual(ingest_dtpp.cycle_add("2701", -1), "2613")
 
 
 class LiveAdapterTests(unittest.TestCase):

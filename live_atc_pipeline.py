@@ -219,6 +219,15 @@ class LiveATCPipeline:
         self._running = False
         self.producer.stop()
 
+    def close(self) -> None:
+        """Release the owned airport context / DB connection (idempotent)."""
+        closer = getattr(self.context, "close", None)
+        if callable(closer):
+            try:
+                closer()
+            except Exception:
+                pass
+
     def _transcribe_segment(self, segment) -> Optional[LatencyRecord]:
         t0 = time.perf_counter()
         prompt = self.context.build_prompt()
@@ -291,7 +300,11 @@ class LiveATCPipeline:
                 continue
             if segment is None:
                 break
-            record = self._transcribe_segment(segment)
+            try:
+                record = self._transcribe_segment(segment)
+            except Exception as exc:  # one bad segment must not kill the worker
+                self._status(f"transcription error (segment dropped): {exc}")
+                record = None
             if record:
                 self._result_queue.put(record)
 
@@ -378,6 +391,7 @@ class LiveATCPipeline:
             self._print_summary()
             if output_json:
                 self._save_json(output_json)
+            self.close()
 
     def _drain_results(self, report_interval: int, stop_at_max: bool = False) -> None:
         """Flush any completed transcriptions from the worker to the handler."""

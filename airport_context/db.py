@@ -14,7 +14,7 @@ import sqlite3
 from pathlib import Path
 from typing import List, Optional
 
-from .models import Airport, Frequency, Navaid, Runway
+from .models import Airport, Frequency, Navaid, Procedure, Runway
 
 # data/ is git-ignored, so the database and CSV cache live there (regenerable).
 _REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -286,8 +286,35 @@ def get_navaids_near(
     return out[:limit]
 
 
+def get_procedures(conn: sqlite3.Connection, airport_id: int, types=None) -> List[Procedure]:
+    sql = (
+        "SELECT procedure_type, procedure_name, spoken_name, runway_ident, chart_code "
+        "FROM procedures WHERE airport_id=?"
+    )
+    params: list = [airport_id]
+    if types:
+        sql += " AND procedure_type IN (%s)" % ",".join("?" * len(types))
+        params.extend(types)
+    sql += " ORDER BY procedure_type, procedure_name"
+    rows = conn.execute(sql, params).fetchall()
+    return [
+        Procedure(
+            procedure_type=r["procedure_type"],
+            name=r["procedure_name"],
+            spoken=r["spoken_name"],
+            runway_ident=r["runway_ident"],
+            chart_code=r["chart_code"],
+        )
+        for r in rows
+    ]
+
+
 def count_airports(conn: sqlite3.Connection) -> int:
     return conn.execute("SELECT COUNT(*) FROM airports").fetchone()[0]
+
+
+def count_procedures(conn: sqlite3.Connection) -> int:
+    return conn.execute("SELECT COUNT(*) FROM procedures").fetchone()[0]
 
 
 def meta_get(conn: sqlite3.Connection, key: str) -> Optional[str]:

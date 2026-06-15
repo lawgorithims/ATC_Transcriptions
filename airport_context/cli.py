@@ -39,6 +39,16 @@ def _cmd_ingest(args) -> int:
     return 0
 
 
+def _cmd_ingest_procedures(args) -> int:
+    from . import ingest_dtpp
+
+    counts = ingest_dtpp.run_ingest(
+        db_path=args.db, cache_dir=args.cache, cycle=args.cycle, force=args.force
+    )
+    print(f"Ingested procedures: {counts}")
+    return 0
+
+
 def _cmd_resolve(args) -> int:
     conn = db.connect(args.db, readonly=True)
     try:
@@ -107,6 +117,14 @@ def build_parser() -> argparse.ArgumentParser:
     pi.add_argument("--cache", help="CSV cache directory")
     pi.add_argument("--force", action="store_true", help="Re-download even if cached")
     pi.set_defaults(func=_cmd_ingest)
+
+    pp = sub.add_parser(
+        "ingest-procedures", help="Download FAA d-TPP and load terminal procedures"
+    )
+    pp.add_argument("--cycle", help="d-TPP cycle id YYNN (default: auto-detect current)")
+    pp.add_argument("--cache", help="d-TPP metafile cache directory")
+    pp.add_argument("--force", action="store_true", help="Re-download even if cached")
+    pp.set_defaults(func=_cmd_ingest_procedures)
 
     pr = sub.add_parser("resolve", help="Resolve an airport code to its canonical identity")
     pr.add_argument("--airport", required=True, help="ICAO / FAA-LID / IATA code")

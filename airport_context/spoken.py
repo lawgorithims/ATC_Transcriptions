@@ -15,6 +15,7 @@ Design choices that follow the spec:
 
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 # Aviation pronunciation of single digits (spec section 12).
@@ -103,25 +104,27 @@ def cardinal_two_digit(n: int) -> str:
     return _TENS[tens] + ((" " + _ONES[ones]) if ones else "")
 
 
+_RUNWAY_IDENT_RE = re.compile(r"^\s*(\d{1,2})\s*([LRC](?:\s*/?\s*[LRC])*)?\s*$")
+
+
 def runway_spoken(ident: str) -> str:
     """'30L' -> 'runway three zero left'; '04' -> 'runway zero four'; '4' -> 'runway four'.
 
-    Non-standard idents (e.g. helipad 'H1') are passed through unchanged.
+    Multi-side idents are spoken in full: '28L/R' -> 'runway two eight left right',
+    '16 R/C/L' -> 'runway one six right center left'. Non-standard idents (e.g.
+    helipad 'H1') are passed through unchanged.
     """
     ident = (ident or "").strip().upper()
     if not ident:
         return ""
-    suffix = ""
-    core = ident
-    if core[-1] in _RUNWAY_SUFFIX:
-        suffix = _RUNWAY_SUFFIX[core[-1]]
-        core = core[:-1]
-    digits = "".join(ch for ch in core if ch.isdigit())
-    if not digits:
+    m = _RUNWAY_IDENT_RE.match(ident)
+    if not m:
         return ident  # not a normal runway number
+    digits, sides = m.group(1), m.group(2) or ""
     spoken = "runway " + " ".join(AVIATION_DIGITS[d] for d in digits)
-    if suffix:
-        spoken += " " + suffix
+    side_words = [_RUNWAY_SUFFIX[c] for c in sides if c in _RUNWAY_SUFFIX]
+    if side_words:
+        spoken += " " + " ".join(side_words)
     return spoken
 
 
