@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ATC_Transcribe — Live Console</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo">ATC</div>
+      <div class="brand-text">
+        <h1>ATC_Transcribe</h1>
+        <div class="subtitle">Live air-traffic-control transcription console</div>
+      </div>
+    </div>
+    <div class="status-bar">
+      <div class="pill" id="pill-handshake" data-state="pending">
+        <span class="dot"></span><span class="pill-label">Handshake</span>
+      </div>
+      <div class="pill" id="pill-pol" data-state="idle">
+        <span class="dot"></span><span class="pill-label">Proof of life</span>
+      </div>
+      <div class="pill" id="pill-stream" data-state="idle">
+        <span class="dot"></span><span class="pill-label">Stream</span>
+      </div>
+      <div class="device-badge" id="device-badge" title="Compute backend on the host">device&nbsp;·&nbsp;—</div>
+    </div>
+  </header>
+
+  <section class="controls">
+    <div class="control-row">
+      <label class="field source-field">
+        <span class="field-label">Source</span>
+        <select id="sourceSelect"></select>
+      </label>
+      <label class="field url-field">
+        <span class="field-label">LiveATC link or stream URL</span>
+        <input
+          id="urlInput"
+          type="text"
+          placeholder="https://www.liveatc.net/hlisten.php?icao=kdfw&amp;mount=kdfw1_app_fin_17c"
+          autocomplete="off"
+          spellcheck="false"
+        />
+      </label>
+      <div class="buttons">
+        <button id="startBtn" class="btn btn-primary">▶ Start</button>
+        <button id="stopBtn" class="btn btn-ghost" disabled>■ Stop</button>
+      </div>
+    </div>
+    <div class="control-row secondary">
+      <button id="polBtn" class="btn btn-small">↺ Run proof-of-life</button>
+      <span class="hint" id="ffmpegHint"></span>
+      <span class="hint detail" id="sessionDetail"></span>
+    </div>
+  </section>
+
+  <main class="layout">
+    <section class="transcript-card">
+      <div class="card-head">
+        <h2>Transcript</h2>
+        <div class="card-head-right">
+          <span class="source-label" id="sourceLabel">No stream running</span>
+          <button id="clearBtn" class="btn btn-small btn-ghost">Clear</button>
+        </div>
+      </div>
+      <div class="transcript" id="transcript">
+        <div class="empty-state" id="emptyState">
+          <div class="empty-icon">📡</div>
+          <p>No transmissions yet.</p>
+          <p class="empty-sub">Paste a LiveATC link above (or pick a preset / replay demo) and press Start.</p>
+        </div>
+      </div>
+    </section>
+
+    <aside class="sidebar">
+      <div class="card stat-card">
+        <h3>Latency</h3>
+        <div class="stat-grid">
+          <div class="stat"><div class="stat-val" id="statCount">0</div><div class="stat-key">transmissions</div></div>
+          <div class="stat"><div class="stat-val" id="statCapture">—</div><div class="stat-key">capture→text p50</div></div>
+          <div class="stat"><div class="stat-val" id="statTranscribe">—</div><div class="stat-key">transcribe p50</div></div>
+          <div class="stat"><div class="stat-val" id="statRtf">—</div><div class="stat-key">RTF mean</div></div>
+          <div class="stat"><div class="stat-val" id="statUptime">—</div><div class="stat-key">uptime</div></div>
+        </div>
+      </div>
+
+      <div class="card pol-card">
+        <h3>Proof of life</h3>
+        <div id="polBody" class="pol-body">
+          <p class="muted">Not checked yet.</p>
+        </div>
+      </div>
+
+      <div class="card sys-card">
+        <h3>Host</h3>
+        <dl class="sys-list" id="sysList">
+          <div><dt>Device</dt><dd id="sysDevice">—</dd></div>
+          <div><dt>Model</dt><dd id="sysModel">—</dd></div>
+          <div><dt>ffmpeg</dt><dd id="sysFfmpeg">—</dd></div>
+          <div><dt>Platform</dt><dd id="sysPlatform">—</dd></div>
+        </dl>
+      </div>
+    </aside>
+  </main>
+
+  <footer class="footer">
+    <span id="connState">connecting…</span>
+    <span class="sep">·</span>
+    <span>Served by the host running the fine-tuned Whisper model</span>
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

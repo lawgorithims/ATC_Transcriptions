@@ -38,6 +38,8 @@ if python -m pip install webrtcvad >/dev/null 2>&1; then
 else
     echo "      webrtcvad skipped - live pipeline will use energy-based VAD fallback."
 fi
+echo "      Installing web UI dependencies (fastapi, uvicorn) ..."
+python -m pip install -r requirements-server.txt
 echo "[5/6] Downloading model weights (if needed) ..."
 python scripts/download_model.py
 echo "[6/6] Checking ffmpeg (required for live online feeds) ..."
@@ -62,6 +64,9 @@ echo "  source .venv/bin/activate"
 echo
 echo "Start live KDFW Lone Star Approach feed:"
 echo "  python live_atc_pipeline.py"
+echo
+echo "Start the browser console (reachable from any device on the network):"
+echo "  bash scripts/run_web_server.sh"
 echo
 echo "Offline smoke test (no ffmpeg / no live feed needed):"
 echo "  python live_atc_pipeline.py --simulate-file <recording.mp3> --fast-simulate --max-segments 5"

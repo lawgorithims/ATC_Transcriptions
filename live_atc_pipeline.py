@@ -31,7 +31,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import Callable, List, Optional
 
 from atc_context import ATCContext
 from atc_stream import (
@@ -124,9 +124,16 @@ class LiveATCPipeline:
         feed_config: Optional[Path] = None,
         feed_key: Optional[str] = None,
         context_history: int = 3,
+        transcriber: Optional[ATCTranscriber] = None,
+        on_record: Optional[Callable[[LatencyRecord], None]] = None,
+        on_status: Optional[Callable[[str], None]] = None,
     ):
         self.stream_url = stream_url
         self.simulate_file = simulate_file
+        # Optional callbacks for embedding the pipeline (e.g. the web server).
+        # The CLI leaves these unset and keeps its print-based behavior.
+        self.on_record = on_record
+        self.on_status_cb = on_status
         self.stats = LatencyStats()
         self.records: List[LatencyRecord] = []
         self._result_queue: queue.Queue = queue.Queue()
@@ -141,7 +148,9 @@ class LiveATCPipeline:
             max_history=context_history,
         )
 
-        self.transcriber = ATCTranscriber(
+        # Reuse a pre-loaded transcriber when one is supplied (the web server
+        # loads the ~1 GB model once and shares it across proof-of-life + sessions).
+        self.transcriber = transcriber or ATCTranscriber(
             model_path=model_path,
             device=device,
             enable_preprocessing=enable_preprocessing,
@@ -170,6 +179,16 @@ class LiveATCPipeline:
 
     def _status(self, msg: str) -> None:
         print(f"[stream] {msg}", file=sys.stderr)
+        if self.on_status_cb is not None:
+            try:
+                self.on_status_cb(msg)
+            except Exception:  # never let a UI callback kill the stream
+                pass
+
+    def stop(self) -> None:
+        """Request a graceful shutdown of the run loop (for embedded use)."""
+        self._running = False
+        self.producer.stop()
 
     def _transcribe_segment(self, segment) -> Optional[LatencyRecord]:
         t0 = time.perf_counter()
@@ -185,7 +204,10 @@ class LiveATCPipeline:
 
         audio_ms = len(segment.audio) / 16000.0 * 1000.0
         transcribe_ms = (t1 - t0) * 1000.0
-        capture_to_text_ms = (t1 - segment.finalized_wall_time) * 1000.0
+        # capture-to-text spans two events, so it must use the wall clock
+        # (time.time) — segment.finalized_wall_time is a time.time() stamp, NOT a
+        # perf_counter value, so subtracting t1 (perf_counter) gave garbage.
+        capture_to_text_ms = (time.time() - segment.finalized_wall_time) * 1000.0
         rtf = transcribe_ms / audio_ms if audio_ms > 0 else 0.0
 
         return LatencyRecord(
@@ -250,6 +272,15 @@ class LiveATCPipeline:
         report_interval: int = 10,
         output_json: Optional[Path] = None,
     ) -> None:
+        # ATC transcripts can contain non-Latin-1 characters; the default Windows
+        # console encoding (cp1252) would otherwise raise UnicodeEncodeError and
+        # kill the run loop. Replace unencodable chars instead of crashing.
+        for stream in (sys.stdout, sys.stderr):
+            try:
+                stream.reconfigure(errors="replace")  # type: ignore[attr-defined]
+            except (AttributeError, ValueError):
+                pass
+
         print("=" * 72)
         print("LIVE ATC TRANSCRIPTION PIPELINE")
         print("=" * 72)
@@ -275,18 +306,19 @@ class LiveATCPipeline:
 
         try:
             while self._running:
-                segment = self.producer.queue.get(timeout=0.5)
+                try:
+                    segment = self.producer.queue.get(timeout=0.5)
+                except queue.Empty:
+                    # No new segment yet (e.g. silence on a live stream). Surface
+                    # any finished transcriptions and keep waiting — do NOT exit.
+                    self._drain_results(report_interval)
+                    continue
                 if segment is None:
                     self._status("Stream producer stopped.")
                     break
                 self._segment_queue.put(segment)
 
-                while True:
-                    try:
-                        record = self._result_queue.get_nowait()
-                    except queue.Empty:
-                        break
-                    self._handle_record(record, report_interval)
+                self._drain_results(report_interval)
 
                 if max_segments and self._segments_done >= max_segments:
                     print(f"\nReached --max-segments {max_segments}. Stopping.")
@@ -296,14 +328,7 @@ class LiveATCPipeline:
             if self._transcribe_thread:
                 self._transcribe_thread.join(timeout=120)
 
-            while True:
-                try:
-                    record = self._result_queue.get_nowait()
-                except queue.Empty:
-                    break
-                self._handle_record(record, report_interval)
-                if max_segments and self._segments_done >= max_segments:
-                    break
+            self._drain_results(report_interval, stop_at_max=True)
 
         except KeyboardInterrupt:
             print("\n\nStopping pipeline...")
@@ -314,9 +339,27 @@ class LiveATCPipeline:
             if output_json:
                 self._save_json(output_json)
 
+    def _drain_results(self, report_interval: int, stop_at_max: bool = False) -> None:
+        """Flush any completed transcriptions from the worker to the handler."""
+        while True:
+            try:
+                record = self._result_queue.get_nowait()
+            except queue.Empty:
+                break
+            self._handle_record(record, report_interval)
+            if stop_at_max and self._max_segments and self._segments_done >= self._max_segments:
+                break
+
     def _handle_record(self, record: LatencyRecord, report_interval: int) -> None:
         self.records.append(record)
         self.stats.add(record)
+        # Notify embedded subscribers (e.g. the web UI) first — console printing
+        # is best-effort and must never block or drop a transcript.
+        if self.on_record is not None:
+            try:
+                self.on_record(record)
+            except Exception:  # a slow/broken subscriber must not stall the pipeline
+                pass
         self._print_transcription(record)
         self._segments_done += 1
         if report_interval and self._segments_done % report_interval == 0:
@@ -352,6 +395,14 @@ def _load_pipeline_config(config_path: Path) -> dict:
 
 
 def main():
+    # Make CLI output (including --help, which contains a "→") safe under the
+    # Windows console / piped-stdout default encoding (cp1252).
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")  # type: ignore[attr-defined]
+        except (AttributeError, ValueError):
+            pass
+
     parser = argparse.ArgumentParser(
         description="Live online ATC feed → real-time transcription with latency metrics"
     )

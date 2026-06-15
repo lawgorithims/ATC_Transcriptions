@@ -82,6 +82,19 @@ On Apple Silicon (M-series) Macs, the default `device: "auto"` automatically use
 
 
 
+## Browser console (Web UI)
+
+Run the transcriber on the host with the model (e.g. the Apple-Silicon Mac) and watch it from any browser on the same network — live transcript, a box to paste a LiveATC link, and handshake / proof-of-life status indicators.
+
+```bash
+pip install -r requirements-server.txt   # one-time: FastAPI + uvicorn
+bash scripts/run_web_server.sh           # macOS / Linux  (Windows: scripts/run_web_server.ps1)
+```
+
+Then open the printed address (e.g. `http://<host-ip>:8000`) in a browser. See **[WEB_UI_README.md](WEB_UI_README.md)** for the full guide, the API, and how to update an existing Apple-Silicon install.
+
+
+
 ## Verify the install (proof of life)
 
 
@@ -207,6 +220,8 @@ airport_configs/       # Per-airport feed URLs and context
 models/whisper-atc/    # Final fine-tuned model weights
 
 config.yaml            # Default settings
+
+server/                # Browser console (FastAPI + static UI) — see WEB_UI_README.md
 
 scripts/               # install + run helpers
 

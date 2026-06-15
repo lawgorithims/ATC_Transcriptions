@@ -1,0 +1,8 @@
+# Web UI server for ATC_Transcribe (browser console).
+# Install on top of requirements-live.txt:
+#   pip install -r requirements-server.txt
+#
+# This adds only the web layer; the model/audio deps come from requirements-live.txt.
+
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0

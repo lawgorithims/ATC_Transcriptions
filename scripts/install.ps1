@@ -44,6 +44,9 @@ if (-not $webrtcOk) {
     Write-Host "      webrtcvad installed."
 }
 
+Write-Host "      Installing web UI dependencies (fastapi, uvicorn) ..."
+python -m pip install -r requirements-server.txt
+
 Write-Host "[5/6] Downloading model weights (if needed) ..."
 python scripts/download_model.py
 if ($LASTEXITCODE -ne 0) {
@@ -71,6 +74,9 @@ Write-Host "  .\.venv\Scripts\Activate.ps1"
 Write-Host ""
 Write-Host "Start live KDFW Lone Star Approach feed:"
 Write-Host "  python live_atc_pipeline.py"
+Write-Host ""
+Write-Host "Start the browser console (reachable from any device on the network):"
+Write-Host "  powershell -ExecutionPolicy Bypass -File scripts/run_web_server.ps1"
 Write-Host ""
 Write-Host "Or:"
 Write-Host "  python main.py live"

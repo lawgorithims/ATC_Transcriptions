@@ -78,10 +78,12 @@ class ATCTranscriber:
         generate_kwargs = {}
         context = (context or "").strip()
         if context:
-            prompt_ids = self.processor.get_prompt_ids(
-                context, return_tensors="pt"
-            ).input_ids.to(self.device)
-            generate_kwargs["prompt_ids"] = prompt_ids
+            # get_prompt_ids returns a bare tensor on recent transformers (5.x)
+            # and a BatchEncoding with .input_ids on older ones. Handle both.
+            prompt_ids = self.processor.get_prompt_ids(context, return_tensors="pt")
+            if hasattr(prompt_ids, "input_ids"):
+                prompt_ids = prompt_ids.input_ids
+            generate_kwargs["prompt_ids"] = prompt_ids.to(self.device)
 
         with torch.no_grad():
             predicted_ids = self.model.generate(input_features, **generate_kwargs)
