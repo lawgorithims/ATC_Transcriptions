@@ -216,5 +216,44 @@ class BuildTests(unittest.TestCase):
         self.assertIn("Frequency type: unknown", result["prompt"])
 
 
+class LiveAdapterTests(unittest.TestCase):
+    """The ATCContext-compatible adapter used by the live pipeline."""
+
+    def setUp(self):
+        self.conn = make_db()
+        self.service = AirportContextService(conn=self.conn, log_snapshots=False)
+
+    def tearDown(self):
+        self.conn.close()
+
+    def test_build_prompt_and_history(self):
+        from airport_context.live import AirportModeContext
+
+        ctx = AirportModeContext("KMSP", "tower", candidate_callsigns=["DAL1234"], service=self.service)
+        p1 = ctx.build_prompt()
+        self.assertIn("KMSP", p1)
+        self.assertIn("Delta twelve thirty four", p1)
+        self.assertNotIn("Recent transcript", p1)  # no history yet
+
+        ctx.update("SkyWest fifty six seventy, line up and wait runway three zero right.")
+        p2 = ctx.build_prompt()
+        self.assertIn("Recent transcript", p2)
+        self.assertNotEqual(p1, p2)
+        self.assertEqual(ctx.build_prompt(), p2)  # cached when history unchanged
+
+    def test_banner_lines(self):
+        from airport_context.live import AirportModeContext
+
+        ctx = AirportModeContext("KMSP", "tower", service=self.service)
+        self.assertTrue(any("KMSP" in line for line in ctx.banner_lines()))
+
+    def test_invalid_airport_raises(self):
+        from airport_context.live import AirportContextError, AirportModeContext
+
+        with self.assertRaises(AirportContextError) as ctx:
+            AirportModeContext("ZZZZ", service=self.service)
+        self.assertEqual(ctx.exception.result["error"], "airport_not_found")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

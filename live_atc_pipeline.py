@@ -12,6 +12,11 @@ Usage:
     # Custom stream URL (any replaceable live feed)
     python live_atc_pipeline.py --stream-url https://d.liveatc.net/kdfw1_app_fin_17c
 
+    # Auto-fetched airport-mode context (airport_context): pair any feed with an
+    # airport + frequency type. Needs the DB: python -m airport_context.cli ingest
+    python live_atc_pipeline.py --stream-url https://d.liveatc.net/kdfw1_twr1_e \
+        --airport KDFW --frequency-type tower
+
     # LiveATC listen page (mount extracted automatically)
     python live_atc_pipeline.py --liveatc-page "https://www.liveatc.net/hlisten.php?icao=kdfw&mount=kdfw1_app_fin_17c"
 
@@ -124,6 +129,12 @@ class LiveATCPipeline:
         feed_config: Optional[Path] = None,
         feed_key: Optional[str] = None,
         context_history: int = 3,
+        airport: Optional[str] = None,
+        frequency_type: str = "unknown",
+        candidate_callsigns: Optional[List[str]] = None,
+        context_db: Optional[str] = None,
+        log_context_snapshots: bool = False,
+        max_prompt_words: int = 600,
         transcriber: Optional[ATCTranscriber] = None,
         on_record: Optional[Callable[[LatencyRecord], None]] = None,
         on_status: Optional[Callable[[str], None]] = None,
@@ -142,11 +153,29 @@ class LiveATCPipeline:
         self._max_segments: Optional[int] = None
         self._segments_done = 0
 
-        self.context = ATCContext(
-            feed_config=feed_config,
-            feed_key=feed_key,
-            max_history=context_history,
-        )
+        # Airport-mode context (auto-fetched from the airport_context database)
+        # is opt-in via `airport`; otherwise use the hand-curated feed-config
+        # context. Both expose build_prompt()/update(), so the loop is unchanged.
+        # An invalid/unknown airport raises AirportContextError here, before the
+        # ~1 GB model loads below — surfaced with a friendly message in main().
+        if airport:
+            from airport_context.live import AirportModeContext
+
+            self.context = AirportModeContext(
+                airport_code=airport,
+                frequency_type=frequency_type,
+                candidate_callsigns=candidate_callsigns,
+                max_history=context_history,
+                max_prompt_words=max_prompt_words,
+                db_path=context_db,
+                log_snapshots=log_context_snapshots,
+            )
+        else:
+            self.context = ATCContext(
+                feed_config=feed_config,
+                feed_key=feed_key,
+                max_history=context_history,
+            )
 
         # Reuse a pre-loaded transcriber when one is supplied (the web server
         # loads the ~1 GB model once and shares it across proof-of-life + sessions).
@@ -286,10 +315,21 @@ class LiveATCPipeline:
         print("=" * 72)
         print(f"  Feed:   {self.stream_url}")
         if self.simulate_file:
-            mode = "fast replay" if getattr(self.capture, "realtime", True) is False else "real-time replay"
-            print(f"  Mode:   offline simulation ({mode})")
+            realtime = getattr(self.capture, "realtime", True) is not False
+            mode = "real-time replay" if realtime else "fast replay"
+            audio_s = len(getattr(self.capture, "audio", [])) / 16000.0
+            print(f"  Mode:   offline simulation ({mode}, {audio_s:.0f}s audio)")
+            if realtime and audio_s > 120:
+                # Real-time replay of a long recording runs for the full duration;
+                # this is intentional for latency eval but surprises quick checks.
+                print(
+                    f"          note: real-time replay of this file takes ~{audio_s / 60:.0f} min — "
+                    "add --fast-simulate for a quick functional check"
+                )
         print(f"  Model:  whisper-atc (with context)")
         print(f"  Device: {self.transcriber.device}")
+        for line in getattr(self.context, "banner_lines", lambda: [])():
+            print(f"  {line}")
         if self.context.build_prompt():
             preview = self.context.build_prompt()[:120]
             print(f"  Context: {preview}...")
@@ -495,6 +535,41 @@ def main():
         default=None,
         help="Silence duration to end a transmission (default: 700)",
     )
+    parser.add_argument(
+        "--airport",
+        type=str,
+        default=None,
+        help="Airport code (ICAO/IATA/FAA-LID) for auto-fetched airport-mode context "
+        "(airport_context). Overrides the feed-config static context. "
+        "Requires the DB: python -m airport_context.cli ingest",
+    )
+    parser.add_argument(
+        "--frequency-type",
+        type=str,
+        default=None,
+        choices=[
+            "clearance", "ground", "tower", "approach",
+            "departure", "center", "ctaf", "unknown",
+        ],
+        help="Frequency type for airport-mode context (default: unknown)",
+    )
+    parser.add_argument(
+        "--callsigns",
+        type=str,
+        default=None,
+        help="Comma-separated candidate callsigns for airport-mode context (e.g. DAL1234,N345AB)",
+    )
+    parser.add_argument(
+        "--context-db",
+        type=str,
+        default=None,
+        help="airport_context SQLite DB path (default: data/airport_context/airport_context.db)",
+    )
+    parser.add_argument(
+        "--log-context-snapshots",
+        action="store_true",
+        help="Log each segment's airport-mode context snapshot to the DB (for evaluation)",
+    )
     args = parser.parse_args()
 
     pipe_cfg = _load_pipeline_config(Path(args.config))
@@ -511,27 +586,59 @@ def main():
         )
         simulate = False
 
-    pipeline = LiveATCPipeline(
-        stream_url=stream_url,
-        model_path=args.model_path or pipe_cfg.get("model_path", "models/whisper-atc"),
-        device=args.device or pipe_cfg.get("device", "auto"),
-        enable_preprocessing=not args.no_preprocessing
-        and pipe_cfg.get("enable_preprocessing", True),
-        aggressive_preprocessing=pipe_cfg.get("aggressive_preprocessing", True),
-        vad_aggressiveness=args.vad_aggressiveness
-        if args.vad_aggressiveness is not None
-        else pipe_cfg.get("vad_aggressiveness", 2),
-        silence_duration_ms=args.silence_ms
-        if args.silence_ms is not None
-        else pipe_cfg.get("silence_duration_ms", 700),
-        min_speech_ms=pipe_cfg.get("min_speech_duration_ms", 500),
-        max_segment_s=pipe_cfg.get("max_segment_duration_s", 12.0),
-        simulate_file=simulate,
-        fast_simulate=args.fast_simulate,
-        feed_config=Path(args.feed_config or pipe_cfg.get("feed_config", "airport_configs/kdfw.json")),
-        feed_key=args.feed or pipe_cfg.get("feed", "lone_star_approach_17c_final"),
-        context_history=pipe_cfg.get("context_history", 3),
-    )
+    # Airport-mode context (airport_context). Empty/blank airport => use the
+    # hand-curated feed-config context instead.
+    airport = args.airport or pipe_cfg.get("airport") or None
+    frequency_type = args.frequency_type or pipe_cfg.get("frequency_type", "unknown")
+    if args.callsigns:
+        candidate_callsigns = [c.strip() for c in args.callsigns.split(",") if c.strip()]
+    else:
+        candidate_callsigns = pipe_cfg.get("candidate_callsigns")
+
+    try:
+        pipeline = LiveATCPipeline(
+            stream_url=stream_url,
+            model_path=args.model_path or pipe_cfg.get("model_path", "models/whisper-atc"),
+            device=args.device or pipe_cfg.get("device", "auto"),
+            enable_preprocessing=not args.no_preprocessing
+            and pipe_cfg.get("enable_preprocessing", True),
+            aggressive_preprocessing=pipe_cfg.get("aggressive_preprocessing", True),
+            vad_aggressiveness=args.vad_aggressiveness
+            if args.vad_aggressiveness is not None
+            else pipe_cfg.get("vad_aggressiveness", 2),
+            silence_duration_ms=args.silence_ms
+            if args.silence_ms is not None
+            else pipe_cfg.get("silence_duration_ms", 700),
+            min_speech_ms=pipe_cfg.get("min_speech_duration_ms", 500),
+            max_segment_s=pipe_cfg.get("max_segment_duration_s", 12.0),
+            simulate_file=simulate,
+            fast_simulate=args.fast_simulate,
+            feed_config=Path(args.feed_config or pipe_cfg.get("feed_config", "airport_configs/kdfw.json")),
+            feed_key=args.feed or pipe_cfg.get("feed", "lone_star_approach_17c_final"),
+            context_history=pipe_cfg.get("context_history", 3),
+            airport=airport,
+            frequency_type=frequency_type,
+            candidate_callsigns=candidate_callsigns,
+            context_db=args.context_db or pipe_cfg.get("context_db"),
+            log_context_snapshots=args.log_context_snapshots
+            or pipe_cfg.get("log_context_snapshots", False),
+            max_prompt_words=pipe_cfg.get("max_prompt_words", 600),
+        )
+    except Exception as exc:  # surface airport-context errors with a friendly message
+        try:
+            from airport_context.live import AirportContextError
+        except ImportError:
+            AirportContextError = ()  # type: ignore[assignment]
+        if isinstance(exc, AirportContextError):
+            print(f"\n[airport context] {exc}", file=sys.stderr)
+            result = getattr(exc, "result", {}) or {}
+            if result.get("error") == "database_empty":
+                print("  Build it first:  python -m airport_context.cli ingest", file=sys.stderr)
+            for c in (result.get("candidates") or [])[:8]:
+                code = c.get("icao") or c.get("faa_lid") or c.get("iata") or "?"
+                print(f"  candidate: {code:<6} {c.get('name')}", file=sys.stderr)
+            sys.exit(2)
+        raise
 
     pipeline.run(
         max_segments=args.max_segments,

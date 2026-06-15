@@ -169,7 +169,19 @@ python -m airport_context.cli build --airport KMSP --frequency-type tower --call
 
 
 
-No third-party dependencies (Python stdlib only); independent of the live pipeline. See **[airport_context/README.md](airport_context/README.md)**.
+It is wired into the live pipeline via `--airport`: pair any feed with an airport + frequency type, and the rolling transcript is fed back as prior-transcript context. Without `--airport`, the pipeline uses the hand-curated feed config exactly as before.
+
+
+
+```bash
+
+python live_atc_pipeline.py --stream-url https://d.liveatc.net/kdfw1_twr1_e --airport KDFW --frequency-type tower
+
+```
+
+
+
+No third-party dependencies (Python stdlib only). See **[airport_context/README.md](airport_context/README.md)**.
 
 
 

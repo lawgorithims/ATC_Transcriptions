@@ -51,9 +51,20 @@ def _split_prior(text: str, max_lines: int = 3, max_words: int = 150) -> List[st
 class AirportContextService:
     """Build airport-mode context snapshots + prompts from request dicts."""
 
-    def __init__(self, db_path=None, conn: Optional[sqlite3.Connection] = None):
+    def __init__(
+        self,
+        db_path=None,
+        conn: Optional[sqlite3.Connection] = None,
+        *,
+        log_snapshots: bool = True,
+        check_same_thread: bool = True,
+    ):
         self._own_conn = conn is None
-        self.conn = conn if conn is not None else db.connect(db_path)
+        self.conn = (
+            conn if conn is not None
+            else db.connect(db_path, check_same_thread=check_same_thread)
+        )
+        self.log_snapshots = log_snapshots
         db.init_db(self.conn)  # ensure tables exist even before ingestion
         self.resolver = AirportResolver(self.conn)
 
@@ -215,6 +226,8 @@ class AirportContextService:
 
     # ------------------------------------------------------------------ #
     def _log_snapshot(self, aid, ft, request, snapshot, prompt, word_count, source_cycle) -> None:
+        if not self.log_snapshots:
+            return
         try:
             self.conn.execute(
                 "INSERT INTO context_snapshots(airport_id, created_at, frequency_type, "

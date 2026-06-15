@@ -40,4 +40,20 @@ live_pipeline:
 
   context_history: 3
 
+  # Airport-mode context (airport_context pipeline). Leave airport blank ("") to
+
+  # use the hand-curated feed_config context instead. Requires the database:
+
+  #   python -m airport_context.cli ingest
+
+  airport: ""
+
+  frequency_type: "unknown"
+
+  # candidate_callsigns: ["DAL1234", "SKW5670"]
+
+  max_prompt_words: 600
+
+  log_context_snapshots: false
+
 

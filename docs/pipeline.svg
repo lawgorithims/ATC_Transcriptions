@@ -1,6 +1,6 @@
-<svg width="760" viewBox="0 0 760 740" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="ATC_Transcribe production data pipeline">
+<svg width="760" viewBox="0 0 760 766" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="ATC_Transcribe production data pipeline">
 <title>ATC_Transcribe production data pipeline</title>
-<desc>Three input modes (live microphone, live ATC web stream, stored audio replay) converge into a shared front-end (16 kHz PCM capture, VAD segmentation), then audio preprocessing and fine-tuned Whisper inference with airport context, producing a live transcript that also updates the rolling context history.</desc>
+<desc>Three input modes (live microphone, live ATC web stream, stored audio replay) converge into a shared front-end (16 kHz PCM capture, VAD segmentation), then audio preprocessing and fine-tuned Whisper inference with airport context, producing a live transcript that also updates the rolling context history. Airport context is either hand-curated (atc_context.py + JSON) or auto-fetched by the airport_context pipeline from a local database built offline from OurAirports data.</desc>
 <style>
 text{font-family:'Segoe UI',-apple-system,Roboto,Helvetica,Arial,sans-serif;}
 .title{font-size:19px;font-weight:600;}
@@ -11,7 +11,7 @@ text{font-family:'Segoe UI',-apple-system,Roboto,Helvetica,Arial,sans-serif;}
 </style>
 <defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="#5F5E5A" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>
 
-<rect x="1" y="1" width="758" height="738" rx="16" fill="#FCFBF8" stroke="#E3E0D6" stroke-width="1"/>
+<rect x="1" y="1" width="758" height="764" rx="16" fill="#FCFBF8" stroke="#E3E0D6" stroke-width="1"/>
 
 <text class="title" x="380" y="36" text-anchor="middle" fill="#2C2C2A">ATC_Transcribe — live production pipeline</text>
 <text class="sub" x="380" y="56" text-anchor="middle" fill="#5F5E5A">ATC radio audio &#8594; fine-tuned Whisper transcription</text>
@@ -58,9 +58,16 @@ text{font-family:'Segoe UI',-apple-system,Roboto,Helvetica,Arial,sans-serif;}
 <line x1="380" y1="416" x2="380" y2="450" stroke="#5F5E5A" stroke-width="1.5" marker-end="url(#arrow)"/>
 
 <g>
+<rect x="30" y="372" width="180" height="50" rx="8" fill="#E6EEF6" stroke="#2F5E86" stroke-width="0.5"/>
+<text class="th" x="120" y="390" text-anchor="middle" dominant-baseline="central" fill="#173A57">Airport database</text>
+<text class="ts" x="120" y="407" text-anchor="middle" dominant-baseline="central" fill="#2F5E86">airport_context &#183; OurAirports</text>
+</g>
+<line x1="120" y1="422" x2="120" y2="450" stroke="#5F5E5A" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+<g>
 <rect x="30" y="450" width="180" height="58" rx="8" fill="#FAECE7" stroke="#993C1D" stroke-width="0.5"/>
 <text class="th" x="120" y="472" text-anchor="middle" dominant-baseline="central" fill="#4A1B0C">Airport context</text>
-<text class="ts" x="120" y="490" text-anchor="middle" dominant-baseline="central" fill="#993C1D">atc_context.py + JSON</text>
+<text class="ts" x="120" y="490" text-anchor="middle" dominant-baseline="central" fill="#993C1D">atc_context.py &#183; airport_context</text>
 </g>
 <line x1="210" y1="479" x2="230" y2="479" stroke="#5F5E5A" stroke-width="1.5" marker-end="url(#arrow)"/>
 
@@ -84,12 +91,14 @@ text{font-family:'Segoe UI',-apple-system,Roboto,Helvetica,Arial,sans-serif;}
 <text class="ts" x="380" y="578" text-anchor="middle" dominant-baseline="central" fill="#5F5E5A">stdout + results/live/*.json</text>
 </g>
 
-<text class="ts" x="380" y="624" text-anchor="middle" dominant-baseline="central" fill="#5F5E5A">&#8635; each transcript is appended to atc_context's rolling history</text>
+<text class="ts" x="380" y="624" text-anchor="middle" dominant-baseline="central" fill="#5F5E5A">&#8635; each transcript is appended to the rolling context history</text>
 
 <rect x="30" y="646" width="14" height="14" rx="3" fill="#E1F5EE" stroke="#0F6E56" stroke-width="0.5"/>
 <text class="lab" x="52" y="653" dominant-baseline="central" fill="#5F5E5A">Live, real-time input — microphone + ATC web stream</text>
 <rect x="30" y="672" width="14" height="14" rx="3" fill="#FAEEDA" stroke="#854F0B" stroke-width="0.5"/>
 <text class="lab" x="52" y="679" dominant-baseline="central" fill="#5F5E5A">Stored audio — proof-of-life replay (must not break)</text>
 <rect x="30" y="698" width="14" height="14" rx="3" fill="#FAECE7" stroke="#993C1D" stroke-width="0.5"/>
-<text class="lab" x="52" y="705" dominant-baseline="central" fill="#5F5E5A">Context delivery — airport, frequency, call signs</text>
+<text class="lab" x="52" y="705" dominant-baseline="central" fill="#5F5E5A">Context delivery — airport, frequency, call signs (hand-curated or auto-fetched)</text>
+<rect x="30" y="724" width="14" height="14" rx="3" fill="#E6EEF6" stroke="#2F5E86" stroke-width="0.5"/>
+<text class="lab" x="52" y="731" dominant-baseline="central" fill="#5F5E5A">Offline data — airport database built from OurAirports (airport_context)</text>
 </svg>

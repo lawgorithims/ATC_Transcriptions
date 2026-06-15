@@ -131,15 +131,28 @@ CREATE TABLE IF NOT EXISTS meta (
 """
 
 
-def connect(path=None, *, readonly: bool = False, create_parents: bool = True) -> sqlite3.Connection:
-    """Open a SQLite connection with a Row factory."""
+def connect(
+    path=None,
+    *,
+    readonly: bool = False,
+    create_parents: bool = True,
+    check_same_thread: bool = True,
+) -> sqlite3.Connection:
+    """Open a SQLite connection with a Row factory.
+
+    Pass ``check_same_thread=False`` when the connection will be used from a
+    different thread than the one that created it (e.g. the live pipeline's
+    transcription worker). Callers must then serialize access themselves.
+    """
     path = Path(path) if path else DEFAULT_DB_PATH
     if readonly:
-        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        conn = sqlite3.connect(
+            f"file:{path}?mode=ro", uri=True, check_same_thread=check_same_thread
+        )
     else:
         if create_parents:
             path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(path))
+        conn = sqlite3.connect(str(path), check_same_thread=check_same_thread)
     conn.row_factory = sqlite3.Row
     return conn
 

@@ -145,13 +145,23 @@ for debugging and evaluation); `meta` (source cycle, counts). See
 The empty `procedures`/`weather_terms` snapshot fields and the
 `procedures_unavailable` warning are deliberate placeholders for those phases.
 
-## Wiring into the live pipeline (future)
+## Wiring into the live pipeline
 
-[`live_atc_pipeline.py`](../live_atc_pipeline.py) currently calls
-`ATCContext.build_prompt()`/`update()`. To drive it from this package, build the
-prompt once per feed from `{airport_code, frequency_type}` and append the rolling
-transcript as `prior_transcript`. Kept intentionally out of this change so the
-working live pipeline is untouched.
+[`live.py`](live.py) provides `AirportModeContext`, an `ATCContext`-compatible
+adapter (`build_prompt()` / `update(text)`) that drives the live pipeline's
+Whisper prompt from this package. It is opt-in via `--airport`:
+
+```bash
+python live_atc_pipeline.py --stream-url https://d.liveatc.net/kdfw1_twr1_e \
+    --airport KDFW --frequency-type tower --callsigns DAL1234,N345AB
+```
+
+Each transmission's rolling history is fed back as `prior_transcript`; the
+rendered prompt is cached and only rebuilt when history changes. The adapter is
+thread-safe (the pipeline transcribes on a worker thread, so the SQLite
+connection uses `check_same_thread=False` plus a lock). An unknown/ambiguous
+airport fails fast with a friendly message *before* the model loads. Without
+`--airport`, the pipeline uses the hand-curated feed config exactly as before.
 
 ## Tests
 
