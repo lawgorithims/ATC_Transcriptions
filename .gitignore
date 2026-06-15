@@ -30,6 +30,12 @@ checkpoints/
 agent-tools/
 agent-transcripts/
 
+# Exception: the airport_context package's source data dir (airline telephony +
+# spoken-name override dictionaries) is tracked source, NOT regenerable data.
+# Only the top-level data/ (airport SQLite DB + OurAirports CSV cache) stays ignored.
+!airport_context/data/
+!airport_context/data/**
+
 # Local-only files — NOT published to GitHub (present on the maintainer's machine).
 # NOTE: "local-only" is a PUBLISHING choice, not a purpose label. This list mixes
 # PRODUCTION pipeline code with TRAINING tooling — do not assume everything here is

@@ -151,6 +151,28 @@ This biases the model toward correct ATC phraseology, call signs, and local name
 
 
 
+## Airport context pipeline (auto-fetched)
+
+
+
+The hand-curated `airport_configs/*.json` above cover a couple of airports. The **`airport_context/`** package builds the same kind of context **automatically** for any U.S. airport from a local database (ingested offline from public-domain OurAirports data), adding spoken-form generation (`runway three zero left`, `Delta twelve thirty four`), frequency-specific ranking, candidate-callsign handling, and per-build snapshot logging.
+
+
+
+```bash
+
+python -m airport_context.cli ingest                                    # one-time: build the DB
+
+python -m airport_context.cli build --airport KMSP --frequency-type tower --callsigns DAL1234,N345AB
+
+```
+
+
+
+No third-party dependencies (Python stdlib only); independent of the live pipeline. See **[airport_context/README.md](airport_context/README.md)**.
+
+
+
 ## Change the feed
 
 
@@ -215,7 +237,9 @@ atc_context.py         # Airport + history context prompts
 
 audio_preprocessing.py # Radio noise cleanup
 
-airport_configs/       # Per-airport feed URLs and context
+airport_configs/       # Per-airport feed URLs and context (hand-curated)
+
+airport_context/       # Auto-fetched airport context pipeline (see airport_context/README.md)
 
 models/whisper-atc/    # Final fine-tuned model weights
 

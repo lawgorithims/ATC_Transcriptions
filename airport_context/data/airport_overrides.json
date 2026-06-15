@@ -1,0 +1,13 @@
+{
+  "_comment": "Manual spoken-name overrides. Common ATC spoken names often differ from the formal airport name. Keyed by ICAO/FAA-LID/IATA. 'spoken_base' seeds facility variants (e.g. <base> Tower); 'spoken_names' replaces the generated list entirely.",
+  "KORD": { "spoken_base": "Chicago" },
+  "KMDW": { "spoken_base": "Midway" },
+  "KJFK": { "spoken_base": "Kennedy", "spoken_names": ["Kennedy", "New York", "Kennedy Tower", "Kennedy Ground", "Kennedy Clearance", "Kennedy Departure", "New York Approach"] },
+  "KEWR": { "spoken_base": "Newark" },
+  "KLGA": { "spoken_base": "La Guardia" },
+  "KDCA": { "spoken_base": "Washington", "spoken_names": ["Washington", "National", "Washington Tower", "Washington Ground", "Washington Clearance", "Potomac Departure", "Potomac Approach"] },
+  "KDFW": { "spoken_base": "Dallas", "spoken_names": ["Dallas", "Dallas Fort Worth", "Regional Tower", "Ground", "Lone Star Approach", "Lone Star Departure"] },
+  "KLAX": { "spoken_base": "Los Angeles" },
+  "KSFO": { "spoken_base": "San Francisco" },
+  "KATL": { "spoken_base": "Atlanta" }
+}
