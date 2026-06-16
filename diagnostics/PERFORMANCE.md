@@ -61,3 +61,55 @@ python diagnostics/bench_mps.py --device auto --json diagnostics/result_mps.json
 python diagnostics/bench_mps.py --device cpu  --json diagnostics/result_cpu.json
 ```
 (Requires the local `data/` datasets, which are not committed.)
+
+## 3. large-v3-turbo fine-tune — turbo vs small (2026-06-15)
+
+Fine-tuned `openai/whisper-large-v3-turbo` (809M) with the **same** recipe and
+data split as the small (244M) model (`train_distil_whisper.py`: lr 5e-6,
+effective batch 4, warmup 500, fp16, early-stop patience 2). Trained on a single
+NVIDIA **H100** (~59 min; early-stopped at step 1300 / epoch 0.64; best
+eval_loss 0.0975). Weights published at **`SingularityUS/ATC-whisper-turbo-v1`**.
+
+### Accuracy — same held-out validation, `evaluate_atco2.py`
+
+| | **turbo (809M)** | small (244M) |
+|---|---|---|
+| Full 2,024-sample val — WER / CER | **7.83% / 3.58%** | 12.82% / 9.24% |
+| 100-sample bundle — WER / CER | **4.5% / 2.7%** | 7.1% / 3.9% |
+
+≈39% relative WER / ≈61% relative CER reduction on the full split — driven mostly
+by turbo eliminating the small model's hallucinated insertions (small produced
+1,691 spurious insertions on the 2,024-sample set).
+
+### Latency — Mac M2 Pro (MPS), 100-sample bundle
+
+| Metric | **turbo** | small |
+|---|---|---|
+| Avg total latency / clip | **1,911 ms** | 545 ms |
+| median / p90 / p95 | 1,908 / 1,956 / 1,979 ms | 542 / 606 / 668 ms |
+| Throughput | 0.52 samp/s | 1.83 samp/s |
+| Real-time factor | **0.48× (~2.1× RT)** | 0.14× (~7.3× RT) |
+| Model load | 1.6 s | 0.9 s |
+
+Turbo is **~3.5× slower than small on MPS** (vs 2.08× on H100/CUDA — the larger
+32-layer / 128-mel encoder scales worse on Metal). It still runs ~2× faster than
+real-time, so it keeps up with live feeds, but with less headroom than small.
+
+### Cross-platform speed (small model, for reference)
+
+| Host / backend | Avg latency / clip | Real-time factor |
+|---|---|---|
+| Mac M2 Pro — MPS | 545 ms | 0.14× (7.3× RT) |
+| Mac M2 Pro — CPU | 945 ms | 0.24× (4.2× RT) |
+| Windows laptop — CPU* | 3,225 ms | 0.81× (1.2× RT) |
+
+\* RTX 2060 present but unused — the installed PyTorch is a CPU-only build.
+
+### Verdict
+The turbo upgrade is **worth it on the Apple-Silicon / MPS host** — a large
+accuracy gain for an affordable, still-real-time speed cost — but **not** on the
+Windows CPU box (already marginal with small).
+
+Raw records: `diagnostics/turbo_run/` (training log, per-sample eval JSONs,
+metrics.csv, loss curve). Windows proof-of-life / bench: `diagnostic_windows.json`,
+`result_windows_cpu.json`.

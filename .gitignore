@@ -89,3 +89,11 @@ models/whisper-atc/checkpoint-*/**
 models/whisper-atc/checkpoint-2200/
 models/whisper-atc/checkpoint-2400/
 models/whisper-atc/training_args.bin
+
+# large-v3-turbo fine-tune — weights hosted on HF (SingularityUS/ATC-whisper-turbo-v1);
+# keep config/tokenizer tracked, exclude weights + checkpoints + optimizer state
+models/whisper-atc-turbo/model.safetensors
+models/whisper-atc-turbo/*.safetensors
+models/whisper-atc-turbo/checkpoint-*/
+models/whisper-atc-turbo/checkpoint-*/**
+models/whisper-atc-turbo/training_args.bin

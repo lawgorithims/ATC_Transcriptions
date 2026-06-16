@@ -1,0 +1,59 @@
+{
+  "environment": {
+    "platform": "Windows-10-10.0.26200-SP0",
+    "machine": "AMD64",
+    "python": "3.11.9",
+    "torch": "2.12.0+cpu",
+    "cuda_available": false,
+    "mps_available": false,
+    "resolved_device": "cpu"
+  },
+  "model_path": "C:\\Users\\bsusl\\ATC_Transcribe\\models\\whisper-atc",
+  "preprocess": true,
+  "load_seconds": 1.374,
+  "mean_wer": 0.1659,
+  "max_wer": 0.5,
+  "passed": true,
+  "snippets": [
+    {
+      "file": "luigisaetta_00367.wav",
+      "reference": "roger station calling please pass your message",
+      "hypothesis": "roger station calling please pass your message",
+      "wer": 0.0,
+      "seconds": 4.768,
+      "ok": true
+    },
+    {
+      "file": "luigisaetta_00270.wav",
+      "reference": "Hotel Echo X-ray number one runway two five",
+      "hypothesis": "delta echo xray number one two five",
+      "wer": 0.25,
+      "seconds": 4.439,
+      "ok": true
+    },
+    {
+      "file": "luigisaetta_00460.wav",
+      "reference": "thank you QNH is one zero two three",
+      "hypothesis": "thank you qlsh is one zero two three",
+      "wer": 0.125,
+      "seconds": 4.478,
+      "ok": true
+    },
+    {
+      "file": "luigisaetta_00464.wav",
+      "reference": "one six right cleared to land Rex Sixty One Thirty Four",
+      "hypothesis": "one six right cleared to land rex sixty one thirty four",
+      "wer": 0.0,
+      "seconds": 4.853,
+      "ok": true
+    },
+    {
+      "file": "luigisaetta_00550.wav",
+      "reference": "tower Bauhinia Two Zero One Seven established ILS three four left",
+      "hypothesis": "tower bongnia two zero one seven seven thousand feet for left",
+      "wer": 0.4545,
+      "seconds": 5.022,
+      "ok": true
+    }
+  ]
+}
