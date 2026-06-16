@@ -4,9 +4,16 @@
 
 model:
 
-  hf_repo: "SingularityUS/ATC-whisper-v1"
+  # Weights fetched by scripts/download_model.py into live_pipeline.model_path (below).
+  # Default = small (whisper-small fine-tune). For the more-accurate large-v3-turbo
+  # fine-tune (~3.5x slower on MPS, still ~2x real-time), switch the three "turbo:"
+  # values — here and live_pipeline.model_path — then re-run download_model.py.
+
+  hf_repo: "SingularityUS/ATC-whisper-v1"          # turbo: "SingularityUS/ATC-whisper-turbo-v1"
 
   hf_filename: "model.safetensors"
+
+  expected_bytes: 966995080                        # ~922 MB small.  turbo: 3235581408  (~3.0 GB)
 
   # Optional direct URL fallback (skips Hugging Face when set):
 
@@ -20,7 +27,7 @@ live_pipeline:
 
   feed: "lone_star_approach_17c_final"
 
-  model_path: "models/whisper-atc"
+  model_path: "models/whisper-atc"              # turbo: "models/whisper-atc-turbo"
 
   device: "auto"
 

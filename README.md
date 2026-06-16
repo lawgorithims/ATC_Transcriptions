@@ -217,6 +217,12 @@ Fine-tuned Whisper-small weights are **not stored in this repo** (~922 MB). They
 
 
 
+### Larger model — `large-v3-turbo` (optional, more accurate)
+
+A fine-tuned **large-v3-turbo** (809M) is also published at [`SingularityUS/ATC-whisper-turbo-v1`](https://huggingface.co/SingularityUS/ATC-whisper-turbo-v1). It is **more accurate** (7.83% vs 12.82% WER on the held-out validation) but **~3.5× slower on Apple-Silicon MPS** (still ~2× faster than real-time). Small is the default; to switch, set the three `turbo:` values in `config.yaml` (`model.hf_repo`, `model.expected_bytes`, `live_pipeline.model_path`) and re-run `python scripts/download_model.py`. Full comparison: [`diagnostics/PERFORMANCE.md`](diagnostics/PERFORMANCE.md).
+
+
+
 GitHub blocks files over 100 MB in git and ties release assets to Git LFS plan limits, so model weights are not published via GitHub Releases.
 
 

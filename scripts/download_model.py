@@ -43,6 +43,22 @@ def _load_config() -> dict:
     return data.get("model") or {}
 
 
+def _config_model_dir() -> str | None:
+    """Destination model dir from config.yaml's live_pipeline.model_path (if set)."""
+    config_path = ROOT / "config.yaml"
+    if not config_path.is_file():
+        return None
+    try:
+        import yaml
+
+        with config_path.open(encoding="utf-8") as fh:
+            data = yaml.safe_load(fh) or {}
+    except Exception:
+        return None
+    model_dir = (data.get("live_pipeline") or {}).get("model_path")
+    return str(model_dir).strip() if model_dir else None
+
+
 def resolve_hf_repo(cli_repo: str | None) -> str:
     if cli_repo:
         return cli_repo
@@ -86,6 +102,9 @@ def resolve_expected_bytes() -> int:
     env_val = os.environ.get("MODEL_EXPECTED_BYTES", "").strip()
     if env_val:
         return int(env_val)
+    cfg_bytes = _load_config().get("expected_bytes")
+    if cfg_bytes:
+        return int(cfg_bytes)
     return EXPECTED_BYTES
 
 
@@ -95,6 +114,11 @@ def resolve_model_path(cli_path: str | None) -> Path:
     env_path = os.environ.get("MODEL_DOWNLOAD_PATH", "").strip()
     if env_path:
         return Path(env_path).expanduser().resolve()
+    # Fall back to <config live_pipeline.model_path>/<hf_filename> so one config
+    # switch sends the right weights to the right model dir (small or turbo).
+    cfg_dir = _config_model_dir()
+    if cfg_dir:
+        return (ROOT / cfg_dir / resolve_hf_filename(None)).expanduser().resolve()
     return DEFAULT_MODEL_PATH
 
 
