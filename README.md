@@ -84,7 +84,7 @@ On Apple Silicon (M-series) Macs, the default `device: "auto"` automatically use
 
 ## Browser console (Web UI)
 
-Run the transcriber on the host with the model (e.g. the Apple-Silicon Mac) and watch it from any browser on the same network — live transcript, a box to paste a LiveATC link, and handshake / proof-of-life status indicators.
+Run the transcriber on the host with the model (e.g. the Apple-Silicon Mac) and watch it from any browser on the same network — live transcript, a box to paste a LiveATC link, handshake / proof-of-life status indicators, a Cockpit / Day / Night theme switcher, and a collapsible System panel showing the compute device and diagnostics.
 
 ```bash
 pip install -r requirements-server.txt   # one-time: FastAPI + uvicorn
@@ -261,11 +261,15 @@ airport_configs/       # Per-airport feed URLs and context (hand-curated)
 
 airport_context/       # Auto-fetched airport context pipeline (see airport_context/README.md)
 
-models/whisper-atc/    # Final fine-tuned model weights
+models/whisper-atc/    # Default fine-tuned weights (whisper-small)
+
+models/whisper-atc-turbo/  # Optional large-v3-turbo model — see Model section
 
 config.yaml            # Default settings
 
 server/                # Browser console (FastAPI + static UI) — see WEB_UI_README.md
+
+diagnostics/           # Proof-of-life, benchmarks + PERFORMANCE.md (small vs turbo)
 
 scripts/               # install + run helpers
 
@@ -283,7 +287,7 @@ scripts/               # install + run helpers
 
 - GPU recommended (`--device cuda`)
 
-- Model weights (~922 MB) — auto-downloaded on install; see `GITHUB.md` if download fails
+- Model weights — small ~922 MB (default), or large-v3-turbo ~3 GB; auto-downloaded on install; see `GITHUB.md` if download fails
 
 
 
