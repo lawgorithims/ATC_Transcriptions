@@ -30,10 +30,53 @@
     sysFfmpeg: $("sysFfmpeg"),
     sysPlatform: $("sysPlatform"),
     connState: $("connState"),
+    systemToggle: $("systemToggle"),
   };
 
   let currentRunId = null;
   let lastStatus = null;
+
+  // ---------- appearance: theme + system pane ----------
+  const THEME_KEY = "atc-theme";
+  const SYSTEM_KEY = "atc-show-system";
+  const THEME_COLORS = { cockpit: "#0b1117", day: "#f4f7fa", night: "#05080b" };
+
+  function applyTheme(theme) {
+    if (!THEME_COLORS[theme]) theme = "cockpit";
+    document.documentElement.dataset.theme = theme;
+    document.querySelectorAll("[data-theme-btn]").forEach((b) => {
+      b.setAttribute("aria-pressed", String(b.dataset.themeBtn === theme));
+    });
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute("content", THEME_COLORS[theme]);
+    try { localStorage.setItem(THEME_KEY, theme); } catch (_) {}
+  }
+
+  function applySystemPane(show) {
+    document.body.classList.toggle("show-system", show);
+    if (el.systemToggle) el.systemToggle.setAttribute("aria-expanded", String(show));
+    try { localStorage.setItem(SYSTEM_KEY, show ? "1" : "0"); } catch (_) {}
+  }
+
+  function initAppearance() {
+    let theme = "cockpit";
+    let showSystem = false;
+    try {
+      theme = localStorage.getItem(THEME_KEY) || "cockpit";
+      showSystem = localStorage.getItem(SYSTEM_KEY) === "1";
+    } catch (_) {}
+    applyTheme(theme);
+    applySystemPane(showSystem);
+
+    document.querySelectorAll("[data-theme-btn]").forEach((b) => {
+      b.addEventListener("click", () => applyTheme(b.dataset.themeBtn));
+    });
+    if (el.systemToggle) {
+      el.systemToggle.addEventListener("click", () =>
+        applySystemPane(!document.body.classList.contains("show-system"))
+      );
+    }
+  }
 
   // ---------- helpers ----------
   function setPill(pill, state, label) {
@@ -76,8 +119,11 @@
     const nearBottom =
       el.transcript.scrollHeight - el.transcript.scrollTop - el.transcript.clientHeight < 80;
 
+    const prevLatest = el.transcript.querySelector(".tx.tx-latest");
+    if (prevLatest) prevLatest.classList.remove("tx-latest");
+
     const div = document.createElement("div");
-    div.className = "tx";
+    div.className = "tx tx-latest";
     const meta = document.createElement("div");
     meta.className = "tx-meta";
     meta.innerHTML =
@@ -153,9 +199,9 @@
     el.deviceBadge.innerHTML = `device&nbsp;·&nbsp;${dev}`;
     el.sysDevice.textContent = dev + (h.model_loaded ? " (loaded)" : "");
     el.sysModel.textContent = h.model_available ? "available" : "MISSING";
-    el.sysModel.style.color = h.model_available ? "" : "var(--red)";
+    el.sysModel.style.color = h.model_available ? "" : "var(--state-critical)";
     el.sysFfmpeg.textContent = h.ffmpeg_available ? "available" : "not installed";
-    el.sysFfmpeg.style.color = h.ffmpeg_available ? "" : "var(--amber)";
+    el.sysFfmpeg.style.color = h.ffmpeg_available ? "" : "var(--state-caution)";
     el.sysPlatform.textContent = h.machine || h.platform || "—";
     el.sysPlatform.title = h.platform || "";
 
@@ -342,6 +388,7 @@
 
   // ---------- boot ----------
   function init() {
+    initAppearance();
     el.sourceSelect.addEventListener("change", syncSourceFields);
     el.startBtn.addEventListener("click", startSession);
     el.stopBtn.addEventListener("click", stopSession);

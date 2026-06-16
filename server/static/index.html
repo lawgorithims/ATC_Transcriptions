@@ -1,8 +1,9 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="cockpit">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#0b1117" />
   <title>ATC_Transcribe — Live Console</title>
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
@@ -15,6 +16,7 @@
         <div class="subtitle">Live air-traffic-control transcription console</div>
       </div>
     </div>
+
     <div class="status-bar">
       <div class="pill" id="pill-handshake" data-state="pending">
         <span class="dot"></span><span class="pill-label">Handshake</span>
@@ -26,6 +28,39 @@
         <span class="dot"></span><span class="pill-label">Stream</span>
       </div>
       <div class="device-badge" id="device-badge" title="Compute backend on the host">device&nbsp;·&nbsp;—</div>
+    </div>
+
+    <div class="topbar-tools">
+      <div class="seg" role="group" aria-label="Appearance">
+        <button type="button" data-theme-btn="cockpit" aria-pressed="true" title="Dark Cockpit">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <circle cx="12" cy="12" r="9" />
+            <path d="M12 3a9 9 0 000 18z" fill="currentColor" stroke="none" />
+          </svg>
+          <span>Cockpit</span>
+        </button>
+        <button type="button" data-theme-btn="day" aria-pressed="false" title="Day">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="4" />
+            <path d="M12 2v2M12 20v2M2 12h2M20 12h2M5 5l1.4 1.4M17.6 17.6L19 19M19 5l-1.4 1.4M6.4 17.6L5 19" />
+          </svg>
+          <span>Day</span>
+        </button>
+        <button type="button" data-theme-btn="night" aria-pressed="false" title="Night">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M21 12.8A8.5 8.5 0 0111.2 3a7 7 0 109.8 9.8z" />
+          </svg>
+          <span>Night</span>
+        </button>
+      </div>
+
+      <button type="button" class="icon-btn" id="systemToggle" aria-expanded="false" title="Show system / diagnostics">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="3" />
+          <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z" />
+        </svg>
+        <span>System</span>
+      </button>
     </div>
   </header>
 
@@ -46,12 +81,17 @@
         />
       </label>
       <div class="buttons">
-        <button id="startBtn" class="btn btn-primary">▶ Start</button>
-        <button id="stopBtn" class="btn btn-ghost" disabled>■ Stop</button>
+        <button id="startBtn" class="btn btn-primary">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
+          Start
+        </button>
+        <button id="stopBtn" class="btn btn-ghost" disabled>
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5" /></svg>
+          Stop
+        </button>
       </div>
     </div>
     <div class="control-row secondary">
-      <button id="polBtn" class="btn btn-small">↺ Run proof-of-life</button>
       <span class="hint" id="ffmpegHint"></span>
       <span class="hint detail" id="sessionDetail"></span>
     </div>
@@ -68,7 +108,12 @@
       </div>
       <div class="transcript" id="transcript">
         <div class="empty-state" id="emptyState">
-          <div class="empty-icon">📡</div>
+          <div class="empty-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+              <circle cx="12" cy="12" r="2" />
+              <path d="M7.8 7.8a6 6 0 000 8.4M16.2 16.2a6 6 0 000-8.4M4.9 4.9a10 10 0 000 14.2M19.1 19.1a10 10 0 000-14.2" />
+            </svg>
+          </div>
           <p>No transmissions yet.</p>
           <p class="empty-sub">Paste a LiveATC link above (or pick a preset / replay demo) and press Start.</p>
         </div>
@@ -91,6 +136,9 @@
         <h3>Proof of life</h3>
         <div id="polBody" class="pol-body">
           <p class="muted">Not checked yet.</p>
+        </div>
+        <div class="pol-actions">
+          <button id="polBtn" class="btn btn-small">↺ Run proof-of-life</button>
         </div>
       </div>
 
