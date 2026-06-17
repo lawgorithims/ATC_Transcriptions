@@ -58,6 +58,14 @@ class StartRequest(BaseModel):
     source_label: Optional[str] = None
 
 
+class ModelOverrideRequest(BaseModel):
+    model: str  # "turbo" | "small"
+
+
+class SettingsRequest(BaseModel):
+    min_realtime_speed: Optional[float] = None
+
+
 def list_feeds() -> list[dict]:
     """Enumerate preset feeds from airport_configs/*.json for the UI dropdown."""
     feeds: list[dict] = []
@@ -81,16 +89,47 @@ def list_feeds() -> list[dict]:
     return feeds
 
 
-def create_app(model_path: str | None = None, device: str = "auto") -> FastAPI:
-    model_path = model_path or os.environ.get(
-        "ATC_MODEL_PATH", str(ROOT / "models" / "whisper-atc")
-    )
+def _build_engine(model_path: str | None, device: str) -> TranscriberEngine:
+    """Single-model override if model_path / ATC_MODEL_PATH is set; otherwise the
+    two-model adaptive setup from config.yaml (model.small / model.turbo / ...)."""
     device = os.environ.get("ATC_DEVICE", device)
+    override_path = model_path or os.environ.get("ATC_MODEL_PATH")
+    if override_path:
+        return TranscriberEngine(
+            models={"custom": {"path": override_path}},
+            device=device,
+            default_model="custom",
+            fallback_model="custom",
+            adaptive=False,
+        )
+    try:
+        import yaml
 
+        cfg = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8")) or {}
+    except Exception:
+        cfg = {}
+    mcfg = cfg.get("model") or {}
+    models: dict = {}
+    for name in ("small", "turbo"):
+        m = mcfg.get(name)
+        if isinstance(m, dict) and m.get("path"):
+            p = Path(m["path"])
+            models[name] = {"path": str(p if p.is_absolute() else ROOT / p)}
+    return TranscriberEngine(
+        models=models or None,
+        device=device,
+        default_model=str(mcfg.get("default", "turbo")),
+        fallback_model=str(mcfg.get("fallback", "small")),
+        min_realtime_speed=float(mcfg.get("min_realtime_speed", 1.2)),
+        adaptive=bool(mcfg.get("adaptive", True)),
+    )
+
+
+def create_app(model_path: str | None = None, device: str = "auto") -> FastAPI:
     # Recover a just-installed ffmpeg whose PATH update hasn't propagated yet.
     ensure_ffmpeg_on_path()
 
-    engine = TranscriberEngine(model_path=model_path, device=device)
+    engine = _build_engine(model_path, device)
     session = TranscriptionSession(engine)
 
     app = FastAPI(title="ATC_Transcribe Web UI", version="1.0")
@@ -122,6 +161,56 @@ def create_app(model_path: str | None = None, device: str = "auto") -> FastAPI:
     async def proof_of_life(force: bool = False):
         result = await asyncio.to_thread(engine.proof_of_life, 2, force)
         return result
+
+    @app.get("/api/model")
+    async def model_status():
+        return engine.model_status()
+
+    @app.post("/api/model/override")
+    async def model_override(req: ModelOverrideRequest):
+        # Swapping the resident model is unsafe while a session holds a reference.
+        if session.is_running():
+            return JSONResponse(
+                status_code=409,
+                content={"error": "Stop the running session before switching models."},
+            )
+        if req.model not in engine.models:
+            return JSONResponse(
+                status_code=400, content={"error": f"Unknown model '{req.model}'."}
+            )
+        if not engine.model_available(req.model):
+            return JSONResponse(
+                status_code=400,
+                content={"error": f"Model '{req.model}' is not downloaded. Run scripts/download_model.py."},
+            )
+        try:
+            return await asyncio.to_thread(engine.override, req.model)
+        except Exception as exc:  # pragma: no cover
+            return JSONResponse(status_code=500, content={"error": str(exc)})
+
+    @app.post("/api/model/auto-select")
+    async def model_auto_select():
+        if session.is_running():
+            return JSONResponse(
+                status_code=409,
+                content={"error": "Stop the running session before re-benchmarking."},
+            )
+        return await asyncio.to_thread(engine.auto_select)
+
+    @app.get("/api/settings")
+    async def get_settings():
+        return {
+            "min_realtime_speed": engine.min_realtime_speed,
+            "adaptive": engine.adaptive,
+            "default_model": engine.default_model,
+            "fallback_model": engine.fallback_model,
+        }
+
+    @app.post("/api/settings")
+    async def update_settings(req: SettingsRequest):
+        if req.min_realtime_speed is not None:
+            engine.set_min_realtime_speed(req.min_realtime_speed)
+        return {"min_realtime_speed": engine.min_realtime_speed, "adaptive": engine.adaptive}
 
     @app.post("/api/session/start")
     async def session_start(req: StartRequest):
@@ -207,6 +296,12 @@ def create_app(model_path: str | None = None, device: str = "auto") -> FastAPI:
             status_code=500, content={"error": "UI not found (server/static/index.html)"}
         )
 
+    @app.on_event("startup")
+    async def _startup_select():
+        # Benchmark the device on the default model at startup and pick small/turbo
+        # accordingly — in the background so the server starts serving immediately.
+        engine.start_auto_select_async()
+
     return app
 
 
@@ -235,11 +330,20 @@ def main() -> None:
     app = create_app(model_path=args.model_path, device=args.device)
 
     if args.warm:
-        print("Warming up: loading model and running proof-of-life ...")
+        print("Warming up: benchmarking device and selecting model ...")
+        status = app.state.engine.auto_select()
+        print(
+            f"Active model: {status.get('active_model')} "
+            f"(measured {status.get('measured_speed')}x real-time, "
+            f"threshold {status.get('min_realtime_speed')}x"
+            f"{', auto-downgraded' if status.get('auto_downgraded') else ''})"
+        )
         result = app.state.engine.proof_of_life(force=True)
         verdict = "PASS" if result.get("passed") else "FAIL"
-        print(f"Proof-of-life: {verdict} (device={result.get('device')}, "
-              f"mean WER={result.get('mean_wer')})")
+        print(
+            f"Proof-of-life: {verdict} (model={result.get('active_model')}, "
+            f"device={result.get('device')}, mean WER={result.get('mean_wer')})"
+        )
 
     print(f"\nATC_Transcribe web UI -> http://{args.host}:{args.port}")
     print("Open that address in a browser on the same network.\n")

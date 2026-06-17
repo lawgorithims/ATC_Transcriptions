@@ -31,6 +31,22 @@
     sysPlatform: $("sysPlatform"),
     connState: $("connState"),
     systemToggle: $("systemToggle"),
+    modelBadge: $("model-badge"),
+    modelWarning: $("modelWarning"),
+    modelWarningText: $("modelWarningText"),
+    modelWarningOverride: $("modelWarningOverride"),
+    settingsToggle: $("settingsToggle"),
+    settingsModal: $("settingsModal"),
+    settingsClose: $("settingsClose"),
+    setActiveModel: $("setActiveModel"),
+    setMeasuredSpeed: $("setMeasuredSpeed"),
+    setModelWarning: $("setModelWarning"),
+    setUseTurbo: $("setUseTurbo"),
+    setUseSmall: $("setUseSmall"),
+    setRebench: $("setRebench"),
+    setModelNote: $("setModelNote"),
+    setThreshold: $("setThreshold"),
+    setApplyThreshold: $("setApplyThreshold"),
   };
 
   let currentRunId = null;
@@ -198,8 +214,6 @@
     const dev = h.resolved_device || h.device_request || "—";
     el.deviceBadge.innerHTML = `device&nbsp;·&nbsp;${dev}`;
     el.sysDevice.textContent = dev + (h.model_loaded ? " (loaded)" : "");
-    el.sysModel.textContent = h.model_available ? "available" : "MISSING";
-    el.sysModel.style.color = h.model_available ? "" : "var(--state-critical)";
     el.sysFfmpeg.textContent = h.ffmpeg_available ? "available" : "not installed";
     el.sysFfmpeg.style.color = h.ffmpeg_available ? "" : "var(--state-caution)";
     el.sysPlatform.textContent = h.machine || h.platform || "—";
@@ -227,7 +241,9 @@
     const verdictClass = p.passed ? "pol-pass" : "pol-fail";
     const verdictText = p.passed ? "PASS — transcriber alive" : "DEGRADED — check output";
     let html = `<div class="pol-verdict ${verdictClass}"><span class="dot"></span>${verdictText}</div>`;
-    html += `<div class="pol-meta">device ${escapeHtml(p.device || "—")} · mean WER ${
+    html += `<div class="pol-meta">model ${escapeHtml(modelLabel(p.active_model))} · device ${escapeHtml(p.device || "—")} · ${
+      p.realtime_speed != null ? p.realtime_speed.toFixed(2) + "x real-time" : "—"
+    } · mean WER ${
       p.mean_wer != null ? (p.mean_wer * 100).toFixed(1) + "%" : "—"
     }${p.load_seconds != null ? " · load " + p.load_seconds + "s" : ""}</div>`;
     (p.snippets || []).forEach((s) => {
@@ -258,6 +274,129 @@
     } finally {
       el.polBtn.disabled = false;
     }
+  }
+
+  // ---------- model selection + settings ----------
+  let modelPollTimer = null;
+  const MODEL_LABEL = { turbo: "large · turbo", small: "small · fast", custom: "custom" };
+
+  function modelLabel(name) {
+    return name ? MODEL_LABEL[name] || name : "—";
+  }
+
+  function applyModelStatus(m) {
+    if (!m) return;
+    const active = m.active_model;
+    const busy = !!m.selecting;
+
+    el.modelBadge.innerHTML = busy
+      ? "model&nbsp;·&nbsp;benchmarking…"
+      : `model&nbsp;·&nbsp;${escapeHtml(modelLabel(active))}`;
+    el.modelBadge.dataset.model = active || "";
+    el.modelBadge.classList.toggle("benchmarking", busy);
+
+    if (m.warning) {
+      el.modelWarningText.textContent = m.warning;
+      el.modelWarning.hidden = false;
+    } else {
+      el.modelWarning.hidden = true;
+    }
+
+    el.setActiveModel.textContent = busy ? "benchmarking…" : modelLabel(active);
+    el.setActiveModel.dataset.model = active || "";
+    el.setMeasuredSpeed.textContent =
+      m.measured_speed != null ? `${m.measured_speed.toFixed(2)}x real-time` : "—";
+    if (m.warning) {
+      el.setModelWarning.textContent = m.warning;
+      el.setModelWarning.hidden = false;
+    } else {
+      el.setModelWarning.hidden = true;
+    }
+    const avail = m.available || {};
+    el.setUseTurbo.disabled = busy || active === "turbo" || avail.turbo === false;
+    el.setUseSmall.disabled = busy || active === "small" || avail.small === false;
+    el.setRebench.disabled = busy;
+    if (document.activeElement !== el.setThreshold && m.min_realtime_speed != null) {
+      el.setThreshold.value = m.min_realtime_speed;
+    }
+    el.setModelNote.textContent = busy
+      ? "Benchmarking the device on the larger model…"
+      : m.auto_downgraded
+      ? "Auto-selected the smaller model — this device is below the speed threshold."
+      : `Using the ${m.adaptive ? "benchmark-selected" : "configured"} model.`;
+
+    if (el.sysModel) el.sysModel.textContent = busy ? "benchmarking…" : modelLabel(active);
+
+    if (busy) {
+      if (!modelPollTimer) modelPollTimer = setTimeout(fetchModelStatus, 1500);
+    } else if (modelPollTimer) {
+      clearTimeout(modelPollTimer);
+      modelPollTimer = null;
+    }
+  }
+
+  async function fetchModelStatus() {
+    modelPollTimer = null;
+    try {
+      applyModelStatus(await api("/api/model"));
+    } catch (_) {
+      modelPollTimer = setTimeout(fetchModelStatus, 3000);
+    }
+  }
+
+  async function overrideModel(name) {
+    el.modelBadge.classList.add("benchmarking");
+    try {
+      const m = await api("/api/model/override", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: name }),
+      });
+      applyModelStatus(m);
+      runProofOfLife(true);
+    } catch (e) {
+      flash(el.sessionDetail, e.message);
+      fetchModelStatus();
+    }
+  }
+
+  async function reBenchmark() {
+    el.modelBadge.innerHTML = "model&nbsp;·&nbsp;benchmarking…";
+    el.modelBadge.classList.add("benchmarking");
+    el.setModelNote.textContent = "Benchmarking…";
+    try {
+      applyModelStatus(await api("/api/model/auto-select", { method: "POST" }));
+      runProofOfLife(true);
+    } catch (e) {
+      flash(el.sessionDetail, e.message);
+      fetchModelStatus();
+    }
+  }
+
+  async function saveThreshold() {
+    const v = parseFloat(el.setThreshold.value);
+    if (isNaN(v) || v < 0) {
+      flash(el.sessionDetail, "Enter a valid speed threshold.");
+      return;
+    }
+    try {
+      await api("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ min_realtime_speed: v }),
+      });
+      await reBenchmark();
+    } catch (e) {
+      flash(el.sessionDetail, e.message);
+    }
+  }
+
+  function openSettings() {
+    el.settingsModal.hidden = false;
+    fetchModelStatus();
+  }
+  function closeSettings() {
+    el.settingsModal.hidden = true;
   }
 
   // ---------- feeds ----------
@@ -398,9 +537,22 @@
       if (e.key === "Enter" && !el.startBtn.disabled) startSession();
     });
 
+    // model + settings
+    el.settingsToggle.addEventListener("click", openSettings);
+    el.settingsClose.addEventListener("click", closeSettings);
+    el.settingsModal.addEventListener("click", (e) => {
+      if (e.target === el.settingsModal) closeSettings();
+    });
+    el.setUseTurbo.addEventListener("click", () => overrideModel("turbo"));
+    el.setUseSmall.addEventListener("click", () => overrideModel("small"));
+    el.setRebench.addEventListener("click", reBenchmark);
+    el.setApplyThreshold.addEventListener("click", saveThreshold);
+    el.modelWarningOverride.addEventListener("click", () => overrideModel("turbo"));
+
     setPill(el.pillHandshake, "pending", "Handshake");
     loadFeeds();
     connectWS();
+    fetchModelStatus();
     // Kick off the proof-of-life handshake automatically (loads the model once).
     runProofOfLife(false);
   }

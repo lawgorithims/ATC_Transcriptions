@@ -28,6 +28,7 @@
         <span class="dot"></span><span class="pill-label">Stream</span>
       </div>
       <div class="device-badge" id="device-badge" title="Compute backend on the host">device&nbsp;·&nbsp;—</div>
+      <div class="model-badge" id="model-badge" title="Active transcription model">model&nbsp;·&nbsp;—</div>
     </div>
 
     <div class="topbar-tools">
@@ -60,6 +61,16 @@
           <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 11-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 11-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 11-2.83-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 110-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 112.83-2.83l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 114 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 112.83 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 110 4h-.09a1.65 1.65 0 00-1.51 1z" />
         </svg>
         <span>System</span>
+      </button>
+
+      <button type="button" class="icon-btn" id="settingsToggle" title="Model &amp; settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <line x1="4" y1="21" x2="4" y2="14" /><line x1="4" y1="10" x2="4" y2="3" />
+          <line x1="12" y1="21" x2="12" y2="12" /><line x1="12" y1="8" x2="12" y2="3" />
+          <line x1="20" y1="21" x2="20" y2="16" /><line x1="20" y1="12" x2="20" y2="3" />
+          <line x1="1" y1="14" x2="7" y2="14" /><line x1="9" y1="8" x2="15" y2="8" /><line x1="17" y1="16" x2="23" y2="16" />
+        </svg>
+        <span>Settings</span>
       </button>
     </div>
   </header>
@@ -96,6 +107,12 @@
       <span class="hint detail" id="sessionDetail"></span>
     </div>
   </section>
+
+  <div class="model-warning-banner" id="modelWarning" role="status" hidden>
+    <span class="warn-icon" aria-hidden="true">⚠</span>
+    <span id="modelWarningText"></span>
+    <button class="btn btn-small" id="modelWarningOverride" type="button">Use large model anyway</button>
+  </div>
 
   <main class="layout">
     <section class="transcript-card">
@@ -159,6 +176,38 @@
     <span class="sep">·</span>
     <span>Served by the host running the fine-tuned Whisper model</span>
   </footer>
+
+  <div class="modal-backdrop" id="settingsModal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+      <div class="modal-head">
+        <h2 id="settingsTitle">Model &amp; settings</h2>
+        <button class="icon-btn modal-close" id="settingsClose" type="button" aria-label="Close settings">✕</button>
+      </div>
+      <div class="modal-body">
+        <section class="set-section">
+          <h3>Transcription model</h3>
+          <div class="set-row"><span>Active model</span><span id="setActiveModel" class="model-tag">—</span></div>
+          <div class="set-row"><span>Measured speed</span><span id="setMeasuredSpeed">—</span></div>
+          <div class="set-warning" id="setModelWarning" hidden></div>
+          <div class="set-actions">
+            <button class="btn btn-small" id="setUseTurbo" data-model="turbo" type="button">Use large (turbo)</button>
+            <button class="btn btn-small" id="setUseSmall" data-model="small" type="button">Use small (fast)</button>
+            <button class="btn btn-small btn-ghost" id="setRebench" type="button">↺ Re-benchmark</button>
+          </div>
+          <p class="set-note" id="setModelNote"></p>
+        </section>
+        <section class="set-section">
+          <h3>Adaptive selection</h3>
+          <label class="set-field">
+            <span>Minimum real-time speed</span>
+            <span class="set-input"><input type="number" id="setThreshold" min="0" max="20" step="0.1" /><em>× real-time</em></span>
+          </label>
+          <p class="set-hint">On startup the larger model is benchmarked on this device. If it runs slower than this, the smaller model is loaded automatically (only one model is kept in memory at a time).</p>
+          <button class="btn btn-small" id="setApplyThreshold" type="button">Save &amp; re-benchmark</button>
+        </section>
+      </div>
+    </div>
+  </div>
 
   <script src="/static/app.js"></script>
 </body>

@@ -220,6 +220,92 @@ def download_from_hf(repo_id: str, filename: str, dest: Path) -> None:
         cached.replace(dest)
 
 
+def _models_from_config() -> list[dict]:
+    """Every model defined under config.yaml `model:` (small + turbo) to download."""
+    cfg = _load_config()
+    out = []
+    for name in ("small", "turbo"):
+        m = cfg.get(name)
+        if isinstance(m, dict) and m.get("path") and m.get("hf_repo"):
+            d = Path(m["path"])
+            if not d.is_absolute():
+                d = ROOT / d
+            fname = str(m.get("hf_filename", DEFAULT_HF_FILENAME))
+            eb = m.get("expected_bytes")
+            out.append(
+                {
+                    "name": name,
+                    "repo": str(m["hf_repo"]).strip(),
+                    "filename": fname,
+                    "path": d / fname,
+                    "expected_bytes": int(eb) if eb else EXPECTED_BYTES,
+                }
+            )
+    return out
+
+
+def _process_one(model_path, expected_bytes, direct_url, hf_repo, hf_filename, args) -> int:
+    """Download/verify a single model weight file. Returns 0 on success."""
+    if is_valid_model_file(model_path, expected_bytes, SIZE_TOLERANCE_BYTES) and not args.force:
+        print(f"Model OK: {model_path} ({format_bytes(model_path.stat().st_size)})")
+        return 0
+
+    if args.check_only:
+        if model_path.is_file():
+            size = model_path.stat().st_size
+            print(
+                f"Model missing or wrong size: {model_path} "
+                f"(found {format_bytes(size)}, expected ~{format_bytes(expected_bytes)})"
+            )
+        else:
+            print(f"Model not found: {model_path}")
+        return 1
+
+    if args.dry_run:
+        if model_path.is_file():
+            print(
+                f"Would replace invalid model at {model_path} "
+                f"({format_bytes(model_path.stat().st_size)})"
+            )
+        else:
+            print(f"Would download model to {model_path}")
+        if direct_url:
+            print(f"Source: direct URL\n  {direct_url}")
+        else:
+            print(f"Source: Hugging Face Hub\n  {hf_repo}/{hf_filename}")
+        print(f"Expected size: ~{format_bytes(expected_bytes)}")
+        return 0
+
+    try:
+        if direct_url:
+            download_file(direct_url, model_path)
+        else:
+            download_from_hf(hf_repo, hf_filename, model_path)
+    except RuntimeError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        print(
+            f"Manual fallback: download {hf_filename} and place it at {model_path}",
+            file=sys.stderr,
+        )
+        print(
+            f"Hugging Face: https://huggingface.co/{hf_repo}/blob/main/{hf_filename}",
+            file=sys.stderr,
+        )
+        return 1
+
+    if not is_valid_model_file(model_path, expected_bytes, SIZE_TOLERANCE_BYTES):
+        size = model_path.stat().st_size if model_path.is_file() else 0
+        print(
+            f"ERROR: Downloaded file size mismatch "
+            f"(got {format_bytes(size)}, expected ~{format_bytes(expected_bytes)})",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(f"Model ready: {model_path} ({format_bytes(model_path.stat().st_size)})")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Download whisper-atc model weights from Hugging Face Hub."
@@ -257,73 +343,34 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    model_path = resolve_model_path(args.path)
-    expected_bytes = resolve_expected_bytes()
-    direct_url = resolve_download_url(args.url)
-    hf_repo = resolve_hf_repo(args.repo)
-    hf_filename = resolve_hf_filename(args.filename)
-
-    if is_valid_model_file(model_path, expected_bytes, SIZE_TOLERANCE_BYTES) and not args.force:
-        print(
-            f"Model OK: {model_path} ({format_bytes(model_path.stat().st_size)})"
+    # Explicit single-model override (--repo / --path / --url) keeps legacy behavior.
+    if args.repo or args.path or args.url:
+        return _process_one(
+            resolve_model_path(args.path),
+            resolve_expected_bytes(),
+            resolve_download_url(args.url),
+            resolve_hf_repo(args.repo),
+            resolve_hf_filename(args.filename),
+            args,
         )
-        return 0
 
-    if args.check_only:
-        if model_path.is_file():
-            size = model_path.stat().st_size
-            print(
-                f"Model missing or wrong size: {model_path} "
-                f"(found {format_bytes(size)}, expected ~{format_bytes(expected_bytes)})"
-            )
-        else:
-            print(f"Model not found: {model_path}")
-        return 1
-
-    if args.dry_run:
-        if model_path.is_file():
-            print(
-                f"Would replace invalid model at {model_path} "
-                f"({format_bytes(model_path.stat().st_size)})"
-            )
-        else:
-            print(f"Would download model to {model_path}")
-        if direct_url:
-            print(f"Source: direct URL\n  {direct_url}")
-        else:
-            print(f"Source: Hugging Face Hub\n  {hf_repo}/{hf_filename}")
-        print(f"Expected size: ~{format_bytes(expected_bytes)}")
-        return 0
-
-    try:
-        if direct_url:
-            download_file(direct_url, model_path)
-        else:
-            download_from_hf(hf_repo, hf_filename, model_path)
-    except RuntimeError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        print(
-            "Manual fallback: download model.safetensors and place it at "
-            f"{model_path}",
-            file=sys.stderr,
+    # Default: ensure BOTH configured models (small + turbo) are present, so the
+    # web server can switch between them with no new download.
+    models = _models_from_config()
+    if not models:
+        return _process_one(
+            resolve_model_path(None),
+            resolve_expected_bytes(),
+            resolve_download_url(None),
+            resolve_hf_repo(None),
+            resolve_hf_filename(None),
+            args,
         )
-        print(
-            f"Hugging Face: https://huggingface.co/{hf_repo}/blob/main/{hf_filename}",
-            file=sys.stderr,
-        )
-        return 1
-
-    if not is_valid_model_file(model_path, expected_bytes, SIZE_TOLERANCE_BYTES):
-        size = model_path.stat().st_size if model_path.is_file() else 0
-        print(
-            f"ERROR: Downloaded file size mismatch "
-            f"(got {format_bytes(size)}, expected ~{format_bytes(expected_bytes)})",
-            file=sys.stderr,
-        )
-        return 1
-
-    print(f"Model ready: {model_path} ({format_bytes(model_path.stat().st_size)})")
-    return 0
+    rc = 0
+    for m in models:
+        print(f"\n=== {m['name']} model ===")
+        rc = _process_one(m["path"], m["expected_bytes"], None, m["repo"], m["filename"], args) or rc
+    return rc
 
 
 if __name__ == "__main__":

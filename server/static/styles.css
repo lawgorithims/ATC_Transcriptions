@@ -891,3 +891,129 @@ body.show-system .sidebar {
     scroll-behavior: auto;
   }
 }
+
+/* ===== adaptive model: badge, warning banner, settings modal ===== */
+.model-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.22rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-secondary);
+  background: var(--bg-card-elevated, var(--bg-card));
+  border: 1px solid var(--border-subtle);
+  white-space: nowrap;
+}
+.model-badge[data-model="turbo"] {
+  color: var(--state-live);
+  border-color: color-mix(in srgb, var(--state-live) 40%, transparent);
+}
+.model-badge[data-model="small"] {
+  color: var(--state-caution);
+  border-color: color-mix(in srgb, var(--state-caution) 40%, transparent);
+}
+.model-badge.benchmarking {
+  color: var(--state-uncertain, var(--text-muted));
+  animation: badgePulse 1.2s ease-in-out infinite;
+}
+@keyframes badgePulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.model-warning-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  margin: 0 1.25rem 0.75rem;
+  padding: 0.7rem 1rem;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--state-caution) 14%, var(--bg-card));
+  border: 1px solid color-mix(in srgb, var(--state-caution) 45%, transparent);
+  color: var(--text-primary);
+  font-size: 0.86rem;
+}
+.model-warning-banner[hidden] { display: none; }
+.model-warning-banner .warn-icon { color: var(--state-caution); font-size: 1.1rem; flex: none; }
+.model-warning-banner #modelWarningText { flex: 1; }
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(3px);
+}
+.modal-backdrop[hidden] { display: none; }
+.modal {
+  width: min(540px, 100%);
+  max-height: 86vh;
+  overflow-y: auto;
+  background: var(--bg-card);
+  border: 1px solid var(--border-subtle);
+  border-radius: 14px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.5);
+}
+.modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.modal-head h2 { margin: 0; font-size: 1.05rem; }
+.modal-body { padding: 1.1rem 1.25rem 1.4rem; display: flex; flex-direction: column; gap: 1.4rem; }
+.set-section h3 {
+  margin: 0 0 0.6rem;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+.set-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.35rem 0;
+  font-size: 0.9rem;
+}
+.set-row > span:first-child, .set-field > span:first-child { color: var(--text-secondary); }
+.model-tag { font-weight: 700; }
+.model-tag[data-model="turbo"] { color: var(--state-live); }
+.model-tag[data-model="small"] { color: var(--state-caution); }
+.set-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.6rem; }
+.set-actions .btn:disabled { opacity: 0.45; cursor: default; }
+.set-warning {
+  margin: 0.5rem 0;
+  padding: 0.6rem 0.75rem;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  background: color-mix(in srgb, var(--state-caution) 14%, var(--bg-card));
+  border: 1px solid color-mix(in srgb, var(--state-caution) 40%, transparent);
+  color: var(--text-primary);
+}
+.set-warning[hidden] { display: none; }
+.set-note { margin: 0.6rem 0 0; font-size: 0.8rem; color: var(--text-muted); }
+.set-field { display: flex; align-items: center; justify-content: space-between; gap: 1rem; font-size: 0.9rem; }
+.set-input { display: inline-flex; align-items: center; gap: 0.4rem; }
+.set-input input {
+  width: 5rem;
+  padding: 0.4rem 0.5rem;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font: inherit;
+  text-align: right;
+}
+.set-input em { color: var(--text-muted); font-style: normal; font-size: 0.82rem; }
+.set-hint { margin: 0.7rem 0; font-size: 0.8rem; color: var(--text-muted); line-height: 1.5; }
