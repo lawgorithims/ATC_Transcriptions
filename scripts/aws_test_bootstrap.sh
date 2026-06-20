@@ -10,8 +10,9 @@
 #   1. Installs system deps (git, Python 3.11, libsndfile, best-effort ffmpeg).
 #   2. Clones/updates this repo (public) and checks out the working branch.
 #   3. Creates a venv and installs CPU PyTorch + project deps.
-#   4. Downloads ONLY the small model weights (~922 MB) from Hugging Face.
-#   5. Starts the web server in the background, pinned to the small model.
+#   4. Downloads both model weights (turbo + small, ~3.9 GB) from Hugging Face.
+#   5. Starts the web server with its defaults (adaptive: loads turbo, benchmarks
+#      it, and auto-falls-back to small only if this device is too slow).
 #   6. Runs scripts/aws_selftest.py and prints a PASS/FAIL summary.
 #
 # After it finishes, open  http://<this-instance-public-ip>:8000  in any browser
@@ -84,22 +85,18 @@ log "      Installing project + web-server deps ..."
 python -m pip install -q -r requirements-live.txt -r requirements-server.txt
 
 # ---------------------------------------------------------------------------
-# 4. Model weights (small only)
+# 4. Model weights (both: turbo default + small fallback)
 # ---------------------------------------------------------------------------
-log "[4/6] Downloading small model weights (~922 MB) ..."
+log "[4/6] Downloading model weights (turbo + small, ~3.9 GB) ..."
 python scripts/download_model.py \
-    --repo SingularityUS/ATC-whisper-v1 \
-    --filename model.safetensors \
-    --path models/whisper-atc/model.safetensors \
     || warn "model download reported a problem - check the log above."
 
 # ---------------------------------------------------------------------------
-# 5. Start the server (pinned to the small model, CPU)
+# 5. Start the server with its defaults (adaptive: turbo, auto-fallback small)
 # ---------------------------------------------------------------------------
-log "[5/6] Starting web server on 0.0.0.0:$PORT (small model, CPU) ..."
+log "[5/6] Starting web server on 0.0.0.0:$PORT (adaptive, default turbo) ..."
 pkill -f "server.app" 2>/dev/null && sleep 2 || true
-nohup python -m server.app --host 0.0.0.0 --port "$PORT" \
-    --model-path models/whisper-atc --device cpu > server.log 2>&1 &
+nohup python -m server.app --host 0.0.0.0 --port "$PORT" > server.log 2>&1 &
 SERVER_PID=$!
 echo "server pid=$SERVER_PID, logging to $APP_DIR/server.log"
 
