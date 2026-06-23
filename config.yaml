@@ -85,6 +85,12 @@ correction:
 
   threshold: 0.84                # 0..1 char-similarity cutoff (higher = stricter)
 
+  numbers: true                  # spoken numbers -> digits (niner->9, "nine seventy five"->975)
+
+  phonetic: true                 # also match by sound, not just spelling (Gulf/Golf-type)
+
+  phonetic_min: 0.62             # min char-similarity for a phonetic match (guards over-correction)
+
   # Optional local LLM via an on-box Ollama/llama.cpp server (Option A: a small
   # compute box in the aircraft, iPad as thin client). OFF until you run a model.
   # Handles acoustic substitutions the dictionary can't. Degrades to "no change"
