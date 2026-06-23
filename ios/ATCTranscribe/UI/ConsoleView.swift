@@ -176,26 +176,25 @@ struct Badge: View {
 
 struct ControlsBar: View {
     @EnvironmentObject var model: AppModel
+    static let freqs = ["auto", "approach", "departure", "tower", "ground", "clearance", "center", "ctaf"]
+
     var body: some View {
         let p = model.palette
         VStack(spacing: 8) {
             HStack(spacing: 10) {
-                Picker("Source", selection: $model.source) {
-                    ForEach(SourceKind.allCases) { Text($0.rawValue).tag($0) }
+                HStack(spacing: 6) {
+                    Text("Input").font(.caption).foregroundStyle(p.textDim)
+                    Picker("Input", selection: $model.source) {
+                        ForEach(SourceKind.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    .labelsHidden().pickerStyle(.menu).tint(p.text)
                 }
-                .pickerStyle(.menu).tint(p.text)
-                .padding(.horizontal, 10).padding(.vertical, 7)
+                .padding(.horizontal, 10).padding(.vertical, 6)
                 .background(p.surfaceAlt).clipShape(RoundedRectangle(cornerRadius: 8))
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(p.border, lineWidth: 1))
 
-                if model.source == .stream {
-                    TextField("LiveATC link or stream URL", text: $model.streamURL)
-                        .textFieldStyle(.plain).autocorrectionDisabled()
-                        .padding(.horizontal, 10).padding(.vertical, 8)
-                        .background(p.surfaceAlt).clipShape(RoundedRectangle(cornerRadius: 8))
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(p.border, lineWidth: 1))
-                }
                 Spacer(minLength: 0)
+
                 Button { model.isRunning ? model.stop() : model.start() } label: {
                     Label(model.isRunning ? "Stop" : "Start",
                           systemImage: model.isRunning ? "stop.fill" : "play.fill")
@@ -207,6 +206,23 @@ struct ControlsBar: View {
                 }
                 .buttonStyle(.plain)
             }
+
+            // The link + airport/frequency context apply ONLY to the internet live feed;
+            // they are hidden for the microphone and USB-audio inputs.
+            if model.source.needsLink {
+                field(icon: "link", placeholder: "LiveATC link or stream URL", text: $model.streamURL)
+                HStack(spacing: 10) {
+                    field(icon: "airplane", placeholder: "Airport context (e.g. KDFW)", text: $model.airport)
+                    Picker("Frequency", selection: $model.frequency) {
+                        ForEach(Self.freqs, id: \.self) { Text($0).tag($0) }
+                    }
+                    .labelsHidden().pickerStyle(.menu).tint(p.text)
+                    .padding(.horizontal, 10).padding(.vertical, 8)
+                    .background(p.surfaceAlt).clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(p.border, lineWidth: 1))
+                }
+            }
+
             HStack {
                 Text(model.detail).font(.caption).foregroundStyle(p.textDim)
                 Spacer()
@@ -214,6 +230,20 @@ struct ControlsBar: View {
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
         .background(p.bg)
+    }
+
+    private func field(icon: String, placeholder: String, text: Binding<String>) -> some View {
+        let p = model.palette
+        return HStack(spacing: 8) {
+            Image(systemName: icon).font(.caption).foregroundStyle(p.textDim)
+            TextField(placeholder, text: text)
+                .textFieldStyle(.plain).autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+        }
+        .padding(.horizontal, 10).padding(.vertical, 8)
+        .background(p.surfaceAlt).clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(p.border, lineWidth: 1))
+        .frame(maxWidth: .infinity)
     }
 }
 

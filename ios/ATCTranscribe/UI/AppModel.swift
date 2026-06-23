@@ -4,10 +4,13 @@ import Combine
 
 /// Audio source choices in the UI's Source picker.
 enum SourceKind: String, CaseIterable, Identifiable {
+    case liveFeed = "Internet live feed"
+    case microphone = "Device microphone"
+    case usbAudio = "USB audio"
     case replay = "Replay demo"
-    case mic = "Microphone"
-    case stream = "LiveATC stream"
     var id: String { rawValue }
+    /// Only the internet live feed needs a stream link + airport context entry.
+    var needsLink: Bool { self == .liveFeed }
 }
 
 /// The view-model the console binds to. In **live** mode (launched with `--model-dir`)
@@ -22,10 +25,10 @@ final class AppModel: ObservableObject {
     @Published var theme: AppTheme = .cockpit
 
     // Source controls
-    @Published var source: SourceKind = .replay
+    @Published var source: SourceKind = .liveFeed
     @Published var streamURL = ""
     @Published var airport = ""
-    @Published var frequency = ""
+    @Published var frequency = "auto"
 
     // Session state (forwarded from TranscriptionSession in live mode)
     @Published var status: SessionStatus = .idle
@@ -58,6 +61,13 @@ final class AppModel: ObservableObject {
             return args[i + 1]
         }
         if let t = value("--theme").flatMap(AppTheme.init(rawValue:)) { theme = t }
+        switch value("--source") {
+        case "live", "feed": source = .liveFeed
+        case "mic": source = .microphone
+        case "usb": source = .usbAudio
+        case "replay": source = .replay
+        default: break
+        }
 
         #if targetEnvironment(simulator)
         deviceLabel = "CPU (Simulator)"
@@ -111,25 +121,33 @@ final class AppModel: ObservableObject {
     // MARK: controls
 
     func start() {
-        if liveMode {
-            guard let session else { return }
-            switch source {
-            case .replay:
-                guard !clips.isEmpty else { detail = "No demo clips available."; return }
-                var feed: [Float] = []
-                let silence = [Float](repeating: 0, count: 16_000)
-                for c in clips { feed += c.audio; feed += silence }
-                session.start(source: ArrayAudioSource(feed, chunkSamples: 8000, realtime: false), label: "Replay demo")
-            case .mic:
-                session.start(source: MicAudioSource(), label: "Microphone")
-            case .stream:
-                detail = "LiveATC stream input is coming soon (device decode)."
-                return
-            }
-            detail = "Transcribing."
-        } else {
-            status = .live; detail = "Transcribing (demo)."
+        guard liveMode, let session else {
+            status = .live; detail = "Transcribing (demo)."; return
         }
+        let src: AudioSource
+        switch source {
+        case .replay:
+            guard !clips.isEmpty else { detail = "No demo clips available."; return }
+            var feed: [Float] = []
+            let silence = [Float](repeating: 0, count: 16_000)
+            for c in clips { feed += c.audio; feed += silence }
+            src = ArrayAudioSource(feed, chunkSamples: 8000, realtime: false)
+        case .microphone:
+            src = DeviceAudioSource(preferUSB: false)
+        case .usbAudio:
+            src = DeviceAudioSource(preferUSB: true)
+        case .liveFeed:
+            guard let resolved = try? StreamURLResolver.resolve(streamURL: streamURL.isEmpty ? nil : streamURL) else {
+                detail = "Enter a LiveATC link or stream URL."; return
+            }
+            guard let url = URL(string: StreamURLResolver.candidateURLs(resolved).first ?? resolved) else {
+                detail = "Invalid stream URL."; return
+            }
+            src = StreamAudioSource(url: url)
+        }
+        session.start(source: src, label: source.rawValue)
+        sourceLabel = source.rawValue
+        detail = "Transcribing."
     }
 
     func stop() {
