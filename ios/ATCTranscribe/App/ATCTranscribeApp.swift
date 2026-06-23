@@ -1,13 +1,15 @@
 import SwiftUI
 
-/// App entry point. The full console UI (themes, status pills, transcript,
-/// sidebar, settings) is ported from `server/static/*` in a later phase; for now
-/// this hosts a skeleton `ConsoleView` so the project builds and runs end-to-end.
+/// App entry point. Owns the `AppModel` (appearance + session state) and hands it to
+/// the console as an environment object.
 @main
 struct ATCTranscribeApp: App {
+    @StateObject private var model = AppModel()
+
     var body: some Scene {
         WindowGroup {
             ConsoleView()
+                .environmentObject(model)
         }
     }
 }

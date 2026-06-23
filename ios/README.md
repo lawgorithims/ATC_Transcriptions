@@ -13,8 +13,9 @@ airport-context prompt → fine-tuned Whisper (CoreML/WhisperKit) → optional c
 > fine-tuned models are converted to CoreML, and the **engine + proof-of-life run on the
 > M4's real ANE** (12.5× real-time, mean WER 9.1%), and the **live session pipeline runs
 > end-to-end** (file-replay → VAD → preprocess → context → transcribe → records, 5
-> transmissions on the ANE). Remaining: the LiveATC live-stream PCM decode (device-only),
-> on-device testing, and the SwiftUI console — see the table below.
+> transmissions on the ANE), and the **SwiftUI console renders in all three themes**
+> (Cockpit / Day / Night). Remaining: the LiveATC stream decode, wiring the UI to live
+> transcription, and on-device testing — see the table below.
 
 This folder is self-contained and intended to split out into its own repository.
 
@@ -31,6 +32,12 @@ bash Tools/setup.sh --all    # everything in one shot
 
 `setup.sh` is idempotent and installs entirely into user space (no sudo).
 
+## Screenshots (iPad Simulator)
+
+| Cockpit | Day | Night |
+| --- | --- | --- |
+| ![Cockpit](docs/screenshots/cockpit.png) | ![Day](docs/screenshots/day.png) | ![Night](docs/screenshots/night.png) |
+
 ## How the Python modules map to Swift
 
 | Python (repo root / `server/`) | Swift (`ATCTranscribe/`) | Status |
@@ -44,7 +51,7 @@ bash Tools/setup.sh --all    # everything in one shot
 | `server/engine.py` (model mgmt, adaptive) | `Engine/Engine.swift` (`TranscriberEngine`, `WER`) | ✅ engine + proof-of-life (PASS on the ANE, 12.5× real-time) |
 | `live_atc_pipeline.py` + `server/session.py` | `Engine/LivePipeline.swift`, `TranscriptionSession.swift` | ✅ pipeline verified end-to-end on the ANE (5 transmissions) |
 | `diagnostics/diagnostic.py` (proof-of-life) | `Engine/Engine.swift` + `ATCKitProbe` | ✅ runs natively on the ANE (probe) |
-| `server/static/*` (browser UI) | `UI/*.swift` (SwiftUI) | ⏳ todo |
+| `server/static/*` (browser UI) | `UI/Theme`, `ConsoleView`, `TranscriptView`, `SidebarView`, `SettingsSheet`, `AppModel` | ✅ console built — Cockpit/Day/Night verified in the Simulator (live-data wiring next) |
 | `atc_stream.py` capture / mounts | `Audio/AudioSource.swift`, `StreamURLResolver.swift` | ✅ file-replay + URL resolver verified; mic compiles; LiveATC stream decode pending (device) |
 
 Behavior parity with the Python is cross-checked two ways: `Tools/parity_check.py`
