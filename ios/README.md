@@ -38,7 +38,7 @@ bash Tools/setup.sh --all    # everything in one shot
 | `Correction`, `SpeechSegment`, `airport_configs/*.json` | `Models/*.swift` + `Resources/airport_configs/` | ✅ builds + tests pass |
 | `atc_stream.py` (VAD/segmentation) | `Audio/VADSegmenter.swift` | ✅ builds + tests pass (energy path) |
 | `atc_transcriber.py` (Whisper) | `Transcription/ATCTranscriber.swift` (WhisperKit) | ✅ runs on-device — transcribes the diagnostic clips |
-| `audio_preprocessing.py` | `Audio/AudioPreprocessor.swift` (Accelerate/vDSP) | ⏳ todo |
+| `audio_preprocessing.py` | `Audio/AudioPreprocessor.swift` + `Biquad`/`STFT` | ✅ builds + tests pass (filters SciPy-parity; `noisereduce` deferred) |
 | `server/engine.py`, `server/session.py` | `Engine/*.swift` | ⏳ todo |
 | `diagnostics/diagnostic.py` (proof-of-life) | `Engine/ProofOfLife.swift` | ⏳ todo |
 | `server/static/*` (browser UI) | `UI/*.swift` (SwiftUI) | ⏳ todo |
