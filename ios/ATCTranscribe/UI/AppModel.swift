@@ -68,6 +68,7 @@ final class AppModel: ObservableObject {
         case "replay": source = .replay
         default: break
         }
+        if let link = value("--link") { streamURL = link }
 
         #if targetEnvironment(simulator)
         deviceLabel = "CPU (Simulator)"
@@ -137,11 +138,9 @@ final class AppModel: ObservableObject {
         case .usbAudio:
             src = DeviceAudioSource(preferUSB: true)
         case .liveFeed:
-            guard let resolved = try? StreamURLResolver.resolve(streamURL: streamURL.isEmpty ? nil : streamURL) else {
-                detail = "Enter a LiveATC link or stream URL."; return
-            }
-            guard let url = URL(string: StreamURLResolver.candidateURLs(resolved).first ?? resolved) else {
-                detail = "Invalid stream URL."; return
+            guard let resolved = try? StreamURLResolver.resolve(streamURL: streamURL.isEmpty ? nil : streamURL),
+                  let url = URL(string: resolved) else {
+                detail = "Enter a valid LiveATC link or stream URL."; return
             }
             src = StreamAudioSource(url: url)
         }

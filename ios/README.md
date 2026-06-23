@@ -14,8 +14,10 @@ airport-context prompt → fine-tuned Whisper (CoreML/WhisperKit) → optional c
 > M4's real ANE** (12.5× real-time, mean WER 9.1%), and the **live session pipeline runs
 > end-to-end** (file-replay → VAD → preprocess → context → transcribe → records, 5
 > transmissions on the ANE), and the **SwiftUI console is wired to live transcription** —
-> the replay demo transcribes in-app (Cockpit/Day/Night themes). Remaining: the LiveATC
-> stream decode, standalone model bundling, and on-device testing — see the table below.
+> the replay demo transcribes in-app (Cockpit/Day/Night themes), and the **LiveATC live
+> internet stream transcribes end-to-end** (AudioToolbox streaming MP3 decode → VAD →
+> transcribe → UI, verified live on the KATL tower feed). Remaining: standalone model
+> bundling and on-device (mic / USB) testing — see the table below.
 
 This folder is self-contained and intended to split out into its own repository.
 
@@ -43,6 +45,13 @@ and ~2.8 s transcribe times vs ~0.2 s on a device's ANE):
 
 ![Live transcription](docs/screenshots/live.png)
 
+The **LiveATC live internet stream** transcribing on-device — a real transmission ("stand
+by level") captured from the KATL tower feed (`s1-bos.liveatc.net/katl_twr`), VAD-segmented
+and transcribed (1.2 s clip, RTF 0.83 on the Simulator CPU), with auto-reconnect on the
+feed's periodic drops:
+
+![LiveATC live stream](docs/screenshots/live_feed.png)
+
 Input method is a dropdown (Internet live feed / Device microphone / USB audio / Replay
 demo). The LiveATC link + airport/frequency fields appear **only** for the internet live
 feed (left) and are hidden for the microphone / USB inputs (right):
@@ -65,7 +74,7 @@ feed (left) and are hidden for the microphone / USB inputs (right):
 | `live_atc_pipeline.py` + `server/session.py` | `Engine/LivePipeline.swift`, `TranscriptionSession.swift` | ✅ pipeline verified end-to-end on the ANE (5 transmissions) |
 | `diagnostics/diagnostic.py` (proof-of-life) | `Engine/Engine.swift` + `ATCKitProbe` | ✅ runs natively on the ANE (probe) |
 | `server/static/*` (browser UI) | `UI/` (Theme, ConsoleView, Transcript, Sidebar, Settings, AppModel) | ✅ console **wired to live transcription** — replay demo transcribes in-app (verified in the Simulator) |
-| `atc_stream.py` capture / mounts | `Audio/` (AudioSource, StreamAudioSource, StreamURLResolver) | ✅ file-replay verified; mic/USB + LiveATC stream (AVPlayer+tap) implemented + build; live/device validation pending |
+| `atc_stream.py` capture / mounts | `Audio/` (AudioSource, StreamAudioSource, StreamURLResolver) | ✅ file-replay + **LiveATC live stream verified end-to-end** (AudioToolbox streaming MP3 decode + auto-reconnect); mic/USB implemented, device validation pending |
 
 Behavior parity with the Python is cross-checked two ways: `Tools/parity_check.py`
 runs the real Python modules against the exact cases the Swift XCTests assert, and the

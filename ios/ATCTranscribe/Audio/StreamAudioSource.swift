@@ -1,127 +1,233 @@
 import Foundation
+import AudioToolbox
 import AVFoundation
-import MediaToolbox
 
-/// Decodes a live HTTP/Icecast MP3 ATC stream to mono 16 kHz PCM and feeds the pipeline.
-/// AVPlayer owns the network streaming + reconnection; an `MTAudioProcessingTap` pulls
-/// the decoded PCM out of the playback graph (the player is muted, so nothing is played
-/// aloud unless `listen` is enabled). The Swift counterpart of the Python ffmpeg decode.
+/// Decodes a live HTTP/Icecast MP3 ATC stream to mono 16 kHz PCM using AudioToolbox —
+/// URLSession streams the bytes, `AudioFileStream` parses MP3 frames into packets, an
+/// `AudioConverter` decodes packets to PCM, and an `AVAudioConverter` resamples to
+/// 16 kHz mono. The native counterpart of the Python ffmpeg decode.
 ///
-/// NOTE: implemented but **live-feed/device validation pending** — remote-stream taps and
-/// the availability of a given LiveATC feed are hard to verify headlessly.
-final class StreamAudioSource: AudioSource {
+/// (AVPlayer + MTAudioProcessingTap was tried first but doesn't work for live remote
+/// Icecast streams — AVURLAsset exposes no audio track — so we decode the stream ourselves.)
+final class StreamAudioSource: NSObject, AudioSource, URLSessionDataDelegate {
     private let url: URL
-    private let listen: Bool
-    private var player: AVPlayer?
-    fileprivate var continuation: AsyncStream<[Float]>.Continuation?
-    fileprivate var converter: AVAudioConverter?
-    fileprivate let target = AVAudioFormat(commonFormat: .pcmFormatFloat32,
-                                           sampleRate: 16000, channels: 1, interleaved: false)!
+    private var urlSession: URLSession?
+    private var task: URLSessionDataTask?
+    private var streamID: AudioFileStreamID?
+    private var decoder: AudioConverterRef?
+    private var resampler: AVAudioConverter?
+    private var sourceFormat = AudioStreamBasicDescription()
+    private var pcmFormat: AVAudioFormat?
 
-    init(url: URL, listen: Bool = false) {
-        self.url = url
-        self.listen = listen
-    }
+    fileprivate var continuation: AsyncStream<[Float]>.Continuation?
+    fileprivate var chunkCount = 0
+
+    // Current batch of compressed packets being fed to the decoder's pull callback.
+    private var packetBuffer: UnsafeMutableRawPointer?
+    fileprivate var packetDescs: [AudioStreamPacketDescription] = []
+    fileprivate var packetCursor = 0
+
+    private let target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
+
+    init(url: URL) { self.url = url; super.init() }
 
     func makeStream() -> AsyncStream<[Float]> {
-        AsyncStream { continuation in
-            self.continuation = continuation
-            let asset = AVURLAsset(url: url)
-            Task { [weak self] in
-                let track = try? await asset.loadTracks(withMediaType: .audio).first
-                await MainActor.run { self?.attach(asset: asset, track: track) }
-            }
-            continuation.onTermination = { [weak self] _ in self?.stop() }
+        AsyncStream { cont in
+            self.continuation = cont
+            AudioFileStreamOpen(Unmanaged.passUnretained(self).toOpaque(),
+                                streamPropertyProc, streamPacketsProc, kAudioFileMP3Type, &self.streamID)
+            var req = URLRequest(url: url)
+            req.setValue("Mozilla/5.0 ATC_Transcribe/1.0", forHTTPHeaderField: "User-Agent")
+            let session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
+            self.urlSession = session
+            let task = session.dataTask(with: req)
+            self.task = task
+            NSLog("[stream] connecting %@", url.absoluteString)
+            task.resume()
+            cont.onTermination = { [weak self] _ in self?.stop() }
         }
     }
 
-    @MainActor private func attach(asset: AVURLAsset, track: AVAssetTrack?) {
-        let item = AVPlayerItem(asset: asset)
-        if let track, let tap = makeTap() {
-            let params = AVMutableAudioMixInputParameters(track: track)
-            params.audioTapProcessor = tap
-            let mix = AVMutableAudioMix()
-            mix.inputParameters = [params]
-            item.audioMix = mix
-        }
-        let player = AVPlayer(playerItem: item)
-        player.isMuted = !listen
-        self.player = player
-        player.play()
-    }
+    private var stopped = false
 
     func stop() {
-        player?.pause()
-        player = nil
-        continuation?.finish()
-        continuation = nil
+        stopped = true
+        task?.cancel(); task = nil
+        urlSession?.invalidateAndCancel(); urlSession = nil
+        if let d = decoder { AudioConverterDispose(d); decoder = nil }
+        if let s = streamID { AudioFileStreamClose(s); streamID = nil }
+        descPtr?.deallocate(); descPtr = nil
+        packetBuffer?.deallocate(); packetBuffer = nil
+        continuation?.finish(); continuation = nil
     }
 
-    private func makeTap() -> MTAudioProcessingTap? {
-        var callbacks = MTAudioProcessingTapCallbacks(
-            version: kMTAudioProcessingTapCallbacksVersion_0,
-            clientInfo: UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque()),
-            init: tapInit, finalize: tapFinalize, prepare: tapPrepare,
-            unprepare: tapUnprepare, process: tapProcess)
-        var tap: MTAudioProcessingTap?
-        let status = MTAudioProcessingTapCreate(kCFAllocatorDefault, &callbacks,
-                                                kMTAudioProcessingTapCreationFlag_PostEffects, &tap)
-        guard status == noErr else { return nil }
-        return tap
+    // MARK: URLSession — feed bytes to the parser
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        guard let streamID else { return }
+        data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            if let base = raw.baseAddress { AudioFileStreamParseBytes(streamID, UInt32(data.count), base, []) }
+        }
     }
 
-    fileprivate func emit(_ samples: [Float]) { continuation?.yield(samples) }
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        NSLog("[stream] task ended: %@", error?.localizedDescription ?? "closed")
+        guard !stopped else { return }
+        // Live streams drop periodically; reconnect (mirrors the Python ffmpeg reconnect).
+        if let s = streamID { AudioFileStreamClose(s); streamID = nil }
+        if let d = decoder { AudioConverterDispose(d); decoder = nil }
+        resampler = nil
+        DispatchQueue.global().asyncAfter(deadline: .now() + 2) { [weak self] in
+            guard let self, !self.stopped, let session = self.urlSession else { return }
+            AudioFileStreamOpen(Unmanaged.passUnretained(self).toOpaque(),
+                                streamPropertyProc, streamPacketsProc, kAudioFileMP3Type, &self.streamID)
+            var req = URLRequest(url: self.url)
+            req.setValue("Mozilla/5.0 ATC_Transcribe/1.0", forHTTPHeaderField: "User-Agent")
+            let next = session.dataTask(with: req)
+            self.task = next
+            NSLog("[stream] reconnecting")
+            next.resume()
+        }
+    }
+
+    // MARK: parser callbacks
+
+    fileprivate func handleProperty(_ propertyID: AudioFileStreamPropertyID) {
+        guard decoder == nil, let streamID,
+              propertyID == kAudioFileStreamProperty_ReadyToProducePackets
+                || propertyID == kAudioFileStreamProperty_DataFormat else { return }
+        var size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        guard AudioFileStreamGetProperty(streamID, kAudioFileStreamProperty_DataFormat, &size, &sourceFormat) == noErr,
+              sourceFormat.mSampleRate > 0, sourceFormat.mChannelsPerFrame > 0 else { return }
+        let ch = sourceFormat.mChannelsPerFrame
+        var pcm = AudioStreamBasicDescription(
+            mSampleRate: sourceFormat.mSampleRate, mFormatID: kAudioFormatLinearPCM,
+            mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
+            mBytesPerPacket: 4 * ch, mFramesPerPacket: 1, mBytesPerFrame: 4 * ch,
+            mChannelsPerFrame: ch, mBitsPerChannel: 32, mReserved: 0)
+        guard AudioConverterNew(&sourceFormat, &pcm, &decoder) == noErr else { return }
+        pcmFormat = AVAudioFormat(streamDescription: &pcm)
+        if let pcmFormat { resampler = AVAudioConverter(from: pcmFormat, to: target) }
+        NSLog("[stream] decoding %.0f Hz %u ch", sourceFormat.mSampleRate, ch)
+    }
+
+    fileprivate func handlePackets(_ numberBytes: UInt32, _ numberPackets: UInt32,
+                                   _ inputData: UnsafeRawPointer,
+                                   _ descs: UnsafeMutablePointer<AudioStreamPacketDescription>?) {
+        guard let decoder, let pcmFormat, let resampler, numberPackets > 0 else { return }
+        packetBuffer?.deallocate()
+        let buf = UnsafeMutableRawPointer.allocate(byteCount: Int(numberBytes), alignment: 1)
+        buf.copyMemory(from: inputData, byteCount: Int(numberBytes))
+        packetBuffer = buf
+        packetDescs = descs != nil ? Array(UnsafeBufferPointer(start: descs, count: Int(numberPackets))) : []
+        packetCursor = 0
+        guard !packetDescs.isEmpty else { return }
+
+        let selfPtr = Unmanaged.passUnretained(self).toOpaque()
+        while packetCursor < packetDescs.count {
+            guard let out = AVAudioPCMBuffer(pcmFormat: pcmFormat, frameCapacity: 8192) else { break }
+            out.frameLength = out.frameCapacity   // advertise full byte capacity, else FillComplexBuffer → -50 paramErr
+            var framesOut: UInt32 = out.frameCapacity
+            let status = AudioConverterFillComplexBuffer(decoder, decoderInputProc, selfPtr,
+                                                         &framesOut, out.mutableAudioBufferList, nil)
+            if status != noErr && framesOut == 0 {
+                if chunkCount < 4 { NSLog("[stream] fill failed status=%d", status) }
+                break
+            }
+            if framesOut == 0 { break }
+            out.frameLength = framesOut
+            resample(out, with: resampler)
+            if status != noErr { break }
+        }
+    }
+
+    private func resample(_ input: AVAudioPCMBuffer, with resampler: AVAudioConverter) {
+        let ratio = target.sampleRate / input.format.sampleRate
+        let capacity = AVAudioFrameCount(Double(input.frameLength) * ratio) + 32
+        guard let out = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: capacity) else { return }
+        var consumed = false
+        var error: NSError?
+        resampler.convert(to: out, error: &error) { _, status in
+            if consumed { status.pointee = .noDataNow; return nil }
+            consumed = true; status.pointee = .haveData; return input
+        }
+        if let channel = out.floatChannelData, out.frameLength > 0 {
+            emit(Array(UnsafeBufferPointer(start: channel[0], count: Int(out.frameLength))))
+        }
+    }
+
+    fileprivate func emit(_ samples: [Float]) {
+        chunkCount += 1
+        if chunkCount % 15 == 1 {
+            var sum: Float = 0
+            for v in samples { sum += v * v }
+            let rms = samples.isEmpty ? 0 : (sum / Float(samples.count)).squareRoot()
+            NSLog("[stream] decoded %d chunks (rms %.4f)", chunkCount, rms)
+        }
+        continuation?.yield(samples)
+    }
+
+    /// Supplies the remaining packets of the current batch to the decoder (one shot).
+    fileprivate func supplyPackets(_ ioNumberDataPackets: UnsafeMutablePointer<UInt32>,
+                                   _ ioData: UnsafeMutablePointer<AudioBufferList>,
+                                   _ outDescs: UnsafeMutablePointer<UnsafeMutablePointer<AudioStreamPacketDescription>?>?) -> OSStatus {
+        let remaining = packetDescs.count - packetCursor
+        guard remaining > 0 else { ioNumberDataPackets.pointee = 0; return noErr }
+        let count = min(Int(ioNumberDataPackets.pointee), remaining)
+        let descSlice = Array(packetDescs[packetCursor ..< packetCursor + count])
+        let start = Int(descSlice[0].mStartOffset)
+        let last = descSlice[count - 1]
+        let end = Int(last.mStartOffset) + Int(last.mDataByteSize)
+
+        ioData.pointee.mNumberBuffers = 1
+        ioData.pointee.mBuffers.mNumberChannels = sourceFormat.mChannelsPerFrame
+        ioData.pointee.mBuffers.mDataByteSize = UInt32(end - start)
+        ioData.pointee.mBuffers.mData = packetBuffer?.advanced(by: start)
+        if let outDescs {
+            // Rebase offsets to the slice start in a stable, manually-owned buffer the
+            // converter reads synchronously during FillComplexBuffer.
+            descPtr?.deallocate()
+            let ptr = UnsafeMutablePointer<AudioStreamPacketDescription>.allocate(capacity: count)
+            for i in 0..<count {
+                let d = descSlice[i]
+                ptr[i] = AudioStreamPacketDescription(mStartOffset: d.mStartOffset - Int64(start),
+                                                      mVariableFramesInPacket: d.mVariableFramesInPacket,
+                                                      mDataByteSize: d.mDataByteSize)
+            }
+            descPtr = ptr
+            outDescs.pointee = ptr
+        }
+        ioNumberDataPackets.pointee = UInt32(count)
+        packetCursor += count
+        return noErr
+    }
+
+    private var descPtr: UnsafeMutablePointer<AudioStreamPacketDescription>?
 }
 
-// MARK: - MTAudioProcessingTap C callbacks
+// MARK: - C callbacks
 
-private func tapInit(_ tap: MTAudioProcessingTap,
-                     _ clientInfo: UnsafeMutableRawPointer?,
-                     _ tapStorageOut: UnsafeMutablePointer<UnsafeMutableRawPointer?>) {
-    tapStorageOut.pointee = clientInfo
+private func streamPropertyProc(_ clientData: UnsafeMutableRawPointer,
+                                _ streamID: AudioFileStreamID,
+                                _ propertyID: AudioFileStreamPropertyID,
+                                _ ioFlags: UnsafeMutablePointer<AudioFileStreamPropertyFlags>) {
+    Unmanaged<StreamAudioSource>.fromOpaque(clientData).takeUnretainedValue().handleProperty(propertyID)
 }
 
-private func tapFinalize(_ tap: MTAudioProcessingTap) {}
-
-private func tapPrepare(_ tap: MTAudioProcessingTap,
-                        _ maxFrames: CMItemCount,
-                        _ processingFormat: UnsafePointer<AudioStreamBasicDescription>) {
-    let source = Unmanaged<StreamAudioSource>.fromOpaque(MTAudioProcessingTapGetStorage(tap)).takeUnretainedValue()
-    var asbd = processingFormat.pointee
-    if let inputFormat = AVAudioFormat(streamDescription: &asbd) {
-        source.converter = AVAudioConverter(from: inputFormat, to: source.target)
-    }
+private func streamPacketsProc(_ clientData: UnsafeMutableRawPointer,
+                               _ numberBytes: UInt32, _ numberPackets: UInt32,
+                               _ inputData: UnsafeRawPointer,
+                               _ packetDescriptions: UnsafeMutablePointer<AudioStreamPacketDescription>?) {
+    Unmanaged<StreamAudioSource>.fromOpaque(clientData).takeUnretainedValue()
+        .handlePackets(numberBytes, numberPackets, inputData, packetDescriptions)
 }
 
-private func tapUnprepare(_ tap: MTAudioProcessingTap) {}
-
-private func tapProcess(_ tap: MTAudioProcessingTap,
-                        _ numberFrames: CMItemCount,
-                        _ flags: MTAudioProcessingTapFlags,
-                        _ bufferListInOut: UnsafeMutablePointer<AudioBufferList>,
-                        _ numberFramesOut: UnsafeMutablePointer<CMItemCount>,
-                        _ flagsOut: UnsafeMutablePointer<MTAudioProcessingTapFlags>) {
-    guard MTAudioProcessingTapGetSourceAudio(tap, numberFrames, bufferListInOut, flagsOut, nil, numberFramesOut) == noErr
-    else { return }
-    let source = Unmanaged<StreamAudioSource>.fromOpaque(MTAudioProcessingTapGetStorage(tap)).takeUnretainedValue()
-    guard let converter = source.converter,
-          let input = AVAudioPCMBuffer(pcmFormat: converter.inputFormat, bufferListNoCopy: bufferListInOut, deallocator: nil)
-    else { return }
-    input.frameLength = AVAudioFrameCount(numberFrames)
-
-    let ratio = source.target.sampleRate / converter.inputFormat.sampleRate
-    let capacity = AVAudioFrameCount(Double(numberFrames) * ratio) + 16
-    guard let output = AVAudioPCMBuffer(pcmFormat: source.target, frameCapacity: capacity) else { return }
-
-    var consumed = false
-    var error: NSError?
-    converter.convert(to: output, error: &error) { _, status in
-        if consumed { status.pointee = .noDataNow; return nil }
-        consumed = true
-        status.pointee = .haveData
-        return input
-    }
-    if let channel = output.floatChannelData, output.frameLength > 0 {
-        source.emit(Array(UnsafeBufferPointer(start: channel[0], count: Int(output.frameLength))))
-    }
+private func decoderInputProc(_ converter: AudioConverterRef,
+                              _ ioNumberDataPackets: UnsafeMutablePointer<UInt32>,
+                              _ ioData: UnsafeMutablePointer<AudioBufferList>,
+                              _ outDataPacketDescription: UnsafeMutablePointer<UnsafeMutablePointer<AudioStreamPacketDescription>?>?,
+                              _ inUserData: UnsafeMutableRawPointer?) -> OSStatus {
+    guard let inUserData else { ioNumberDataPackets.pointee = 0; return noErr }
+    return Unmanaged<StreamAudioSource>.fromOpaque(inUserData).takeUnretainedValue()
+        .supplyPackets(ioNumberDataPackets, ioData, outDataPacketDescription)
 }
