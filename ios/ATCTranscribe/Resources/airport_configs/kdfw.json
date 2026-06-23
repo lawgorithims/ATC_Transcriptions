@@ -1,0 +1,47 @@
+{
+  "airport_code": "KDFW",
+  "airport_name": "Dallas/Fort Worth International Airport",
+  "tracon": "Lone Star Approach / Departure (D10)",
+  "runways": [
+    "13L", "13R", "17C", "17L", "17R", "18L", "18R", "31L", "31R", "35C", "35L", "35R", "36L", "36R"
+  ],
+  "frequencies": {
+    "lone_star_approach_17c_final": "127.075",
+    "lone_star_approach_17l_final": "127.250",
+    "lone_star_approach_18r_final": "125.150",
+    "tower_east": "126.550",
+    "tower_west": "124.150",
+    "ground_east": "121.800",
+    "ground_west": "121.950",
+    "clearance_delivery": "128.250"
+  },
+  "streams": {
+    "lone_star_approach_17c_final": {
+      "label": "Lone Star Approach (17/35C Final)",
+      "url": "https://d.liveatc.net/kdfw1_app_fin_17c",
+      "liveatc_page": "https://www.liveatc.net/hlisten.php?icao=kdfw&mount=kdfw1_app_fin_17c",
+      "frequency_mhz": "127.075",
+      "archive_mount": "kdfw1_app_fin_17c"
+    },
+    "lone_star_approach_17l_final": {
+      "label": "Lone Star Approach (17L/35R Final)",
+      "url": "https://d.liveatc.net/kdfw1_app_fin_17l",
+      "liveatc_page": "https://www.liveatc.net/hlisten.php?icao=kdfw&mount=kdfw1_app_fin_17l",
+      "frequency_mhz": "127.250",
+      "archive_mount": "kdfw1_app_fin_17l"
+    },
+    "lone_star_approach_18r_final": {
+      "label": "Lone Star Approach (18R/36L Final)",
+      "url": "https://d.liveatc.net/kdfw1_app_fin_18r",
+      "liveatc_page": "https://www.liveatc.net/hlisten.php?icao=kdfw&mount=kdfw1_app_fin_18r",
+      "frequency_mhz": "125.150",
+      "archive_mount": "kdfw1_app_fin_18r"
+    },
+    "tower_east": {
+      "label": "KDFW Tower (East)",
+      "url": "https://d.liveatc.net/kdfw1_twr1_e",
+      "liveatc_page": "https://www.liveatc.net/hlisten.php?icao=kdfw&mount=kdfw1_twr1_e",
+      "frequency_mhz": "126.550"
+    }
+  }
+}
