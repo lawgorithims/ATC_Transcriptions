@@ -13,6 +13,12 @@ from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
 from audio_preprocessing import AudioPreprocessor
 
+# Whisper shares a single 448-token decoder window between the prompt and the
+# generated text. If the prompt fills it, generation has no room and transformers
+# raises ("max_new_tokens is 0"). Cap the prompt well below 448 so every segment
+# always has room to decode, regardless of how long a context the caller passes.
+MAX_PROMPT_TOKENS = 220
+
 
 def _resolve_device(device: str) -> str:
     """Resolve 'auto' to the best available backend: CUDA, then Apple MPS, then CPU."""
@@ -83,6 +89,9 @@ class ATCTranscriber:
             prompt_ids = self.processor.get_prompt_ids(context, return_tensors="pt")
             if hasattr(prompt_ids, "input_ids"):
                 prompt_ids = prompt_ids.input_ids
+            # Keep the prompt within budget so decoding always has room (see above).
+            if prompt_ids.shape[-1] > MAX_PROMPT_TOKENS:
+                prompt_ids = prompt_ids[..., :MAX_PROMPT_TOKENS]
             generate_kwargs["prompt_ids"] = prompt_ids.to(self.device)
 
         with torch.no_grad():
