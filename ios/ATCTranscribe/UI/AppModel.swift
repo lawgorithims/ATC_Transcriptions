@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import Combine
 
 /// Audio source choices in the UI's Source picker.
 enum SourceKind: String, CaseIterable, Identifiable {
@@ -9,10 +10,13 @@ enum SourceKind: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
-/// The view-model the console binds to: appearance, the audio source selection, the
-/// rolling transcript + stats + status (mirrors `TranscriptionSession`), and the
-/// proof-of-life result. Real pipeline wiring (model load → replay/mic) lands next; for
-/// now it seeds representative sample data so the UI renders fully populated.
+/// The view-model the console binds to. In **live** mode (launched with `--model-dir`)
+/// it loads the converted model and drives a real `TranscriptionSession` — pressing
+/// Start replays the bundled clips through the pipeline and live records appear. With no
+/// model it falls back to **demo** mode (sample data) so the layout still renders.
+///
+/// Launch args (used for Simulator verification): `--theme <t>`, `--model-dir <path>`,
+/// `--audio-dir <diagnostic_data>`, `--autostart`.
 @MainActor
 final class AppModel: ObservableObject {
     @Published var theme: AppTheme = .cockpit
@@ -23,9 +27,9 @@ final class AppModel: ObservableObject {
     @Published var airport = ""
     @Published var frequency = ""
 
-    // Session state (mirrors TranscriptionSession's published state)
+    // Session state (forwarded from TranscriptionSession in live mode)
     @Published var status: SessionStatus = .idle
-    @Published var detail = "Replay demo loaded — press Start."
+    @Published var detail = "Replay demo — press Start."
     @Published var sourceLabel = "Replay demo"
     @Published var records: [TranscriptRecord] = []
     @Published var stats = LatencyStats()
@@ -40,34 +44,132 @@ final class AppModel: ObservableObject {
     @Published var proofOfLife: ProofOfLifeResult?
     @Published var polRunning = false
 
-    // Sheets
     @Published var showSettings = false
 
+    private var engine: TranscriberEngine?
+    private var session: TranscriptionSession?
+    private var clips: [DiagnosticClip] = []
+    private var liveMode = false
+
     init() {
-        // Initial theme can be forced for screenshots: `--theme night`.
-        if let i = CommandLine.arguments.firstIndex(of: "--theme"),
-           i + 1 < CommandLine.arguments.count,
-           let t = AppTheme(rawValue: CommandLine.arguments[i + 1]) {
-            theme = t
+        let args = CommandLine.arguments
+        func value(_ flag: String) -> String? {
+            guard let i = args.firstIndex(of: flag), i + 1 < args.count else { return nil }
+            return args[i + 1]
         }
-        seedSampleData()
+        if let t = value("--theme").flatMap(AppTheme.init(rawValue:)) { theme = t }
+
+        #if targetEnvironment(simulator)
+        deviceLabel = "CPU (Simulator)"
+        let cpuOnly = true
+        #else
+        let cpuOnly = false
+        #endif
+
+        if let modelDir = value("--model-dir") {
+            liveMode = true
+            records = []
+            stats = LatencyStats()
+            status = .idle
+            detail = "Loading model…"
+            let audioDir = value("--audio-dir")
+            let autostart = args.contains("--autostart")
+            Task { await setupLive(modelDir: modelDir, audioDir: audioDir, cpuOnly: cpuOnly, autostart: autostart) }
+        } else {
+            seedSampleData()   // demo mode — populated layout for design/screenshots
+        }
     }
 
     var palette: Palette { theme.palette }
     var isRunning: Bool { status == .live || status == .connecting || status == .starting }
 
-    // Wired to the real TranscriptionSession in the next step.
-    func start() { status = .live; detail = "Transcribing." }
-    func stop() { status = .stopped; detail = "Stopped." }
-    func clear() { records = []; stats = LatencyStats() }
-    func runProofOfLife() { /* runs engine.proofOfLife once the model is wired */ }
+    // MARK: live wiring
 
-    /// Representative state so the console renders fully populated for design + screenshots.
+    private func setupLive(modelDir: String, audioDir: String?, cpuOnly: Bool, autostart: Bool) async {
+        let engine = TranscriberEngine(models: ["small": modelDir], defaultModel: "small",
+                                       fallbackModel: "small", adaptive: false, cpuOnly: cpuOnly)
+        let transcriber = ATCTranscriber(modelFolder: modelDir, cpuOnly: cpuOnly)
+        do { try await transcriber.load() } catch {
+            detail = "Model failed to load: \(error.localizedDescription)"
+            return
+        }
+        let pipeline = LivePipeline(transcriber: transcriber, context: ATCContext(),
+                                    preprocessor: AudioPreprocessor(aggressiveRadio: true), corrector: NullCorrector())
+        let session = TranscriptionSession(pipeline: pipeline)
+        session.$records.assign(to: &$records)   // mirror live session state into the UI
+        session.$status.assign(to: &$status)
+        session.$stats.assign(to: &$stats)
+        self.session = session
+        self.engine = engine
+        self.activeModel = "small"
+
+        if let audioDir { clips = (try? Self.loadClips(audioDir)) ?? [] }
+        detail = clips.isEmpty ? "Model ready (no demo clips)." : "Ready — press Start."
+        if autostart { start() }
+    }
+
+    // MARK: controls
+
+    func start() {
+        if liveMode {
+            guard let session else { return }
+            switch source {
+            case .replay:
+                guard !clips.isEmpty else { detail = "No demo clips available."; return }
+                var feed: [Float] = []
+                let silence = [Float](repeating: 0, count: 16_000)
+                for c in clips { feed += c.audio; feed += silence }
+                session.start(source: ArrayAudioSource(feed, chunkSamples: 8000, realtime: false), label: "Replay demo")
+            case .mic:
+                session.start(source: MicAudioSource(), label: "Microphone")
+            case .stream:
+                detail = "LiveATC stream input is coming soon (device decode)."
+                return
+            }
+            detail = "Transcribing."
+        } else {
+            status = .live; detail = "Transcribing (demo)."
+        }
+    }
+
+    func stop() {
+        if let session { session.stop() } else { status = .stopped }
+        detail = "Stopped."
+    }
+
+    func clear() {
+        records = []
+        stats = LatencyStats()
+    }
+
+    func runProofOfLife() {
+        guard let engine, !clips.isEmpty else { return }
+        polRunning = true
+        Task {
+            let result = await engine.proofOfLife(clips: clips, maxSnippets: clips.count)
+            self.proofOfLife = result
+            if let s = result.realtimeSpeed { self.measuredSpeed = s }
+            self.polRunning = false
+        }
+    }
+
+    private static func loadClips(_ audioDir: String) throws -> [DiagnosticClip] {
+        struct Manifest: Decodable { struct Snip: Decodable { let file: String; let reference: String }; let snippets: [Snip] }
+        let url = URL(fileURLWithPath: (audioDir as NSString).appendingPathComponent("manifest.json"))
+        let manifest = try JSONDecoder().decode(Manifest.self, from: Data(contentsOf: url))
+        return try manifest.snippets.map { s in
+            DiagnosticClip(file: s.file, reference: s.reference,
+                           audio: try AudioFile.load16kMono(path: (audioDir as NSString).appendingPathComponent(s.file)))
+        }
+    }
+
+    // MARK: demo data
+
     private func seedSampleData() {
         let samples: [(String, String, Double, Double, Double, Double, [CorrectionEdit])] = [
             ("american twelve thirty four cleared to land runway one seven center", "14:32:04", 12.3, 16.0, 280, 0.08, []),
-            ("delta eight ninety contact ground point niner", "14:32:19", 18.1, 21.2, 240, 0.09, [
-                CorrectionEdit(from: "niner", to: "9", reason: "number", backend: "deterministic")]),
+            ("delta eight ninety contact ground point niner", "14:32:19", 18.1, 21.2, 240, 0.09,
+             [CorrectionEdit(from: "niner", to: "9", reason: "number", backend: "deterministic")]),
             ("skywest fifty six seventy turn left heading three four zero", "14:32:38", 24.0, 28.4, 360, 0.10, []),
             ("november three four five alpha bravo hold short runway one seven center", "14:33:01", 30.5, 35.1, 410, 0.11, []),
         ]
@@ -83,8 +185,7 @@ final class AppModel: ObservableObject {
         for r in records { stats.add(r) }
         status = .live
         detail = "Transcribing."
-        proofOfLife = ProofOfLifeResult(
-            passed: true, activeModel: "small", meanWER: 0.091, realtimeSpeed: 12.5,
-            snippets: [], error: nil)
+        proofOfLife = ProofOfLifeResult(passed: true, activeModel: "small", meanWER: 0.091,
+                                        realtimeSpeed: 12.5, snippets: [], error: nil)
     }
 }
