@@ -10,9 +10,9 @@ airport-context prompt → fine-tuned Whisper (CoreML/WhisperKit) → optional c
 > scaffold, deterministic core (context + corrector), and VAD segmenter compile and
 > pass a 20-test XCTest suite on the iOS Simulator, and `ATCTranscriber` loads the
 > converted CoreML model and **transcribes the diagnostic ATC clips correctly**. Both
-> fine-tuned models are converted to CoreML (verified on the Neural Engine). Remaining:
-> audio preprocessing, engine/session, live audio input, and the SwiftUI console — see
-> the table below.
+> fine-tuned models are converted to CoreML, and the **engine + proof-of-life run on the
+> M4's real ANE** (12.5× real-time, mean WER 9.1%). Remaining: live audio input, the live
+> session, and the SwiftUI console — see the table below.
 
 This folder is self-contained and intended to split out into its own repository.
 
@@ -39,14 +39,30 @@ bash Tools/setup.sh --all    # everything in one shot
 | `atc_stream.py` (VAD/segmentation) | `Audio/VADSegmenter.swift` | ✅ builds + tests pass (energy path) |
 | `atc_transcriber.py` (Whisper) | `Transcription/ATCTranscriber.swift` (WhisperKit) | ✅ runs on-device — transcribes the diagnostic clips |
 | `audio_preprocessing.py` | `Audio/AudioPreprocessor.swift` + `Biquad`/`STFT` | ✅ builds + tests pass (filters SciPy-parity; `noisereduce` deferred) |
-| `server/engine.py`, `server/session.py` | `Engine/*.swift` | ⏳ todo |
-| `diagnostics/diagnostic.py` (proof-of-life) | `Engine/ProofOfLife.swift` | ⏳ todo |
+| `server/engine.py` (model mgmt, adaptive) | `Engine/Engine.swift` (`TranscriberEngine`, `WER`) | ✅ engine + proof-of-life (PASS on the ANE, 12.5× real-time) |
+| `server/session.py` (live orchestration) | `Engine/Session.swift` | ⏳ with live audio (#6) |
+| `diagnostics/diagnostic.py` (proof-of-life) | `Engine/Engine.swift` + `ATCKitProbe` | ✅ runs natively on the ANE (probe) |
 | `server/static/*` (browser UI) | `UI/*.swift` (SwiftUI) | ⏳ todo |
 | live mic / LiveATC stream / replay | `Audio/StreamCapture.swift` (AVAudioEngine / AVPlayer) | ⏳ todo |
 
 Behavior parity with the Python is cross-checked two ways: `Tools/parity_check.py`
 runs the real Python modules against the exact cases the Swift XCTests assert, and the
 XCTests then run those cases on-device in the Simulator.
+
+## Testing strategy — Simulator vs. native ANE
+
+The iOS Simulator has **no Apple Neural Engine** (CoreML silently falls back to CPU), so
+it's the wrong place to validate the neural path. Testing is split accordingly:
+
+- **iOS Simulator** (`ATCTranscribe` scheme) — UI + pure-logic XCTests (corrector,
+  context, VAD, filters, WER): 25 tests, fast, headless via the Simulator.
+- **Native macOS, real ANE** (`ATCKitProbe`) — a command-line *probe* (not XCTest) that
+  runs the engine + proof-of-life on the Mac's actual Neural Engine: `bash Tools/probe.sh`.
+  Measured **12.5× real-time** on the M4 vs ~1× on the Simulator CPU.
+
+A probe rather than a macOS XCTest target because macOS XCTest needs a GUI test-runner
+daemon (`testmanagerd`) that isn't available over headless SSH — a plain executable runs
+anywhere.
 
 ## Models
 

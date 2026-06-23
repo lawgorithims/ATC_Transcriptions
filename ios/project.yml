@@ -19,6 +19,7 @@ options:
   createIntermediateGroups: true
   deploymentTarget:
     iOS: "17.0"
+    macOS: "13.0"
 
 settings:
   base:
@@ -79,6 +80,28 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: net.atctranscribe.tests
         GENERATE_INFOPLIST_FILE: YES
 
+  # Native macOS PROBE — a command-line executable (NOT XCTest) that runs the engine +
+  # proof-of-life on the Mac's REAL Neural Engine. A plain tool runs headless over SSH;
+  # macOS XCTest does not (its test-runner daemon needs a GUI session). Build it, then
+  # run the binary directly with ATC_MODEL_DIR + ATC_AUDIO_DIR set (see Tools/probe.sh).
+  # The Simulator (no ANE) is reserved for the UI + pure-logic XCTests.
+  ATCKitProbe:
+    type: tool
+    platform: macOS
+    sources:
+      - path: ATCTranscribe/Models
+      - path: ATCTranscribe/Core
+      - path: ATCTranscribe/Audio
+      - path: ATCTranscribe/Transcription
+      - path: ATCTranscribe/Engine
+      - path: ATCKitProbe
+    dependencies:
+      - package: argmax-oss-swift
+        product: WhisperKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: net.atctranscribe.probe
+
 schemes:
   ATCTranscribe:
     build:
@@ -97,3 +120,12 @@ schemes:
       environmentVariables:
         ATC_MODEL_DIR: ${ATC_MODEL_DIR}
         ATC_AUDIO_DIR: ${ATC_AUDIO_DIR}
+
+  # Native macOS probe: `xcodebuild build -scheme ATCKitProbe -destination platform=macOS`,
+  # then run the built binary directly (env-driven). See Tools/probe.sh.
+  ATCKitProbe:
+    build:
+      targets:
+        ATCKitProbe: all
+    run:
+      config: Debug
