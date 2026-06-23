@@ -156,9 +156,19 @@
     meta.innerHTML =
       `<span class="tx-time">${rec.timestamp || ""}</span>` +
       `<span class="tx-stream">stream ${Number(rec.stream_start_s).toFixed(1)}s</span>`;
+    // Optional correction layer: when present, show the corrected text as primary
+    // with a badge; the raw original + exact edits live in a collapsible below.
+    const hasCorrection = !!rec.corrected && rec.corrected !== rec.text;
     const text = document.createElement("div");
     text.className = "tx-text";
-    text.textContent = rec.text;
+    text.textContent = hasCorrection ? rec.corrected : rec.text;
+    if (hasCorrection) {
+      const badge = document.createElement("span");
+      badge.className = "tx-corrected-badge";
+      badge.textContent = "corrected";
+      badge.title = "Edited by the correction layer — expand below to see changes";
+      text.append(" ", badge);
+    }
     const lat = document.createElement("div");
     lat.className = "tx-latency";
     lat.textContent =
@@ -166,6 +176,64 @@
       `transcribe ${Math.round(rec.transcribe_ms)} ms · ` +
       `RTF ${Number(rec.real_time_factor).toFixed(2)}`;
     div.append(meta, text, lat);
+
+    // Note every change the correction layer made: collapsible from->to list plus
+    // the raw original. Shown by default (not System-gated) — changes matter.
+    if (hasCorrection) {
+      const edits = rec.corrections || [];
+      const det = document.createElement("details");
+      det.className = "tx-corrections";
+      const sum = document.createElement("summary");
+      sum.textContent = `${edits.length} change${edits.length === 1 ? "" : "s"}`;
+      det.appendChild(sum);
+      const body = document.createElement("div");
+      body.className = "tx-corrections-body";
+      edits.forEach((e) => {
+        const row = document.createElement("div");
+        row.className = "tx-edit";
+        const from = document.createElement("span");
+        from.className = "edit-from";
+        from.textContent = e.from;
+        const arrow = document.createElement("span");
+        arrow.className = "edit-arrow";
+        arrow.textContent = "→";
+        const to = document.createElement("span");
+        to.className = "edit-to";
+        to.textContent = e.to;
+        row.append(from, arrow, to);
+        const bits = [e.reason, e.confidence != null ? e.confidence : null, e.backend].filter(
+          (b) => b != null && b !== ""
+        );
+        if (bits.length) {
+          const m = document.createElement("span");
+          m.className = "edit-meta";
+          m.textContent = bits.join(" · ");
+          row.append(m);
+        }
+        body.appendChild(row);
+      });
+      const raw = document.createElement("div");
+      raw.className = "tx-raw";
+      raw.textContent = `raw: ${rec.text}`;
+      body.appendChild(raw);
+      det.appendChild(body);
+      div.append(det);
+    }
+
+    // The exact prompt injected for this transmission. A diagnostic, so it rides
+    // with the System pane toggle (like latency) to keep the default view clean.
+    if (rec.prompt) {
+      const det = document.createElement("details");
+      det.className = "tx-prompt";
+      const sum = document.createElement("summary");
+      sum.textContent = "injected prompt";
+      const pre = document.createElement("pre");
+      pre.className = "tx-prompt-text";
+      pre.textContent = rec.prompt;
+      det.append(sum, pre);
+      div.append(det);
+    }
+
     el.transcript.appendChild(div);
 
     if (nearBottom) el.transcript.scrollTop = el.transcript.scrollHeight;

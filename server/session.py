@@ -42,8 +42,11 @@ _MAX_RECORDS = 500  # cap in-memory transcript history for the UI
 class TranscriptionSession:
     """Manages a single live transcription run in a background thread."""
 
-    def __init__(self, engine):
+    def __init__(self, engine, correction_config=None):
         self.engine = engine
+        # Optional post-ASR correction layer config (off by default). Passed
+        # straight to the pipeline, which builds a no-op corrector when disabled.
+        self.correction_config = correction_config or {}
         self._lock = threading.Lock()
         self._pipeline: Optional[LiveATCPipeline] = None
         self._thread: Optional[threading.Thread] = None
@@ -153,6 +156,7 @@ class TranscriptionSession:
             on_record=self._on_record,
             on_status=self._on_status,
             on_audio=self.audio.publish,
+            correction_config=self.correction_config,
         )
         try:
             transcriber = self.engine.get_transcriber()

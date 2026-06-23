@@ -657,6 +657,129 @@ body.show-system .tx-latency {
   display: block;
 }
 
+/* Injected-prompt inspector: collapsed by default, revealed with the System pane
+   like the other per-record diagnostics. Lets the operator see exactly what
+   context (incl. the rolling "Recent:" history) conditioned each transcript. */
+.tx-prompt {
+  display: none;
+  margin-top: 8px;
+}
+body.show-system .tx-prompt {
+  display: block;
+}
+.tx-prompt > summary {
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+.tx-prompt > summary::-webkit-details-marker {
+  display: none;
+}
+.tx-prompt > summary::before {
+  content: "▸ ";
+}
+.tx-prompt[open] > summary::before {
+  content: "▾ ";
+}
+.tx-prompt-text {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  background: var(--bg-base);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-ctl);
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+/* ----- Correction layer: badge + visible from->to change list -------------- */
+.tx-corrected-badge {
+  display: inline-block;
+  vertical-align: middle;
+  margin-left: 8px;
+  padding: 1px 7px;
+  border-radius: var(--radius-chip);
+  font-family: var(--font-sans);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--action-primary);
+  background: color-mix(in srgb, var(--action-primary) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--action-primary) 40%, transparent);
+}
+/* Shown by default — a change to the transcript is operational, not a diagnostic. */
+.tx-corrections {
+  margin-top: 8px;
+}
+.tx-corrections > summary {
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.tx-corrections > summary::-webkit-details-marker {
+  display: none;
+}
+.tx-corrections > summary::before {
+  content: "▸ ";
+  color: var(--action-primary);
+}
+.tx-corrections[open] > summary::before {
+  content: "▾ ";
+}
+.tx-corrections-body {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  background: var(--bg-base);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-ctl);
+}
+.tx-edit {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.tx-edit .edit-from {
+  color: var(--text-muted);
+  text-decoration: line-through;
+}
+.tx-edit .edit-arrow {
+  color: var(--text-muted);
+  margin: 0 6px;
+}
+.tx-edit .edit-to {
+  color: var(--state-live);
+  font-weight: 600;
+}
+.tx-edit .edit-meta {
+  margin-left: 8px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.tx-raw {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border-subtle);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* ----- Clearance chips ---------------------------------------------------- */
 /* Visual system is defined and ready for extracted clearance data. Operational
    tags use all caps; amber styling is reserved for uncertain extractions. */
