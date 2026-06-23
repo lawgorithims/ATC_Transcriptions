@@ -1,4 +1,5 @@
 import Foundation
+import CoreML
 import WhisperKit
 
 /// Fine-tuned Whisper inference for live ATC segments, on-device via WhisperKit
@@ -16,10 +17,6 @@ import WhisperKit
 ///
 /// Audio is expected already preprocessed (mono 16 kHz float32 in [-1, 1]); the
 /// radio-cleanup stage (`AudioPreprocessor`, ported separately) runs upstream.
-///
-/// NOTE: authored against argmax-oss-swift (WhisperKit) v1.0 source; not yet compiled
-/// on the Mac. Verify symbol names (`Logging.LogLevel.error`, `DecodingTask.transcribe`,
-/// `WhisperTokenizer.specialTokens`) at first build.
 actor ATCTranscriber {
     /// Whisper shares a 448-token decoder window between prompt and generated text; cap
     /// the prompt well below it so generation always has room. (= Python `MAX_PROMPT_TOKENS`)
@@ -29,16 +26,21 @@ actor ATCTranscriber {
     private let language: String
     private let compressionRatioThreshold: Float
     private let temperatureFallbackCount: Int
+    private let cpuOnly: Bool
     private var pipe: WhisperKit?
 
+    /// - Parameter cpuOnly: force CPU compute units (the iOS Simulator has no Neural
+    ///   Engine). Leave false on real devices to use the ANE.
     init(modelFolder: String,
          language: String = "en",
          compressionRatioThreshold: Float = 2.4,
-         temperatureFallbackCount: Int = 5) {
+         temperatureFallbackCount: Int = 5,
+         cpuOnly: Bool = false) {
         self.modelFolder = modelFolder
         self.language = language
         self.compressionRatioThreshold = compressionRatioThreshold
         self.temperatureFallbackCount = temperatureFallbackCount
+        self.cpuOnly = cpuOnly
     }
 
     var isLoaded: Bool { pipe != nil }
@@ -46,8 +48,12 @@ actor ATCTranscriber {
     /// Load the converted CoreML model from a local folder. No network (`download: false`).
     /// Mirrors the model load in `ATCTranscriber.__init__`.
     func load() async throws {
+        let compute = cpuOnly
+            ? ModelComputeOptions(melCompute: .cpuOnly, audioEncoderCompute: .cpuOnly, textDecoderCompute: .cpuOnly)
+            : nil
         let config = WhisperKitConfig(
             modelFolder: modelFolder,
+            computeOptions: compute,
             verbose: false,
             logLevel: .error,
             prewarm: true,
