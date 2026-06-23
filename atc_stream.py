@@ -136,12 +136,20 @@ def candidate_stream_urls(url: str) -> List[str]:
 class FileSimulator:
     """Replay a local audio file at live speed without ffmpeg."""
 
-    def __init__(self, path: str, chunk_duration_s: float = 0.5, realtime: bool = True):
+    def __init__(
+        self,
+        path: str,
+        chunk_duration_s: float = 0.5,
+        realtime: bool = True,
+        on_audio: Optional[Callable[[np.ndarray], None]] = None,
+    ):
         import librosa
 
         self.path = path
         self.chunk_samples = int(chunk_duration_s * SAMPLE_RATE)
         self.realtime = realtime
+        # Optional tee of the decoded PCM (e.g. the web server's audio relay).
+        self.on_audio = on_audio
         audio, _ = librosa.load(path, sr=SAMPLE_RATE, mono=True)
         self.audio = audio.astype(np.float32)
         self._stream_time_s = 0.0
@@ -161,6 +169,11 @@ class FileSimulator:
                 chunk = np.pad(chunk, (0, self.chunk_samples - len(chunk)))
             offset += self.chunk_samples
             self._stream_time_s += len(chunk) / SAMPLE_RATE
+            if self.on_audio is not None:
+                try:
+                    self.on_audio(chunk)
+                except Exception:  # a listener must never kill the replay
+                    pass
             yield chunk
             if self.realtime:
                 elapsed = time.perf_counter() - t0
@@ -180,10 +193,13 @@ class StreamCapture:
         url: str,
         chunk_duration_s: float = 0.5,
         on_status: Optional[Callable[[str], None]] = None,
+        on_audio: Optional[Callable[[np.ndarray], None]] = None,
     ):
         self.url = url
         self.chunk_samples = int(chunk_duration_s * SAMPLE_RATE)
         self.on_status = on_status or (lambda _msg: None)
+        # Optional tee of the decoded PCM (e.g. the web server's audio relay).
+        self.on_audio = on_audio
         self._proc: Optional[subprocess.Popen] = None
         self._stream_time_s = 0.0
         self._running = False
@@ -290,6 +306,11 @@ class StreamCapture:
                         pcm = np.frombuffer(frame_bytes, dtype=np.int16).astype(np.float32)
                         pcm /= 32768.0
                         self._stream_time_s += len(pcm) / SAMPLE_RATE
+                        if self.on_audio is not None:
+                            try:
+                                self.on_audio(pcm)
+                            except Exception:  # a listener must never kill capture
+                                pass
                         yield pcm
 
                 if self._proc and self._proc.poll() is None:
