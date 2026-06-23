@@ -23,6 +23,7 @@ from atc_corrector import DeterministicCorrector  # noqa: E402
 from atc_stream import VADSegmenter  # noqa: E402
 import numpy as np  # noqa: E402
 from server.engine import _word_error_rate  # noqa: E402
+from atc_stream import resolve_stream_url, candidate_stream_urls, _extract_liveatc_mount  # noqa: E402
 
 
 def det(vocab=()):
@@ -88,6 +89,21 @@ check("wer article dropped", _word_error_rate("the tower cleared for takeoff", "
 check("wer case-insensitive", _word_error_rate("thank you QNH is one zero two three", "thank you qnh is one zero two three"), 0.0)
 check("wer empty hyp", _word_error_rate("roger", ""), 1.0)
 check("wer hyphen normalized", _word_error_rate("hotel echo xray", "hotel echo x-ray"), 0.0)
+
+
+# --- StreamURLResolver (atc_stream.resolve_stream_url / candidate_stream_urls) asserted in StreamURLResolverTests ---
+check("resolve hlisten",
+      resolve_stream_url(stream_url="https://www.liveatc.net/hlisten.php?icao=kdfw&mount=kdfw1_app_fin_17c"),
+      "https://d.liveatc.net/kdfw1_app_fin_17c")
+check("resolve direct",
+      resolve_stream_url(stream_url="https://d.liveatc.net/kdfw1_app_fin_17c"),
+      "https://d.liveatc.net/kdfw1_app_fin_17c")
+check("extract mount",
+      _extract_liveatc_mount("https://www.liveatc.net/hlisten.php?icao=kdfw&mount=kdfw1_app_fin_17c"),
+      "kdfw1_app_fin_17c")
+check("candidates count", len(candidate_stream_urls("https://d.liveatc.net/kdfw1_app_fin_17c")), 8)
+check("candidates last", candidate_stream_urls("https://d.liveatc.net/kdfw1_app_fin_17c")[-1],
+      "https://s1-lax.liveatc.net/kdfw1_app_fin_17c")
 
 failed = [c for c in checks if not c[1]]
 for name, ok, got, want in checks:

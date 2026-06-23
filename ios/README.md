@@ -11,8 +11,10 @@ airport-context prompt → fine-tuned Whisper (CoreML/WhisperKit) → optional c
 > pass a 20-test XCTest suite on the iOS Simulator, and `ATCTranscriber` loads the
 > converted CoreML model and **transcribes the diagnostic ATC clips correctly**. Both
 > fine-tuned models are converted to CoreML, and the **engine + proof-of-life run on the
-> M4's real ANE** (12.5× real-time, mean WER 9.1%). Remaining: live audio input, the live
-> session, and the SwiftUI console — see the table below.
+> M4's real ANE** (12.5× real-time, mean WER 9.1%), and the **live session pipeline runs
+> end-to-end** (file-replay → VAD → preprocess → context → transcribe → records, 5
+> transmissions on the ANE). Remaining: the LiveATC live-stream PCM decode (device-only),
+> on-device testing, and the SwiftUI console — see the table below.
 
 This folder is self-contained and intended to split out into its own repository.
 
@@ -40,10 +42,10 @@ bash Tools/setup.sh --all    # everything in one shot
 | `atc_transcriber.py` (Whisper) | `Transcription/ATCTranscriber.swift` (WhisperKit) | ✅ runs on-device — transcribes the diagnostic clips |
 | `audio_preprocessing.py` | `Audio/AudioPreprocessor.swift` + `Biquad`/`STFT` | ✅ builds + tests pass (filters SciPy-parity; `noisereduce` deferred) |
 | `server/engine.py` (model mgmt, adaptive) | `Engine/Engine.swift` (`TranscriberEngine`, `WER`) | ✅ engine + proof-of-life (PASS on the ANE, 12.5× real-time) |
-| `server/session.py` (live orchestration) | `Engine/Session.swift` | ⏳ with live audio (#6) |
+| `live_atc_pipeline.py` + `server/session.py` | `Engine/LivePipeline.swift`, `TranscriptionSession.swift` | ✅ pipeline verified end-to-end on the ANE (5 transmissions) |
 | `diagnostics/diagnostic.py` (proof-of-life) | `Engine/Engine.swift` + `ATCKitProbe` | ✅ runs natively on the ANE (probe) |
 | `server/static/*` (browser UI) | `UI/*.swift` (SwiftUI) | ⏳ todo |
-| live mic / LiveATC stream / replay | `Audio/StreamCapture.swift` (AVAudioEngine / AVPlayer) | ⏳ todo |
+| `atc_stream.py` capture / mounts | `Audio/AudioSource.swift`, `StreamURLResolver.swift` | ✅ file-replay + URL resolver verified; mic compiles; LiveATC stream decode pending (device) |
 
 Behavior parity with the Python is cross-checked two ways: `Tools/parity_check.py`
 runs the real Python modules against the exact cases the Swift XCTests assert, and the
