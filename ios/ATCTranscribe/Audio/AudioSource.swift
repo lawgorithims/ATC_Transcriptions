@@ -61,14 +61,18 @@ final class FileReplaySource: AudioSource {
     func stop() { backing.stop() }
 }
 
-/// Live microphone capture via AVAudioEngine, resampled to mono 16 kHz. The app
-/// configures the `AVAudioSession` (record category) and requests permission before
-/// starting. NOTE: authored but device-tested later (no mic over headless SSH).
-final class MicAudioSource: AudioSource {
+/// Live capture from the device microphone or a connected USB audio interface, via
+/// AVAudioEngine, resampled to mono 16 kHz. `preferUSB` routes the session to a USB
+/// input when present. NOTE: device-tested later (no audio input over headless SSH).
+final class DeviceAudioSource: AudioSource {
     private let engine = AVAudioEngine()
+    private let preferUSB: Bool
+
+    init(preferUSB: Bool = false) { self.preferUSB = preferUSB }
 
     func makeStream() -> AsyncStream<[Float]> {
         AsyncStream { continuation in
+            configureSession()
             let input = engine.inputNode
             let inputFormat = input.outputFormat(forBus: 0)
             guard let outputFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32,
@@ -102,5 +106,18 @@ final class MicAudioSource: AudioSource {
     func stop() {
         engine.inputNode.removeTap(onBus: 0)
         if engine.isRunning { engine.stop() }
+    }
+
+    private func configureSession() {
+        #if os(iOS)
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(.playAndRecord, mode: .measurement, options: [.allowBluetooth, .defaultToSpeaker])
+        try? session.setActive(true)
+        if preferUSB, let usb = session.availableInputs?.first(where: { $0.portType == .usbAudio }) {
+            try? session.setPreferredInput(usb)
+        } else if !preferUSB, let mic = session.availableInputs?.first(where: { $0.portType == .builtInMic }) {
+            try? session.setPreferredInput(mic)
+        }
+        #endif
     }
 }

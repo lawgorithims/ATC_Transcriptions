@@ -43,6 +43,14 @@ and ~2.8 s transcribe times vs ~0.2 s on a device's ANE):
 
 ![Live transcription](docs/screenshots/live.png)
 
+Input method is a dropdown (Internet live feed / Device microphone / USB audio / Replay
+demo). The LiveATC link + airport/frequency fields appear **only** for the internet live
+feed (left) and are hidden for the microphone / USB inputs (right):
+
+| Internet live feed | Device microphone |
+| --- | --- |
+| ![Live feed input](docs/screenshots/input_livefeed.png) | ![Mic input](docs/screenshots/input_mic.png) |
+
 ## How the Python modules map to Swift
 
 | Python (repo root / `server/`) | Swift (`ATCTranscribe/`) | Status |
@@ -57,7 +65,7 @@ and ~2.8 s transcribe times vs ~0.2 s on a device's ANE):
 | `live_atc_pipeline.py` + `server/session.py` | `Engine/LivePipeline.swift`, `TranscriptionSession.swift` | ✅ pipeline verified end-to-end on the ANE (5 transmissions) |
 | `diagnostics/diagnostic.py` (proof-of-life) | `Engine/Engine.swift` + `ATCKitProbe` | ✅ runs natively on the ANE (probe) |
 | `server/static/*` (browser UI) | `UI/` (Theme, ConsoleView, Transcript, Sidebar, Settings, AppModel) | ✅ console **wired to live transcription** — replay demo transcribes in-app (verified in the Simulator) |
-| `atc_stream.py` capture / mounts | `Audio/AudioSource.swift`, `StreamURLResolver.swift` | ✅ file-replay + URL resolver verified; mic compiles; LiveATC stream decode pending (device) |
+| `atc_stream.py` capture / mounts | `Audio/` (AudioSource, StreamAudioSource, StreamURLResolver) | ✅ file-replay verified; mic/USB + LiveATC stream (AVPlayer+tap) implemented + build; live/device validation pending |
 
 Behavior parity with the Python is cross-checked two ways: `Tools/parity_check.py`
 runs the real Python modules against the exact cases the Swift XCTests assert, and the
