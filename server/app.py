@@ -37,10 +37,11 @@ if str(ROOT) not in sys.path:
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
-from fastapi.responses import FileResponse, JSONResponse  # noqa: E402
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
+from server.audio import mp3_chunks  # noqa: E402
 from server.engine import TranscriberEngine, ensure_ffmpeg_on_path  # noqa: E402
 from server.session import TranscriptionSession  # noqa: E402
 
@@ -56,6 +57,11 @@ class StartRequest(BaseModel):
     demo: bool = False
     max_segments: Optional[int] = None
     source_label: Optional[str] = None
+    # Optional airport-mode context (auto-fetched fixes/navaids/procedures) — the
+    # single biggest accuracy lever for a pasted feed. frequency_type tailors it.
+    airport: Optional[str] = None
+    frequency_type: Optional[str] = None
+    callsigns: Optional[str] = None  # comma-separated, e.g. "AAL123,SKW45"
 
 
 class ModelOverrideRequest(BaseModel):
@@ -235,6 +241,9 @@ def create_app(model_path: str | None = None, device: str = "auto") -> FastAPI:
                     )
                 )
             else:
+                callsigns = [
+                    c.strip() for c in (req.callsigns or "").split(",") if c.strip()
+                ] or None
                 snap = await asyncio.to_thread(
                     lambda: session.start(
                         stream_url=req.stream_url,
@@ -242,6 +251,9 @@ def create_app(model_path: str | None = None, device: str = "auto") -> FastAPI:
                         feed_key=req.feed_key,
                         max_segments=req.max_segments,
                         source_label=req.source_label,
+                        airport=req.airport,
+                        frequency_type=req.frequency_type,
+                        candidate_callsigns=callsigns,
                     )
                 )
             return snap
@@ -258,6 +270,27 @@ def create_app(model_path: str | None = None, device: str = "auto") -> FastAPI:
     @app.get("/api/session/status")
     async def session_status(last_seq: int = 0):
         return session.snapshot(last_seq=last_seq)
+
+    @app.get("/api/session/audio")
+    async def session_audio():
+        """Live MP3 of the current feed — the same PCM the model transcribes.
+
+        Tee'd from the pipeline's single upstream connection, so listening never
+        opens a second connection to the source. Browsers play it via <audio>.
+        """
+        if not session.is_running():
+            return JSONResponse(
+                status_code=409, content={"error": "No live session is running."}
+            )
+        if not engine.ffmpeg_available():
+            return JSONResponse(
+                status_code=400, content={"error": "ffmpeg is required to relay audio."}
+            )
+        return StreamingResponse(
+            mp3_chunks(session.audio),
+            media_type="audio/mpeg",
+            headers={"Cache-Control": "no-store"},
+        )
 
     # ----- WebSocket: live transcript + status --------------------------
 

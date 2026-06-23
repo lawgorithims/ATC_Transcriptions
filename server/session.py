@@ -17,6 +17,13 @@ from pathlib import Path
 from typing import Optional
 
 from live_atc_pipeline import LatencyRecord, LiveATCPipeline
+from server.audio import AudioBroadcaster
+
+try:
+    from airport_context.live import AirportContextError
+except Exception:  # airport_context is stdlib-only and always present, but be safe
+    class AirportContextError(Exception):  # type: ignore
+        pass
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -40,6 +47,9 @@ class TranscriptionSession:
         self._lock = threading.Lock()
         self._pipeline: Optional[LiveATCPipeline] = None
         self._thread: Optional[threading.Thread] = None
+        # Live audio relay: the pipeline tees decoded PCM here; browsers subscribe
+        # via GET /api/session/audio and hear the same feed the model transcribes.
+        self.audio = AudioBroadcaster()
 
         self.status = IDLE
         self.detail = "No stream running."
@@ -72,6 +82,9 @@ class TranscriptionSession:
         fast_simulate: bool = False,
         max_segments: Optional[int] = None,
         source_label: Optional[str] = None,
+        airport: Optional[str] = None,
+        frequency_type: Optional[str] = None,
+        candidate_callsigns: Optional[list] = None,
     ) -> dict:
         """Start a session. Raises ValueError if one is already running."""
         with self._lock:
@@ -130,18 +143,41 @@ class TranscriptionSession:
             self.source_label = label
 
         # Build the pipeline with the shared, pre-loaded transcriber.
+        airport = (airport or "").strip() or None
+        pipe_kwargs = dict(
+            stream_url=resolved_url,  # type: ignore[arg-type]
+            simulate_file=simulate,
+            fast_simulate=fast_simulate,
+            feed_config=Path(feed_config) if (feed_config and not simulate) else None,
+            feed_key=feed_key if not simulate else None,
+            on_record=self._on_record,
+            on_status=self._on_status,
+            on_audio=self.audio.publish,
+        )
         try:
             transcriber = self.engine.get_transcriber()
-            pipeline = LiveATCPipeline(
-                stream_url=resolved_url,  # type: ignore[arg-type]
-                simulate_file=simulate,
-                fast_simulate=fast_simulate,
-                feed_config=Path(feed_config) if (feed_config and not simulate) else None,
-                feed_key=feed_key if not simulate else None,
-                transcriber=transcriber,
-                on_record=self._on_record,
-                on_status=self._on_status,
-            )
+            try:
+                pipeline = LiveATCPipeline(
+                    transcriber=transcriber,
+                    airport=airport if not simulate else None,
+                    frequency_type=frequency_type or "unknown",
+                    candidate_callsigns=candidate_callsigns or None,
+                    **pipe_kwargs,
+                )
+                if airport and not simulate:
+                    with self._lock:
+                        self.detail = (
+                            f"Using {airport} {frequency_type or 'unknown'} airport context."
+                        )
+            except AirportContextError as exc:
+                # Unknown/ambiguous airport must NOT kill the session — transcribe
+                # with generic context and tell the user why.
+                with self._lock:
+                    self.detail = (
+                        f"Airport '{airport}' context unavailable ({exc}); "
+                        "using generic context."
+                    )
+                pipeline = LiveATCPipeline(transcriber=transcriber, **pipe_kwargs)
         except Exception as exc:
             self._fail(f"Failed to start pipeline: {exc}")
             raise
@@ -168,6 +204,7 @@ class TranscriptionSession:
         thread = self._thread
         if thread is not None:
             thread.join(timeout=10)
+        self.audio.close()  # end any browser audio streams for this run
         with self._lock:
             if self.status != ERROR:
                 self.status = STOPPED
@@ -185,6 +222,7 @@ class TranscriptionSession:
                     self.status = STOPPED
                     self.detail = "Stream ended."
                     self.stopped_at = time.time()
+            self.audio.close()  # end browser audio when the stream ends on its own
         except Exception as exc:  # pragma: no cover - runtime stream failure
             self._fail(f"Pipeline error: {exc}")
 
@@ -218,6 +256,7 @@ class TranscriptionSession:
             self.error = message
             self.detail = message
             self.stopped_at = time.time()
+        self.audio.close()  # end any browser audio streams on failure
 
     # ----- read-side -------------------------------------------------------
 
@@ -228,6 +267,8 @@ class TranscriptionSession:
         self._transcribe_ms = []
         self._rtf = []
         self.error = None
+        # Evict any listeners attached to the previous run's audio.
+        self.audio.close()
 
     def _stats_locked(self) -> dict:
         def _summary(values: list[float]) -> Optional[dict]:

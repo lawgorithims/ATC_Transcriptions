@@ -91,6 +91,29 @@
           spellcheck="false"
         />
       </label>
+      <label class="field airport-field">
+        <span class="field-label" title="Loads local fixes, navaids and procedures into the prompt for far better accuracy">Airport context</span>
+        <input
+          id="airportInput"
+          type="text"
+          placeholder="auto · e.g. KDFW"
+          autocomplete="off"
+          spellcheck="false"
+        />
+      </label>
+      <label class="field freq-field">
+        <span class="field-label">Frequency</span>
+        <select id="freqType">
+          <option value="">auto</option>
+          <option value="approach">approach</option>
+          <option value="departure">departure</option>
+          <option value="tower">tower</option>
+          <option value="ground">ground</option>
+          <option value="clearance">clearance</option>
+          <option value="center">center</option>
+          <option value="ctaf">ctaf</option>
+        </select>
+      </label>
       <div class="buttons">
         <button id="startBtn" class="btn btn-primary">
           <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>
@@ -120,8 +143,20 @@
         <h2>Transcript</h2>
         <div class="card-head-right">
           <span class="source-label" id="sourceLabel">No stream running</span>
+          <div class="listen-group" style="display:flex;align-items:center;gap:8px;">
+            <button id="listenBtn" class="btn btn-small btn-ghost" type="button" disabled
+                    title="Listen to the live audio feed">
+              <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" style="width:14px;height:14px;">
+                <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3a4.5 4.5 0 00-2.5-4.03v8.05A4.5 4.5 0 0016.5 12z" />
+              </svg>
+              <span id="listenLabel">Listen</span>
+            </button>
+            <input id="volume" type="range" min="0" max="1" step="0.05" value="0.9"
+                   title="Volume" aria-label="Volume" style="width:84px;vertical-align:middle;" />
+          </div>
           <button id="clearBtn" class="btn btn-small btn-ghost">Clear</button>
         </div>
+        <audio id="player" preload="none" style="display:none"></audio>
       </div>
       <div class="transcript" id="transcript">
         <div class="empty-state" id="emptyState">

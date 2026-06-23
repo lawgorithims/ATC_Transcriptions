@@ -10,6 +10,8 @@
     deviceBadge: $("device-badge"),
     sourceSelect: $("sourceSelect"),
     urlInput: $("urlInput"),
+    airportInput: $("airportInput"),
+    freqType: $("freqType"),
     startBtn: $("startBtn"),
     stopBtn: $("stopBtn"),
     polBtn: $("polBtn"),
@@ -18,6 +20,10 @@
     transcript: $("transcript"),
     emptyState: $("emptyState"),
     sourceLabel: $("sourceLabel"),
+    listenBtn: $("listenBtn"),
+    listenLabel: $("listenLabel"),
+    volume: $("volume"),
+    player: $("player"),
     clearBtn: $("clearBtn"),
     statCount: $("statCount"),
     statCapture: $("statCapture"),
@@ -51,6 +57,11 @@
 
   let currentRunId = null;
   let lastStatus = null;
+  let listening = false;   // browser is playing the live audio relay
+  let wantAudio = false;   // user asked to hear this session (auto-resume across runs)
+  let sessionRunning = false;   // a transcription session is active (blocks model switch)
+  let lastModelStatus = null;   // most recent /api/model payload
+  let ctxTouched = false;  // user manually edited airport/frequency (stop auto-detect)
 
   // ---------- appearance: theme + system pane ----------
   const THEME_KEY = "atc-theme";
@@ -174,10 +185,11 @@
   function applySession(s) {
     if (!s) return;
 
-    // New run -> clear the board.
+    // New run -> clear the board, and (re)attach audio if the user wants to hear it.
     if (s.run_id != null && s.run_id !== currentRunId) {
       currentRunId = s.run_id;
       clearTranscript();
+      if (wantAudio) startListening();
     }
 
     const map = STREAM_STATE[s.status] || ["idle", s.status];
@@ -186,6 +198,12 @@
     const running = ["starting", "connecting", "live", "stopping"].includes(s.status);
     el.startBtn.disabled = running;
     el.stopBtn.disabled = !running;
+    el.listenBtn.disabled = !running;
+    if (!running && listening) stopListening();
+    if (running !== sessionRunning) {
+      sessionRunning = running;
+      refreshOverrideButtons();  // model switching is blocked while a session runs
+    }
 
     el.sourceLabel.textContent = s.source_label || "No stream running";
     el.sessionDetail.textContent = s.detail || "";
@@ -284,8 +302,31 @@
     return name ? MODEL_LABEL[name] || name : "—";
   }
 
+  // Override/re-benchmark buttons depend on BOTH the model state and whether a
+  // session is running (the model can't be hot-swapped mid-session, so the server
+  // returns 409). Compute their enabled state + the explanatory note in one place.
+  function refreshOverrideButtons() {
+    const m = lastModelStatus || {};
+    const busy = !!m.selecting;
+    const active = m.active_model;
+    const avail = m.available || {};
+    const block = busy || sessionRunning;
+    el.setUseTurbo.disabled = block || active === "turbo" || avail.turbo === false;
+    el.setUseSmall.disabled = block || active === "small" || avail.small === false;
+    el.setRebench.disabled = block;
+    if (el.modelWarningOverride) el.modelWarningOverride.disabled = sessionRunning;
+    el.setModelNote.textContent = sessionRunning
+      ? "Stop the running session to switch models — the model is in use while transcribing."
+      : busy
+      ? "Benchmarking the device on the larger model…"
+      : m.auto_downgraded
+      ? "Auto-selected the smaller model — this device is below the speed threshold."
+      : `Using the ${m.adaptive ? "benchmark-selected" : "configured"} model.`;
+  }
+
   function applyModelStatus(m) {
     if (!m) return;
+    lastModelStatus = m;
     const active = m.active_model;
     const busy = !!m.selecting;
 
@@ -312,18 +353,10 @@
     } else {
       el.setModelWarning.hidden = true;
     }
-    const avail = m.available || {};
-    el.setUseTurbo.disabled = busy || active === "turbo" || avail.turbo === false;
-    el.setUseSmall.disabled = busy || active === "small" || avail.small === false;
-    el.setRebench.disabled = busy;
     if (document.activeElement !== el.setThreshold && m.min_realtime_speed != null) {
       el.setThreshold.value = m.min_realtime_speed;
     }
-    el.setModelNote.textContent = busy
-      ? "Benchmarking the device on the larger model…"
-      : m.auto_downgraded
-      ? "Auto-selected the smaller model — this device is below the speed threshold."
-      : `Using the ${m.adaptive ? "benchmark-selected" : "configured"} model.`;
+    refreshOverrideButtons();
 
     if (el.sysModel) el.sysModel.textContent = busy ? "benchmarking…" : modelLabel(active);
 
@@ -437,7 +470,42 @@
   function syncSourceFields() {
     const isCustom = el.sourceSelect.value === "custom";
     el.urlInput.disabled = !isCustom;
+    el.airportInput.disabled = !isCustom;
+    el.freqType.disabled = !isCustom;
     if (isCustom) el.urlInput.focus();
+  }
+
+  // Best-effort airport + frequency-type detection from a LiveATC link/mount,
+  // e.g. ".../hlisten.php?icao=kdfw&mount=kdfw1_app_fin_17c" -> KDFW, approach.
+  function detectContext(url) {
+    let icao = "", freq = "";
+    url = url || "";
+    const icaoQ = url.match(/[?&]icao=([a-z]{3,4})\b/i);
+    let mount = "";
+    const mountQ = url.match(/[?&]mount=([a-z0-9_]+)/i);
+    if (mountQ) mount = mountQ[1];
+    else mount = (url.split("?")[0].split("/").filter(Boolean).pop() || "");
+    if (icaoQ) icao = icaoQ[1].toUpperCase();
+    else {
+      const lead = (mount.match(/^([a-z]{3,4})/i) || [])[1];
+      if (lead) icao = lead.toUpperCase();
+    }
+    const m = mount.toLowerCase();
+    if (/(^|_)(app|appr|fin|final)/.test(m)) freq = "approach";
+    else if (/(^|_)dep/.test(m)) freq = "departure";
+    else if (/(^|_)(twr|tower)/.test(m)) freq = "tower";
+    else if (/(^|_)(gnd|ground)/.test(m)) freq = "ground";
+    else if (/(^|_)(del|clnc|clr|cd)/.test(m)) freq = "clearance";
+    else if (/(^|_)(ctr|cent)/.test(m)) freq = "center";
+    else if (/(^|_)(ctaf|unicom)/.test(m)) freq = "ctaf";
+    return { icao, freq };
+  }
+
+  function autofillContext() {
+    if (ctxTouched) return;  // respect manual edits
+    const { icao, freq } = detectContext(el.urlInput.value.trim());
+    el.airportInput.value = icao;
+    el.freqType.value = freq;
   }
 
   // ---------- start / stop ----------
@@ -454,6 +522,10 @@
         return;
       }
       body.stream_url = url;
+      const ap = el.airportInput.value.trim();
+      if (ap) body.airport = ap;
+      const ft = el.freqType.value;
+      if (ft) body.frequency_type = ft;
     } else if (val.startsWith("feed:")) {
       const opt = el.sourceSelect.selectedOptions[0];
       body.feed_config = opt.dataset.feedConfig;
@@ -467,6 +539,9 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
+      // Auto-attach audio for this session (applySession starts it on the new run).
+      // This runs in the Start click's gesture, so browsers allow playback.
+      wantAudio = true;
       applySession(snap);
     } catch (e) {
       flash(el.sessionDetail, e.message);
@@ -490,6 +565,49 @@
     setTimeout(() => node.classList.remove("warn"), 4000);
   }
 
+  // ---------- live audio relay ----------
+  function setListenUI(on) {
+    listening = on;
+    if (!el.listenBtn) return;
+    el.listenLabel.textContent = on ? "Listening" : "Listen";
+    el.listenBtn.classList.toggle("btn-primary", on);
+    el.listenBtn.classList.toggle("btn-ghost", !on);
+  }
+
+  function startListening() {
+    if (!el.player) return;
+    // Cache-bust + tag the run so we always attach to the current stream.
+    el.player.src = `/api/session/audio?run=${currentRunId || 0}&t=${Date.now()}`;
+    el.player.volume = parseFloat(el.volume.value || "0.9");
+    setListenUI(true);
+    const p = el.player.play();
+    if (p && p.catch) {
+      p.catch(() => {
+        // Autoplay blocked (e.g. Safari without a direct gesture) or not ready yet.
+        stopListening();
+        flash(el.sessionDetail, "Press Listen to enable audio.");
+      });
+    }
+  }
+
+  function stopListening() {
+    if (!el.player) return;
+    try { el.player.pause(); } catch (_) {}
+    el.player.removeAttribute("src");
+    try { el.player.load(); } catch (_) {}  // drop the server connection
+    setListenUI(false);
+  }
+
+  function toggleListen() {
+    if (listening) {
+      wantAudio = false;
+      stopListening();
+    } else {
+      wantAudio = true;
+      startListening();
+    }
+  }
+
   // ---------- websocket ----------
   let ws = null;
   let reconnectTimer = null;
@@ -501,6 +619,9 @@
     ws.onopen = () => {
       setPill(el.pillHandshake, "ok", "Handshake");
       el.connState.textContent = "connected";
+      // Refresh model status so the badge reflects the host's current choice
+      // even if it changed while we were disconnected (e.g. a server restart).
+      fetchModelStatus();
     };
     ws.onmessage = (ev) => {
       let msg;
@@ -531,11 +652,21 @@
     el.sourceSelect.addEventListener("change", syncSourceFields);
     el.startBtn.addEventListener("click", startSession);
     el.stopBtn.addEventListener("click", stopSession);
+    el.listenBtn.addEventListener("click", toggleListen);
+    el.volume.addEventListener("input", () => {
+      if (el.player) el.player.volume = parseFloat(el.volume.value);
+    });
+    el.player.addEventListener("ended", () => setListenUI(false));
+    el.player.addEventListener("error", () => { if (listening) stopListening(); });
     el.polBtn.addEventListener("click", () => runProofOfLife(true));
     el.clearBtn.addEventListener("click", clearTranscript);
     el.urlInput.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !el.startBtn.disabled) startSession();
     });
+    // Auto-detect airport + frequency from the pasted link (until the user edits them).
+    el.urlInput.addEventListener("input", autofillContext);
+    el.airportInput.addEventListener("input", () => { ctxTouched = true; });
+    el.freqType.addEventListener("change", () => { ctxTouched = true; });
 
     // model + settings
     el.settingsToggle.addEventListener("click", openSettings);

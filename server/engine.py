@@ -32,13 +32,15 @@ def ensure_ffmpeg_on_path() -> bool:
     """
     Make ffmpeg findable even if it was just installed and the shell PATH is stale.
 
-    winget/choco install ffmpeg but tell you to "restart your shell" before the
-    updated PATH takes effect — long-running or inherited processes never see it.
-    If ffmpeg isn't already resolvable, probe the standard install locations and
-    prepend the first hit to this process's PATH.
+    Package managers install ffmpeg but tell you to "restart your shell" before
+    the updated PATH takes effect — long-running or inherited processes never see
+    it. This bites two ways: winget/choco on Windows, and Homebrew on macOS when
+    the server runs from a non-login shell (e.g. `nohup`, a service, or SSH) that
+    never sourced `brew shellenv`, so /opt/homebrew/bin is absent from PATH.
 
-    No-op when ffmpeg is already on PATH (e.g. Homebrew on macOS / Linux).
-    Returns True if ffmpeg is resolvable afterward.
+    If ffmpeg isn't already resolvable, probe the standard install locations and
+    prepend the first hit to this process's PATH. No-op when ffmpeg is already on
+    PATH. Returns True if ffmpeg is resolvable afterward.
     """
     if shutil.which("ffmpeg"):
         return True
@@ -59,6 +61,10 @@ def ensure_ffmpeg_on_path() -> bool:
     candidates += [
         r"C:\ProgramData\chocolatey\bin\ffmpeg.exe",
         r"C:\ffmpeg\bin\ffmpeg.exe",
+        "/opt/homebrew/bin/ffmpeg",  # Homebrew on Apple Silicon
+        "/usr/local/bin/ffmpeg",     # Homebrew on Intel macOS / common Linux
+        "/opt/local/bin/ffmpeg",     # MacPorts
+        "/usr/bin/ffmpeg",           # distro package
     ]
 
     for candidate in candidates:
@@ -299,18 +305,53 @@ class TranscriberEngine:
             "all_alive": bool(scored) and all(s["ok"] for s in scored),
         }
 
+    def _measure_speed(self, transcriber, warmup: int = 1, passes: int = 2) -> float:
+        """Real-time speed (audio_seconds / processing_seconds) on a clip of
+        REALISTIC length.
+
+        Whisper has a large fixed per-call cost — it always encodes a 30 s window
+        — so timing short snippets individually badly understates throughput: a
+        2.8 s clip and a 14 s clip take almost the same wall time, which makes even
+        fast hardware look like it can barely keep up (~1x) when it is really ~2x+.
+        We concatenate the bundled snippets into one realistic-length transmission
+        and time that, after a warmup pass that absorbs first-call kernel/graph
+        compilation on MPS/CUDA. Genuinely slow devices still fall below the
+        threshold; capable ones are no longer penalized for the fixed cost.
+        """
+        import numpy as np
+
+        clips = self._load_snippets(1000)  # all bundled snippets
+        if not clips:
+            return 0.0
+        audio = np.concatenate([c[0] for c in clips])
+        audio = audio[: 25 * 16000]  # cap ~25 s (one Whisper window) to stay bounded
+        dur = len(audio) / 16000.0
+        if dur <= 0:
+            return 0.0
+        for _ in range(max(1, warmup)):
+            transcriber.transcribe(audio)  # discard: compiles kernels, warms caches
+        best = None
+        for _ in range(max(1, passes)):
+            t0 = time.perf_counter()
+            transcriber.transcribe(audio)
+            secs = time.perf_counter() - t0
+            best = secs if best is None else min(best, secs)
+        return (dur / best) if best and best > 0 else 0.0
+
     def benchmark(self, name: Optional[str] = None, warmup: int = 1, max_snippets: int = 3) -> dict:
-        """Load `name` (or active/default), warm up, then time snippets -> realtime speed."""
+        """Load `name` (or active/default), warm up, then measure real-time speed
+        on a representative-length clip (see _measure_speed for why)."""
         with self._lock:
             target = name or self.active_model or self.default_model
             transcriber = self.load_model(target)
-            timing = self._time_snippets(transcriber, self._load_snippets(max_snippets), warmup)
-            timing["model"] = self.active_model
-            timing["device"] = self.resolved_device()
-            timing["load_seconds"] = (
-                round(self._load_seconds, 2) if self._load_seconds is not None else None
-            )
-            return timing
+            return {
+                "realtime_speed": round(self._measure_speed(transcriber, warmup=warmup), 3),
+                "model": self.active_model,
+                "device": self.resolved_device(),
+                "load_seconds": (
+                    round(self._load_seconds, 2) if self._load_seconds is not None else None
+                ),
+            }
 
     # ----- adaptive selection ---------------------------------------------
 

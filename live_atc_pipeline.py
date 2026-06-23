@@ -138,6 +138,7 @@ class LiveATCPipeline:
         transcriber: Optional[ATCTranscriber] = None,
         on_record: Optional[Callable[[LatencyRecord], None]] = None,
         on_status: Optional[Callable[[str], None]] = None,
+        on_audio: Optional[Callable] = None,
     ):
         self.stream_url = stream_url
         self.simulate_file = simulate_file
@@ -145,6 +146,8 @@ class LiveATCPipeline:
         # The CLI leaves these unset and keeps its print-based behavior.
         self.on_record = on_record
         self.on_status_cb = on_status
+        # Optional tee of the decoded PCM for the web server's browser audio relay.
+        self.on_audio = on_audio
         self.stats = LatencyStats()
         self.records: List[LatencyRecord] = []
         self._result_queue: queue.Queue = queue.Queue()
@@ -190,13 +193,17 @@ class LiveATCPipeline:
 
         if simulate_file:
             self.capture = FileSimulator(
-                capture_url, chunk_duration_s=0.5, realtime=not fast_simulate
+                capture_url,
+                chunk_duration_s=0.5,
+                realtime=not fast_simulate,
+                on_audio=on_audio,
             )  # type: ignore[assignment]
         else:
             self.capture = StreamCapture(
                 capture_url,
                 chunk_duration_s=0.5,
                 on_status=self._status,
+                on_audio=on_audio,
             )
         self.segmenter = VADSegmenter(
             aggressiveness=vad_aggressiveness,
