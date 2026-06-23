@@ -70,3 +70,30 @@ live_pipeline:
   log_context_snapshots: false
 
 
+
+# Optional FINAL post-ASR correction layer (atc_corrector.py). OFF by default —
+# when disabled this changes nothing (the pipeline builds a no-op corrector). It
+# never rewrites silently: every change is recorded (raw + corrected + edits) and
+# shown in the web console. `text` always stays the raw Whisper output.
+correction:
+
+  enabled: false                 # master switch for the whole layer
+
+  # Deterministic vocab/near-miss matcher (stdlib, instant, safe, runs anywhere).
+  # Fixes near-miss spellings of known terms (e.g. "maverik" -> "Maverick").
+  deterministic: true
+
+  threshold: 0.84                # 0..1 char-similarity cutoff (higher = stricter)
+
+  # Optional local LLM via an on-box Ollama/llama.cpp server (Option A: a small
+  # compute box in the aircraft, iPad as thin client). OFF until you run a model.
+  # Handles acoustic substitutions the dictionary can't. Degrades to "no change"
+  # if the server is unreachable, so it can never break the live feed.
+  llm:
+    enabled: false
+    backend: ollama
+    url: "http://localhost:11434"
+    model: "qwen2.5:3b-instruct"
+    timeout_s: 8
+
+

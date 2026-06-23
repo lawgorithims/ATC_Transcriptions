@@ -177,6 +177,28 @@ class AirportModeContext:
     def history(self) -> List[str]:
         return list(self._history)
 
+    def vocab(self) -> List[str]:
+        """Canonical local terms for the optional corrector.
+
+        Pulls the same proper nouns the prompt is built from — facility names,
+        fixes/navaids, procedures, runways, candidate callsigns — out of the most
+        recent context snapshot. The deterministic corrector matches transcript
+        tokens against these, so single-token proper nouns (fixes, navaids) are
+        where it pays off.
+        """
+        result = self.last_result or {}
+        snap = result.get("context_snapshot", {}) if isinstance(result, dict) else {}
+        if not isinstance(snap, dict):
+            return []
+        terms: List[str] = []
+        terms.extend(str(x) for x in (snap.get("facility_names") or []) if x)
+        terms.extend(_spoken_list(snap.get("fixes")))
+        terms.extend(_spoken_list(snap.get("procedures")))
+        terms.extend(_spoken_list(snap.get("runways")))
+        for c in snap.get("candidate_callsigns") or []:
+            terms.extend(c.get("spoken") or [] if isinstance(c, dict) else [])
+        return list(dict.fromkeys(t for t in terms if t))  # de-dupe, preserve order
+
     def banner_lines(self) -> List[str]:
         """Short human-readable lines for the pipeline startup banner."""
         result = self.last_result or {}

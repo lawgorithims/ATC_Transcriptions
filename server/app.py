@@ -136,7 +136,19 @@ def create_app(model_path: str | None = None, device: str = "auto") -> FastAPI:
     ensure_ffmpeg_on_path()
 
     engine = _build_engine(model_path, device)
-    session = TranscriptionSession(engine)
+
+    # Optional post-ASR correction layer (off by default; see config.yaml
+    # `correction:`). The session passes it to the pipeline, which builds a no-op
+    # corrector when disabled — so this is a true no-op until turned on.
+    correction_cfg: dict = {}
+    try:
+        import yaml
+
+        _cfg = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8")) or {}
+        correction_cfg = _cfg.get("correction") or {}
+    except Exception:
+        correction_cfg = {}
+    session = TranscriptionSession(engine, correction_config=correction_cfg)
 
     app = FastAPI(title="ATC_Transcribe Web UI", version="1.0")
     app.add_middleware(

@@ -29,6 +29,7 @@ class ATCContext:
         self.max_prompt_chars = max_prompt_chars
         self._history: Deque[str] = deque(maxlen=max_history)
         self._static_prefix = ""
+        self._vocab: List[str] = []  # canonical terms for the optional corrector
         if self.feed_config and self.feed_key:
             self._static_prefix = self._build_static_prefix()
 
@@ -42,6 +43,9 @@ class ATCContext:
         airport = cfg.get("airport_name") or cfg.get("airport_code") or ""
         runways = cfg.get("runways") or []
         fixes = cfg.get("fixes") or cfg.get("waypoints") or []
+
+        # Canonical terms the optional corrector matches transcript tokens against.
+        self._vocab = [str(x) for x in (list(runways) + list(fixes)) if x]
 
         parts = [
             f"Air traffic control radio transcript from {label}.",
@@ -86,6 +90,10 @@ class ATCContext:
         if len(prompt) > self.max_prompt_chars:
             prompt = prompt[-self.max_prompt_chars :]
         return prompt
+
+    def vocab(self) -> List[str]:
+        """Canonical local terms (runways, fixes) for the optional corrector."""
+        return list(self._vocab)
 
     def reload(self, feed_config: Path, feed_key: str) -> None:
         self.feed_config = Path(feed_config)

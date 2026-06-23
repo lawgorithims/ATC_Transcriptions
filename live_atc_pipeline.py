@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Callable, List, Optional
 
 from atc_context import ATCContext
+from atc_corrector import build_corrector
 from atc_stream import (
     AsyncSegmentProducer,
     FileSimulator,
@@ -46,7 +47,7 @@ from atc_stream import (
     VADSegmenter,
     resolve_stream_url,
 )
-from atc_transcriber import ATCTranscriber
+from atc_transcriber import ATCTranscriber, _compression_ratio
 
 try:
     from dotenv import load_dotenv
@@ -65,6 +66,16 @@ class LatencyRecord:
     capture_to_text_ms: float
     transcribe_ms: float
     real_time_factor: float
+    # The exact prompt injected into Whisper for THIS segment (static context +
+    # rolling "Recent:" history). Surfaced to the web console so the operator can
+    # see what conditioned each transcript. Empty when no context is configured.
+    prompt: str = ""
+    # Optional final-layer correction (off by default). `corrected` is the cleaned
+    # text ("" when the corrector is disabled or made no change); `corrections`
+    # lists the exact edits (from -> to + reason/confidence/backend) so every
+    # change is visible. `text` always stays the raw Whisper output.
+    corrected: str = ""
+    corrections: list = field(default_factory=list)
     timestamp: str = field(default_factory=lambda: datetime.now().strftime("%H:%M:%S"))
 
 
@@ -139,6 +150,7 @@ class LiveATCPipeline:
         on_record: Optional[Callable[[LatencyRecord], None]] = None,
         on_status: Optional[Callable[[str], None]] = None,
         on_audio: Optional[Callable] = None,
+        correction_config: Optional[dict] = None,
     ):
         self.stream_url = stream_url
         self.simulate_file = simulate_file
@@ -179,6 +191,11 @@ class LiveATCPipeline:
                 feed_key=feed_key,
                 max_history=context_history,
             )
+
+        # Optional FINAL correction layer (off unless correction_config.enabled).
+        # build_corrector returns a no-op NullCorrector when disabled, so this is
+        # zero-cost and changes nothing until explicitly turned on in config.
+        self.corrector = build_corrector(correction_config, self.context)
 
         # Reuse a pre-loaded transcriber when one is supplied (the web server
         # loads the ~1 GB model once and shares it across proof-of-life + sessions).
@@ -245,7 +262,13 @@ class LiveATCPipeline:
         if not text:
             return None
 
-        self.context.update(text)
+        # Only feed a clean decode back into the rolling prompt history. A
+        # repetitive decode that slipped past the transcriber's guard must NOT
+        # become next segment's "Recent:" context, or it biases the model to
+        # repeat it — the self-reinforcing loop the operator was seeing.
+        threshold = getattr(self.transcriber, "compression_ratio_threshold", 2.4)
+        if _compression_ratio(text) <= threshold:
+            self.context.update(text)
 
         audio_ms = len(segment.audio) / 16000.0 * 1000.0
         transcribe_ms = (t1 - t0) * 1000.0
@@ -255,6 +278,13 @@ class LiveATCPipeline:
         capture_to_text_ms = (time.time() - segment.finalized_wall_time) * 1000.0
         rtf = transcribe_ms / audio_ms if audio_ms > 0 else 0.0
 
+        # Final, output-only correction layer. NullCorrector when disabled, so this
+        # is a no-op by default; it never touches the ASR prompt history updated
+        # above. `text` stays the raw Whisper output; corrected/edits ride along.
+        result = self.corrector.correct(text, history=self.context.history)
+        corrected = result.corrected if result.changed else ""
+        corrections = result.edits if result.changed else []
+
         return LatencyRecord(
             text=text,
             stream_start_s=round(segment.stream_start_s, 1),
@@ -263,6 +293,9 @@ class LiveATCPipeline:
             capture_to_text_ms=round(capture_to_text_ms, 1),
             transcribe_ms=round(transcribe_ms, 1),
             real_time_factor=round(rtf, 3),
+            prompt=prompt or "",
+            corrected=corrected,
+            corrections=corrections,
         )
 
     def _print_transcription(self, record: LatencyRecord) -> None:
@@ -455,6 +488,17 @@ def _load_pipeline_config(config_path: Path) -> dict:
     return {}
 
 
+def _load_correction_config(config_path: Path) -> dict:
+    """Top-level `correction:` block (sibling of live_pipeline). Off by default."""
+    import yaml
+
+    if config_path.exists():
+        with open(config_path, "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        return cfg.get("correction", {}) or {}
+    return {}
+
+
 def main():
     # Make CLI output (including --help, which contains a "→") safe under the
     # Windows console / piped-stdout default encoding (cp1252).
@@ -594,6 +638,7 @@ def main():
     args = parser.parse_args()
 
     pipe_cfg = _load_pipeline_config(Path(args.config))
+    correction_cfg = _load_correction_config(Path(args.config))
 
     if args.simulate_file:
         stream_url = args.simulate_file
@@ -644,6 +689,7 @@ def main():
             log_context_snapshots=args.log_context_snapshots
             or pipe_cfg.get("log_context_snapshots", False),
             max_prompt_words=pipe_cfg.get("max_prompt_words", 600),
+            correction_config=correction_cfg,
         )
     except Exception as exc:  # surface airport-context errors with a friendly message
         try:
