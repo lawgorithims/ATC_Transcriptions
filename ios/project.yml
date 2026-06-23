@@ -91,3 +91,9 @@ schemes:
       config: Debug
       targets:
         - ATCTranscribeTests
+      # Populated from the shell at `xcodegen generate` time; empty (test skips) when
+      # unset. Set them to run the on-device transcription smoke test — see
+      # ATCTranscriberSmokeTests and Tools/smoke (the M4 runner).
+      environmentVariables:
+        ATC_MODEL_DIR: ${ATC_MODEL_DIR}
+        ATC_AUDIO_DIR: ${ATC_AUDIO_DIR}

@@ -6,12 +6,13 @@ app runs the **entire pipeline on the device** — capture → VAD → preproces
 airport-context prompt → fine-tuned Whisper (CoreML/WhisperKit) → optional correction
 — with no server. Universal: iPhone + iPad (iPad-first cockpit/EFB layout).
 
-> **Status: the foundation builds and is tested.** The scaffold, deterministic core
-> (context + corrector), VAD segmenter, and the WhisperKit transcriber compile as an
-> iOS app, and the **20-test XCTest suite passes on the iOS Simulator**. Both
-> fine-tuned models are converted to CoreML and verified on the Neural Engine.
-> Remaining: audio preprocessing, engine/session, live audio input, and the SwiftUI
-> console — see the table below.
+> **Status: the foundation builds, is tested, and the model runs on-device.** The
+> scaffold, deterministic core (context + corrector), and VAD segmenter compile and
+> pass a 20-test XCTest suite on the iOS Simulator, and `ATCTranscriber` loads the
+> converted CoreML model and **transcribes the diagnostic ATC clips correctly**. Both
+> fine-tuned models are converted to CoreML (verified on the Neural Engine). Remaining:
+> audio preprocessing, engine/session, live audio input, and the SwiftUI console — see
+> the table below.
 
 This folder is self-contained and intended to split out into its own repository.
 
@@ -36,7 +37,7 @@ bash Tools/setup.sh --all    # everything in one shot
 | `atc_context.py` | `Core/ATCContext.swift` | ✅ builds + tests pass |
 | `Correction`, `SpeechSegment`, `airport_configs/*.json` | `Models/*.swift` + `Resources/airport_configs/` | ✅ builds + tests pass |
 | `atc_stream.py` (VAD/segmentation) | `Audio/VADSegmenter.swift` | ✅ builds + tests pass (energy path) |
-| `atc_transcriber.py` (Whisper) | `Transcription/ATCTranscriber.swift` (WhisperKit) | ✅ compiles vs WhisperKit v1; runtime test pending |
+| `atc_transcriber.py` (Whisper) | `Transcription/ATCTranscriber.swift` (WhisperKit) | ✅ runs on-device — transcribes the diagnostic clips |
 | `audio_preprocessing.py` | `Audio/AudioPreprocessor.swift` (Accelerate/vDSP) | ⏳ todo |
 | `server/engine.py`, `server/session.py` | `Engine/*.swift` | ⏳ todo |
 | `diagnostics/diagnostic.py` (proof-of-life) | `Engine/ProofOfLife.swift` | ⏳ todo |
