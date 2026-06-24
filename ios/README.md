@@ -1,6 +1,6 @@
 # ATC_Transcribe — iOS / iPadOS app (native, on-device)
 
-A native Swift port of the [ATC_Transcribe](../README.md) browser console. Unlike
+A native Swift port of the [ATC_Transcribe](../python-legacy/README.md) browser console. Unlike
 the web console (a thin client that talks to a Python host running the model), this
 app runs the **entire pipeline on the device** — capture → VAD → preprocessing →
 airport-context prompt → fine-tuned Whisper (CoreML/WhisperKit) → optional correction
