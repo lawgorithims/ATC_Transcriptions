@@ -26,6 +26,45 @@ airport-context prompt → fine-tuned Whisper (CoreML/WhisperKit) → optional c
 
 This folder is self-contained and intended to split out into its own repository.
 
+## Architecture (on-device pipeline)
+
+Every stage from audio capture to corrected text runs **on the device** — the web
+console's split design (a browser talking to a Python host over WebSocket) collapses
+into a single app. Audio flows top to bottom; the Swift type is on the left, its
+`ATCTranscribe/` group in parentheses:
+
+```
+   ┌─────────────────────────────────────────────────────────────┐
+   │  iPhone / iPad   —   capture → text, entirely on-device       │
+   └─────────────────────────────────────────────────────────────┘
+
+   AudioSource  (Audio/)             LiveATC stream · mic · USB · replay
+        │                            StreamAudioSource·DeviceAudioSource·Array…
+        ▼                            → 16 kHz mono PCM
+   VADSegmenter  (Audio/)            split into speech segments (WebRTC / energy)
+        │
+        ▼
+   AudioPreprocessor  (Audio/)       band-pass + STFT spectral gate + normalize
+        │
+        ▼
+   ATCContext  (Core/)               airport prompt · rolling history · vocab()
+        │
+        ▼
+   ATCTranscriber  (Transcription/)  fine-tuned Whisper (WhisperKit / CoreML)
+        │                            → Apple Neural Engine · turbo ⇄ small (adaptive)
+        ▼                            → raw transcript
+   Corrector chain  (Core/)          DeterministicCorrector → FoundationModelsCorrector
+        │                            optional · Correction { raw, corrected, edits[] }
+        ▼
+   LivePipeline  (actor, Engine/)    drives the loop · builds TranscriptRecord + latency
+        │
+        ▼
+   TranscriptionSession → ConsoleView   (UI/ · SwiftUI: live records, themes, controls)
+```
+
+The same `LivePipeline` / `Corrector` types run in the headless `ATCKitProbe` (native
+ANE) and in the app, so the neural path is identical whether it's being tested or shipped.
+
 ## Quick start (fresh macOS / Apple Silicon)
 
 Requires **full Xcode** installed (App Store / xip — too large to script). Then:
@@ -92,6 +131,90 @@ runway/waypoint names, and ICAO phraseology:
 Behavior parity with the Python is cross-checked two ways: `Tools/parity_check.py`
 runs the real Python modules against the exact cases the Swift XCTests assert, and the
 XCTests then run those cases on-device in the Simulator.
+
+## Correction pipeline
+
+The correction layer is the **final, output-only** stage: it runs on Whisper's decoded
+text and never touches the rolling prompt history, so the raw transcript is always the
+source of truth. It is **off by default** and **transparent** — every run returns a
+`Correction { raw, corrected, edits[] }` and the UI shows each `from → to` edit inline
+with the backend that made it. Both rules are ported verbatim from `atc_corrector.py`.
+
+### Current structure
+
+`buildCorrector(CorrectionConfig)` composes the enabled stages into a `ChainCorrector`
+that threads the text through each stage and accumulates the edits:
+
+```
+   raw Whisper transcript
+        │
+        ▼   buildCorrector(config) → ChainCorrector (off → NullCorrector, a no-op)
+        │
+        ▼   stage 1 — DeterministicCorrector        stdlib · instant · always-on
+   ┌──────────────────────────────────────────────────────────────────────────┐
+   │  • spoken numbers → digits      "niner" → 9 · "nine seventy five" → 975    │
+   │  • char near-miss vs vocab()    "maverik" → Maverick   (difflib ratio)     │
+   │  • phonetic fallback            "golf" → Gulf          (vowel-confusion)    │
+   └──────────────────────────────────────────────────────────────────────────┘
+        │   text threaded forward, edits accumulated
+        ▼   stage 2 — FoundationModelsCorrector     on-device LLM · OPTIONAL
+   ┌──────────────────────────────────────────────────────────────────────────┐
+   │  Apple Foundation Models (the model behind Apple Intelligence) — fixes     │
+   │  what the dictionary can't, via guided generation into {corrected,edits}:  │
+   │   • mis-heard callsigns · runways · taxiways · waypoints · navaids         │
+   │   • standard ICAO phraseology        • accidental repeats                  │
+   │  graceful-degrade: any failure (model off/slow/guardrail) → text unchanged │
+   └──────────────────────────────────────────────────────────────────────────┘
+        │
+        ▼
+   Correction { raw, corrected, edits[] : from → to · reason · backend · conf }
+        raw is ALWAYS preserved · UI shows `corrected` + every edit inline
+```
+
+| Stage | Type | Needs | Runs |
+| --- | --- | --- | --- |
+| Deterministic | `DeterministicCorrector` (stdlib) | nothing | any device, instant |
+| LLM | `FoundationModelsCorrector` | Apple Intelligence (iOS 26 / A17 Pro+/M-series) | when enabled **and** available; else degrades to deterministic-only |
+
+The stages share one `Corrector` protocol, so the LLM backend is swappable (see roadmap).
+Toggle both from **Settings → Transcript correction**, or launch with `--correct` /
+`--llm` for headless runs.
+
+### Roadmap
+
+```
+   ┌───────────────┐      ┌───────────────┐      ┌───────────────┐
+   │  NOW · shipped│ ───▶ │   NEAR-TERM   │ ───▶ │     LATER     │
+   └───────────────┘      └───────────────┘      └───────────────┘
+```
+
+**Now (shipped).** Deterministic stage (numbers, char near-miss, phonetic); Foundation
+Models LLM stage (guided generation, graceful-degrade); chain + config toggle; edits
+shown inline. Builds against the iOS 26 / macOS 26 SDK, 32 async unit tests pass, and the
+deterministic stage is verified correcting **live in-app**.
+
+**Near-term.**
+- **Multi-word / n-gram vocab matching** — today's deterministic match is single-token;
+  callsigns and fixes are often multi-word ("Lone Star", "three four left").
+- **Altitude / QNH-aware number assembly** — "nine thousand five hundred" → 9500, flight
+  levels; today "hundred/thousand" terminate a run to avoid a wrong scaled number.
+- **Confidence gating on LLM edits** — apply only high-confidence rewrites; surface the
+  rest as suggestions the operator accepts or rejects (the raw text already rides along).
+- **Foundation Models session prewarm + reuse** across a burst to cut first-token latency.
+- **On-device validation** on a real Apple-Intelligence device (latency + quality numbers)
+  — the one piece that can't be checked on the headless M4 (Apple Intelligence is off there).
+
+**Later.**
+- **Alternate LLM backends behind the same `Corrector` protocol** — an embedded MLX /
+  llama.cpp model for devices without Apple Intelligence; an opt-in cloud LLM for
+  ground-side review. The protocol + `Correction` contract already make this a drop-in.
+- **ATC-specialized adapter (LoRA)** on the on-device model for phraseology / callsigns.
+- **Operator-feedback loop** — accepted edits feed a local glossary that biases both the
+  Whisper prompt and the corrector vocab.
+- **Cross-transmission context** — resolve callsigns / runways consistently across a
+  session (track the active runway, known tail numbers).
+- **Structured intent extraction** — emit `{callsign, instruction, runway, altitude,
+  frequency}` for EFB integration, not just corrected text.
 
 ## Testing strategy — Simulator vs. native ANE
 
