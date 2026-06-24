@@ -148,7 +148,9 @@ private func phoneticKey(_ norm: String) -> String {
     return String(out)
 }
 
-private func round2(_ x: Double) -> Double { (x * 100).rounded() / 100 }
+// Banker's rounding (round-half-to-even) to match Python's `round(score, 2)`, which the
+// reference uses to record edit confidence. Swift's default `.rounded()` is half-away-from-zero.
+private func round2(_ x: Double) -> Double { (x * 100).rounded(.toNearestOrEven) / 100 }
 
 // MARK: - Deterministic corrector
 

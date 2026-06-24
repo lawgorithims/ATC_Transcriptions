@@ -46,12 +46,19 @@ struct AudioPreprocessor {
 
     /// Per-bin dB-threshold spectral gate. Port of `apply_spectral_gating`: bins whose
     /// magnitude is below `thresholdDb` are attenuated by `suppressDb`; phase is kept.
+    ///
+    /// The Python uses `librosa.amplitude_to_db(magnitude)`, whose default `top_db=80`
+    /// floors every bin's dB at `(globalMaxDb - 80)` before the threshold compare. Omitting
+    /// that floor makes the gate over-suppress quiet bins on loud spectra (whose peak
+    /// exceeds `thresholdDb + 80`), diverging from the reference — so we replicate it here.
     func spectralGating(_ x: [Double]) -> [Double] {
         guard let stft = STFT(nFFT: 2048, hop: 512) else { return x }
         let thresholdDb = aggressiveRadio ? -35.0 : -40.0
         let suppressGain = pow(10.0, (aggressiveRadio ? -25.0 : -20.0) / 20.0)   // 10^(-suppressDb/20)
-        return stft.processGating(x) { mag in
-            let db = 20.0 * log10(Swift.max(1e-10, mag))
+        let amin = 1e-5   // librosa.amplitude_to_db default amin
+        return stft.processGating(x) { mag, maxMag in
+            let maxDb = 20.0 * log10(Swift.max(amin, maxMag))
+            let db = Swift.max(20.0 * log10(Swift.max(amin, mag)), maxDb - 80.0)   // top_db=80 floor
             return db > thresholdDb ? mag : mag * suppressGain
         }
     }

@@ -32,10 +32,11 @@ final class STFT {
         vDSP_DFT_DestroySetupD(inverse)
     }
 
-    /// Run the STFT, apply `gate` (magnitude → new magnitude) to every bin of every
-    /// frame (phase preserved by scaling real+imag), and overlap-add back to a signal
-    /// the same length as `x`.
-    func processGating(_ x: [Double], gate: (Double) -> Double) -> [Double] {
+    /// Run the STFT, apply `gate` to every bin of every frame (phase preserved by scaling
+    /// real+imag), and overlap-add back to a signal the same length as `x`. The gate
+    /// receives each bin's magnitude and the spectrogram's peak magnitude — the latter so a
+    /// gate can express librosa-style dB thresholds relative to the global maximum.
+    func processGating(_ x: [Double], gate: (_ mag: Double, _ maxMag: Double) -> Double) -> [Double] {
         let n = x.count
         guard n > 1 else { return x }
         let pad = nFFT / 2
@@ -55,6 +56,21 @@ final class STFT {
         var timeI = [Double](repeating: 0, count: nFFT)
         let invScale = 1.0 / Double(nFFT)
 
+        // First pass: peak magnitude across the whole spectrogram. librosa's
+        // amplitude_to_db (top_db=80) floors every bin's dB relative to this global max, so
+        // the gate needs it before any bin decision is made.
+        var maxMag = 0.0
+        var scan = 0
+        while scan + nFFT <= m {
+            for i in 0..<nFFT { inR[i] = padded[scan + i] * window[i] }
+            vDSP_DFT_ExecuteD(forward, inR, inI, &specR, &specI)
+            for k in 0..<nFFT {
+                let mag = (specR[k] * specR[k] + specI[k] * specI[k]).squareRoot()
+                if mag > maxMag { maxMag = mag }
+            }
+            scan += hop
+        }
+
         var start = 0
         while start + nFFT <= m {
             for i in 0..<nFFT { inR[i] = padded[start + i] * window[i] }
@@ -64,7 +80,7 @@ final class STFT {
                 if mag < 1e-12 {
                     recR[k] = 0; recI[k] = 0
                 } else {
-                    let s = gate(mag) / mag        // ≤ 1; scales magnitude, keeps phase
+                    let s = gate(mag, maxMag) / mag        // ≤ 1; scales magnitude, keeps phase
                     recR[k] = specR[k] * s; recI[k] = specI[k] * s
                 }
             }

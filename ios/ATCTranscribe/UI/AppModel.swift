@@ -156,8 +156,11 @@ final class AppModel: ObservableObject {
     // MARK: controls
 
     func start() {
-        guard liveMode, let session else {
+        guard liveMode else {           // no model → design/screenshot demo
             status = .live; detail = "Transcribing (demo)."; return
+        }
+        guard let session else {        // live build whose model failed to load
+            status = .error; detail = "Model unavailable — cannot start."; return
         }
         let src: AudioSource
         switch source {
@@ -189,8 +192,16 @@ final class AppModel: ObservableObject {
     }
 
     func clear() {
-        records = []
-        stats = LatencyStats()
+        // In live mode `records`/`stats` are driven by `session.$records`/`$stats` via
+        // `assign(to:)`, so clearing the local copies alone is reverted on the next
+        // transmission. Clear the session's source-of-truth instead (the binding then
+        // propagates the empty state); fall back to a local reset only in demo mode.
+        if let session {
+            session.clear()
+        } else {
+            records = []
+            stats = LatencyStats()
+        }
     }
 
     func runProofOfLife() {

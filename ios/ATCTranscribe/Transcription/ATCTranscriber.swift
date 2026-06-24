@@ -103,7 +103,10 @@ actor ATCTranscriber {
         guard !ctx.isEmpty, let tokenizer else { return nil }
         var ids = tokenizer.encode(text: " " + ctx)
             .filter { $0 < tokenizer.specialTokens.specialTokenBegin }
-        if ids.count > Self.maxPromptTokens { ids = Array(ids.suffix(Self.maxPromptTokens)) }
+        // Keep the LEADING tokens (the static facility prefix), matching the Python
+        // `prompt_ids[..., :MAX_PROMPT_TOKENS]`. Dropping the head (suffix) would discard
+        // the airport/runway/phraseology priming and keep only recent-history tokens.
+        if ids.count > Self.maxPromptTokens { ids = Array(ids.prefix(Self.maxPromptTokens)) }
         return ids.isEmpty ? nil : ids
     }
 

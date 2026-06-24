@@ -9,8 +9,25 @@ import AVFoundation
 ///
 /// (AVPlayer + MTAudioProcessingTap was tried first but doesn't work for live remote
 /// Icecast streams — AVURLAsset exposes no audio track — so we decode the stream ourselves.)
+///
+/// **Threading:** the parser/decoder state (streamID, decoder, resampler, packetBuffer,
+/// descPtr, packetCursor, …) and the continuation are AudioToolbox C objects and manually
+/// managed memory with no internal locking. ALL access is confined to one private serial
+/// queue: URLSession delivers its delegate callbacks there (via `callbackQueue`), and
+/// connect/reconnect/`stop` teardown are dispatched there too. That makes buffer frees and
+/// CoreAudio handle lifecycle mutually exclusive with in-flight parsing/decoding — without
+/// it, a `stop()` racing a delegate callback is a use-after-free.
 final class StreamAudioSource: NSObject, AudioSource, URLSessionDataDelegate {
     private let url: URL
+    /// Edge-server candidates for the mount (Python iterates `candidate_stream_urls`); a
+    /// reconnect rotates through these so one dead edge host doesn't strand the feed.
+    private let candidates: [URL]
+    private var candidateIndex = 0
+    /// Consecutive failed connects with no decoded audio (reset once audio flows). Used to
+    /// give up on a permanently unreachable feed instead of reconnecting forever.
+    private var connectAttempts = 0
+    private var decodedAnyAudio = false
+
     private var urlSession: URLSession?
     private var task: URLSessionDataTask?
     private var streamID: AudioFileStreamID?
@@ -18,6 +35,12 @@ final class StreamAudioSource: NSObject, AudioSource, URLSessionDataDelegate {
     private var resampler: AVAudioConverter?
     private var sourceFormat = AudioStreamBasicDescription()
     private var pcmFormat: AVAudioFormat?
+    private var stopped = false
+
+    /// Serial queue that owns all parser/decoder/continuation state (see the type doc).
+    private let workQueue = DispatchQueue(label: "net.atctranscribe.stream")
+    /// URLSession delegate queue, backed by `workQueue` so callbacks run serially with teardown.
+    private let callbackQueue = OperationQueue()
 
     fileprivate var continuation: AsyncStream<[Float]>.Continuation?
     fileprivate var chunkCount = 0
@@ -29,28 +52,44 @@ final class StreamAudioSource: NSObject, AudioSource, URLSessionDataDelegate {
 
     private let target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
 
-    init(url: URL) { self.url = url; super.init() }
+    init(url: URL) {
+        self.url = url
+        let expanded = StreamURLResolver.candidateURLs(url.absoluteString).compactMap { URL(string: $0) }
+        self.candidates = expanded.isEmpty ? [url] : expanded
+        super.init()
+        callbackQueue.underlyingQueue = workQueue
+        callbackQueue.maxConcurrentOperationCount = 1
+    }
 
     func makeStream() -> AsyncStream<[Float]> {
         AsyncStream { cont in
-            self.continuation = cont
-            AudioFileStreamOpen(Unmanaged.passUnretained(self).toOpaque(),
-                                streamPropertyProc, streamPacketsProc, kAudioFileMP3Type, &self.streamID)
-            var req = URLRequest(url: url)
-            req.setValue("Mozilla/5.0 ATC_Transcribe/1.0", forHTTPHeaderField: "User-Agent")
-            let session = URLSession(configuration: .default, delegate: self, delegateQueue: nil)
-            self.urlSession = session
-            let task = session.dataTask(with: req)
-            self.task = task
-            NSLog("[stream] connecting %@", url.absoluteString)
-            task.resume()
+            self.continuation = cont                          // written once, before any workQueue activity
             cont.onTermination = { [weak self] _ in self?.stop() }
+            self.workQueue.async { [weak self] in self?.connect() }
         }
     }
 
-    private var stopped = false
+    /// Open the parser and start a data task for the current candidate. Runs on `workQueue`.
+    private func connect() {
+        guard !stopped else { return }
+        let target = candidates[candidateIndex % candidates.count]
+        AudioFileStreamOpen(Unmanaged.passUnretained(self).toOpaque(),
+                            streamPropertyProc, streamPacketsProc, kAudioFileMP3Type, &streamID)
+        var req = URLRequest(url: target)
+        req.setValue("Mozilla/5.0 ATC_Transcribe/1.0", forHTTPHeaderField: "User-Agent")
+        let session = urlSession ?? URLSession(configuration: .default, delegate: self, delegateQueue: callbackQueue)
+        urlSession = session
+        let t = session.dataTask(with: req)
+        task = t
+        NSLog("[stream] connecting %@", target.absoluteString)
+        t.resume()
+    }
 
-    func stop() {
+    func stop() { workQueue.async { [weak self] in self?.teardown() } }
+
+    /// Full teardown. Runs on `workQueue`; idempotent via `stopped`.
+    private func teardown() {
+        guard !stopped else { return }
         stopped = true
         task?.cancel(); task = nil
         urlSession?.invalidateAndCancel(); urlSession = nil
@@ -61,10 +100,10 @@ final class StreamAudioSource: NSObject, AudioSource, URLSessionDataDelegate {
         continuation?.finish(); continuation = nil
     }
 
-    // MARK: URLSession — feed bytes to the parser
+    // MARK: URLSession — feed bytes to the parser (delegate callbacks run on workQueue)
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-        guard let streamID else { return }
+        guard !stopped, let streamID else { return }
         data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
             if let base = raw.baseAddress { AudioFileStreamParseBytes(streamID, UInt32(data.count), base, []) }
         }
@@ -73,20 +112,27 @@ final class StreamAudioSource: NSObject, AudioSource, URLSessionDataDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         NSLog("[stream] task ended: %@", error?.localizedDescription ?? "closed")
         guard !stopped else { return }
-        // Live streams drop periodically; reconnect (mirrors the Python ffmpeg reconnect).
+        // Drop this attempt's parser/decoder before retrying.
         if let s = streamID { AudioFileStreamClose(s); streamID = nil }
         if let d = decoder { AudioConverterDispose(d); decoder = nil }
         resampler = nil
-        DispatchQueue.global().asyncAfter(deadline: .now() + 2) { [weak self] in
-            guard let self, !self.stopped, let session = self.urlSession else { return }
-            AudioFileStreamOpen(Unmanaged.passUnretained(self).toOpaque(),
-                                streamPropertyProc, streamPacketsProc, kAudioFileMP3Type, &self.streamID)
-            var req = URLRequest(url: self.url)
-            req.setValue("Mozilla/5.0 ATC_Transcribe/1.0", forHTTPHeaderField: "User-Agent")
-            let next = session.dataTask(with: req)
-            self.task = next
-            NSLog("[stream] reconnecting")
-            next.resume()
+
+        // Rotate to the next edge server. Until we've decoded any audio a completion is a
+        // connect failure, not a live drop: cap the attempts so a dead/unreachable feed
+        // ends the stream (UI shows "Stream ended") instead of reconnecting forever.
+        candidateIndex += 1
+        if !decodedAnyAudio {
+            connectAttempts += 1
+            if connectAttempts >= candidates.count * 2 {
+                NSLog("[stream] no audio after %d attempts — giving up", connectAttempts)
+                teardown()   // invalidate the session + finish the stream (UI shows "Stream ended")
+                return
+            }
+        }
+        // Live streams drop periodically; reconnect (mirrors the Python ffmpeg reconnect).
+        workQueue.asyncAfter(deadline: .now() + 2) { [weak self] in
+            guard let self, !self.stopped else { return }
+            self.connect()
         }
     }
 
@@ -114,7 +160,7 @@ final class StreamAudioSource: NSObject, AudioSource, URLSessionDataDelegate {
     fileprivate func handlePackets(_ numberBytes: UInt32, _ numberPackets: UInt32,
                                    _ inputData: UnsafeRawPointer,
                                    _ descs: UnsafeMutablePointer<AudioStreamPacketDescription>?) {
-        guard let decoder, let pcmFormat, let resampler, numberPackets > 0 else { return }
+        guard !stopped, let decoder, let pcmFormat, let resampler, numberPackets > 0 else { return }
         packetBuffer?.deallocate()
         let buf = UnsafeMutableRawPointer.allocate(byteCount: Int(numberBytes), alignment: 1)
         buf.copyMemory(from: inputData, byteCount: Int(numberBytes))
@@ -157,6 +203,8 @@ final class StreamAudioSource: NSObject, AudioSource, URLSessionDataDelegate {
     }
 
     fileprivate func emit(_ samples: [Float]) {
+        decodedAnyAudio = true
+        connectAttempts = 0
         chunkCount += 1
         if chunkCount % 15 == 1 {
             var sum: Float = 0

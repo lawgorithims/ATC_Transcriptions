@@ -41,8 +41,8 @@ final class TranscriptionSession: ObservableObject {
         self.source = source
 
         task = Task { [pipeline] in
-            await pipeline.run(source: source) { record in
-                Task { @MainActor in self.append(record) }
+            await pipeline.run(source: source) { [weak self] record in
+                Task { @MainActor in self?.append(record) }
             }
             await MainActor.run {
                 if self.status == .live { self.status = .stopped; self.detail = "Stream ended." }
@@ -69,7 +69,20 @@ final class TranscriptionSession: ObservableObject {
         Task { await pipeline.setCorrector(corrector) }
     }
 
+    /// Reset the rolling transcript + stats (the Clear button). Resets the session's own
+    /// source-of-truth so a UI bound to `$records`/`$stats` clears too — and the next
+    /// transmission appends to the now-empty buffers rather than resurrecting old records.
+    func clear() {
+        records = []
+        stats = LatencyStats()
+    }
+
     private func append(_ record: TranscriptRecord) {
+        // Ignore records that arrive after the user stopped (or before a run starts). An
+        // in-flight transcription can still complete and call back after stop() set a
+        // terminal state; without this guard it would resurrect status to .live and append
+        // a stray record. (Python drains the worker thread in stop(); we guard instead.)
+        guard status == .live || status == .starting || status == .connecting else { return }
         records.append(record)
         if records.count > maxRecords { records.removeFirst(records.count - maxRecords) }
         stats.add(record)
