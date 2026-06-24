@@ -65,7 +65,7 @@ actor LivePipeline {
     private let transcriber: ATCTranscriber
     private let context: ATCContext
     private let preprocessor: AudioPreprocessor?
-    private let corrector: Corrector
+    private var corrector: Corrector
     private let segmenter: VADSegmenter
     private var running = false
 
@@ -108,7 +108,7 @@ actor LivePipeline {
 
         // Final, output-only correction (NullCorrector by default — a no-op). Never
         // touches the prompt history updated above; `text` stays the raw output.
-        let correction = corrector.correct(text, history: context.recentHistory)
+        let correction = await corrector.correct(text, history: context.recentHistory)
 
         return TranscriptRecord(
             text: text,
@@ -138,4 +138,8 @@ actor LivePipeline {
     }
 
     func stop() { running = false }
+
+    /// Swap the output-correction stage at runtime (the Settings toggle). Takes effect on
+    /// the next transmission; the in-flight one finishes with the previous corrector.
+    func setCorrector(_ corrector: Corrector) { self.corrector = corrector }
 }

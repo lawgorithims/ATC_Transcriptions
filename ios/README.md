@@ -16,8 +16,13 @@ airport-context prompt → fine-tuned Whisper (CoreML/WhisperKit) → optional c
 > transmissions on the ANE), and the **SwiftUI console is wired to live transcription** —
 > the replay demo transcribes in-app (Cockpit/Day/Night themes), and the **LiveATC live
 > internet stream transcribes end-to-end** (AudioToolbox streaming MP3 decode → VAD →
-> transcribe → UI, verified live on the KATL tower feed). Remaining: standalone model
-> bundling and on-device (mic / USB) testing — see the table below.
+> transcribe → UI, verified live on the KATL tower feed). An **optional on-device
+> correction layer** then refines each transcript — a deterministic vocabulary/number
+> fixer (verified correcting live in-app) plus an **Apple Foundation Models** LLM stage
+> for the errors a dictionary can't reach (mis-heard callsigns, runways, waypoints, ICAO
+> phraseology, repeats). Remaining: standalone model bundling, the LLM stage's on-device
+> validation (needs an Apple-Intelligence device), and on-device (mic / USB) testing —
+> see the table below.
 
 This folder is self-contained and intended to split out into its own repository.
 
@@ -60,11 +65,19 @@ feed (left) and are hidden for the microphone / USB inputs (right):
 | --- | --- |
 | ![Live feed input](docs/screenshots/input_livefeed.png) | ![Mic input](docs/screenshots/input_mic.png) |
 
+The optional **correction layer** refining transcripts live — each edit is shown inline
+(`from → to`) and the raw transcript is always preserved. Here the deterministic stage
+normalizes spoken numbers (`one zero two three → 1023`, `sixty one thirty four → 6134`);
+with Apple Intelligence enabled, the LLM stage additionally fixes mis-heard callsigns,
+runway/waypoint names, and ICAO phraseology:
+
+![Correction layer](docs/screenshots/correction.png)
+
 ## How the Python modules map to Swift
 
 | Python (repo root / `server/`) | Swift (`ATCTranscribe/`) | Status |
 | --- | --- | --- |
-| `atc_corrector.py` | `Core/ATCCorrector.swift`, `Core/StringRatio.swift` | ✅ builds + tests pass |
+| `atc_corrector.py` (deterministic + LLM) | `Core/ATCCorrector.swift`, `Core/StringRatio.swift`, `Core/FoundationModelsCorrector.swift` | ✅ deterministic stage builds, 32 tests pass, corrects live in-app; LLM stage = Apple Foundation Models (builds + degrades gracefully; runs on an Apple-Intelligence device) |
 | `atc_context.py` | `Core/ATCContext.swift` | ✅ builds + tests pass |
 | `Correction`, `SpeechSegment`, `airport_configs/*.json` | `Models/*.swift` + `Resources/airport_configs/` | ✅ builds + tests pass |
 | `atc_stream.py` (VAD/segmentation) | `Audio/VADSegmenter.swift` | ✅ builds + tests pass (energy path) |

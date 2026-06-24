@@ -16,18 +16,21 @@ import Foundation
 // MARK: - Protocol
 
 /// Anything that turns a raw transcript into a `Correction`. Mirrors the
-/// `Corrector` protocol in `atc_corrector.py`.
+/// `Corrector` protocol in `atc_corrector.py`. `correct` is `async` here (the Python
+/// is sync): the on-device LLM backend (`FoundationModelsCorrector`) is async, and the
+/// pipeline already awaits the transcriber, so the deterministic stages just suspend
+/// trivially.
 protocol Corrector {
-    func correct(_ text: String, history: [String]) -> Correction
+    func correct(_ text: String, history: [String]) async -> Correction
 }
 
 extension Corrector {
-    func correct(_ text: String) -> Correction { correct(text, history: []) }
+    func correct(_ text: String) async -> Correction { await correct(text, history: []) }
 }
 
 /// No-op corrector used whenever correction is disabled (the default).
 struct NullCorrector: Corrector {
-    func correct(_ text: String, history: [String]) -> Correction { .unchanged(text) }
+    func correct(_ text: String, history: [String]) async -> Correction { .unchanged(text) }
 }
 
 // MARK: - Lexicon & helpers (port of the module-level tables/functions)
@@ -162,7 +165,7 @@ struct DeterministicCorrector: Corrector {
     var numbers: Bool = true
     var minTokenLen: Int = kMinTokenLen
 
-    func correct(_ text: String, history: [String]) -> Correction {
+    func correct(_ text: String, history: [String]) async -> Correction {
         if text.trimmingCharacters(in: .whitespaces).isEmpty {
             return .unchanged(text, backend: "deterministic")
         }
@@ -242,13 +245,13 @@ struct DeterministicCorrector: Corrector {
 struct ChainCorrector: Corrector {
     let correctors: [Corrector]
 
-    func correct(_ text: String, history: [String]) -> Correction {
+    func correct(_ text: String, history: [String]) async -> Correction {
         let raw = text
         var current = raw
         var edits: [CorrectionEdit] = []
         var backends: [String] = []
         for c in correctors {
-            let res = c.correct(current, history: history)
+            let res = await c.correct(current, history: history)
             if res.changed, !res.corrected.isEmpty {
                 edits.append(contentsOf: res.edits)
                 backends.append(res.backend)
@@ -293,7 +296,12 @@ func buildCorrector(config: CorrectionConfig, vocab: @escaping () -> [String]) -
             phoneticMin: config.phoneticMin,
             numbers: config.numbers))
     }
-    // TODO (later phase): append a FoundationModelsCorrector when config.llmEnabled.
+    // Optional on-device LLM stage (Apple Foundation Models). Present only when the
+    // framework is in the SDK / the OS is new enough; nil (skipped) otherwise, so a
+    // device without it simply runs the deterministic stage. Off by default.
+    if config.llmEnabled, let llm = makeFoundationModelsCorrector(vocab: vocab) {
+        stages.append(llm)
+    }
 
     if stages.isEmpty { return NullCorrector() }
     if stages.count == 1 { return stages[0] }

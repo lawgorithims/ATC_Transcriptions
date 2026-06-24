@@ -36,6 +36,23 @@ struct SettingsSheet: View {
                                 .font(.caption2).foregroundStyle(p.textDim)
                         }
                     }
+                    Card(title: "Transcript correction") {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Toggle(isOn: $model.correctionEnabled) {
+                                Text("Vocabulary correction").font(.caption).foregroundStyle(p.text)
+                            }
+                            Text("Normalizes spoken numbers and snaps near-miss callsign / runway / waypoint names onto the airport vocabulary. On-device, instant, zero dependencies.")
+                                .font(.caption2).foregroundStyle(p.textDim)
+                            Rectangle().fill(p.border).frame(height: 1)
+                            Toggle(isOn: $model.llmEnabled) {
+                                Text("AI correction (Apple Intelligence)").font(.caption).foregroundStyle(p.text)
+                            }
+                            .disabled(!model.correctionEnabled)
+                            Text("Adds an on-device language model that fixes semantic mishears, ICAO phraseology, and repetition the dictionary can't. Needs an Apple-Intelligence-capable device; otherwise it quietly falls back to vocabulary-only. The raw transcript is always kept and every edit is shown.")
+                                .font(.caption2).foregroundStyle(p.textDim)
+                                .opacity(model.correctionEnabled ? 1 : 0.5)
+                        }
+                    }
                 }
                 .padding(16)
             }
