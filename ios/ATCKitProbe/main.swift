@@ -92,6 +92,36 @@ do {
     print("PIPELINE: \(collector.records.count) transmissions, RTF p50=\(p50)")
     if collector.records.isEmpty { die("pipeline produced no transmissions") }
 
+    // --- OPTIONAL: live LiveATC stream → VAD → preprocess → context → ANE transcribe ---
+    // Validates the StreamAudioSource live-decode path (serial-queue concurrency + edge-server
+    // candidate failover + stop/teardown) end-to-end on the real Neural Engine. Opt-in via
+    // ATC_STREAM_URL so the default probe stays offline/deterministic; ATC_STREAM_SECONDS
+    // bounds the capture window.
+    if let streamURLRaw = env["ATC_STREAM_URL"], !streamURLRaw.isEmpty {
+        let seconds = Double(env["ATC_STREAM_SECONDS"] ?? "") ?? 75
+        let resolved = (try? StreamURLResolver.resolve(streamURL: streamURLRaw)) ?? streamURLRaw
+        print("--- live stream (StreamAudioSource → VAD → ANE) for \(Int(seconds))s ---")
+        print("   url: \(resolved)")
+        guard let streamURL = URL(string: resolved) else { die("bad stream URL: \(resolved)") }
+
+        let streamContext = ATCContext()
+        let streamPipeline = LivePipeline(transcriber: transcriber, context: streamContext,
+                                          preprocessor: AudioPreprocessor(aggressiveRadio: true),
+                                          corrector: NullCorrector())
+        let streamSource = StreamAudioSource(url: streamURL)
+        let streamCollector = Collector()
+        let streamTask = Task { await streamPipeline.run(source: streamSource) { streamCollector.add($0) } }
+        try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+        streamSource.stop()                 // exercises the rewritten stop()/teardown path
+        await streamPipeline.stop()
+        _ = await streamTask.value
+        for r in streamCollector.records {
+            print(String(format: "STREAM [%.1f-%.1fs] rtf=%.2f transcribe=%.0fms  %@",
+                         r.streamStartS, r.streamEndS, r.realTimeFactor, r.transcribeMs, r.display))
+        }
+        print("STREAM: \(streamCollector.records.count) transmissions transcribed in \(Int(seconds))s")
+    }
+
     print("PROBE OK")
 } catch {
     die("probe error: \(error)")
