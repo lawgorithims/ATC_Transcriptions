@@ -47,11 +47,19 @@ final class AppModel: ObservableObject {
     @Published var proofOfLife: ProofOfLifeResult?
     @Published var polRunning = false
 
+    // Correction layer (off by default — port of the `correction:` config block).
+    // `correctionEnabled` runs the deterministic vocab/number fixer; `llmEnabled` adds the
+    // on-device Apple Foundation Models stage. Toggling either rebuilds the corrector and
+    // hot-swaps it into the live session.
+    @Published var correctionEnabled = false { didSet { rebuildCorrector() } }
+    @Published var llmEnabled = false { didSet { rebuildCorrector() } }
+
     @Published var showSettings = false
 
     private var engine: TranscriberEngine?
     private var session: TranscriptionSession?
     private var clips: [DiagnosticClip] = []
+    private var liveContext: ATCContext?
     private var liveMode = false
 
     init() {
@@ -69,6 +77,8 @@ final class AppModel: ObservableObject {
         default: break
         }
         if let link = value("--link") { streamURL = link }
+        if args.contains("--correct") { correctionEnabled = true }
+        if args.contains("--llm") { correctionEnabled = true; llmEnabled = true }
 
         #if targetEnvironment(simulator)
         deviceLabel = "CPU (Simulator)"
@@ -104,8 +114,11 @@ final class AppModel: ObservableObject {
             detail = "Model failed to load: \(error.localizedDescription)"
             return
         }
-        let pipeline = LivePipeline(transcriber: transcriber, context: ATCContext(),
-                                    preprocessor: AudioPreprocessor(aggressiveRadio: true), corrector: NullCorrector())
+        let context = ATCContext()
+        self.liveContext = context
+        let pipeline = LivePipeline(transcriber: transcriber, context: context,
+                                    preprocessor: AudioPreprocessor(aggressiveRadio: true),
+                                    corrector: currentCorrector())
         let session = TranscriptionSession(pipeline: pipeline)
         session.$records.assign(to: &$records)   // mirror live session state into the UI
         session.$status.assign(to: &$status)
@@ -117,6 +130,27 @@ final class AppModel: ObservableObject {
         if let audioDir { clips = (try? Self.loadClips(audioDir)) ?? [] }
         detail = clips.isEmpty ? "Model ready (no demo clips)." : "Ready — press Start."
         if autostart { start() }
+    }
+
+    // MARK: correction
+
+    private var correctionConfig: CorrectionConfig {
+        var c = CorrectionConfig()
+        c.enabled = correctionEnabled
+        c.llmEnabled = llmEnabled
+        return c
+    }
+
+    /// Build a corrector from the current toggles + the live airport vocab: `NullCorrector`
+    /// when off, the deterministic stage when only `correctionEnabled`, or deterministic +
+    /// on-device LLM when `llmEnabled`.
+    private func currentCorrector() -> Corrector {
+        buildCorrector(config: correctionConfig, vocab: { [weak self] in self?.liveContext?.vocab() ?? [] })
+    }
+
+    /// Rebuild and hot-swap the corrector into the running session (a toggle changed).
+    private func rebuildCorrector() {
+        session?.setCorrector(currentCorrector())
     }
 
     // MARK: controls

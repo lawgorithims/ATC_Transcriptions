@@ -62,6 +62,13 @@ final class TranscriptionSession: ObservableObject {
         detail = "Stopped."
     }
 
+    /// Swap the output-correction stage at runtime (Settings toggle). Safe to call while
+    /// a run is active; it takes effect on the next transmission.
+    func setCorrector(_ corrector: Corrector) {
+        let pipeline = self.pipeline
+        Task { await pipeline.setCorrector(corrector) }
+    }
+
     private func append(_ record: TranscriptRecord) {
         records.append(record)
         if records.count > maxRecords { records.removeFirst(records.count - maxRecords) }

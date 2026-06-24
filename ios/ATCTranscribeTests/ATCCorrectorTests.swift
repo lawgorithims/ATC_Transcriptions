@@ -3,6 +3,8 @@ import XCTest
 
 /// These tests encode the observed behavior of `atc_corrector.py` so the Swift port
 /// stays faithful. Each assertion corresponds to a documented rule in the Python.
+/// `correct` is `async` (the on-device LLM backend is async), so the deterministic
+/// assertions `await` it — the math is unchanged.
 final class ATCCorrectorTests: XCTestCase {
 
     private func det(vocab: [String] = [],
@@ -24,72 +26,77 @@ final class ATCCorrectorTests: XCTestCase {
 
     // MARK: number normalization (vocab-independent)
 
-    func testIcaoNumberWords() {
+    func testIcaoNumberWords() async {
         // "niner" -> 9; "thousand" is not a number word so it terminates the run.
-        let r = det().correct("descend niner thousand")
+        let r = await det().correct("descend niner thousand")
         XCTAssertTrue(r.changed)
         XCTAssertEqual(r.corrected, "descend 9 thousand")
         XCTAssertEqual(r.edits.first?.reason, "number")
     }
 
-    func testGroupedTensAndUnit() {
+    func testGroupedTensAndUnit() async {
         // 9 + (seventy + five = 75) -> "975".
-        XCTAssertEqual(det().correct("climbing nine seventy five").corrected, "climbing 975")
+        let r = await det().correct("climbing nine seventy five")
+        XCTAssertEqual(r.corrected, "climbing 975")
     }
 
-    func testNoNumbersIsUnchanged() {
-        let r = det().correct("contact tower")
+    func testNoNumbersIsUnchanged() async {
+        let r = await det().correct("contact tower")
         XCTAssertFalse(r.changed)
         XCTAssertEqual(r.display, "contact tower")
     }
 
     // MARK: vocab matching
 
-    func testCharacterNearMiss() {
-        let r = det(vocab: ["Maverick"]).correct("inbound maverik")
+    func testCharacterNearMiss() async {
+        let r = await det(vocab: ["Maverick"]).correct("inbound maverik")
         XCTAssertTrue(r.changed)
         XCTAssertEqual(r.corrected, "inbound Maverick")
         XCTAssertEqual(r.edits.first?.reason, "vocab match")
         XCTAssertEqual(r.edits.first?.to, "Maverick")
     }
 
-    func testPhoneticFallback() {
+    func testPhoneticFallback() async {
         // "golf" vs "Gulf": char ratio 0.75 < 0.84, but same phonetic key ("glf")
         // and ratio >= 0.62 -> phonetic match.
-        let r = det(vocab: ["Gulf"]).correct("over golf intersection")
+        let r = await det(vocab: ["Gulf"]).correct("over golf intersection")
         XCTAssertTrue(r.changed)
         XCTAssertEqual(r.corrected, "over Gulf intersection")
         XCTAssertEqual(r.edits.first?.reason, "phonetic match")
     }
 
-    func testStopwordsAreProtected() {
+    func testStopwordsAreProtected() async {
         // "right" is a stopword: never corrected even toward a close vocab term.
-        let r = det(vocab: ["Bright"]).correct("turn right")
+        let r = await det(vocab: ["Bright"]).correct("turn right")
         XCTAssertFalse(r.changed)
     }
 
-    func testShortTokensSkipped() {
+    func testShortTokensSkipped() async {
         // "fix" is 3 chars (< min token length) -> never fuzzy-matched.
-        XCTAssertFalse(det(vocab: ["six"]).correct("fix").changed)
+        let r = await det(vocab: ["six"]).correct("fix")
+        XCTAssertFalse(r.changed)
     }
 
-    func testKnownTermLeftAsIs() {
+    func testKnownTermLeftAsIs() async {
         // A token already equal to a vocab term is not "corrected" onto itself.
-        XCTAssertFalse(det(vocab: ["Maverick"]).correct("Maverick").changed)
+        let r = await det(vocab: ["Maverick"]).correct("Maverick")
+        XCTAssertFalse(r.changed)
     }
 
     // MARK: factory & chain
 
-    func testDisabledConfigIsNullCorrector() {
+    func testDisabledConfigIsNullCorrector() async {
         let c = buildCorrector(config: CorrectionConfig(), vocab: { ["Maverick"] })
         XCTAssertTrue(c is NullCorrector)
-        XCTAssertFalse(c.correct("inbound maverik").changed)
+        let r = await c.correct("inbound maverik")
+        XCTAssertFalse(r.changed)
     }
 
-    func testEnabledDeterministicCorrects() {
+    func testEnabledDeterministicCorrects() async {
         var cfg = CorrectionConfig()
         cfg.enabled = true
         let c = buildCorrector(config: cfg, vocab: { ["Maverick"] })
-        XCTAssertEqual(c.correct("inbound maverik").corrected, "inbound Maverick")
+        let r = await c.correct("inbound maverik")
+        XCTAssertEqual(r.corrected, "inbound Maverick")
     }
 }
