@@ -38,8 +38,10 @@ final class StreamAudioSource: NSObject, AudioSource, URLSessionDataDelegate {
     private var stopped = false
 
     /// Serial queue that owns all parser/decoder/continuation state (see the type doc).
-    private let workQueue = DispatchQueue(label: "net.atctranscribe.stream")
-    /// URLSession delegate queue, backed by `workQueue` so callbacks run serially with teardown.
+    /// URLSession delivers its delegate callbacks here, and connect/reconnect/teardown are
+    /// posted here as operations, so every access to the CoreAudio handles is serialized.
+    /// (A plain serial OperationQueue, like URLSession's own `delegateQueue: nil` queue —
+    /// NOT backed by an `underlyingQueue`, which stalls callback delivery after the first.)
     private let callbackQueue = OperationQueue()
 
     fileprivate var continuation: AsyncStream<[Float]>.Continuation?
@@ -57,19 +59,19 @@ final class StreamAudioSource: NSObject, AudioSource, URLSessionDataDelegate {
         let expanded = StreamURLResolver.candidateURLs(url.absoluteString).compactMap { URL(string: $0) }
         self.candidates = expanded.isEmpty ? [url] : expanded
         super.init()
-        callbackQueue.underlyingQueue = workQueue
-        callbackQueue.maxConcurrentOperationCount = 1
+        callbackQueue.name = "net.atctranscribe.stream"
+        callbackQueue.maxConcurrentOperationCount = 1     // serial: one callback/teardown at a time
     }
 
     func makeStream() -> AsyncStream<[Float]> {
         AsyncStream { cont in
-            self.continuation = cont                          // written once, before any workQueue activity
+            self.continuation = cont                          // written once, before any queue activity
             cont.onTermination = { [weak self] _ in self?.stop() }
-            self.workQueue.async { [weak self] in self?.connect() }
+            self.callbackQueue.addOperation { [weak self] in self?.connect() }
         }
     }
 
-    /// Open the parser and start a data task for the current candidate. Runs on `workQueue`.
+    /// Open the parser and start a data task for the current candidate. Runs on `callbackQueue`.
     private func connect() {
         guard !stopped else { return }
         let target = candidates[candidateIndex % candidates.count]
@@ -85,9 +87,9 @@ final class StreamAudioSource: NSObject, AudioSource, URLSessionDataDelegate {
         t.resume()
     }
 
-    func stop() { workQueue.async { [weak self] in self?.teardown() } }
+    func stop() { callbackQueue.addOperation { [weak self] in self?.teardown() } }
 
-    /// Full teardown. Runs on `workQueue`; idempotent via `stopped`.
+    /// Full teardown. Runs serialized on `callbackQueue`; idempotent via `stopped`.
     private func teardown() {
         guard !stopped else { return }
         stopped = true
@@ -100,7 +102,7 @@ final class StreamAudioSource: NSObject, AudioSource, URLSessionDataDelegate {
         continuation?.finish(); continuation = nil
     }
 
-    // MARK: URLSession — feed bytes to the parser (delegate callbacks run on workQueue)
+    // MARK: URLSession — feed bytes to the parser (delegate callbacks run on callbackQueue)
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         guard !stopped, let streamID else { return }
@@ -130,9 +132,12 @@ final class StreamAudioSource: NSObject, AudioSource, URLSessionDataDelegate {
             }
         }
         // Live streams drop periodically; reconnect (mirrors the Python ffmpeg reconnect).
-        workQueue.asyncAfter(deadline: .now() + 2) { [weak self] in
-            guard let self, !self.stopped else { return }
-            self.connect()
+        // Wait off-queue, then post connect back onto the serial callbackQueue.
+        DispatchQueue.global().asyncAfter(deadline: .now() + 2) { [weak self] in
+            self?.callbackQueue.addOperation { [weak self] in
+                guard let self, !self.stopped else { return }
+                self.connect()
+            }
         }
     }
 
@@ -176,14 +181,18 @@ final class StreamAudioSource: NSObject, AudioSource, URLSessionDataDelegate {
             var framesOut: UInt32 = out.frameCapacity
             let status = AudioConverterFillComplexBuffer(decoder, decoderInputProc, selfPtr,
                                                          &framesOut, out.mutableAudioBufferList, nil)
-            if status != noErr && framesOut == 0 {
-                if chunkCount < 4 { NSLog("[stream] fill failed status=%d", status) }
+            // `status == noMoreInputData` means the input proc reported this batch is drained —
+            // NOT a real error and NOT end-of-stream (see supplyPackets). Emit any frames it
+            // managed to produce, then move on; the converter stays alive for the next batch.
+            if framesOut == 0 {
+                if status != noErr && status != Self.noMoreInputData && chunkCount < 4 {
+                    NSLog("[stream] fill failed status=%d", status)
+                }
                 break
             }
-            if framesOut == 0 { break }
             out.frameLength = framesOut
             resample(out, with: resampler)
-            if status != noErr { break }
+            if status != noErr { break }   // batch drained (or real error) → done with this batch
         }
     }
 
@@ -215,12 +224,19 @@ final class StreamAudioSource: NSObject, AudioSource, URLSessionDataDelegate {
         continuation?.yield(samples)
     }
 
+    /// Sentinel returned by the decoder input proc when the current batch is drained. It is
+    /// NOT `noErr`: returning 0 packets with `noErr` tells AudioConverter the stream has ENDED,
+    /// after which it flushes and produces 0 frames forever (the live feed goes deaf after the
+    /// first batch). A non-zero status instead means "no more input right now" — FillComplexBuffer
+    /// returns it without latching end-of-stream, so the converter is reusable for the next batch.
+    static let noMoreInputData: OSStatus = -1
+
     /// Supplies the remaining packets of the current batch to the decoder (one shot).
     fileprivate func supplyPackets(_ ioNumberDataPackets: UnsafeMutablePointer<UInt32>,
                                    _ ioData: UnsafeMutablePointer<AudioBufferList>,
                                    _ outDescs: UnsafeMutablePointer<UnsafeMutablePointer<AudioStreamPacketDescription>?>?) -> OSStatus {
         let remaining = packetDescs.count - packetCursor
-        guard remaining > 0 else { ioNumberDataPackets.pointee = 0; return noErr }
+        guard remaining > 0 else { ioNumberDataPackets.pointee = 0; return Self.noMoreInputData }
         let count = min(Int(ioNumberDataPackets.pointee), remaining)
         let descSlice = Array(packetDescs[packetCursor ..< packetCursor + count])
         let start = Int(descSlice[0].mStartOffset)
