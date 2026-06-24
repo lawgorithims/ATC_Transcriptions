@@ -1,0 +1,62 @@
+import XCTest
+@testable import ATCTranscribe
+
+/// Encodes the behavior of `atc_context.py`: empty when there's nothing, rolling
+/// 3-deep history, and the static prefix / vocab built from an airport config.
+final class ATCContextTests: XCTestCase {
+
+    func testEmptyContextIsEmptyPrompt() {
+        XCTAssertEqual(ATCContext().buildPrompt(), "")
+    }
+
+    func testHistoryRollsAtThree() {
+        let ctx = ATCContext()
+        ctx.update("one"); ctx.update("two"); ctx.update("three"); ctx.update("four")
+        XCTAssertEqual(ctx.recentHistory, ["two", "three", "four"])
+        XCTAssertEqual(ctx.buildPrompt(), "Recent transmissions: two three four")
+    }
+
+    func testBlankUpdatesIgnored() {
+        let ctx = ATCContext()
+        ctx.update("   "); ctx.update("")
+        XCTAssertEqual(ctx.recentHistory, [])
+    }
+
+    func testStaticPrefixAndVocabFromConfig() throws {
+        // Inline config avoids unit-test bundle-resource lookup; exercises the same
+        // decode + prefix path the app uses with airport_configs/*.json.
+        let json = """
+        {
+          "airport_code": "KDFW",
+          "airport_name": "Dallas/Fort Worth International Airport",
+          "tracon": "Lone Star Approach / Departure (D10)",
+          "runways": ["17C", "35C"],
+          "fixes": ["AKUNA", "BLECO"],
+          "streams": {
+            "f": { "label": "Lone Star Approach (17/35C Final)", "frequency_mhz": "127.075" }
+          }
+        }
+        """
+        let cfg = try AirportConfig.decode(Data(json.utf8))
+        let ctx = ATCContext(config: cfg, feedKey: "f")
+
+        let prompt = ctx.buildPrompt()
+        XCTAssertTrue(prompt.contains("Air traffic control radio transcript from Lone Star Approach (17/35C Final)."))
+        XCTAssertTrue(prompt.contains("Airport: Dallas/Fort Worth International Airport."))
+        XCTAssertTrue(prompt.contains("Facility: Lone Star Approach / Departure (D10)."))
+        XCTAssertTrue(prompt.contains("Frequency: 127.075 MHz."))
+        XCTAssertTrue(prompt.contains("Runways: 17C, 35C."))
+        XCTAssertTrue(prompt.contains("Fixes: AKUNA, BLECO."))
+        XCTAssertEqual(ctx.vocab(), ["17C", "35C", "AKUNA", "BLECO"])
+    }
+
+    func testHistoryAppendsAfterStaticPrefix() throws {
+        let json = #"{"airport_name":"Test","streams":{"f":{"label":"Test Feed"}}}"#
+        let cfg = try AirportConfig.decode(Data(json.utf8))
+        let ctx = ATCContext(config: cfg, feedKey: "f")
+        ctx.update("cleared to land")
+        let prompt = ctx.buildPrompt()
+        XCTAssertTrue(prompt.hasPrefix("Air traffic control radio transcript from Test Feed."))
+        XCTAssertTrue(prompt.hasSuffix("Recent transmissions: cleared to land"))
+    }
+}

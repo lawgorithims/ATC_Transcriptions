@@ -1,0 +1,24 @@
+# XcodeGen generates the project from project.yml — don't commit the generated project.
+*.xcodeproj/
+*.xcworkspace/
+# XcodeGen-generated Info.plist (generated from project.yml `info:` block).
+ATCTranscribe/Info.plist
+
+# Xcode build output / user state
+DerivedData/
+build/
+.build/
+*.xcuserstate
+xcuserdata/
+*.xcscmblueprint
+
+# Swift Package Manager
+.swiftpm/
+
+# Converted CoreML model bundles (large; produced by Tools/ conversion, distributed separately)
+*.mlmodelc
+*.mlpackage
+ATCTranscribe/Resources/Models/
+
+# macOS
+.DS_Store

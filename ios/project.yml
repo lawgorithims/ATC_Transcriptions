@@ -1,0 +1,131 @@
+# XcodeGen spec for the ATC_Transcribe iOS app.
+#
+# This file is the source of truth for the Xcode project so it can be authored as
+# plain text on Windows. On the Mac (the Scaleway M4 build box) regenerate with:
+#
+#     brew install xcodegen          # one-time
+#     cd ios && xcodegen generate    # writes ATCTranscribe.xcodeproj (git-ignored)
+#     xcodebuild -project ATCTranscribe.xcodeproj -scheme ATCTranscribe \
+#                -destination 'platform=iOS Simulator,name=iPhone 15' test
+#
+# WhisperKit is intentionally NOT wired yet — the deterministic core (models,
+# context, corrector) is pure Foundation and builds with no dependencies, so the
+# first green build is fast. The WhisperKit Swift package is added in the
+# "Convert models to CoreML + wire WhisperKit" phase.
+
+name: ATCTranscribe
+options:
+  bundleIdPrefix: net.atctranscribe
+  createIntermediateGroups: true
+  deploymentTarget:
+    iOS: "17.0"
+    macOS: "13.0"
+
+settings:
+  base:
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.9"
+    CODE_SIGN_STYLE: Automatic
+    # DEVELOPMENT_TEAM: ""   # set on the Mac for on-device (not Simulator) builds
+
+packages:
+  argmax-oss-swift:
+    url: https://github.com/argmaxinc/argmax-oss-swift.git
+    from: "1.0.0"
+
+targets:
+  ATCTranscribe:
+    type: application
+    platform: iOS
+    sources:
+      - path: ATCTranscribe
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: net.atctranscribe.app
+        TARGETED_DEVICE_FAMILY: "1,2"      # 1 = iPhone, 2 = iPad (universal)
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: ATCTranscribe/Info.plist
+    info:
+      path: ATCTranscribe/Info.plist
+      properties:
+        CFBundleDisplayName: ATC_Transcribe
+        UILaunchScreen: {}
+        ITSAppUsesNonExemptEncryption: false
+        NSMicrophoneUsageDescription: "ATC_Transcribe uses the microphone to capture and transcribe live ATC audio."
+        UIBackgroundModes:
+          - audio
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+    dependencies:
+      - package: argmax-oss-swift
+        product: WhisperKit
+
+  ATCTranscribeTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: ATCTranscribeTests
+    dependencies:
+      - target: ATCTranscribe
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: net.atctranscribe.tests
+        GENERATE_INFOPLIST_FILE: YES
+
+  # Native macOS PROBE — a command-line executable (NOT XCTest) that runs the engine +
+  # proof-of-life on the Mac's REAL Neural Engine. A plain tool runs headless over SSH;
+  # macOS XCTest does not (its test-runner daemon needs a GUI session). Build it, then
+  # run the binary directly with ATC_MODEL_DIR + ATC_AUDIO_DIR set (see Tools/probe.sh).
+  # The Simulator (no ANE) is reserved for the UI + pure-logic XCTests.
+  ATCKitProbe:
+    type: tool
+    platform: macOS
+    sources:
+      - path: ATCTranscribe/Models
+      - path: ATCTranscribe/Core
+      - path: ATCTranscribe/Audio
+      - path: ATCTranscribe/Transcription
+      - path: ATCTranscribe/Engine
+      - path: ATCKitProbe
+    dependencies:
+      - package: argmax-oss-swift
+        product: WhisperKit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: net.atctranscribe.probe
+
+schemes:
+  ATCTranscribe:
+    build:
+      targets:
+        ATCTranscribe: all
+        ATCTranscribeTests: [test]
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - ATCTranscribeTests
+      # Populated from the shell at `xcodegen generate` time; empty (test skips) when
+      # unset. Set them to run the on-device transcription smoke test — see
+      # ATCTranscriberSmokeTests and Tools/smoke (the M4 runner).
+      environmentVariables:
+        ATC_MODEL_DIR: ${ATC_MODEL_DIR}
+        ATC_AUDIO_DIR: ${ATC_AUDIO_DIR}
+
+  # Native macOS probe: `xcodebuild build -scheme ATCKitProbe -destination platform=macOS`,
+  # then run the built binary directly (env-driven). See Tools/probe.sh.
+  ATCKitProbe:
+    build:
+      targets:
+        ATCKitProbe: all
+    run:
+      config: Debug

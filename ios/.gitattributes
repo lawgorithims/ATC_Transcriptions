@@ -1,0 +1,9 @@
+# This subproject is built on macOS/Linux. Force LF so shell scripts and sources
+# are never checked out with CRLF (which breaks `#!/usr/bin/env bash` on macOS).
+* text=auto eol=lf
+*.sh    text eol=lf
+*.swift text eol=lf
+*.py    text eol=lf
+*.json  text eol=lf
+*.yml   text eol=lf
+*.md    text eol=lf

@@ -1,0 +1,105 @@
+# Configuration for live ATC transcription
+
+
+
+model:
+
+  # Two fine-tuned models. scripts/download_model.py fetches BOTH so the web server
+  # can switch between them with no new download.
+  small:
+    path: "models/whisper-atc"
+    hf_repo: "SingularityUS/ATC-whisper-v1"
+    hf_filename: "model.safetensors"
+    expected_bytes: 966995080        # ~922 MB
+  turbo:
+    path: "models/whisper-atc-turbo"
+    hf_repo: "SingularityUS/ATC-whisper-turbo-v1"
+    hf_filename: "model.safetensors"
+    expected_bytes: 3235581408       # ~3.0 GB
+
+  # Web-server adaptive selection (browser console only): load `default`, benchmark it
+  # on the proof-of-life test, and auto-fall-back to `fallback` if the device runs
+  # slower than min_realtime_speed (x faster than real-time; adjustable in UI Settings).
+  adaptive: true
+  default: turbo
+  fallback: small
+  min_realtime_speed: 1.2
+
+
+
+live_pipeline:
+
+  feed_config: "airport_configs/kdfw.json"
+
+  feed: "lone_star_approach_17c_final"
+
+  model_path: "models/whisper-atc-turbo"        # CLI pipeline model (no adaptive swap). small: "models/whisper-atc"
+
+  device: "auto"
+
+  enable_preprocessing: true
+
+  aggressive_preprocessing: true
+
+  vad_aggressiveness: 2
+
+  silence_duration_ms: 700
+
+  min_speech_duration_ms: 500
+
+  max_segment_duration_s: 12.0
+
+  report_interval: 10
+
+  context_history: 3
+
+  # Airport-mode context (airport_context pipeline). Leave airport blank ("") to
+
+  # use the hand-curated feed_config context instead. Requires the database:
+
+  #   python -m airport_context.cli ingest
+
+  airport: ""
+
+  frequency_type: "unknown"
+
+  # candidate_callsigns: ["DAL1234", "SKW5670"]
+
+  max_prompt_words: 600
+
+  log_context_snapshots: false
+
+
+
+# Optional FINAL post-ASR correction layer (atc_corrector.py). OFF by default —
+# when disabled this changes nothing (the pipeline builds a no-op corrector). It
+# never rewrites silently: every change is recorded (raw + corrected + edits) and
+# shown in the web console. `text` always stays the raw Whisper output.
+correction:
+
+  enabled: false                 # master switch for the whole layer
+
+  # Deterministic vocab/near-miss matcher (stdlib, instant, safe, runs anywhere).
+  # Fixes near-miss spellings of known terms (e.g. "maverik" -> "Maverick").
+  deterministic: true
+
+  threshold: 0.84                # 0..1 char-similarity cutoff (higher = stricter)
+
+  numbers: true                  # spoken numbers -> digits (niner->9, "nine seventy five"->975)
+
+  phonetic: true                 # also match by sound, not just spelling (Gulf/Golf-type)
+
+  phonetic_min: 0.62             # min char-similarity for a phonetic match (guards over-correction)
+
+  # Optional local LLM via an on-box Ollama/llama.cpp server (Option A: a small
+  # compute box in the aircraft, iPad as thin client). OFF until you run a model.
+  # Handles acoustic substitutions the dictionary can't. Degrades to "no change"
+  # if the server is unreachable, so it can never break the live feed.
+  llm:
+    enabled: false
+    backend: ollama
+    url: "http://localhost:11434"
+    model: "qwen2.5:3b-instruct"
+    timeout_s: 8
+
+
