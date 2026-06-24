@@ -39,13 +39,25 @@ targets:
     type: application
     platform: iOS
     sources:
+      # The bundled CoreML model + demo clips are added as FOLDER REFERENCES below (not
+      # the recursive glob) so the `.mlmodelc` directory bundles ship verbatim and the
+      # clip folder keeps its manifest+wavs together; exclude them from the glob to avoid
+      # double-adding / flattening.
       - path: ATCTranscribe
+        excludes:
+          - "Resources/Models"
+          - "Resources/DemoClips"
+      - path: ATCTranscribe/Resources/Models      # ~465 MB `small` model, placed by Tools/testflight.sh
+        type: folder                              #   (empty .gitkeep on Simulator builds → demo mode)
+      - path: ATCTranscribe/Resources/DemoClips    # 5 known-good clips → offline Replay demo
+        type: folder
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.atctranscribe.app
         TARGETED_DEVICE_FAMILY: "1,2"      # 1 = iPhone, 2 = iPad (universal)
         GENERATE_INFOPLIST_FILE: NO
         INFOPLIST_FILE: ATCTranscribe/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon   # Assets.xcassets/AppIcon.appiconset
     info:
       path: ATCTranscribe/Info.plist
       properties:
