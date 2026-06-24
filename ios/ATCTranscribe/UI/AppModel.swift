@@ -87,17 +87,27 @@ final class AppModel: ObservableObject {
         let cpuOnly = false
         #endif
 
-        if let modelDir = value("--model-dir") {
+        // Resolve the model + demo clips. Explicit launch flags (Simulator verification)
+        // win; otherwise fall back to the copies bundled into the app — the shipping path,
+        // since a TestFlight build on a device has no command line. With a bundled model
+        // the app is fully functional on first launch; only a model-less build falls
+        // through to the populated demo layout.
+        let modelDir = value("--model-dir") ?? Self.bundledModelDir()
+        let audioDir = value("--audio-dir") ?? Self.bundledDemoClipsDir()
+        if let modelDir {
             liveMode = true
             records = []
             stats = LatencyStats()
             status = .idle
             detail = "Loading model…"
-            let audioDir = value("--audio-dir")
+            // Default to the self-contained Replay demo when clips ship with the app, so a
+            // fresh install transcribes on the first Start with no network or mic needed
+            // (the picker can still switch to the live feed / mic). An explicit --source wins.
+            if value("--source") == nil, audioDir != nil { source = .replay }
             let autostart = args.contains("--autostart")
             Task { await setupLive(modelDir: modelDir, audioDir: audioDir, cpuOnly: cpuOnly, autostart: autostart) }
         } else {
-            seedSampleData()   // demo mode — populated layout for design/screenshots
+            seedSampleData()   // no model bundled — populated layout for design/screenshots
         }
     }
 
@@ -213,6 +223,33 @@ final class AppModel: ObservableObject {
             if let s = result.realtimeSpeed { self.measuredSpeed = s }
             self.polRunning = false
         }
+    }
+
+    // MARK: bundled resources
+
+    /// Locate the CoreML model shipped inside the app bundle. The converter writes the
+    /// `.mlmodelc` set into a sanitized-id subfolder, so we search for the
+    /// `AudioEncoder.mlmodelc` marker (the same file `TranscriberEngine.modelAvailable`
+    /// checks) and return its parent — no need to hardcode the model id. The model dir is
+    /// added to the app target as a `type: folder` reference in project.yml, so it lands at
+    /// `<bundle>/Models/…`. Returns nil for a model-less (demo-only) build.
+    static func bundledModelDir() -> String? {
+        guard let root = Bundle.main.resourceURL?.appendingPathComponent("Models") else { return nil }
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: root.path),
+              let walker = fm.enumerator(at: root, includingPropertiesForKeys: nil) else { return nil }
+        for case let url as URL in walker where url.lastPathComponent == "AudioEncoder.mlmodelc" {
+            return url.deletingLastPathComponent().path
+        }
+        return nil
+    }
+
+    /// The bundled diagnostic-clips folder (`manifest.json` + wavs) for the Replay demo,
+    /// or nil if not shipped. Also a `type: folder` reference → `<bundle>/DemoClips/`.
+    static func bundledDemoClipsDir() -> String? {
+        guard let dir = Bundle.main.resourceURL?.appendingPathComponent("DemoClips") else { return nil }
+        let manifest = dir.appendingPathComponent("manifest.json")
+        return FileManager.default.fileExists(atPath: manifest.path) ? dir.path : nil
     }
 
     private static func loadClips(_ audioDir: String) throws -> [DiagnosticClip] {
