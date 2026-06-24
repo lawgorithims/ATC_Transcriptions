@@ -39,7 +39,7 @@ final class AudioPreprocessorTests: XCTestCase {
     func testSTFTRoundTripReconstructs() throws {
         let stft = try XCTUnwrap(STFT(nFFT: 2048, hop: 512))
         let x = Self.signal(8000)
-        let y = stft.processGating(x) { $0 }          // identity gate → reconstruct input
+        let y = stft.processGating(x) { mag, _ in mag }   // identity gate → reconstruct input
         XCTAssertEqual(y.count, x.count)
         for idx in [1000, 2000, 4000, 6000, 7000] {
             XCTAssertEqual(y[idx], x[idx], accuracy: 1e-3, "round-trip @\(idx)")

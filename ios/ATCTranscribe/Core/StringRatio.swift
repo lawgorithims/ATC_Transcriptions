@@ -75,12 +75,18 @@ struct SequenceMatcher {
 /// Single best vocab match for `word` at or above `cutoff` by
 /// `SequenceMatcher.ratio()`, or `nil`. Equivalent to
 /// `difflib.get_close_matches(word, vocab, n: 1, cutoff: cutoff)` plus the ratio.
-/// On ties the first term in `vocab` order wins.
+///
+/// difflib selects with `heapq.nlargest(1, [(ratio, term), ...])`, which compares the
+/// whole `(ratio, term)` tuple — so on a ratio tie the lexicographically-LARGER term
+/// wins, independent of `vocab` order. We replicate that tie-break here (Swift's
+/// `Dictionary.keys` order is not even insertion-stable, so without it the chosen
+/// correction would be both wrong-vs-Python and nondeterministic).
 func closestMatch(_ word: String, in vocab: [String], cutoff: Double) -> (term: String, ratio: Double)? {
     var best: (term: String, ratio: Double)?
     for term in vocab {
         let r = SequenceMatcher(word, term).ratio()
-        if r >= cutoff, best == nil || r > best!.ratio {
+        guard r >= cutoff else { continue }
+        if best == nil || r > best!.ratio || (r == best!.ratio && term > best!.term) {
             best = (term, r)
         }
     }
