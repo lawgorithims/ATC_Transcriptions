@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "python-legacy"))   # Python reference now lives under python-legacy/
 
 from atc_corrector import DeterministicCorrector  # noqa: E402
 from atc_stream import VADSegmenter  # noqa: E402

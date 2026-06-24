@@ -33,13 +33,13 @@ agent-transcripts/
 # Exception: the airport_context package's source data dir (airline telephony +
 # spoken-name override dictionaries) is tracked source, NOT regenerable data.
 # Only the top-level data/ (airport SQLite DB + OurAirports CSV cache) stays ignored.
-!airport_context/data/
-!airport_context/data/**
+!python-legacy/airport_context/data/
+!python-legacy/airport_context/data/**
 
 # Local-only files — NOT published to GitHub (present on the maintainer's machine).
 # NOTE: "local-only" is a PUBLISHING choice, not a purpose label. This list mixes
 # PRODUCTION pipeline code with TRAINING tooling — do not assume everything here is
-# "training". See the "Maintainer notes" section of README.md.
+# "training". See the "Maintainer notes" section of python-legacy/README.md.
 #
 # Production (live inference / proof-of-life), kept local:
 main.py
@@ -76,24 +76,24 @@ requirements.txt
 *.ogg
 
 # Exception: short proof-of-life snippets for diagnostics/diagnostic.py travel with the repo
-!tests/diagnostic_data/*.wav
+!python-legacy/tests/diagnostic_data/*.wav
 
 # Benchmark audio bundle (regenerable via diagnostics/build_bundle.py from local data/)
-diagnostics/bundle/
+python-legacy/diagnostics/bundle/
 
 # Model: exclude weights (host separately) and training checkpoints
-models/whisper-atc/model.safetensors
-models/whisper-atc/*.safetensors
-models/whisper-atc/checkpoint-*/
-models/whisper-atc/checkpoint-*/**
-models/whisper-atc/checkpoint-2200/
-models/whisper-atc/checkpoint-2400/
-models/whisper-atc/training_args.bin
+python-legacy/models/whisper-atc/model.safetensors
+python-legacy/models/whisper-atc/*.safetensors
+python-legacy/models/whisper-atc/checkpoint-*/
+python-legacy/models/whisper-atc/checkpoint-*/**
+python-legacy/models/whisper-atc/checkpoint-2200/
+python-legacy/models/whisper-atc/checkpoint-2400/
+python-legacy/models/whisper-atc/training_args.bin
 
 # large-v3-turbo fine-tune — weights hosted on HF (SingularityUS/ATC-whisper-turbo-v1);
 # keep config/tokenizer tracked, exclude weights + checkpoints + optimizer state
-models/whisper-atc-turbo/model.safetensors
-models/whisper-atc-turbo/*.safetensors
-models/whisper-atc-turbo/checkpoint-*/
-models/whisper-atc-turbo/checkpoint-*/**
-models/whisper-atc-turbo/training_args.bin
+python-legacy/models/whisper-atc-turbo/model.safetensors
+python-legacy/models/whisper-atc-turbo/*.safetensors
+python-legacy/models/whisper-atc-turbo/checkpoint-*/
+python-legacy/models/whisper-atc-turbo/checkpoint-*/**
+python-legacy/models/whisper-atc-turbo/training_args.bin

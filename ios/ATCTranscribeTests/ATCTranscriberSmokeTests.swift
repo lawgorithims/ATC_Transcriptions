@@ -11,7 +11,7 @@ import XCTest
 ///
 ///   MODEL=$(find ~/atc-coreml/small -name AudioEncoder.mlmodelc -exec dirname {} \;)
 ///   SIMCTL_CHILD_ATC_MODEL_DIR="$MODEL" \
-///   SIMCTL_CHILD_ATC_AUDIO_DIR="$HOME/ATC_Transcribe/tests/diagnostic_data" \
+///   SIMCTL_CHILD_ATC_AUDIO_DIR="$HOME/ATC_Transcribe/python-legacy/tests/diagnostic_data" \
 ///   xcodebuild test-without-building -scheme ATCTranscribe \
 ///     -only-testing:ATCTranscribeTests/ATCTranscriberSmokeTests -destination '...'
 final class ATCTranscriberSmokeTests: XCTestCase {

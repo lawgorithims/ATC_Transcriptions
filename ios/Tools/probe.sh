@@ -25,7 +25,7 @@ fi
 
 # Default to the converted small model + bundled diagnostic clips if not provided.
 export ATC_MODEL_DIR="${ATC_MODEL_DIR:-$(find "$HOME/atc-coreml/small" -name AudioEncoder.mlmodelc -exec dirname {} \; 2>/dev/null | head -1)}"
-export ATC_AUDIO_DIR="${ATC_AUDIO_DIR:-$HOME/ATC_Transcribe/tests/diagnostic_data}"
+export ATC_AUDIO_DIR="${ATC_AUDIO_DIR:-$HOME/ATC_Transcribe/python-legacy/tests/diagnostic_data}"
 
 "$XCODEGEN" generate >/dev/null
 xcodebuild build -scheme ATCKitProbe -destination 'platform=macOS' \
