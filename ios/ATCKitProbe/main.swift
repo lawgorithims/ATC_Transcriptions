@@ -131,6 +131,30 @@ do {
     print("PIPELINE: \(collector.records.count) transmissions, RTF p50=\(p50)")
     if collector.records.isEmpty { die("pipeline produced no transmissions") }
 
+    // --- confidence gate: real avgLogprob per clip + what the gate decides (threshold calibration) ---
+    print("--- confidence gate (avgLogprob / compression -> decision) ---")
+    let gctx = ATCContext()   // no facility config in the probe → ASR signals dominate
+    var outs: [(file: String, out: TranscriptionOutput)] = []
+    for clip in clips {
+        let out = (try? await transcriber.transcribe(clip.audio)) ?? .empty
+        if !out.text.isEmpty { outs.append((clip.file, out)) }
+    }
+    for sensitivity in [GateSensitivity.conservative, .balanced, .aggressive] {
+        let gate = ConfidenceGate(sensitivity: sensitivity)
+        var refine = 0, skip = 0
+        for (file, out) in outs {
+            let d = gate.assess(text: out.text, retrieved: gctx.retrieveKnowledge(for: out.text),
+                                asr: out.asr, inlineEdits: [])
+            if d.shouldRefine { refine += 1 } else { skip += 1 }
+            if sensitivity == .conservative {
+                print(String(format: "GATE %@  avgLogprob=%.3f compression=%.2f -> %@ (%@)",
+                             file, out.asr.avgLogprob, out.asr.compressionRatio,
+                             d.shouldRefine ? "REFINE" : "skip", d.reason))
+            }
+        }
+        print("GATE[\(sensitivity.rawValue)]: refine=\(refine) skip=\(skip)")
+    }
+
     // --- OPTIONAL: live LiveATC stream → VAD → preprocess → context → ANE transcribe ---
     // Validates the StreamAudioSource live-decode path (serial-queue concurrency + edge-server
     // candidate failover + stop/teardown) end-to-end on the real Neural Engine. Opt-in via

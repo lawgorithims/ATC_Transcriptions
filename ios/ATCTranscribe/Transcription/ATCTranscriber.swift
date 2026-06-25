@@ -2,6 +2,24 @@ import Foundation
 import CoreML
 import WhisperKit
 
+/// Whisper's own confidence for one decoded transmission, surfaced for the LLM confidence gate.
+/// `avgLogprob` is the mean segment log-probability (closer to 0 = more confident; very negative =
+/// the model was unsure); `compressionRatio` is the max over segments (high = repetitive/degenerate).
+/// `noSpeechProb` is intentionally omitted — it's stubbed to 0 in this WhisperKit build.
+struct ASRConfidence: Sendable, Equatable {
+    var avgLogprob: Float
+    var compressionRatio: Float
+    /// Neutral "no signal" value for non-Whisper callers and tests (treated as confident).
+    static let unknown = ASRConfidence(avgLogprob: 0, compressionRatio: 0)
+}
+
+/// One transcribed transmission plus the ASR confidence that produced it.
+struct TranscriptionOutput: Sendable {
+    var text: String
+    var asr: ASRConfidence
+    static let empty = TranscriptionOutput(text: "", asr: .unknown)
+}
+
 /// Fine-tuned Whisper inference for live ATC segments, on-device via WhisperKit
 /// (CoreML on the Apple Neural Engine). Swift port of `atc_transcriber.ATCTranscriber`.
 ///
@@ -63,10 +81,10 @@ actor ATCTranscriber {
         pipe = try await WhisperKit(config)
     }
 
-    /// Transcribe mono 16 kHz audio with an optional context prompt. Returns the
-    /// transcript, or "" when the decode stays degenerate after fallback (the caller
-    /// treats "" as "skip this segment"). Port of `ATCTranscriber.transcribe`.
-    func transcribe(_ audio: [Float], context: String? = nil) async throws -> String {
+    /// Transcribe mono 16 kHz audio with an optional context prompt. Returns the transcript +
+    /// the ASR confidence; `text` is "" when the decode stays degenerate after fallback (the
+    /// caller treats "" as "skip this segment"). Port of `ATCTranscriber.transcribe`.
+    func transcribe(_ audio: [Float], context: String? = nil) async throws -> TranscriptionOutput {
         guard let pipe else { throw TranscriberError.notLoaded }
 
         let options = DecodingOptions(
@@ -84,15 +102,21 @@ actor ATCTranscriber {
 
         let results = try await pipe.transcribe(audioArray: audio, decodeOptions: options)
 
-        // Drop if still degenerate after WhisperKit's temperature fallback — a segment
-        // above the compression-ratio threshold is a stuck repetition loop ("runway three
-        // right runway three right ..."), which gzip-compresses far better than speech.
+        // Aggregate Whisper's per-segment confidence: mean avgLogprob, max compressionRatio.
         let segments = results.flatMap(\.segments)
-        if segments.contains(where: { $0.compressionRatio > compressionRatioThreshold }) {
-            return ""
+        let compression = segments.map(\.compressionRatio).max() ?? 0
+        let avgLogprob = segments.isEmpty ? 0 : segments.map(\.avgLogprob).reduce(0, +) / Float(segments.count)
+        let asr = ASRConfidence(avgLogprob: avgLogprob, compressionRatio: compression)
+
+        // Drop if still degenerate after WhisperKit's temperature fallback — a segment above the
+        // compression-ratio threshold is a stuck repetition loop ("runway three right runway three
+        // right ..."), which gzip-compresses far better than speech.
+        if compression > compressionRatioThreshold {
+            return TranscriptionOutput(text: "", asr: asr)
         }
-        return results.map(\.text).joined(separator: " ")
+        let text = results.map(\.text).joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        return TranscriptionOutput(text: text, asr: asr)
     }
 
     /// Encode the airport-context string to prompt token ids, drop special tokens, and cap

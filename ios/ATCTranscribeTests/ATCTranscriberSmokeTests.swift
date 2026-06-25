@@ -39,7 +39,7 @@ final class ATCTranscriberSmokeTests: XCTestCase {
         for clip in Self.clips {
             let path = (audioDir as NSString).appendingPathComponent(clip.file)
             let audio = try AudioFile.load16kMono(path: path)
-            let text = try await transcriber.transcribe(audio)
+            let text = try await transcriber.transcribe(audio).text
             print("SMOKE \(clip.file)\n   ref: \(clip.reference)\n   got: \(text)")
             if !text.isEmpty { produced += 1 }
         }

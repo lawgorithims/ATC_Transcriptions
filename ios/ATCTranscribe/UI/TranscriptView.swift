@@ -77,6 +77,12 @@ struct TranscriptRow: View {
                         Text("refining…").font(.caption2)
                     }
                     .foregroundStyle(p.textDim)
+                } else if record.refinementState == .skippedConfident {
+                    HStack(spacing: 5) {
+                        Image(systemName: "checkmark.seal").font(.caption2)
+                        Text("high confidence").font(.caption2)
+                    }
+                    .foregroundStyle(p.textDim)
                 }
                 if !record.allEdits.isEmpty {
                     HStack(spacing: 6) {
