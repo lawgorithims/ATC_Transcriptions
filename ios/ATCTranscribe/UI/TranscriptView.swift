@@ -71,10 +71,17 @@ struct TranscriptRow: View {
                 }
                 Text(record.display).font(.callout).foregroundStyle(p.text)
                     .textSelection(.enabled)
-                if !record.corrections.isEmpty {
+                if record.refinementState == .pending {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.mini)
+                        Text("refining…").font(.caption2)
+                    }
+                    .foregroundStyle(p.textDim)
+                }
+                if !record.allEdits.isEmpty {
                     HStack(spacing: 6) {
                         Image(systemName: "wand.and.stars").font(.caption2)
-                        Text(record.corrections.map { "\($0.from) → \($0.to)" }.joined(separator: ",  "))
+                        Text(record.allEdits.map { "\($0.from) → \($0.to)" }.joined(separator: ",  "))
                             .font(.caption2)
                     }
                     .foregroundStyle(p.accent)

@@ -3,28 +3,22 @@ import Foundation
 import FoundationModels
 #endif
 
-/// On-device LLM correction stage — the Swift counterpart of `atc_corrector.OllamaCorrector`,
-/// using Apple's **Foundation Models** framework (the on-device model behind Apple
-/// Intelligence) in place of a local Ollama server. It is the FINAL, output-only stage:
-/// it fixes what the deterministic vocab matcher can't — genuine semantic mishears,
-/// callsign / runway / waypoint / taxiway substitutions, ICAO phraseology, and repetition
-/// artifacts — while preserving the raw transcript and recording every edit.
+/// Apple Foundation Models correction backend — the **alternate** on-device LLM (kept pluggable
+/// behind `LLMCorrector` alongside the primary llama.cpp `LocalLLMCorrector`). It uses Apple's
+/// on-device model (Apple Intelligence) via guided generation. Unlike the CPU llama.cpp backend
+/// it runs on Apple-managed silicon (the ANE), so it can contend with WhisperKit — offered as an
+/// option, not the default.
 ///
-/// Two product rules carry over verbatim from the Python design:
-///   * OPTIONAL — only built when `CorrectionConfig.llmEnabled` is set AND the framework
-///     is present (`makeFoundationModelsCorrector` returns nil otherwise), so a device
-///     without it simply runs the deterministic stage.
-///   * GRACEFUL — any failure (model unavailable/slow, guardrail, unparseable output)
-///     returns the text unchanged, so the LLM can never break the live feed.
-///
-/// Requires iOS 26 / macOS 26 and an Apple-Intelligence-capable device; weak-linked via
-/// `@available` so the app still builds and runs (deterministic-only) on older targets.
+/// Shares the honing (`ATCCorrectionPrompt`) and the guardrails (`CorrectionValidator`) with the
+/// local backend, so both behave consistently. Two product rules carry over:
+///   * OPTIONAL — only built on iOS 26 / macOS 26 (`makeFoundationModelsCorrector` returns nil
+///     otherwise); the per-device "is Apple Intelligence ready" check happens at correction time.
+///   * GRACEFUL — any failure returns the text unchanged, so the LLM can never break the feed.
 
 #if canImport(FoundationModels)
 
-/// Structured output the model is constrained to produce — mirrors the strict-JSON
-/// `{"corrected": ..., "edits": [{"from","to","reason"}]}` contract of the Ollama backend,
-/// but enforced by guided generation instead of a `format: "json"` request.
+/// Structured output the model is constrained to produce — the `edits` are authoritative (the
+/// validator re-applies them); `corrected` is advisory, mirroring the local backend.
 @available(iOS 26.0, macOS 26.0, *)
 @Generable
 struct LLMCorrectionResult {
@@ -46,83 +40,55 @@ struct LLMCorrectionEdit {
 }
 
 @available(iOS 26.0, macOS 26.0, *)
-struct FoundationModelsCorrector: Corrector {
-    let vocabProvider: () -> [String]
+struct FoundationModelsCorrector: LLMCorrector {
+    let knowledge: ATCKnowledgeBase
+    let feedKey: String?
+    let backend = "foundation"
 
-    static let instructions = """
-    You correct transcription errors in air-traffic-control (ATC) radio transcripts produced \
-    by a speech model. Use the provided known vocabulary (airport facility names, runways, \
-    taxiways, fixes and waypoints, navaids, procedures, and airline callsigns) together with \
-    standard ICAO phraseology to fix only CLEAR mistakes:
-    - misheard callsigns, runway / taxiway / waypoint / navaid names, and airline names that \
-    closely match a known-vocabulary term;
-    - standard ICAO phraseology and read-back wording;
-    - obvious repetition where the model accidentally repeated a word or phrase.
-    Make the MINIMUM number of edits. Never invent or add information that is not in the \
-    transcript. Preserve every number, heading, altitude, frequency, and squawk code exactly \
-    as transcribed. If you are not confident an edit is correct, leave that text unchanged.
-    """
-
-    func correct(_ text: String, history: [String]) async -> Correction {
+    func correct(text: String, history: [String], retrieved: RetrievedContext) async -> Correction {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return .unchanged(text, backend: "foundation") }
+        guard !trimmed.isEmpty else { return .unchanged(text, backend: backend) }
         // Per-device gate: Apple Intelligence may be off, downloading, or unsupported.
         guard case .available = SystemLanguageModel.default.availability else {
-            return .unchanged(text, backend: "foundation")
+            return .unchanged(text, backend: backend)
         }
 
-        let vocab = vocabProvider().filter { !$0.isEmpty }.joined(separator: ", ")
-        let prompt = """
-        Known vocabulary: \(vocab.isEmpty ? "(none)" : vocab)
-        Recent transmissions: \(history.isEmpty ? "(none)" : history.joined(separator: " "))
-        Transcript to correct: \(text)
-        """
-
+        let prompt = ATCCorrectionPrompt.userMessage(transcript: text,
+                                                     retrieved: retrieved.block,
+                                                     history: history)
         do {
-            // A fresh session per transmission: each correction is independent (no rolling
-            // chat history that would bias the next one). The model itself is loaded once.
-            let session = LanguageModelSession(instructions: { Self.instructions })
+            // A fresh session per transmission: each correction is independent (no rolling chat
+            // history that would bias the next). The model itself is loaded once by the system.
+            let session = LanguageModelSession(instructions: { ATCCorrectionPrompt.systemInstructions })
             let response = try await session.respond(
                 to: prompt,
                 generating: LLMCorrectionResult.self,
                 options: GenerationOptions(temperature: 0))
-            let result = response.content
-            let corrected = result.corrected.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !corrected.isEmpty, corrected != text else {
-                return .unchanged(text, backend: "foundation")
+            let edits = response.content.edits.map {
+                CorrectionEdit(from: $0.from, to: $0.to,
+                               reason: $0.reason.isEmpty ? "llm" : $0.reason, backend: backend)
             }
-            let edits = result.edits.compactMap { e -> CorrectionEdit? in
-                let from = e.from.trimmingCharacters(in: .whitespaces)
-                let to = e.to.trimmingCharacters(in: .whitespaces)
-                guard !from.isEmpty, !to.isEmpty else { return nil }
-                return CorrectionEdit(from: from, to: to,
-                                      reason: e.reason.isEmpty ? "llm" : e.reason,
-                                      backend: "foundation")
-            }
-            return Correction(raw: text, corrected: corrected, changed: true, edits: edits, backend: "foundation")
+            let allowed = CorrectionValidator.allowedTerms(retrieved: retrieved, knowledge: knowledge,
+                                                           freqType: frequencyType(forFeedKey: feedKey))
+            return CorrectionValidator(allowed: allowed).validate(raw: text, edits: edits, backend: backend)
         } catch {
             // Model unavailable / slow / guardrail / unparseable — never break the feed.
-            return .unchanged(text, backend: "foundation")
+            return .unchanged(text, backend: backend)
         }
     }
 }
 
-/// Build the on-device LLM corrector when the framework is present AND the OS is new
-/// enough. Returns nil on older OSes (the caller then runs deterministic-only). The
-/// per-device "is Apple Intelligence actually ready" check happens at correction time via
-/// `SystemLanguageModel.availability`, so enabling the toggle on an incapable device is
-/// harmless — every correction simply degrades to "unchanged".
-func makeFoundationModelsCorrector(vocab: @escaping () -> [String]) -> Corrector? {
+/// Build the Foundation Models backend when the framework is present AND the OS is new enough.
+func makeFoundationModelsCorrector(knowledge: ATCKnowledgeBase, feedKey: String?) -> LLMCorrector? {
     if #available(iOS 26.0, macOS 26.0, *) {
-        return FoundationModelsCorrector(vocabProvider: vocab)
+        return FoundationModelsCorrector(knowledge: knowledge, feedKey: feedKey)
     }
     return nil
 }
 
 #else
 
-/// Framework absent in this SDK — the LLM stage is unavailable, so correction runs
-/// deterministic-only.
-func makeFoundationModelsCorrector(vocab: @escaping () -> [String]) -> Corrector? { nil }
+/// Framework absent in this SDK — the Foundation Models backend is unavailable.
+func makeFoundationModelsCorrector(knowledge: ATCKnowledgeBase, feedKey: String?) -> LLMCorrector? { nil }
 
 #endif

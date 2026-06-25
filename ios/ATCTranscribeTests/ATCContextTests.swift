@@ -38,7 +38,9 @@ final class ATCContextTests: XCTestCase {
         }
         """
         let cfg = try AirportConfig.decode(Data(json.utf8))
-        let ctx = ATCContext(config: cfg, feedKey: "f")
+        // Inject an empty knowledge base so the enriched vocab is exactly the local config terms
+        // (with the real KB it would also include airline callsigns / facility names).
+        let ctx = ATCContext(config: cfg, feedKey: "f", knowledge: .empty)
 
         let prompt = ctx.buildPrompt()
         XCTAssertTrue(prompt.contains("Air traffic control radio transcript from Lone Star Approach (17/35C Final)."))
