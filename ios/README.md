@@ -53,15 +53,28 @@ into a single app. Audio flows top to bottom; the Swift type is on the left, its
         ▼
    ATCTranscriber  (Transcription/)  fine-tuned Whisper (WhisperKit / CoreML)
         │                            → Apple Neural Engine · turbo ⇄ small (adaptive)
-        ▼                            → raw transcript
-   Fast inline corrector (Core/)     RepetitionCollapse → DeterministicCorrector
-        │                            optional · Correction { raw, corrected, edits[] }
+        ▼                            → raw transcript + ASR confidence (avgLogprob)
+   ┌─ two-tier correction ─────────  transparent: raw always kept, every edit shown ─┐
+   │    ▼  FAST inline  (in LivePipeline.process — instant, never blocks the feed)    │
+   │  RepetitionCollapse → DeterministicCorrector    numbers · vocab/phonetic · repeats│
+   │    │                                            → TranscriptRecord shown NOW      │
+   │    ▼  ConfidenceGate (Core/)   run the LLM only if something looks suspicious —   │
+   │    │     low avgLogprob · vocab near-miss · non-English · repetition; else SKIP   │
+   │    ▼  SLOW background  (LLMRefiner · .background QoS · bounded queue · off-actor)  │
+   │  RAG retrieve (ATCKnowledgeRetriever) → LLM (llama.cpp CPU / Foundation Models)   │
+   │  → CorrectionValidator guardrails               → record updated in place         │
+   └──────────────────────────────────────────────────────────────────────────────────┘
+        │
         ▼
    LivePipeline  (actor, Engine/)    drives the loop · builds TranscriptRecord + latency
-        │                            └─▶ LLMRefiner (bg) · RAG + llama.cpp/Foundation + guards
+        │
         ▼
    TranscriptionSession → ConsoleView   (UI/ · SwiftUI: live records, themes, controls)
 ```
+
+The correction layer is the substance of the on-device work; see **[Correction pipeline](#correction-pipeline)**
+below for the full rationale (why it's two-tier, why the LLM is decoupled + CPU-only, why the
+confidence gate exists, and how the guardrails keep it safe).
 
 The same `LivePipeline` / `Corrector` types run in the headless `ATCKitProbe` (native
 ANE) and in the app, so the neural path is identical whether it's being tested or shipped.

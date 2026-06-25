@@ -6,13 +6,20 @@ model. The repo holds **two implementations** of the same pipeline:
 | Folder | What it is | Start here |
 | --- | --- | --- |
 | [`python-legacy/`](python-legacy/) | The original **Python** implementation: model fine-tuning/training tooling, the airport-context engine, the live ATC pipeline, and a server + browser console (a thin client that talks to a Python host running the model). | [`python-legacy/README.md`](python-legacy/README.md) |
-| [`ios/`](ios/) | A native **iOS / iPadOS** port that runs the **entire pipeline on-device** (capture → VAD → preprocessing → airport-context prompt → Whisper via CoreML/WhisperKit → optional on-device correction), with no server. Universal iPhone + iPad. | [`ios/README.md`](ios/README.md) |
+| [`ios/`](ios/) | A native **iOS / iPadOS** port that runs the **entire pipeline on-device** (capture → VAD → preprocessing → airport-context prompt → Whisper via CoreML/WhisperKit → two-tier on-device correction), with no server. Universal iPhone + iPad. | [`ios/README.md`](ios/README.md) |
 
 Both share the same design — VAD segmentation, radio-audio preprocessing, airport-context
 prompting, the fine-tuned Whisper models, and a transparent post-ASR correction layer. The
 iOS app is a faithful port of the Python modules; the Swift↔Python mapping is documented in
 [`ios/README.md`](ios/README.md), and behavior parity is cross-checked by
 [`ios/Tools/parity_check.py`](ios/Tools/parity_check.py) against the real Python reference.
+
+The iOS correction layer goes beyond the Python original: it is **two-tier** — an instant
+deterministic fixer (numbers, vocabulary, repetition) plus a **decoupled, CPU-only RAG
+"context-fixer" LLM** (llama.cpp, or Apple Foundation Models) that runs in the background so it
+never slows transcription, behind output guardrails and a **confidence gate** that only invokes
+it when a transmission looks suspicious. The full rationale is in
+[`ios/README.md` → Correction pipeline](ios/README.md#correction-pipeline).
 
 ## Repository layout
 
