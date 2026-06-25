@@ -48,11 +48,16 @@ final class AppModel: ObservableObject {
     @Published var polRunning = false
 
     // Correction layer (off by default — port of the `correction:` config block).
-    // `correctionEnabled` runs the deterministic vocab/number fixer; `llmEnabled` adds the
-    // on-device Apple Foundation Models stage. Toggling either rebuilds the corrector and
-    // hot-swaps it into the live session.
-    @Published var correctionEnabled = false { didSet { rebuildCorrector() } }
-    @Published var llmEnabled = false { didSet { rebuildCorrector() } }
+    // `correctionEnabled` runs the fast inline tier (repetition collapse + deterministic
+    // vocab/number fixer); `llmBackend` picks the optional slow-tier LLM (off / local llama.cpp
+    // on the CPU / Apple Foundation Models). Toggling either hot-swaps into the live session.
+    @Published var correctionEnabled = false { didSet { rebuildCorrector(); rebuildLLM() } }
+    @Published var llmBackend: LLMBackend = .off { didSet { if llmBackend != oldValue { rebuildLLM() } } }
+
+    // Confidence gate: only run the AI fixer when a transmission looks suspicious. `skipWhenConfident`
+    // toggles the gate; `gateSensitivity` trades correction coverage against CPU savings.
+    @Published var skipWhenConfident = true { didSet { applyGate() } }
+    @Published var gateSensitivity: GateSensitivity = .conservative { didSet { applyGate() } }
 
     @Published var showSettings = false
 
@@ -60,6 +65,7 @@ final class AppModel: ObservableObject {
     private var session: TranscriptionSession?
     private var clips: [DiagnosticClip] = []
     private var liveContext: ATCContext?
+    private var feedKey: String?
     private var liveMode = false
 
     init() {
@@ -78,7 +84,8 @@ final class AppModel: ObservableObject {
         }
         if let link = value("--link") { streamURL = link }
         if args.contains("--correct") { correctionEnabled = true }
-        if args.contains("--llm") { correctionEnabled = true; llmEnabled = true }
+        if args.contains("--llm") { correctionEnabled = true; llmBackend = .local }
+        if args.contains("--llm-foundation") { correctionEnabled = true; llmBackend = .foundation }
 
         #if targetEnvironment(simulator)
         deviceLabel = "CPU (Simulator)"
@@ -87,17 +94,27 @@ final class AppModel: ObservableObject {
         let cpuOnly = false
         #endif
 
-        if let modelDir = value("--model-dir") {
+        // Resolve the model + demo clips. Explicit launch flags (Simulator verification)
+        // win; otherwise fall back to the copies bundled into the app — the shipping path,
+        // since a TestFlight build on a device has no command line. With a bundled model
+        // the app is fully functional on first launch; only a model-less build falls
+        // through to the populated demo layout.
+        let modelDir = value("--model-dir") ?? Self.bundledModelDir()
+        let audioDir = value("--audio-dir") ?? Self.bundledDemoClipsDir()
+        if let modelDir {
             liveMode = true
             records = []
             stats = LatencyStats()
             status = .idle
             detail = "Loading model…"
-            let audioDir = value("--audio-dir")
+            // Default to the self-contained Replay demo when clips ship with the app, so a
+            // fresh install transcribes on the first Start with no network or mic needed
+            // (the picker can still switch to the live feed / mic). An explicit --source wins.
+            if value("--source") == nil, audioDir != nil { source = .replay }
             let autostart = args.contains("--autostart")
             Task { await setupLive(modelDir: modelDir, audioDir: audioDir, cpuOnly: cpuOnly, autostart: autostart) }
         } else {
-            seedSampleData()   // demo mode — populated layout for design/screenshots
+            seedSampleData()   // no model bundled — populated layout for design/screenshots
         }
     }
 
@@ -114,11 +131,28 @@ final class AppModel: ObservableObject {
             detail = "Model failed to load: \(error.localizedDescription)"
             return
         }
-        let context = ATCContext()
+
+        // Load a facility config so the corrector vocabulary + RAG retrieval actually have data
+        // (the shipping default is KDFW; an airport typed in the UI overrides it). Previously
+        // ATCContext() was empty, so vocab()/retrieval were no-ops.
+        let configName = airport.isEmpty ? "kdfw" : airport.lowercased()
+        let cfg = try? AirportConfig.load(named: configName)
+        let feedKey = cfg?.streams?.keys.sorted().first
+        self.feedKey = feedKey
+        let context = ATCContext(config: cfg, feedKey: feedKey)
         self.liveContext = context
+
+        // Build the optional slow-tier LLM off the main actor (loading the GGUF can take ~1s).
+        let cfgCorr = correctionConfig
+        let knowledge = context.knowledge
+        let llm = correctionEnabled
+            ? await Task.detached(priority: .utility) { buildLLMCorrector(config: cfgCorr, knowledge: knowledge, feedKey: feedKey) }.value
+            : nil
+
         let pipeline = LivePipeline(transcriber: transcriber, context: context,
                                     preprocessor: AudioPreprocessor(aggressiveRadio: true),
-                                    corrector: currentCorrector())
+                                    corrector: currentCorrector(), llm: llm,
+                                    gateEnabled: skipWhenConfident, gateSensitivity: gateSensitivity)
         let session = TranscriptionSession(pipeline: pipeline)
         session.$records.assign(to: &$records)   // mirror live session state into the UI
         session.$status.assign(to: &$status)
@@ -137,20 +171,40 @@ final class AppModel: ObservableObject {
     private var correctionConfig: CorrectionConfig {
         var c = CorrectionConfig()
         c.enabled = correctionEnabled
-        c.llmEnabled = llmEnabled
+        c.llmBackend = correctionEnabled ? llmBackend : .off
         return c
     }
 
-    /// Build a corrector from the current toggles + the live airport vocab: `NullCorrector`
-    /// when off, the deterministic stage when only `correctionEnabled`, or deterministic +
-    /// on-device LLM when `llmEnabled`.
+    /// Build the fast inline corrector from the current toggles + the live airport vocab:
+    /// `NullCorrector` when off, else repetition collapse + the deterministic vocab/number fixer.
     private func currentCorrector() -> Corrector {
         buildCorrector(config: correctionConfig, vocab: { [weak self] in self?.liveContext?.vocab() ?? [] })
     }
 
-    /// Rebuild and hot-swap the corrector into the running session (a toggle changed).
+    /// Rebuild and hot-swap the fast inline corrector into the running session (a toggle changed).
     private func rebuildCorrector() {
         session?.setCorrector(currentCorrector())
+    }
+
+    /// Push the confidence-gate settings into the running session (a toggle/sensitivity changed).
+    private func applyGate() {
+        session?.setGate(enabled: skipWhenConfident, sensitivity: gateSensitivity)
+    }
+
+    /// Rebuild and hot-swap the slow-tier LLM backend (off / local llama.cpp / Foundation
+    /// Models). Built off the main actor so a model load never janks the UI.
+    private func rebuildLLM() {
+        guard liveMode, let context = liveContext else { return }
+        let cfg = correctionConfig
+        let feedKey = self.feedKey
+        let knowledge = context.knowledge
+        let enabled = correctionEnabled
+        Task {
+            let llm = enabled
+                ? await Task.detached(priority: .utility) { buildLLMCorrector(config: cfg, knowledge: knowledge, feedKey: feedKey) }.value
+                : nil
+            session?.setLLM(llm)
+        }
     }
 
     // MARK: controls
@@ -213,6 +267,33 @@ final class AppModel: ObservableObject {
             if let s = result.realtimeSpeed { self.measuredSpeed = s }
             self.polRunning = false
         }
+    }
+
+    // MARK: bundled resources
+
+    /// Locate the CoreML model shipped inside the app bundle. The converter writes the
+    /// `.mlmodelc` set into a sanitized-id subfolder, so we search for the
+    /// `AudioEncoder.mlmodelc` marker (the same file `TranscriberEngine.modelAvailable`
+    /// checks) and return its parent — no need to hardcode the model id. The model dir is
+    /// added to the app target as a `type: folder` reference in project.yml, so it lands at
+    /// `<bundle>/Models/…`. Returns nil for a model-less (demo-only) build.
+    static func bundledModelDir() -> String? {
+        guard let root = Bundle.main.resourceURL?.appendingPathComponent("Models") else { return nil }
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: root.path),
+              let walker = fm.enumerator(at: root, includingPropertiesForKeys: nil) else { return nil }
+        for case let url as URL in walker where url.lastPathComponent == "AudioEncoder.mlmodelc" {
+            return url.deletingLastPathComponent().path
+        }
+        return nil
+    }
+
+    /// The bundled diagnostic-clips folder (`manifest.json` + wavs) for the Replay demo,
+    /// or nil if not shipped. Also a `type: folder` reference → `<bundle>/DemoClips/`.
+    static func bundledDemoClipsDir() -> String? {
+        guard let dir = Bundle.main.resourceURL?.appendingPathComponent("DemoClips") else { return nil }
+        let manifest = dir.appendingPathComponent("manifest.json")
+        return FileManager.default.fileExists(atPath: manifest.path) ? dir.path : nil
     }
 
     private static func loadClips(_ audioDir: String) throws -> [DiagnosticClip] {

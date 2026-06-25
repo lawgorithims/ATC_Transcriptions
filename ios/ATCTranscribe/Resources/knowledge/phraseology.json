@@ -1,0 +1,69 @@
+{
+  "_comment": "Frequency-specific ICAO phraseology + spelling hints, ported from python-legacy/airport_context/phrases.py and spoken.py. Hand-curated; deliberately short. The retriever prefers local terms (callsigns, runways, facility names) over these generic phrases when the prompt budget is tight. Keys starting with '_' are ignored.",
+  "phrases": {
+    "clearance": [
+      "cleared to", "via", "as filed", "then as filed", "maintain", "expect",
+      "departure frequency", "squawk", "hold for release", "released for departure",
+      "read back correct", "clearance on request"
+    ],
+    "ground": [
+      "taxi via", "hold short", "cross runway", "give way", "follow", "monitor tower",
+      "contact tower", "pushback approved", "progressive taxi", "without delay",
+      "ramp", "gate"
+    ],
+    "tower": [
+      "cleared to land", "cleared for takeoff", "line up and wait", "continue",
+      "go around", "extend downwind", "make left traffic", "make right traffic",
+      "report midfield", "traffic in sight", "wind check", "cleared the option"
+    ],
+    "approach": [
+      "radar contact", "climb and maintain", "descend and maintain", "turn left heading",
+      "turn right heading", "fly heading", "proceed direct", "resume own navigation",
+      "cleared visual approach", "cleared ILS approach", "cleared RNAV approach",
+      "maintain until established", "contact tower", "contact departure"
+    ],
+    "departure": [
+      "radar contact", "climb and maintain", "descend and maintain", "turn left heading",
+      "turn right heading", "fly heading", "proceed direct", "resume own navigation",
+      "cleared visual approach", "cleared ILS approach", "cleared RNAV approach",
+      "maintain until established", "contact tower", "contact departure"
+    ],
+    "center": [
+      "radar contact", "climb and maintain", "descend and maintain", "maintain flight level",
+      "cleared direct", "proceed direct", "resume own navigation", "contact center",
+      "expect higher", "say altitude", "ident"
+    ],
+    "ctaf": [
+      "traffic", "left downwind", "right downwind", "base", "final", "short final",
+      "clear of runway", "departing runway", "taking the runway", "crosswind",
+      "straight in", "any traffic please advise"
+    ],
+    "unknown": [
+      "cleared to land", "cleared for takeoff", "line up and wait", "taxi via",
+      "hold short", "cross runway", "climb and maintain", "descend and maintain",
+      "fly heading", "proceed direct", "cleared approach", "contact tower",
+      "contact departure"
+    ]
+  },
+  "spelling": {
+    "clearance": ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "niner", "fife", "squawk", "altimeter"],
+    "ground": ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "niner", "fife", "squawk", "altimeter"],
+    "tower": ["niner", "fife", "tree", "squawk", "altimeter", "localizer", "glideslope", "RNAV", "VOR", "DME"],
+    "approach": ["niner", "fife", "tree", "squawk", "altimeter", "localizer", "glideslope", "RNAV", "VOR", "DME"],
+    "departure": ["niner", "fife", "tree", "squawk", "altimeter", "localizer", "glideslope", "RNAV", "VOR", "DME"],
+    "center": ["niner", "fife", "tree", "squawk", "altimeter", "localizer", "glideslope", "RNAV", "VOR", "DME"],
+    "ctaf": ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "niner", "fife", "tree", "squawk", "altimeter"],
+    "unknown": ["Alpha", "Bravo", "Charlie", "niner", "fife", "tree", "squawk", "altimeter", "localizer", "RNAV", "VOR", "DME"]
+  },
+  "phonetic": {
+    "A": "alpha", "B": "bravo", "C": "charlie", "D": "delta", "E": "echo",
+    "F": "foxtrot", "G": "golf", "H": "hotel", "I": "india", "J": "juliet",
+    "K": "kilo", "L": "lima", "M": "mike", "N": "november", "O": "oscar",
+    "P": "papa", "Q": "quebec", "R": "romeo", "S": "sierra", "T": "tango",
+    "U": "uniform", "V": "victor", "W": "whiskey", "X": "xray", "Y": "yankee", "Z": "zulu"
+  },
+  "digits": {
+    "0": "zero", "1": "one", "2": "two", "3": "three", "4": "four",
+    "5": "five", "6": "six", "7": "seven", "8": "eight", "9": "niner"
+  }
+}
