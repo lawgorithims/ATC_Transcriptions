@@ -33,23 +33,35 @@ packages:
   argmax-oss-swift:
     url: https://github.com/argmaxinc/argmax-oss-swift.git
     from: "1.0.0"
+  # llama.cpp powers the local CPU context-fixer LLM (LocalLLMCorrector / LlamaContext).
+  # The repo tags releases as bNNNN (not SemVer), so pin a revision/tag on the Mac for
+  # reproducibility; `branch: master` resolves the latest. Product name is `llama`.
+  llama-cpp:
+    url: https://github.com/ggml-org/llama.cpp.git
+    branch: master
 
 targets:
   ATCTranscribe:
     type: application
     platform: iOS
     sources:
-      # The bundled CoreML model + demo clips are added as FOLDER REFERENCES below (not
-      # the recursive glob) so the `.mlmodelc` directory bundles ship verbatim and the
-      # clip folder keeps its manifest+wavs together; exclude them from the glob to avoid
-      # double-adding / flattening.
+      # Resource folders are added as FOLDER REFERENCES below (not the recursive glob) so the
+      # `.mlmodelc`/`.gguf` bundles ship verbatim and JSON folders keep their subdirectory in the
+      # built bundle (so `Bundle.url(forResource:subdirectory:)` resolves); exclude them from the
+      # glob to avoid double-adding / flattening.
       - path: ATCTranscribe
         excludes:
           - "Resources/Models"
           - "Resources/DemoClips"
-      - path: ATCTranscribe/Resources/Models      # ~465 MB `small` model, placed by Tools/testflight.sh
-        type: folder                              #   (empty .gitkeep on Simulator builds → demo mode)
+          - "Resources/knowledge"
+          - "Resources/airport_configs"
+      - path: ATCTranscribe/Resources/Models      # `small` Whisper model + `llm/<model>.gguf`,
+        type: folder                              #   placed by Tools/testflight.sh + fetch_llm_model.sh
       - path: ATCTranscribe/Resources/DemoClips    # 5 known-good clips → offline Replay demo
+        type: folder
+      - path: ATCTranscribe/Resources/knowledge    # RAG corpus: airlines / overrides / phraseology
+        type: folder
+      - path: ATCTranscribe/Resources/airport_configs   # facility configs (runways, fixes, streams)
         type: folder
     settings:
       base:
@@ -79,6 +91,8 @@ targets:
     dependencies:
       - package: argmax-oss-swift
         product: WhisperKit
+      - package: llama-cpp
+        product: llama
 
   ATCTranscribeTests:
     type: bundle.unit-test
@@ -110,6 +124,8 @@ targets:
     dependencies:
       - package: argmax-oss-swift
         product: WhisperKit
+      - package: llama-cpp
+        product: llama
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.atctranscribe.probe

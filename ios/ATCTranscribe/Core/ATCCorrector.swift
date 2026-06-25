@@ -270,26 +270,44 @@ struct ChainCorrector: Corrector {
 
 // MARK: - Config & factory
 
+/// Which on-device LLM drives the slow (background) correction tier, if any.
+enum LLMBackend: String, Sendable, CaseIterable {
+    case off          // deterministic only
+    case local        // bundled llama.cpp model on the CPU (primary)
+    case foundation   // Apple Foundation Models / Apple Intelligence (alternate)
+}
+
 /// Mirrors the `correction:` block of `config.yaml`. Off by default.
 struct CorrectionConfig {
     var enabled = false
     var deterministic = true
+    /// Cheap repetition-loop collapse in the fast inline tier (on when correction is enabled).
+    var repetition = true
     var threshold = 0.84
     var numbers = true
     var phonetic = true
     var phoneticMin = 0.62
-    /// Optional local-LLM backend. On iOS this becomes Apple Foundation Models
-    /// (added later); the contract matches the Python `llm:` block.
-    var llmEnabled = false
+    /// The slow-tier LLM backend (off / local llama.cpp / Apple Foundation Models). The LLM
+    /// runs off the transcription hot path via `LLMRefiner`, not as an inline corrector stage.
+    var llmBackend: LLMBackend = .off
+
+    /// Legacy boolean shim (kept for older call sites/tests): maps to the Foundation Models
+    /// backend when set on, `.off` when cleared.
+    var llmEnabled: Bool {
+        get { llmBackend != .off }
+        set { llmBackend = newValue ? (llmBackend == .off ? .foundation : llmBackend) : .off }
+    }
 }
 
-/// Build a corrector from config + a live vocab provider, or a no-op when disabled.
-/// Returns `NullCorrector` when disabled or no backend is enabled, so an "off" config
-/// is a genuine no-op. Port of `atc_corrector.build_corrector`.
+/// Build the **fast inline** corrector from config + a live vocab provider, or a no-op when
+/// disabled. This is the hot-path tier (`NullCorrector` when off; else repetition collapse +
+/// the deterministic vocab/number fixer). The slow LLM tier is built separately and run by
+/// `LLMRefiner` so it can't stall transcription. Port of `atc_corrector.build_corrector`.
 func buildCorrector(config: CorrectionConfig, vocab: @escaping () -> [String]) -> Corrector {
     guard config.enabled else { return NullCorrector() }
 
     var stages: [Corrector] = []
+    if config.repetition { stages.append(RepetitionCollapse()) }
     if config.deterministic {
         stages.append(DeterministicCorrector(
             vocabProvider: vocab,
@@ -298,14 +316,26 @@ func buildCorrector(config: CorrectionConfig, vocab: @escaping () -> [String]) -
             phoneticMin: config.phoneticMin,
             numbers: config.numbers))
     }
-    // Optional on-device LLM stage (Apple Foundation Models). Present only when the
-    // framework is in the SDK / the OS is new enough; nil (skipped) otherwise, so a
-    // device without it simply runs the deterministic stage. Off by default.
-    if config.llmEnabled, let llm = makeFoundationModelsCorrector(vocab: vocab) {
-        stages.append(llm)
-    }
 
     if stages.isEmpty { return NullCorrector() }
     if stages.count == 1 { return stages[0] }
     return ChainCorrector(correctors: stages)
+}
+
+/// Build the optional slow-tier LLM corrector for the selected backend, or nil. The local
+/// backend loads the bundled GGUF (CPU); the foundation backend weak-links Apple Intelligence.
+/// Both return nil gracefully when unavailable, so the pipeline just runs deterministic-only.
+func buildLLMCorrector(config: CorrectionConfig,
+                       knowledge: ATCKnowledgeBase,
+                       feedKey: String?) -> LLMCorrector? {
+    guard config.enabled else { return nil }
+    switch config.llmBackend {
+    case .off:
+        return nil
+    case .local:
+        guard let engine = makeLocalLLMEngine() else { return nil }
+        return LocalLLMCorrector(engine: engine, knowledge: knowledge, feedKey: feedKey)
+    case .foundation:
+        return makeFoundationModelsCorrector(knowledge: knowledge, feedKey: feedKey)
+    }
 }

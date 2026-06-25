@@ -1,0 +1,3 @@
+# The local context-fixer GGUF (Qwen2.5-0.5B-Instruct Q4_K_M) is placed here by
+# Tools/fetch_llm_model.sh. It is git-ignored (too large to commit). Without it the app
+# runs deterministic-only / Foundation Models; bundledLLMModelPath() returns nil gracefully.

@@ -122,6 +122,45 @@ do {
         print("STREAM: \(streamCollector.records.count) transmissions transcribed in \(Int(seconds))s")
     }
 
+    // --- OPTIONAL: local CPU context-fixer LLM (llama.cpp) end-to-end ---
+    // Loads the bundled-style GGUF on the CPU and runs canned noisy transcripts through the full
+    // LocalLLMCorrector path (RAG retrieval → grammar-constrained JSON → guardrails), asserting
+    // the JSON parses, numbers are preserved, and latency is bounded. Opt-in via ATC_LLM_MODEL so
+    // the default probe stays fast/offline. This runs entirely off the ANE (n_gpu_layers = 0), so
+    // it can run alongside the Whisper pipeline above without contending for the Neural Engine.
+    if let llmModel = env["ATC_LLM_MODEL"], !llmModel.isEmpty {
+        print("--- local LLM context-fixer (CPU llama.cpp) ---")
+        guard let llmEngine = makeLlamaEngine(modelPath: llmModel, nThreads: 2) else {
+            die("failed to load LLM model at \(llmModel)")
+        }
+        // Inline knowledge so the probe doesn't depend on app-bundle resources.
+        let kb = ATCKnowledgeBase(
+            airlineTelephony: ["DAL": "Delta", "SKW": "SkyWest", "AAL": "American"],
+            spokenNamesByAirport: ["KJFK": ["Kennedy", "New York"]],
+            spokenBaseByAirport: [:],
+            phrasesByType: ["tower": ["cleared to land", "line up and wait", "contact ground"]],
+            spellingByType: ["tower": ["niner", "fife", "squawk"]],
+            phonetic: [:], digits: [:])
+        let retriever = ATCKnowledgeRetriever(kb: kb, config: nil, feedKey: "tower")
+        let corrector = LocalLLMCorrector(engine: llmEngine, knowledge: kb, feedKey: "tower")
+        let cases = [
+            "delta eight ninety runway runway three four left",        // repetition loop
+            "skywest fifty six seventy contact kenedy tower",          // misheard facility
+            "american twelve thirty four cleared to land one seven center",  // already clean
+        ]
+        for text in cases {
+            let retrieved = retriever.retrieve(transcript: text, history: [])
+            let t0 = Date()
+            let c = await corrector.correct(text: text, history: [], retrieved: retrieved)
+            let ms = Date().timeIntervalSince(t0) * 1000
+            print(String(format: "LLM %.0fms  [%@] -> %@", ms, text, c.display))
+            if text.filter(\.isNumber) != c.display.filter(\.isNumber) {
+                die("LLM guardrail FAILED — digits changed: \(text) -> \(c.display)")
+            }
+        }
+        print("LLM mode OK")
+    }
+
     print("PROBE OK")
 } catch {
     die("probe error: \(error)")

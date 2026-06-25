@@ -43,6 +43,8 @@ final class TranscriptionSession: ObservableObject {
         task = Task { [pipeline] in
             await pipeline.run(source: source) { [weak self] record in
                 Task { @MainActor in self?.append(record) }
+            } onRefined: { [weak self] id, outcome in
+                Task { @MainActor in self?.applyRefinement(id: id, outcome: outcome) }
             }
             await MainActor.run {
                 if self.status == .live { self.status = .stopped; self.detail = "Stream ended." }
@@ -62,11 +64,25 @@ final class TranscriptionSession: ObservableObject {
         detail = "Stopped."
     }
 
-    /// Swap the output-correction stage at runtime (Settings toggle). Safe to call while
+    /// Swap the fast inline-correction stage at runtime (Settings toggle). Safe to call while
     /// a run is active; it takes effect on the next transmission.
     func setCorrector(_ corrector: Corrector) {
         let pipeline = self.pipeline
         Task { await pipeline.setCorrector(corrector) }
+    }
+
+    /// Swap the slow-tier LLM backend at runtime (Settings backend picker). nil disables
+    /// background refinement. Safe while a run is active.
+    func setLLM(_ llm: LLMCorrector?) {
+        let pipeline = self.pipeline
+        Task { await pipeline.setLLM(llm) }
+    }
+
+    /// Apply a background-refinement outcome to the matching record (updates the `@Published`
+    /// array element so the UI flips "refining…" → refined text). No-op if the record is gone.
+    private func applyRefinement(id: UUID, outcome: RefinementOutcome) {
+        guard let idx = records.firstIndex(where: { $0.id == id }) else { return }
+        records[idx] = records[idx].applying(outcome)
     }
 
     /// Reset the rolling transcript + stats (the Clear button). Resets the session's own
