@@ -24,8 +24,14 @@ struct LocalLLMCorrector: LLMCorrector {
                                                       retrieved: retrieved.block,
                                                       history: history)
         do {
+            // NOTE: grammar is intentionally nil. llama.cpp's GBNF grammar sampler throws a
+            // C++ std::runtime_error on a grammar-stack mismatch, which is UNCATCHABLE from
+            // Swift and aborts the process — unacceptable for a "never break the feed" stage.
+            // Instead we steer the JSON shape with the ChatML few-shot prompt and recover with
+            // the brace-scanning parser + validator, both of which degrade gracefully to
+            // "unchanged" on bad output. (jsonGrammar is kept for a future C++-shim path.)
             let out = try await engine.generate(prompt: prompt,
-                                                grammar: ATCCorrectionPrompt.jsonGrammar,
+                                                grammar: nil,
                                                 maxTokens: maxTokens,
                                                 stop: ["<|im_end|>", "<|endoftext|>"])
             guard let payload = LLMCorrectionPayload.parse(out) else {

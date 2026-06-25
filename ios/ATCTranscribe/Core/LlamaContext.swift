@@ -85,7 +85,9 @@ final class LlamaContext: LLMEngine, @unchecked Sendable {
         }
         guard promptOK else { throw LlamaError.decode }
 
-        // Sampler chain: optional grammar (forces the JSON shape) then greedy (temperature 0).
+        // Sampler chain: optional grammar then greedy (temperature 0). WARNING: the grammar
+        // sampler throws an uncatchable C++ exception on a grammar-stack mismatch (aborts the
+        // process), so callers that must not crash pass grammar: nil (see LocalLLMCorrector).
         let sampler = llama_sampler_chain_init(llama_sampler_chain_default_params())
         defer { llama_sampler_free(sampler) }
         if let grammar {
