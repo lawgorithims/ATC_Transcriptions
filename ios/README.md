@@ -178,6 +178,20 @@ time at `.background` priority; its queue is **bounded**, so under load (Whisper
 the CPU) the oldest pending refinement is dropped (`skipped`) rather than backing up — the
 context fixer uses spare CPU and never slows the feed.
 
+**Confidence gate (when to run the LLM).** Before the slow tier, a cheap deterministic
+`ConfidenceGate` decides whether a transmission is even worth the LLM. It does *not* ask "are
+all words known?" (that over-triggers on normal English chatter) — it runs the LLM only when a
+**suspicion** signal fires: low Whisper `avgLogprob` or high `compressionRatio`, a lexical
+near-miss to a known callsign/runway/fix (fuzzy ratio in `[floor, 0.84)` — close to a known term
+but below the deterministic auto-fix bar), non-English, or residual repetition. Otherwise the
+record is marked **"high confidence"** and the LLM is skipped, saving CPU/battery and keeping the
+bounded queue free for transmissions that actually need help. A **Skip-when-confident** toggle +
+**Conservative / Balanced / Aggressive** sensitivity live in **Settings → Transcript correction**.
+Skipping is safe — it only costs a missed refinement (the raw + deterministic text always shows),
+never a wrong correction. On the clean diagnostic clips the gate skips all five (`avgLogprob`
+−0.01…−0.46, via the `ATCKitProbe` gate log); a noisy live feed's lower-confidence transmissions
+trigger it.
+
 | Tier | Type | Needs | Runs |
 | --- | --- | --- | --- |
 | Fast (inline) | `RepetitionCollapse` + `DeterministicCorrector` (stdlib) | nothing | any device, instant, on the hot path |
