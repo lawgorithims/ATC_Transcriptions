@@ -204,17 +204,21 @@ numbers/vocab); RAG retrieval over the ported ATC knowledge base; CPU llama.cpp
 pluggable backend; output guardrails; decoupled background `LLMRefiner` with bounded
 backpressure. **53 unit tests pass; the macOS probe LLM mode loads the GGUF on the CPU and
 corrects a transcript** (e.g. `kenedy → kennedy`, numbers preserved, clean text untouched, no
-crash). Latency was ~9.5 s/transmission for the 0.5B on the M4 CPU — fine for the background
-tier (the record shows immediately and refines later), with prompt-caching/threads tuning next.
+crash). **Prompt-prefix KV-cache reuse** (`LlamaContext`) cuts per-transmission latency: the
+static system+few-shot block (~490 tokens, identical every call) is evaluated once and reused,
+so warm-path latency dropped from ~9.6 s to ~3.3 s on the M4 CPU (cold first call still ~9.6 s).
+Fine for the background tier — the record shows immediately and refines later.
 
 **Near-term.**
+- **Further latency** — the ~3.3 s warm path is now mostly token generation; `n_threads` (vs
+  Whisper contention), a smaller/faster quant, or a fine-tuned model needing no few-shot are the
+  next levers.
 - **On-device latency/quality numbers** — run the probe LLM mode on a real device and tune
   threads / queue depth / `minRefineWords` against live RTF (the headless M4 has no ANE, so
   the Whisper-RTF-under-refinement check is a device step).
 - **Multi-word / n-gram vocab matching** in the deterministic stage (callsigns, multi-word
   fixes the per-token matcher misses).
 - **Altitude / QNH-aware number assembly** — "nine thousand five hundred" → 9500.
-- **llama.cpp session/KV reuse + prompt-prefix caching** to cut per-transmission latency.
 
 **Later.**
 - **ATC-specialized adapter (LoRA / fine-tuned GGUF)** on the local model for phraseology /
