@@ -19,7 +19,7 @@ options:
   createIntermediateGroups: true
   deploymentTarget:
     iOS: "17.0"
-    macOS: "13.0"
+    macOS: "14.0"   # bumped from 13.0 for the StanfordBDHG llama.cpp SwiftPM mirror (needs macOS 14)
 
 settings:
   base:
@@ -34,11 +34,12 @@ packages:
     url: https://github.com/argmaxinc/argmax-oss-swift.git
     from: "1.0.0"
   # llama.cpp powers the local CPU context-fixer LLM (LocalLLMCorrector / LlamaContext).
-  # The repo tags releases as bNNNN (not SemVer), so pin a revision/tag on the Mac for
-  # reproducibility; `branch: master` resolves the latest. Product name is `llama`.
+  # Upstream ggml-org/llama.cpp dropped its SwiftPM manifest, so we use the maintained
+  # StanfordBDHG SwiftPM mirror, which ships a prebuilt `llama` xcframework (C `llama`
+  # module → `import llama`). Requires iOS 17 / macOS 14 (hence the macOS bump above).
   llama-cpp:
-    url: https://github.com/ggml-org/llama.cpp.git
-    branch: master
+    url: https://github.com/StanfordBDHG/llama.cpp.git
+    from: "0.3.3"
 
 targets:
   ATCTranscribe:
