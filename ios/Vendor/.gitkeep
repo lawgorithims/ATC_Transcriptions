@@ -1,0 +1,2 @@
+# Vendored binary frameworks built on the Mac. llama.xcframework (for the local CPU
+# context-fixer LLM) is produced here by Tools/build_llama_xcframework.sh and git-ignored.
