@@ -78,6 +78,13 @@ final class TranscriptionSession: ObservableObject {
         Task { await pipeline.setLLM(llm) }
     }
 
+    /// Update the LLM confidence gate at runtime (Settings toggle + sensitivity). Safe while a
+    /// run is active; takes effect on the next transmission.
+    func setGate(enabled: Bool, sensitivity: GateSensitivity) {
+        let pipeline = self.pipeline
+        Task { await pipeline.setGate(enabled: enabled, sensitivity: sensitivity) }
+    }
+
     /// Apply a background-refinement outcome to the matching record (updates the `@Published`
     /// array element so the UI flips "refining…" → refined text). No-op if the record is gone.
     private func applyRefinement(id: UUID, outcome: RefinementOutcome) {

@@ -54,6 +54,11 @@ final class AppModel: ObservableObject {
     @Published var correctionEnabled = false { didSet { rebuildCorrector(); rebuildLLM() } }
     @Published var llmBackend: LLMBackend = .off { didSet { if llmBackend != oldValue { rebuildLLM() } } }
 
+    // Confidence gate: only run the AI fixer when a transmission looks suspicious. `skipWhenConfident`
+    // toggles the gate; `gateSensitivity` trades correction coverage against CPU savings.
+    @Published var skipWhenConfident = true { didSet { applyGate() } }
+    @Published var gateSensitivity: GateSensitivity = .conservative { didSet { applyGate() } }
+
     @Published var showSettings = false
 
     private var engine: TranscriberEngine?
@@ -146,7 +151,8 @@ final class AppModel: ObservableObject {
 
         let pipeline = LivePipeline(transcriber: transcriber, context: context,
                                     preprocessor: AudioPreprocessor(aggressiveRadio: true),
-                                    corrector: currentCorrector(), llm: llm)
+                                    corrector: currentCorrector(), llm: llm,
+                                    gateEnabled: skipWhenConfident, gateSensitivity: gateSensitivity)
         let session = TranscriptionSession(pipeline: pipeline)
         session.$records.assign(to: &$records)   // mirror live session state into the UI
         session.$status.assign(to: &$status)
@@ -178,6 +184,11 @@ final class AppModel: ObservableObject {
     /// Rebuild and hot-swap the fast inline corrector into the running session (a toggle changed).
     private func rebuildCorrector() {
         session?.setCorrector(currentCorrector())
+    }
+
+    /// Push the confidence-gate settings into the running session (a toggle/sensitivity changed).
+    private func applyGate() {
+        session?.setGate(enabled: skipWhenConfident, sensitivity: gateSensitivity)
     }
 
     /// Rebuild and hot-swap the slow-tier LLM backend (off / local llama.cpp / Foundation

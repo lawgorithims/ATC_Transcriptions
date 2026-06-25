@@ -54,8 +54,9 @@ private let kTens: [String: Int] = [
 ]
 
 /// Common ATC/English words never replaced by vocab matching (they collide
-/// phonetically with short vocab terms). Mirrors `_STOPWORDS`.
-private let kStopwords: Set<String> = [
+/// phonetically with short vocab terms). Mirrors `_STOPWORDS`. Internal so the confidence
+/// gate can skip these when looking for suspicious near-miss tokens.
+let kStopwords: Set<String> = [
     "left", "right", "center", "centre", "cleared", "clear", "runway", "tower",
     "ground", "traffic", "contact", "hold", "short", "line", "wait", "taxi",
     "cross", "descend", "climb", "maintain", "heading", "turn", "approach",
@@ -68,13 +69,20 @@ private let kStopwords: Set<String> = [
 
 private let kVowels: Set<Character> = ["a", "e", "i", "o", "u"]
 
-/// Lowercase, strip non-`[a-z0-9]` — for matching, not display. Port of `_norm`.
-private func normToken(_ token: String) -> String {
+/// Lowercase, strip non-`[a-z0-9]` — for matching, not display. Port of `_norm`. Internal so
+/// the confidence gate normalizes tokens the same way the corrector does.
+func normToken(_ token: String) -> String {
     String(token.lowercased().filter { ("a"..."z").contains($0) || ("0"..."9").contains($0) })
 }
 
 private func isAllDigits(_ s: String) -> Bool {
     !s.isEmpty && s.allSatisfy { $0.isASCII && $0.isNumber }
+}
+
+/// True when a normalized token is pure digits or a spoken number word (unit/teen/tens) — the
+/// confidence gate skips these (they're never suspicious mishears). Reuses the number tables.
+func isNumberLikeToken(_ norm: String) -> Bool {
+    !norm.isEmpty && (isAllDigits(norm) || kUnits[norm] != nil || kTeens[norm] != nil || kTens[norm] != nil)
 }
 
 private enum NumKind { case unit, teen, tens }
