@@ -162,7 +162,7 @@ It runs in **two latency tiers** so a slow LLM can never stall transcription:
    │     knowledge/: airlines, overrides, phraseology), lexically ranked.       │
    │  2. The LLM (CPU llama.cpp, or Apple Foundation Models) → {corrected,edits}│
    │     fixes mis-heard callsigns/runways/navaids, ICAO phraseology, repeats,  │
-   │     stray non-English words — grammar-constrained JSON.                    │
+   │     stray non-English words — JSON steered by a ChatML few-shot prompt.    │
    │  3. CorrectionValidator guardrails — applies ONLY safe edits: numbers      │
    │     preserved, `to` must be a known term or near-miss of `from`, no        │
    │     wholesale rewrite. Any failure → text unchanged.                       │
@@ -181,22 +181,31 @@ context fixer uses spare CPU and never slows the feed.
 | Tier | Type | Needs | Runs |
 | --- | --- | --- | --- |
 | Fast (inline) | `RepetitionCollapse` + `DeterministicCorrector` (stdlib) | nothing | any device, instant, on the hot path |
-| Slow · on-device LLM | `LocalLLMCorrector` → `LlamaContext` (llama.cpp) | a bundled GGUF (`Tools/fetch_llm_model.sh`) | **CPU only** (`n_gpu_layers = 0`), background — leaves the ANE/GPU for Whisper |
+| Slow · on-device LLM | `LocalLLMCorrector` → `LlamaContext` (llama.cpp) | the `llama.xcframework` + a GGUF (build/fetch steps below) | **CPU only** (`n_gpu_layers = 0`), background — leaves the ANE/GPU for Whisper |
 | Slow · alternate | `FoundationModelsCorrector` | Apple Intelligence (iOS 26 / A17 Pro+/M-series) | runs on the ANE; pluggable behind the same `LLMCorrector` protocol |
 
-The local model is **Qwen2.5-0.5B-Instruct Q4_K_M (~0.4 GB)** by default; fetch it with
-`bash Tools/fetch_llm_model.sh` (lands under `Resources/Models/llm/`, bundled by the
-`Models` folder reference). Pick the backend in **Settings → Transcript correction** (Off /
-On-device / Apple Intel.), or launch headless with `--correct`, `--llm` (local), or
-`--llm-foundation`.
+Two one-time Mac steps enable the local backend (both git-ignored, so the repo stays light):
+```
+bash Tools/build_llama_xcframework.sh   # vendors ios/Vendor/llama.xcframework (needs cmake)
+bash Tools/fetch_llm_model.sh           # Qwen2.5-0.5B-Instruct Q4_K_M (~0.4 GB) → Resources/Models/llm/
+```
+`LlamaContext` is behind `#if canImport(llama)`, so the app/probe build fine without the
+xcframework (local LLM just unavailable). Grammar-constrained decoding is intentionally OFF:
+llama.cpp's GBNF sampler raises an uncatchable C++ exception on a grammar-stack mismatch, so
+JSON is steered by the few-shot prompt and recovered by the brace-scanning parser + validator
+instead. Pick the backend in **Settings → Transcript correction** (Off / On-device / Apple
+Intel.), or launch headless with `--correct`, `--llm` (local), or `--llm-foundation`.
 
 ### Roadmap
 
-**Now (shipped).** Fast inline tier (repetition collapse + deterministic numbers/vocab);
-RAG retrieval over the ported ATC knowledge base; CPU llama.cpp `LocalLLMCorrector`
-(grammar-constrained JSON) + Apple Foundation Models as a pluggable backend; output
-guardrails; decoupled background `LLMRefiner` with bounded backpressure; model-free unit
-tests + an opt-in `ATCKitProbe` LLM mode (`ATC_LLM_MODEL=<gguf>`).
+**Now (shipped + verified on the M4).** Fast inline tier (repetition collapse + deterministic
+numbers/vocab); RAG retrieval over the ported ATC knowledge base; CPU llama.cpp
+`LocalLLMCorrector` (vendored `llama.xcframework`, modern API) + Apple Foundation Models as a
+pluggable backend; output guardrails; decoupled background `LLMRefiner` with bounded
+backpressure. **53 unit tests pass; the macOS probe LLM mode loads the GGUF on the CPU and
+corrects a transcript** (e.g. `kenedy → kennedy`, numbers preserved, clean text untouched, no
+crash). Latency was ~9.5 s/transmission for the 0.5B on the M4 CPU — fine for the background
+tier (the record shows immediately and refines later), with prompt-caching/threads tuning next.
 
 **Near-term.**
 - **On-device latency/quality numbers** — run the probe LLM mode on a real device and tune
