@@ -147,6 +147,7 @@ final class LlamaContext: LLMEngine, @unchecked Sendable {
         cparams.n_ctx = nCtx
         cparams.n_threads = nThreads
         cparams.n_threads_batch = nThreads
+        cparams.no_perf = false   // populate the prompt-eval/gen ms used by the ATC_LLM_PERF log
         guard let c = llama_init_from_model(model, cparams) else { throw LlamaError.contextInit }
         ctx = c
         cachedTokens = []
