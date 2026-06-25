@@ -27,6 +27,10 @@ ATCTranscribe/Resources/Models/*
 ATCTranscribe/Resources/Models/llm/*
 !ATCTranscribe/Resources/Models/llm/.gitkeep
 
+# Vendored llama.xcframework — large binary built on the Mac by Tools/build_llama_xcframework.sh.
+Vendor/*
+!Vendor/.gitkeep
+
 # The Replay-demo clips are deliberately bundled into the app, so re-include them despite
 # the repo-root `*.wav` rule (which exists to keep training/audio corpora out of git).
 !ATCTranscribe/Resources/DemoClips/*.wav
