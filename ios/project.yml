@@ -92,8 +92,11 @@ targets:
     dependencies:
       - package: argmax-oss-swift
         product: WhisperKit
-      # - framework: Vendor/llama.xcframework   # add after Tools/build_llama_xcframework.sh
-      #   embed: true
+      # Local CPU context-fixer LLM. Vendored dynamic xcframework (built by
+      # Tools/build_llama_xcframework.sh, git-ignored). Embedded into the app's Frameworks/
+      # (install_name @rpath/llama.framework/llama → resolved by the default app rpath).
+      - framework: Vendor/llama.xcframework
+        embed: true
 
   ATCTranscribeTests:
     type: bundle.unit-test
@@ -125,10 +128,15 @@ targets:
     dependencies:
       - package: argmax-oss-swift
         product: WhisperKit
-      # - framework: Vendor/llama.xcframework   # add after Tools/build_llama_xcframework.sh
+      - framework: Vendor/llama.xcframework
+        embed: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.atctranscribe.probe
+        # The macOS framework's install_name is @rpath/llama.framework/Versions/Current/llama;
+        # point the runtime search path at the xcframework's macOS slice so the CLI tool resolves
+        # the dylib at runtime without an embed phase.
+        LD_RUNPATH_SEARCH_PATHS: "$(SRCROOT)/Vendor/llama.xcframework/macos-arm64_x86_64"
 
 schemes:
   ATCTranscribe:
