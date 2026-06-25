@@ -10,6 +10,11 @@ final class ATCContext {
     private let maxHistory: Int
     private let maxPromptChars: Int
 
+    /// The on-device ATC knowledge corpus backing the RAG retriever.
+    let knowledge: ATCKnowledgeBase
+    /// Lexical RAG retriever, present when a facility config is loaded.
+    private let retriever: ATCKnowledgeRetriever?
+
     private var historyBuffer: [String] = []   // most-recent last, capped at maxHistory
     private var staticPrefix: String = ""
     private var vocabTerms: [String] = []
@@ -17,14 +22,18 @@ final class ATCContext {
     init(config: AirportConfig? = nil,
          feedKey: String? = nil,
          maxHistory: Int = 3,
-         maxPromptChars: Int = 800) {
+         maxPromptChars: Int = 800,
+         knowledge: ATCKnowledgeBase = .shared) {
         self.config = config
         self.feedKey = feedKey
         self.maxHistory = maxHistory
         self.maxPromptChars = maxPromptChars
+        self.knowledge = knowledge
         if let config, let feedKey {
             (staticPrefix, vocabTerms) = ATCContext.buildStaticPrefix(config: config, feedKey: feedKey)
         }
+        self.retriever = config == nil ? nil
+            : ATCKnowledgeRetriever(kb: knowledge, config: config, feedKey: feedKey)
     }
 
     /// Build the static prefix and the canonical vocab (runways + fixes). Port of
@@ -81,6 +90,16 @@ final class ATCContext {
         return prompt
     }
 
-    /// Canonical local terms (runways, fixes) for the optional corrector.
-    func vocab() -> [String] { vocabTerms }
+    /// Canonical terms for the optional corrector. With a facility config this is the
+    /// enriched set (runways, fixes, taxiways, single-word callsigns, facility names); with
+    /// no config it stays the legacy runways+fixes list (empty for a bare `ATCContext()`).
+    func vocab() -> [String] { retriever?.enrichedVocab() ?? vocabTerms }
+
+    /// Retrieve the RAG knowledge block for a transcript (callsigns mentioned, this
+    /// facility's names, runways/fixes, the right phraseology, ICAO spelling) plus the
+    /// language-suspect flag. Used by the local-LLM correction stage.
+    func retrieveKnowledge(for transcript: String) -> RetrievedContext {
+        let r = retriever ?? ATCKnowledgeRetriever(kb: knowledge, config: nil, feedKey: nil)
+        return r.retrieve(transcript: transcript, history: recentHistory)
+    }
 }

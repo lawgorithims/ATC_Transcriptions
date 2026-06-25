@@ -19,7 +19,7 @@ options:
   createIntermediateGroups: true
   deploymentTarget:
     iOS: "17.0"
-    macOS: "13.0"
+    macOS: "14.0"   # bumped from 13.0 for the StanfordBDHG llama.cpp SwiftPM mirror (needs macOS 14)
 
 settings:
   base:
@@ -33,19 +33,44 @@ packages:
   argmax-oss-swift:
     url: https://github.com/argmaxinc/argmax-oss-swift.git
     from: "1.0.0"
+  # llama.cpp powers the local CPU context-fixer LLM (LocalLLMCorrector / LlamaContext).
+  # NOTE: not a SwiftPM package. Upstream dropped its Package.swift, and the StanfordBDHG
+  # mirror's xcframework leaks C++ headers (grammar-parser.h) into the C `llama` module, so
+  # Swift can't import it. We instead vendor a `llama.xcframework` built from a recent
+  # llama.cpp via Tools/build_llama_xcframework.sh (clean C module + modern API), wired as a
+  # binary framework below. LlamaContext is `#if canImport(llama)`, so the app/probe build
+  # fine without it (local LLM just unavailable until the xcframework is in place).
 
 targets:
   ATCTranscribe:
     type: application
     platform: iOS
     sources:
+      # Resource folders are added as FOLDER REFERENCES below (not the recursive glob) so the
+      # `.mlmodelc`/`.gguf` bundles ship verbatim and JSON folders keep their subdirectory in the
+      # built bundle (so `Bundle.url(forResource:subdirectory:)` resolves); exclude them from the
+      # glob to avoid double-adding / flattening.
       - path: ATCTranscribe
+        excludes:
+          - "Resources/Models"
+          - "Resources/DemoClips"
+          - "Resources/knowledge"
+          - "Resources/airport_configs"
+      - path: ATCTranscribe/Resources/Models      # `small` Whisper model + `llm/<model>.gguf`,
+        type: folder                              #   placed by Tools/testflight.sh + fetch_llm_model.sh
+      - path: ATCTranscribe/Resources/DemoClips    # 5 known-good clips → offline Replay demo
+        type: folder
+      - path: ATCTranscribe/Resources/knowledge    # RAG corpus: airlines / overrides / phraseology
+        type: folder
+      - path: ATCTranscribe/Resources/airport_configs   # facility configs (runways, fixes, streams)
+        type: folder
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.atctranscribe.app
         TARGETED_DEVICE_FAMILY: "1,2"      # 1 = iPhone, 2 = iPad (universal)
         GENERATE_INFOPLIST_FILE: NO
         INFOPLIST_FILE: ATCTranscribe/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon   # Assets.xcassets/AppIcon.appiconset
     info:
       path: ATCTranscribe/Info.plist
       properties:
@@ -67,6 +92,11 @@ targets:
     dependencies:
       - package: argmax-oss-swift
         product: WhisperKit
+      # Local CPU context-fixer LLM. Vendored dynamic xcframework (built by
+      # Tools/build_llama_xcframework.sh, git-ignored). Embedded into the app's Frameworks/
+      # (install_name @rpath/llama.framework/llama → resolved by the default app rpath).
+      - framework: Vendor/llama.xcframework
+        embed: true
 
   ATCTranscribeTests:
     type: bundle.unit-test
@@ -98,9 +128,15 @@ targets:
     dependencies:
       - package: argmax-oss-swift
         product: WhisperKit
+      - framework: Vendor/llama.xcframework
+        embed: false
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: net.atctranscribe.probe
+        # The macOS framework's install_name is @rpath/llama.framework/Versions/Current/llama;
+        # point the runtime search path at the xcframework's macOS slice so the CLI tool resolves
+        # the dylib at runtime without an embed phase.
+        LD_RUNPATH_SEARCH_PATHS: "$(SRCROOT)/Vendor/llama.xcframework/macos-arm64_x86_64"
 
 schemes:
   ATCTranscribe:

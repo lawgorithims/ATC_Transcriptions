@@ -34,6 +34,45 @@ for c in werCases where abs(WER.rate(reference: c.ref, hypothesis: c.hyp) - c.wa
 print("WER self-checks: OK (\(werCases.count) cases)")
 
 let env = ProcessInfo.processInfo.environment
+
+// --- OPTIONAL: local CPU context-fixer LLM (llama.cpp), independent of the Whisper model ---
+// Loads the GGUF on the CPU and runs canned noisy transcripts through the full LocalLLMCorrector
+// path (RAG retrieval → grammar-constrained JSON → guardrails), asserting the JSON parses and
+// numbers are preserved. Opt-in via ATC_LLM_MODEL. Runs entirely off the ANE (n_gpu_layers = 0).
+if let llmModel = env["ATC_LLM_MODEL"], !llmModel.isEmpty {
+    print("--- local LLM context-fixer (CPU llama.cpp) ---")
+    guard let llmEngine = makeLlamaEngine(modelPath: llmModel, nThreads: 2) else {
+        die("failed to load LLM model at \(llmModel) (is llama.xcframework linked?)")
+    }
+    // Inline knowledge so the probe doesn't depend on app-bundle resources.
+    let kb = ATCKnowledgeBase(
+        airlineTelephony: ["DAL": "Delta", "SKW": "SkyWest", "AAL": "American"],
+        spokenNamesByAirport: ["KJFK": ["Kennedy", "New York"]],
+        spokenBaseByAirport: [:],
+        phrasesByType: ["tower": ["cleared to land", "line up and wait", "contact ground"]],
+        spellingByType: ["tower": ["niner", "fife", "squawk"]],
+        phonetic: [:], digits: [:])
+    let retriever = ATCKnowledgeRetriever(kb: kb, config: nil, feedKey: "tower")
+    let corrector = LocalLLMCorrector(engine: llmEngine, knowledge: kb, feedKey: "tower")
+    let cases = [
+        "delta eight ninety runway runway three four left",            // repetition loop
+        "skywest fifty six seventy contact kenedy tower",              // misheard facility
+        "american twelve thirty four cleared to land one seven center",// already clean
+    ]
+    for text in cases {
+        let retrieved = retriever.retrieve(transcript: text, history: [])
+        let t0 = Date()
+        let c = await corrector.correct(text: text, history: [], retrieved: retrieved)
+        let ms = Date().timeIntervalSince(t0) * 1000
+        print(String(format: "LLM %.0fms  [%@] -> %@", ms, text, c.display))
+        if text.filter(\.isNumber) != c.display.filter(\.isNumber) {
+            die("LLM guardrail FAILED — digits changed: \(text) -> \(c.display)")
+        }
+    }
+    print("LLM mode OK")
+    if env["ATC_MODEL_DIR"] == nil { exit(0) }   // LLM-only run when no Whisper model is set
+}
+
 guard let modelDir = env["ATC_MODEL_DIR"], !modelDir.isEmpty,
       let audioDir = env["ATC_AUDIO_DIR"], !audioDir.isEmpty else {
     print("WER OK. Set ATC_MODEL_DIR + ATC_AUDIO_DIR to also run the proof-of-life + pipeline.")
@@ -91,6 +130,30 @@ do {
     let p50 = stats.realTimeFactorSummary.map { String(format: "%.2f", $0.p50) } ?? "-"
     print("PIPELINE: \(collector.records.count) transmissions, RTF p50=\(p50)")
     if collector.records.isEmpty { die("pipeline produced no transmissions") }
+
+    // --- confidence gate: real avgLogprob per clip + what the gate decides (threshold calibration) ---
+    print("--- confidence gate (avgLogprob / compression -> decision) ---")
+    let gctx = ATCContext()   // no facility config in the probe → ASR signals dominate
+    var outs: [(file: String, out: TranscriptionOutput)] = []
+    for clip in clips {
+        let out = (try? await transcriber.transcribe(clip.audio)) ?? .empty
+        if !out.text.isEmpty { outs.append((clip.file, out)) }
+    }
+    for sensitivity in [GateSensitivity.conservative, .balanced, .aggressive] {
+        let gate = ConfidenceGate(sensitivity: sensitivity)
+        var refine = 0, skip = 0
+        for (file, out) in outs {
+            let d = gate.assess(text: out.text, retrieved: gctx.retrieveKnowledge(for: out.text),
+                                asr: out.asr, inlineEdits: [])
+            if d.shouldRefine { refine += 1 } else { skip += 1 }
+            if sensitivity == .conservative {
+                print(String(format: "GATE %@  avgLogprob=%.3f compression=%.2f -> %@ (%@)",
+                             file, out.asr.avgLogprob, out.asr.compressionRatio,
+                             d.shouldRefine ? "REFINE" : "skip", d.reason))
+            }
+        }
+        print("GATE[\(sensitivity.rawValue)]: refine=\(refine) skip=\(skip)")
+    }
 
     // --- OPTIONAL: live LiveATC stream → VAD → preprocess → context → ANE transcribe ---
     // Validates the StreamAudioSource live-decode path (serial-queue concurrency + edge-server

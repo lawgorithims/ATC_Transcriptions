@@ -1,0 +1,4 @@
+# Keeps Resources/Models/ tracked so the project.yml `type: folder` reference resolves
+# even when the (git-ignored, ~465 MB) CoreML model isn't present — e.g. Simulator
+# builds, which then run in demo mode. Tools/testflight.sh drops the real `small/<id>/`
+# model set here on the Mac before `xcodegen generate` for the TestFlight archive.

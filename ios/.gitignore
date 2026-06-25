@@ -18,7 +18,22 @@ xcuserdata/
 # Converted CoreML model bundles (large; produced by Tools/ conversion, distributed separately)
 *.mlmodelc
 *.mlpackage
-ATCTranscribe/Resources/Models/
+# Ignore the bundled model's heavy contents but keep the dir tracked (.gitkeep) so the
+# project.yml folder reference always resolves. Keep the empty `llm/` subdir tracked too —
+# Tools/fetch_llm_model.sh drops the GGUF there (also heavy, so still ignored).
+ATCTranscribe/Resources/Models/*
+!ATCTranscribe/Resources/Models/.gitkeep
+!ATCTranscribe/Resources/Models/llm/
+ATCTranscribe/Resources/Models/llm/*
+!ATCTranscribe/Resources/Models/llm/.gitkeep
+
+# Vendored llama.xcframework — large binary built on the Mac by Tools/build_llama_xcframework.sh.
+Vendor/*
+!Vendor/.gitkeep
+
+# The Replay-demo clips are deliberately bundled into the app, so re-include them despite
+# the repo-root `*.wav` rule (which exists to keep training/audio corpora out of git).
+!ATCTranscribe/Resources/DemoClips/*.wav
 
 # macOS
 .DS_Store

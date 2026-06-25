@@ -198,7 +198,7 @@ actor TranscriberEngine {
         var totalAudio = 0.0, totalProc = 0.0
         for clip in use {
             let start = Date()
-            let hyp = (try? await transcriber.transcribe(clip.audio)) ?? ""
+            let hyp = (try? await transcriber.transcribe(clip.audio))?.text ?? ""
             let secs = Date().timeIntervalSince(start)
             totalAudio += clip.audioSeconds
             totalProc += secs

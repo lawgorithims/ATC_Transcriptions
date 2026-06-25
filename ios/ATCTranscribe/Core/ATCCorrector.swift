@@ -54,8 +54,9 @@ private let kTens: [String: Int] = [
 ]
 
 /// Common ATC/English words never replaced by vocab matching (they collide
-/// phonetically with short vocab terms). Mirrors `_STOPWORDS`.
-private let kStopwords: Set<String> = [
+/// phonetically with short vocab terms). Mirrors `_STOPWORDS`. Internal so the confidence
+/// gate can skip these when looking for suspicious near-miss tokens.
+let kStopwords: Set<String> = [
     "left", "right", "center", "centre", "cleared", "clear", "runway", "tower",
     "ground", "traffic", "contact", "hold", "short", "line", "wait", "taxi",
     "cross", "descend", "climb", "maintain", "heading", "turn", "approach",
@@ -68,13 +69,20 @@ private let kStopwords: Set<String> = [
 
 private let kVowels: Set<Character> = ["a", "e", "i", "o", "u"]
 
-/// Lowercase, strip non-`[a-z0-9]` — for matching, not display. Port of `_norm`.
-private func normToken(_ token: String) -> String {
+/// Lowercase, strip non-`[a-z0-9]` — for matching, not display. Port of `_norm`. Internal so
+/// the confidence gate normalizes tokens the same way the corrector does.
+func normToken(_ token: String) -> String {
     String(token.lowercased().filter { ("a"..."z").contains($0) || ("0"..."9").contains($0) })
 }
 
 private func isAllDigits(_ s: String) -> Bool {
     !s.isEmpty && s.allSatisfy { $0.isASCII && $0.isNumber }
+}
+
+/// True when a normalized token is pure digits or a spoken number word (unit/teen/tens) — the
+/// confidence gate skips these (they're never suspicious mishears). Reuses the number tables.
+func isNumberLikeToken(_ norm: String) -> Bool {
+    !norm.isEmpty && (isAllDigits(norm) || kUnits[norm] != nil || kTeens[norm] != nil || kTens[norm] != nil)
 }
 
 private enum NumKind { case unit, teen, tens }
@@ -270,26 +278,44 @@ struct ChainCorrector: Corrector {
 
 // MARK: - Config & factory
 
+/// Which on-device LLM drives the slow (background) correction tier, if any.
+enum LLMBackend: String, Sendable, CaseIterable {
+    case off          // deterministic only
+    case local        // bundled llama.cpp model on the CPU (primary)
+    case foundation   // Apple Foundation Models / Apple Intelligence (alternate)
+}
+
 /// Mirrors the `correction:` block of `config.yaml`. Off by default.
 struct CorrectionConfig {
     var enabled = false
     var deterministic = true
+    /// Cheap repetition-loop collapse in the fast inline tier (on when correction is enabled).
+    var repetition = true
     var threshold = 0.84
     var numbers = true
     var phonetic = true
     var phoneticMin = 0.62
-    /// Optional local-LLM backend. On iOS this becomes Apple Foundation Models
-    /// (added later); the contract matches the Python `llm:` block.
-    var llmEnabled = false
+    /// The slow-tier LLM backend (off / local llama.cpp / Apple Foundation Models). The LLM
+    /// runs off the transcription hot path via `LLMRefiner`, not as an inline corrector stage.
+    var llmBackend: LLMBackend = .off
+
+    /// Legacy boolean shim (kept for older call sites/tests): maps to the Foundation Models
+    /// backend when set on, `.off` when cleared.
+    var llmEnabled: Bool {
+        get { llmBackend != .off }
+        set { llmBackend = newValue ? (llmBackend == .off ? .foundation : llmBackend) : .off }
+    }
 }
 
-/// Build a corrector from config + a live vocab provider, or a no-op when disabled.
-/// Returns `NullCorrector` when disabled or no backend is enabled, so an "off" config
-/// is a genuine no-op. Port of `atc_corrector.build_corrector`.
+/// Build the **fast inline** corrector from config + a live vocab provider, or a no-op when
+/// disabled. This is the hot-path tier (`NullCorrector` when off; else repetition collapse +
+/// the deterministic vocab/number fixer). The slow LLM tier is built separately and run by
+/// `LLMRefiner` so it can't stall transcription. Port of `atc_corrector.build_corrector`.
 func buildCorrector(config: CorrectionConfig, vocab: @escaping () -> [String]) -> Corrector {
     guard config.enabled else { return NullCorrector() }
 
     var stages: [Corrector] = []
+    if config.repetition { stages.append(RepetitionCollapse()) }
     if config.deterministic {
         stages.append(DeterministicCorrector(
             vocabProvider: vocab,
@@ -298,14 +324,26 @@ func buildCorrector(config: CorrectionConfig, vocab: @escaping () -> [String]) -
             phoneticMin: config.phoneticMin,
             numbers: config.numbers))
     }
-    // Optional on-device LLM stage (Apple Foundation Models). Present only when the
-    // framework is in the SDK / the OS is new enough; nil (skipped) otherwise, so a
-    // device without it simply runs the deterministic stage. Off by default.
-    if config.llmEnabled, let llm = makeFoundationModelsCorrector(vocab: vocab) {
-        stages.append(llm)
-    }
 
     if stages.isEmpty { return NullCorrector() }
     if stages.count == 1 { return stages[0] }
     return ChainCorrector(correctors: stages)
+}
+
+/// Build the optional slow-tier LLM corrector for the selected backend, or nil. The local
+/// backend loads the bundled GGUF (CPU); the foundation backend weak-links Apple Intelligence.
+/// Both return nil gracefully when unavailable, so the pipeline just runs deterministic-only.
+func buildLLMCorrector(config: CorrectionConfig,
+                       knowledge: ATCKnowledgeBase,
+                       feedKey: String?) -> LLMCorrector? {
+    guard config.enabled else { return nil }
+    switch config.llmBackend {
+    case .off:
+        return nil
+    case .local:
+        guard let engine = makeLocalLLMEngine() else { return nil }
+        return LocalLLMCorrector(engine: engine, knowledge: knowledge, feedKey: feedKey)
+    case .foundation:
+        return makeFoundationModelsCorrector(knowledge: knowledge, feedKey: feedKey)
+    }
 }
