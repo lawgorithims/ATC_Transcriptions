@@ -124,6 +124,9 @@ targets:
       - path: ATCTranscribe/Audio
       - path: ATCTranscribe/Transcription
       - path: ATCTranscribe/Engine
+      # Core/LocalLLMCorrector references ModelStore (downloaded-model path lookup), which lives
+      # in this Foundation-only file; the rest of Download/ (SwiftUI/WhisperKit UI) is app-only.
+      - path: ATCTranscribe/Download/ModelCatalog.swift
       - path: ATCKitProbe
     dependencies:
       - package: argmax-oss-swift

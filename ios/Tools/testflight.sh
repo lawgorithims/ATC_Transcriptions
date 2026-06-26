@@ -43,14 +43,19 @@ SCHEME="${SCHEME:-ATCTranscribe}"
 XCODEGEN="${XCODEGEN:-$HOME/.xcodegen/xcodegen/bin/xcodegen}"
 [ -x "$XCODEGEN" ] || XCODEGEN="$(command -v xcodegen)" || die "xcodegen not found (run Tools/setup.sh)."
 
-# 1. the bundled CoreML model MUST be present (it is added as a folder reference). Without
-#    it the app would ship demo-only — fail loudly rather than upload a useless build.
+# 1. CoreML model presence. The app now DOWNLOADS the model on first launch (HuggingFace, see
+#    Tools/publish_models.md), so a lean model-less archive is the normal TestFlight build. We
+#    only warn here. Set REQUIRE_BUNDLED_MODEL=1 to hard-fail instead (for an offline/bundled build).
 if ! find ATCTranscribe/Resources/Models -name AudioEncoder.mlmodelc -print -quit 2>/dev/null | grep -q .; then
-  die "no CoreML model under ATCTranscribe/Resources/Models/.
-       Convert it (Tools/setup.sh --models) and copy the small/<id>/ dir there first:
-         SRC=\$(find \$HOME/atc-coreml/small -name AudioEncoder.mlmodelc -exec dirname {} \;)
-         mkdir -p ATCTranscribe/Resources/Models/small
-         cp -R \"\$SRC\" ATCTranscribe/Resources/Models/small/"
+  if [ "${REQUIRE_BUNDLED_MODEL:-0}" = "1" ]; then
+    die "no CoreML model under ATCTranscribe/Resources/Models/ and REQUIRE_BUNDLED_MODEL=1.
+         Convert it (Tools/setup.sh --models) and copy the small/<id>/ dir there first:
+           SRC=\$(find \$HOME/atc-coreml/small -name AudioEncoder.mlmodelc -exec dirname {} \;)
+           mkdir -p ATCTranscribe/Resources/Models/small
+           cp -R \"\$SRC\" ATCTranscribe/Resources/Models/small/"
+  fi
+  log "no bundled CoreML model — building LEAN (the app downloads the model on first launch).
+       Ensure the models are published to the HuggingFace repo (Tools/publish_models.md)."
 fi
 
 # 2. (re)generate the Xcode project from project.yml
