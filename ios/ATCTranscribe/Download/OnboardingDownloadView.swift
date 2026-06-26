@@ -47,9 +47,11 @@ struct OnboardingDownloadView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(!primaryEnabled)
+                    .accessibilityIdentifier("gate-primary")
 
                     Button("Skip — explore with demo data") { model.finishOnboarding() }
                         .font(.caption).foregroundStyle(p.textDim)
+                        .accessibilityIdentifier("gate-skip")
                 }
                 .padding(.horizontal, 16)
                 Spacer()

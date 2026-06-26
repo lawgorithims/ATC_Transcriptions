@@ -110,6 +110,21 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.flycommsight.atctranscribe.tests
         GENERATE_INFOPLIST_FILE: YES
 
+  # UI tests — drive the real app in the Simulator and tap every control (gate, themes,
+  # settings, source picker, start/stop) to verify the buttons/features work end-to-end.
+  ATCTranscribeUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: ATCTranscribeUITests
+    dependencies:
+      - target: ATCTranscribe
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.flycommsight.atctranscribe.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: ATCTranscribe
+
   # Native macOS PROBE — a command-line executable (NOT XCTest) that runs the engine +
   # proof-of-life on the Mac's REAL Neural Engine. A plain tool runs headless over SSH;
   # macOS XCTest does not (its test-runner daemon needs a GUI session). Build it, then
@@ -147,12 +162,14 @@ schemes:
       targets:
         ATCTranscribe: all
         ATCTranscribeTests: [test]
+        ATCTranscribeUITests: [test]
     run:
       config: Debug
     test:
       config: Debug
       targets:
         - ATCTranscribeTests
+        - ATCTranscribeUITests
       # Populated from the shell at `xcodegen generate` time; empty (test skips) when
       # unset. Set them to run the on-device transcription smoke test — see
       # ATCTranscriberSmokeTests and Tools/smoke (the M4 runner).
