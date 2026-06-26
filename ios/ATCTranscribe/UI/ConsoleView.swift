@@ -80,6 +80,8 @@ struct TopBar: View {
                 Image(systemName: "gearshape.fill").font(.system(size: 17))
             }
             .buttonStyle(.plain).foregroundStyle(p.textDim)
+            .accessibilityIdentifier("settings-button")
+            .accessibilityLabel("Settings")
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
         .background(p.surface)
@@ -101,6 +103,8 @@ struct ThemeSwitcher: View {
                         .clipShape(RoundedRectangle(cornerRadius: 6))
                 }
                 .buttonStyle(.plain)
+                .accessibilityIdentifier("theme-\(theme.rawValue)")
+                .accessibilityLabel("\(theme.label) theme")
             }
         }
         .padding(3)
@@ -217,6 +221,7 @@ struct ControlsBar: View {
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
                 .buttonStyle(.plain)
+                .accessibilityIdentifier("start-stop-button")
             }
 
             // The link + airport/frequency context apply ONLY to the internet live feed;
