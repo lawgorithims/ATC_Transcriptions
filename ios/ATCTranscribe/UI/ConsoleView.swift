@@ -6,6 +6,7 @@ import SwiftUI
 /// on iPhone (compact).
 struct ConsoleView: View {
     @EnvironmentObject var model: AppModel
+    @EnvironmentObject var downloads: ModelDownloadManager
     @Environment(\.horizontalSizeClass) private var hSize
 
     var body: some View {
@@ -22,8 +23,18 @@ struct ConsoleView: View {
         }
         .tint(p.accent)
         .preferredColorScheme(model.theme == .day ? .light : .dark)
-        .sheet(isPresented: $model.showSettings) { SettingsSheet().environmentObject(model) }
+        .sheet(isPresented: $model.showSettings) {
+            SettingsSheet().environmentObject(model).environmentObject(downloads)
+        }
+        .fullScreenCover(isPresented: $model.needsOnboarding) {
+            OnboardingDownloadView().environmentObject(model).environmentObject(downloads)
+        }
         .animation(.easeInOut(duration: 0.25), value: model.theme)
+        .onAppear {
+            // Bridge a finished download back to the model so it can load a model that wasn't
+            // present at launch (lean TestFlight build → first-run download → live console).
+            downloads.onReady = { entry in model.modelDidDownload(entry) }
+        }
     }
 
     private var hairline: some View { Rectangle().fill(model.palette.border).frame(height: 1) }
@@ -112,6 +123,7 @@ struct StatusBar: View {
                 StatusPill(label: "Stream", state: streamState)
                 Badge(text: "device · \(model.deviceLabel)")
                 Badge(text: "model · \(model.activeModel)")
+                Badge(text: "src · \(model.modelSource)")
                 if let s = model.measuredSpeed { Badge(text: String(format: "%.1f× real-time", s)) }
             }
             .padding(.horizontal, 14).padding(.vertical, 8)
@@ -270,5 +282,7 @@ struct Card<Content: View>: View {
 }
 
 #Preview {
-    ConsoleView().environmentObject(AppModel())
+    ConsoleView()
+        .environmentObject(AppModel())
+        .environmentObject(ModelDownloadManager())
 }

@@ -61,12 +61,18 @@ final class AppModel: ObservableObject {
 
     @Published var showSettings = false
 
+    // First-launch model download gate: true when no Whisper model is bundled or downloaded yet.
+    // Drives the full-screen `OnboardingDownloadView`. `modelSource` is a small status badge.
+    @Published var needsOnboarding = false
+    @Published var modelSource = "—"
+
     private var engine: TranscriberEngine?
     private var session: TranscriptionSession?
     private var clips: [DiagnosticClip] = []
     private var liveContext: ATCContext?
     private var feedKey: String?
     private var liveMode = false
+    private var storedCPUOnly = false
 
     init() {
         let args = CommandLine.arguments
@@ -93,13 +99,14 @@ final class AppModel: ObservableObject {
         #else
         let cpuOnly = false
         #endif
+        storedCPUOnly = cpuOnly
 
-        // Resolve the model + demo clips. Explicit launch flags (Simulator verification)
-        // win; otherwise fall back to the copies bundled into the app — the shipping path,
-        // since a TestFlight build on a device has no command line. With a bundled model
-        // the app is fully functional on first launch; only a model-less build falls
-        // through to the populated demo layout.
-        let modelDir = value("--model-dir") ?? Self.bundledModelDir()
+        // Resolve the model + demo clips. Explicit launch flags (Simulator verification) win;
+        // otherwise prefer a model the user has DOWNLOADED into Application Support, then a copy
+        // bundled into the app. A TestFlight build ships without the heavy model, so on first
+        // launch nothing resolves and we gate on the download onboarding step.
+        let explicitModel = value("--model-dir")
+        let modelDir = explicitModel ?? Self.resolvedModelDir()
         let audioDir = value("--audio-dir") ?? Self.bundledDemoClipsDir()
         if let modelDir {
             liveMode = true
@@ -107,6 +114,8 @@ final class AppModel: ObservableObject {
             stats = LatencyStats()
             status = .idle
             detail = "Loading model…"
+            modelSource = explicitModel != nil ? "launch"
+                : (ModelStore.downloadedWhisperDir() != nil ? "downloaded" : "bundled")
             // Default to the self-contained Replay demo when clips ship with the app, so a
             // fresh install transcribes on the first Start with no network or mic needed
             // (the picker can still switch to the live feed / mic). An explicit --source wins.
@@ -114,7 +123,10 @@ final class AppModel: ObservableObject {
             let autostart = args.contains("--autostart")
             Task { await setupLive(modelDir: modelDir, audioDir: audioDir, cpuOnly: cpuOnly, autostart: autostart) }
         } else {
-            seedSampleData()   // no model bundled — populated layout for design/screenshots
+            seedSampleData()   // no model yet — populated demo layout behind the download gate
+            // Gate the first launch on downloading the required model, unless launched with an
+            // explicit flag or the user already chose to skip on a previous launch.
+            needsOnboarding = explicitModel == nil && !Self.onboardingDismissed
         }
     }
 
@@ -267,6 +279,49 @@ final class AppModel: ObservableObject {
             if let s = result.realtimeSpeed { self.measuredSpeed = s }
             self.polRunning = false
         }
+    }
+
+    // MARK: model resolution + download gate
+
+    /// Where the live model comes from, preferring a user-downloaded model over a bundled one.
+    /// Returns nil when neither exists (a lean TestFlight build before the first download).
+    static func resolvedModelDir() -> String? {
+        ModelStore.downloadedWhisperDir() ?? bundledModelDir()
+    }
+
+    /// Persisted "user skipped the download gate" flag (so we don't nag in demo mode each launch).
+    private static let onboardingKey = "atc.onboardingDismissed"
+    static var onboardingDismissed: Bool {
+        get { UserDefaults.standard.bool(forKey: onboardingKey) }
+        set { UserDefaults.standard.set(newValue, forKey: onboardingKey) }
+    }
+
+    /// Dismiss the first-launch gate. If the user skipped without downloading (still no model),
+    /// remember it so the gate doesn't reappear; if a model is now present, no flag is needed.
+    func finishOnboarding() {
+        needsOnboarding = false
+        if Self.resolvedModelDir() == nil { Self.onboardingDismissed = true }
+    }
+
+    /// A model finished downloading. If the app launched without one (demo mode), bring up the
+    /// live session now so the gate's "Continue" lands in a working console. (GGUF downloads are
+    /// picked up the next time the AI fixer backend is built.)
+    func modelDidDownload(_ entry: ModelEntry) {
+        guard entry.kind == .whisperKit else { return }
+        modelSource = "downloaded"
+        guard !liveMode, let dir = Self.resolvedModelDir() else { return }
+        liveMode = true
+        detail = "Loading model…"
+        if value(forFlag: "--source") == nil, Self.bundledDemoClipsDir() != nil { source = .replay }
+        Task { await setupLive(modelDir: dir, audioDir: Self.bundledDemoClipsDir(),
+                               cpuOnly: storedCPUOnly, autostart: false) }
+    }
+
+    /// Read a `--flag value` pair from the launch arguments (used post-init by `modelDidDownload`).
+    private func value(forFlag flag: String) -> String? {
+        let args = CommandLine.arguments
+        guard let i = args.firstIndex(of: flag), i + 1 < args.count else { return nil }
+        return args[i + 1]
     }
 
     // MARK: bundled resources

@@ -48,11 +48,12 @@ struct LocalLLMCorrector: LLMCorrector {
     }
 }
 
-/// Locate the bundled GGUF and build a CPU llama.cpp engine, or return nil (caller then runs
-/// without a local LLM — deterministic-only, or the Foundation Models backend). Mirrors the
-/// graceful, optional design of `makeFoundationModelsCorrector`.
+/// Locate the GGUF and build a CPU llama.cpp engine, or return nil (caller then runs without a
+/// local LLM — deterministic-only, or the Foundation Models backend). Prefers a model the user
+/// DOWNLOADED into Application Support (`ModelStore.downloadedLLMPath`), then a bundled copy.
+/// Mirrors the graceful, optional design of `makeFoundationModelsCorrector`.
 func makeLocalLLMEngine(modelPath: String? = nil, nThreads: Int = 2) -> LLMEngine? {
-    guard let path = modelPath ?? bundledLLMModelPath() else { return nil }
+    guard let path = modelPath ?? ModelStore.downloadedLLMPath() ?? bundledLLMModelPath() else { return nil }
     return makeLlamaEngine(modelPath: path, nThreads: nThreads)
 }
 

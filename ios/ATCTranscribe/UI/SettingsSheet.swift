@@ -4,6 +4,7 @@ import SwiftUI
 /// transcription model and the adaptive real-time-speed threshold.
 struct SettingsSheet: View {
     @EnvironmentObject var model: AppModel
+    @EnvironmentObject var downloads: ModelDownloadManager
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -11,6 +12,16 @@ struct SettingsSheet: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 16) {
+                    Card(title: "Models") {
+                        VStack(spacing: 10) {
+                            ForEach(ModelCatalog.all) { entry in
+                                ModelDownloadRow(entry: entry)
+                            }
+                            Text("Models download once over Wi-Fi and are stored on this device. The required speech model is needed to transcribe; the others are optional (higher-accuracy model, on-device AI fixer).")
+                                .font(.caption2).foregroundStyle(p.textDim)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
                     Card(title: "Transcription model") {
                         VStack(spacing: 10) {
                             KV("Active model", model.activeModel)
