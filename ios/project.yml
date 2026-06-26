@@ -15,7 +15,7 @@
 
 name: ATCTranscribe
 options:
-  bundleIdPrefix: net.atctranscribe
+  bundleIdPrefix: com.flycommsight
   createIntermediateGroups: true
   deploymentTarget:
     iOS: "17.0"
@@ -66,7 +66,7 @@ targets:
         type: folder
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: net.atctranscribe.app
+        PRODUCT_BUNDLE_IDENTIFIER: com.flycommsight.atctranscribe
         TARGETED_DEVICE_FAMILY: "1,2"      # 1 = iPhone, 2 = iPad (universal)
         GENERATE_INFOPLIST_FILE: NO
         INFOPLIST_FILE: ATCTranscribe/Info.plist
@@ -107,7 +107,7 @@ targets:
       - target: ATCTranscribe
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: net.atctranscribe.tests
+        PRODUCT_BUNDLE_IDENTIFIER: com.flycommsight.atctranscribe.tests
         GENERATE_INFOPLIST_FILE: YES
 
   # Native macOS PROBE — a command-line executable (NOT XCTest) that runs the engine +
@@ -132,7 +132,7 @@ targets:
         embed: false
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: net.atctranscribe.probe
+        PRODUCT_BUNDLE_IDENTIFIER: com.flycommsight.atctranscribe.probe
         # The macOS framework's install_name is @rpath/llama.framework/Versions/Current/llama;
         # point the runtime search path at the xcframework's macOS slice so the CLI tool resolves
         # the dylib at runtime without an embed phase.
