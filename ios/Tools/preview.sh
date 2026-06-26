@@ -33,7 +33,7 @@ export PATH="$HOME/.local/bin:/opt/homebrew/bin:$PATH"
 
 DD="${DD:-$HOME/atc-dd}"
 APP="$DD/Build/Products/Debug-iphonesimulator/ATCTranscribe.app"
-BUNDLE_ID="net.atctranscribe.app"
+BUNDLE_ID="com.flycommsight.atctranscribe"
 DEVICE="${DEVICE:-iPhone 17 Pro}"
 PORT="${PORT:-6080}"
 NOVNC_DIR="${NOVNC_DIR:-$HOME/noVNC}"
