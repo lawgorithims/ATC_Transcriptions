@@ -61,9 +61,38 @@ feeds:
       - tower_primary
       - tower_1191
       - tower_2
+      - sector_9s
   - airport_config: airport_configs/kbos.json
     feed_keys:
       - tower_primary
+  - airport_config: airport_configs/katl.json
+    feed_keys:
+      - tower_primary
+  - airport_config: airport_configs/ksfo.json
+    feed_keys:
+      - tower_primary
+  - airport_config: airport_configs/klax.json
+    feed_keys:
+      - final_approach
+  - airport_config: airport_configs/kewr.json
+    feed_keys:
+      - tower_primary
+  - airport_config: airport_configs/paed.json
+    feed_keys:
+      - tower_primary
+  # En-route Centers — different phraseology (handoffs, altitudes, direct-to fixes).
+  - airport_config: airport_configs/zoa.json
+    feed_keys:
+      - center
+  - airport_config: airport_configs/zan.json
+    feed_keys:
+      - center
+  - airport_config: airport_configs/zkc.json
+    feed_keys:
+      - center
+  - airport_config: airport_configs/zfw.json
+    feed_keys:
+      - center
 
 # Acceptance gates for a TRAINING pseudo-label (tune on the eval set).
 thresholds:

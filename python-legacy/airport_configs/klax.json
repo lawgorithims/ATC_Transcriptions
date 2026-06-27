@@ -1,0 +1,19 @@
+{
+  "airport_code": "KLAX",
+  "airport_name": "Los Angeles International Airport",
+  "tracon": "SOCAL Approach (SCT)",
+  "runways": [
+    "6L", "6R", "7L", "7R", "24L", "24R", "25L", "25R"
+  ],
+  "frequencies": {
+    "tower": "120.95"
+  },
+  "streams": {
+    "final_approach": {
+      "label": "KLAX Final Approach",
+      "url": "https://d.liveatc.net/klax6",
+      "liveatc_page": "https://www.liveatc.net/hlisten.php?mount=klax6&icao=klax",
+      "archive_mount": "klax6"
+    }
+  }
+}
