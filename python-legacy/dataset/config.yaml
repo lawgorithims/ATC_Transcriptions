@@ -3,6 +3,16 @@
 # Times are UTC. Adjust the windows to recent dates within LiveATC's ~30-day
 # archive retention. Pick busy daytime-local hours for dense, diverse phraseology.
 
+# PERSISTENT storage root — point this at a mounted block volume on the H100 so the
+# data (raw audio, segments, pseudo-labels, train_metadata.json) survives instance
+# teardown. The H100's root disk is EPHEMERAL. All sub-paths derive from here unless
+# explicitly overridden. Example after mounting your volume at /mnt/atc-data:
+storage_root: /mnt/atc-data
+# raw audio   -> {storage_root}/raw_us           (LOCAL ONLY, never redistributed)
+# segments    -> {storage_root}/segments
+# pseudo-labels + train_metadata.json -> {storage_root}/us_pseudo
+# eval set    -> {storage_root}/us_eval
+
 models:
   # Teacher A: most accurate Whisper available (accuracy > speed for a labeler).
   teacher_a: openai/whisper-large-v3
@@ -17,7 +27,6 @@ acquisition:
   # recommended) — needs ffmpeg + to run during busy local hours. "archive" pulls
   # historical 30-min blocks from the Cloudflare-protected site (set cloudflare: true).
   mode: live
-  out_dir: data/raw_us        # raw blocks (LOCAL ONLY, never committed)
   queue_size: 16
   loop: true                  # keep cycling feeds forever (models stay loaded); Ctrl-C to stop
   loop_sleep_s: 30
@@ -40,9 +49,6 @@ acquisition:
   start: "2026-06-20T13:00"   # UTC window (within ~30-day archive retention)
   end: "2026-06-20T17:00"
   # template: override only if LiveATC's archive URL format changes.
-
-segments_dir: data/segments
-output_root: data/us_pseudo    # manifest.jsonl + transcripts/ + scores.jsonl
 
 correction:
   enabled: true        # run the deterministic corrector on the final label
@@ -112,9 +118,7 @@ thresholds:
 # the training harvest AND use a different feed (below) so there is no overlap.
 eval:
   # mode: inherits acquisition.mode if omitted. For archive mode add start/end.
-  output_root: data/us_eval
-  out_dir: data/raw_us_eval
-  segments_dir: data/segments_eval
+  # Paths derive from storage_root (us_eval / raw_us_eval / segments_eval).
   chunks_per_feed: 4          # ~2 h of eval audio per feed (live mode)
   min_block_speech_s: 20.0
   feeds:

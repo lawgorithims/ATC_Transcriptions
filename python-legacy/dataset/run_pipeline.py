@@ -15,6 +15,7 @@ Models are loaded once (teacher A + partner B). Everything else is config-driven
 from __future__ import annotations
 
 import queue
+import shutil
 import threading
 import time
 from dataclasses import dataclass
@@ -86,6 +87,31 @@ def _thresholds(cfg: dict) -> FilterThresholds:
     return base
 
 
+def _check_storage(storage_root: Path) -> None:
+    """Ensure the storage root exists, is writable, and report free space.
+
+    Warns loudly if it resolves under the current working directory, which on the
+    H100 is the (ephemeral) root disk — data there is lost on instance teardown.
+    """
+    storage_root = Path(storage_root)
+    storage_root.mkdir(parents=True, exist_ok=True)
+    probe = storage_root / ".write_test"
+    try:
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+    except OSError as exc:
+        raise RuntimeError(f"storage_root {storage_root} is not writable: {exc}")
+    free_gb = shutil.disk_usage(storage_root).free / 1e9
+    resolved = storage_root.resolve()
+    print(f"Storage: {resolved}  (free {free_gb:.1f} GB)")
+    if Path.cwd() in resolved.parents or resolved == Path.cwd():
+        print("  WARNING: storage_root is on the working dir / root disk — this is "
+              "EPHEMERAL on the H100. Point storage_root at a mounted block volume "
+              "(e.g. /mnt/atc-data) so training data survives instance teardown.")
+    if free_gb < 10:
+        print(f"  WARNING: only {free_gb:.1f} GB free — raw audio fills fast (~0.5 GB/feed-hour).")
+
+
 @dataclass
 class _BlockItem:
     job: FeedJob
@@ -98,10 +124,16 @@ def run(cfg: dict) -> dict:
 
     acq = cfg.get("acquisition") or {}
     models = cfg.get("models") or {}
-    out_root = Path(cfg.get("output_root", "data/us_pseudo"))
-    raw_dir = Path(acq.get("out_dir", "data/raw_us"))
-    seg_dir = Path(cfg.get("segments_dir", "data/segments"))
-    start, end = _parse_dt(acq["start"]), _parse_dt(acq["end"])
+    # All outputs live under storage_root — point this at a PERSISTENT block volume
+    # on the H100 so the data survives instance teardown (root disk is ephemeral).
+    storage_root = Path(cfg.get("storage_root", "data"))
+    out_root = Path(cfg.get("output_root") or storage_root / "us_pseudo")
+    raw_dir = Path(acq.get("out_dir") or storage_root / "raw_us")
+    seg_dir = Path(cfg.get("segments_dir") or storage_root / "segments")
+    # start/end only needed for archive mode.
+    start = _parse_dt(acq["start"]) if acq.get("start") else None
+    end = _parse_dt(acq["end"]) if acq.get("end") else None
+    _check_storage(storage_root)
 
     jobs = _build_feed_jobs(cfg)
     thresholds = _thresholds(cfg)
@@ -226,6 +258,14 @@ def run(cfg: dict) -> dict:
         except KeyboardInterrupt:
             print("Interrupted — stopping.")
             break
+        # Keep training-ready metadata fresh after every pass (idempotent).
+        try:
+            n = emit_metadata.to_train_metadata(
+                writer.manifest_path, out_root / "train_metadata.json"
+            )
+            print(f"  exported {n} examples -> {out_root / 'train_metadata.json'}")
+        except Exception as exc:
+            print(f"  (train_metadata export skipped: {exc})")
         if not loop:
             break
         time.sleep(loop_sleep_s)

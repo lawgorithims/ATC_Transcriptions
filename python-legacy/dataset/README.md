@@ -37,6 +37,7 @@ archive_downloader  ->  bulk_capture  ->  scored_transcribe + pseudo_label  ->  
 | `emit_metadata.py` | Write `manifest.jsonl` + `transcripts/` + `scores.jsonl`; convert to `train_metadata.json`. |
 | `run_pipeline.py` | Streaming orchestrator (download in background, label as blocks land). |
 | `eval_set.py` | Reserve a strict, **disjoint** US eval set; score a model (corpus WER/CER). |
+| `monitor.py` | Health report: usable data per feed (accepted/hours/roles), reject reasons, storage. |
 | `tts_synth.py` | OPTIONAL: synthetic US phraseology + radio degradation (Phase 4). |
 | `../atc_diarize.py` | Role attribution (controller vs pilot) + callsign, content-based. |
 
@@ -63,6 +64,32 @@ python -m dataset.feed_prober --feed-config airport_configs/kjfk.json --seconds 
 Add more airports by dropping a config in `airport_configs/` (real LiveATC mounts) and
 listing its feeds in `config.yaml`; the prober/speech-gate will ignore any that are
 dead or silent.
+
+## Persistent storage + verifying usable data
+
+**Save to a block volume, not the ephemeral root disk.** Set `storage_root` in
+`config.yaml` to a mounted volume so the data (raw audio, segments, pseudo-labels,
+`train_metadata.json`) survives instance teardown:
+
+```bash
+lsblk                                   # find your block device, e.g. /dev/sdb
+mkfs.ext4 /dev/sdb                       # ONE TIME (skip if already formatted)
+mkdir -p /mnt/atc-data && mount /dev/sdb /mnt/atc-data
+# set  storage_root: /mnt/atc-data  in dataset/config.yaml
+```
+The pipeline checks the storage root is writable on startup and **warns** if it's on
+the ephemeral root disk. After every harvest pass it refreshes
+`{storage_root}/us_pseudo/train_metadata.json` so training-ready data is always current.
+
+**Confirm each feed is producing usable data** with the monitor:
+
+```bash
+python -m dataset.monitor --config dataset/config.yaml            # one-shot
+python -m dataset.monitor --config dataset/config.yaml --watch 30 # live dashboard
+```
+It shows accepted examples + audio hours + controller/pilot mix **per feed**, the
+global accept rate and reject-reason breakdown, free disk, and flags any configured
+feed that's recording but yielding nothing (tune thresholds) or not active at all.
 
 ## Quick start (manual)
 
