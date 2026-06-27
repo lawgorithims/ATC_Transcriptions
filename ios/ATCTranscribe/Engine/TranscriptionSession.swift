@@ -32,10 +32,11 @@ final class TranscriptionSession: ObservableObject {
         status == .starting || status == .connecting || status == .live || status == .stopping
     }
 
-    func start(source: AudioSource, label: String) {
+    /// Start a run. `clearHistory: false` keeps the existing transcript/stats (used when resuming
+    /// from standby or switching model) so the accumulated console isn't wiped.
+    func start(source: AudioSource, label: String, clearHistory: Bool = true) {
         guard !isRunning else { return }
-        records = []
-        stats = LatencyStats()
+        if clearHistory { records = []; stats = LatencyStats() }
         errorMessage = nil
         status = .live
         detail = "Transcribing."
@@ -51,7 +52,12 @@ final class TranscriptionSession: ObservableObject {
                 Task { @MainActor in self?.updateInputLevel(level) }
             }
             await MainActor.run {
-                if self.status == .live { self.status = .stopped; self.detail = "Stream ended." }
+                // The source ended on its own (clips drained / feed disconnected). Release the
+                // audio session so a finished run doesn't keep the app awake in the background.
+                if self.status == .live {
+                    self.status = .stopped; self.detail = "Stream ended."
+                    AudioSessionManager.deactivate()
+                }
                 self.inputLevel = 0
             }
         }
@@ -68,6 +74,14 @@ final class TranscriptionSession: ObservableObject {
         status = .stopped
         detail = "Stopped."
         inputLevel = 0
+        AudioSessionManager.deactivate()   // release the session on an explicit stop too
+    }
+
+    /// Seed the transcript/stats from a prior session (used when switching model rebuilds the
+    /// session) so the visible console survives the swap. Call before binding `$records`/`$stats`.
+    func adopt(records: [TranscriptRecord], stats: LatencyStats) {
+        self.records = records
+        self.stats = stats
     }
 
     /// Swap the fast inline-correction stage at runtime (Settings toggle). Safe to call while

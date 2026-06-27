@@ -73,8 +73,12 @@ struct TranscriptRow: View {
                             .font(.caption2.monospaced())
                     }
                 }
-                // Corrected words are tinted amber inline so they stand out at a glance.
-                Text(highlighted(record.display, edits: record.allEdits, color: p.warn))
+                // Corrected words are tinted amber inline so they stand out at a glance. Highlight
+                // only the tier actually shown: the LLM's edits when the LLM-refined text is on
+                // screen, otherwise the inline corrector's.
+                Text(highlighted(record.display,
+                                 edits: record.llmCorrected.isEmpty ? record.corrections : record.llmEdits,
+                                 color: p.warn))
                     .font(.callout).foregroundStyle(p.text)
                     .textSelection(.enabled)
                 refinementStatus(p)
@@ -137,11 +141,19 @@ struct TranscriptRow: View {
         for target in targets {
             var idx = attr.startIndex
             while idx < attr.endIndex, let r = attr[idx...].range(of: target) {
+                idx = r.upperBound
+                // Whole-token only: skip a match glued to an alphanumeric on either side, so a
+                // replacement like "9" doesn't tint inside "390" and "left" not inside "leftover".
+                let chars = attr.characters
+                let before = r.lowerBound == attr.startIndex ? nil : chars[chars.index(before: r.lowerBound)]
+                let after = r.upperBound == attr.endIndex ? nil : chars[r.upperBound]
+                if (before.map(isAlnum) ?? false) || (after.map(isAlnum) ?? false) { continue }
                 attr[r].foregroundColor = color
                 attr[r].font = .callout.weight(.semibold)
-                idx = r.upperBound
             }
         }
         return attr
     }
+
+    private func isAlnum(_ c: Character) -> Bool { c.isLetter || c.isNumber }
 }

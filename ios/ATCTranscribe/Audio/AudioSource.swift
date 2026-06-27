@@ -72,7 +72,9 @@ final class DeviceAudioSource: AudioSource {
 
     func makeStream() -> AsyncStream<[Float]> {
         AsyncStream { continuation in
-            configureSession()
+            // The audio session is already configured + activated on the main actor by
+            // AppModel.start() (via AudioSessionManager) before this source runs — don't re-activate
+            // the shared singleton off the main thread here.
             let input = engine.inputNode
             let inputFormat = input.outputFormat(forBus: 0)
             guard let outputFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32,
@@ -106,11 +108,5 @@ final class DeviceAudioSource: AudioSource {
     func stop() {
         engine.inputNode.removeTap(onBus: 0)
         if engine.isRunning { engine.stop() }
-    }
-
-    private func configureSession() {
-        // Shared with the non-mic sources via AudioSessionManager so the active session (and thus
-        // background execution) is configured the same way everywhere. Idempotent.
-        AudioSessionManager.activate(recording: true, preferUSB: preferUSB)
     }
 }
