@@ -98,6 +98,15 @@ final class AppModel: ObservableObject {
         didSet { UserDefaults.standard.set(manualSquelch, forKey: "atc.manualSquelch"); applySquelch() }
     }
 
+    // Speaker diarization: split merged transmissions and put each speaker on its own line. On by
+    // default; persisted; hot-applied to the running pipeline.
+    @Published var diarizationEnabled = (UserDefaults.standard.object(forKey: "atc.diarization") as? Bool) ?? true {
+        didSet {
+            UserDefaults.standard.set(diarizationEnabled, forKey: "atc.diarization")
+            session?.setDiarization(diarizationEnabled)
+        }
+    }
+
     // Live-feed monitor: play the internet feed out the speakers so it can be heard/verified (mic &
     // USB are NOT monitored — feedback). Persisted; toggled by the speaker button. Muting just sets
     // the player volume so it doesn't disrupt the running stream.
@@ -239,6 +248,7 @@ final class AppModel: ObservableObject {
                                     preprocessor: AudioPreprocessor(aggressiveRadio: true),
                                     corrector: currentCorrector(), llm: llm,
                                     gateEnabled: skipWhenConfident, gateSensitivity: gateSensitivity,
+                                    diarizationEnabled: diarizationEnabled,
                                     vadConfig: VADConfig(squelchAuto: squelchAuto,
                                                          squelchLevel: Float(manualSquelch)))
         let session = TranscriptionSession(pipeline: pipeline)

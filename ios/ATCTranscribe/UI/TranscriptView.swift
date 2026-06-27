@@ -62,6 +62,16 @@ struct TranscriptRow: View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 8) {
+                    if let spk = record.speaker {
+                        Text("S\(spk + 1)")
+                            .font(.caption2.weight(.bold))
+                            .padding(.horizontal, 6).padding(.vertical, 1)
+                            .background(speakerColor(spk).opacity(0.22))
+                            .foregroundStyle(speakerColor(spk))
+                            .clipShape(Capsule())
+                            .overlay(Capsule().stroke(speakerColor(spk).opacity(0.5), lineWidth: 1))
+                            .accessibilityIdentifier("speaker-chip")
+                    }
                     Text(record.timestamp).font(.caption2.monospaced()).foregroundStyle(p.accent)
                     Text(String(format: "stream %.1fs", record.streamStartS))
                         .font(.caption2.monospaced()).foregroundStyle(p.textDim)
@@ -156,4 +166,11 @@ struct TranscriptRow: View {
     }
 
     private func isAlnum(_ c: Character) -> Bool { c.isLetter || c.isNumber }
+
+    /// Distinct color per diarization speaker id (cycles for many speakers).
+    private func speakerColor(_ i: Int) -> Color {
+        let colors: [Color] = [.hex(0x3B9EFF), .hex(0x2EE6A6), .hex(0xF5C451),
+                               .hex(0xC58CFF), .hex(0xFF8FB1), .hex(0x5AD1E6)]
+        return colors[((i % colors.count) + colors.count) % colors.count]
+    }
 }

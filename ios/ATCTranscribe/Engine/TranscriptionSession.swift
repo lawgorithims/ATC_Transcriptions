@@ -112,6 +112,12 @@ final class TranscriptionSession: ObservableObject {
         Task { await pipeline.setSquelch(auto: auto, level: level) }
     }
 
+    /// Toggle speaker diarization (Settings) at runtime. Takes effect on the next segment.
+    func setDiarization(_ on: Bool) {
+        let pipeline = self.pipeline
+        Task { await pipeline.setDiarization(on) }
+    }
+
     /// Apply a background-refinement outcome to the matching record (updates the `@Published`
     /// array element so the UI flips "refining…" → refined text). No-op if the record is gone.
     private func applyRefinement(id: UUID, outcome: RefinementOutcome) {
