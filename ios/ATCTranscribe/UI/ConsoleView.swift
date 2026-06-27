@@ -169,6 +169,7 @@ struct ThemeSwitcher: View {
 struct NotificationCarousel: View {
     @EnvironmentObject var model: AppModel
     @State private var page = 0
+    private let pageCount = 3
 
     var body: some View {
         let p = model.palette
@@ -177,9 +178,19 @@ struct NotificationCarousel: View {
             FlightPlanPage().tag(1)
             FlightDataPage().tag(2)
         }
-        .tabViewStyle(.page(indexDisplayMode: .always))
-        .indexViewStyle(.page(backgroundDisplayMode: .interactive))
+        // Custom dots (the system page indicator ran ~33% larger); ~5.5pt circles.
+        .tabViewStyle(.page(indexDisplayMode: .never))
         .frame(height: 84)
+        .overlay(alignment: .bottom) {
+            HStack(spacing: 6) {
+                ForEach(0..<pageCount, id: \.self) { i in
+                    Circle()
+                        .fill(i == page ? p.text : p.textDim.opacity(0.4))
+                        .frame(width: 5.5, height: 5.5)
+                }
+            }
+            .padding(.bottom, 5)
+        }
         .background(p.bg)
     }
 }
@@ -260,37 +271,82 @@ struct Badge: View {
 
 // MARK: - Carousel page 2: flight plan summary
 
-/// A compact summary of the filed flight plan (callsign · departure → destination · route), or a
-/// prompt to file one. A yellow "Update" chip appears when the plan is over a week old. Tapping
-/// anywhere opens the flight-bag editor.
+/// The filed flight plan shown as the full, colour-coded route (departure → fixes/airways →
+/// destination), or a prompt to file one. Airports are purple-pink, VOR navaids green, RNAV/GPS
+/// fixes blue, airways amber. The route is greyed until the on-device AI context (the fixer GGUF)
+/// has downloaded — until then the plan can't actually bias corrections. Tapping opens the editor.
 struct FlightPlanPage: View {
     @EnvironmentObject var model: AppModel
+    @EnvironmentObject var downloads: ModelDownloadManager
+
+    private var contextReady: Bool {
+        if case .ready = downloads.state(ModelCatalog.llm.id) { return true }
+        return ModelStore.isReady(ModelCatalog.llm)
+    }
+
     var body: some View {
         let p = model.palette
-        HStack(spacing: 10) {
-            Image(systemName: "briefcase.fill").font(.callout).foregroundStyle(p.textDim)
-            if let fp = model.flightPlan {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(fp.summaryLine).font(.caption.weight(.semibold)).foregroundStyle(p.text).lineLimit(1)
-                    if !fp.routeText.isEmpty {
-                        Text(fp.routeText).font(.caption2.monospaced()).foregroundStyle(p.textDim).lineLimit(1)
+        Group {
+            if let fp = model.flightPlan, !fp.fullRoute.isEmpty {
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "briefcase.fill").font(.caption2).foregroundStyle(p.textDim)
+                        if !fp.callsign.isEmpty {
+                            Text(fp.callsign).font(.caption.weight(.semibold)).foregroundStyle(p.text)
+                        }
+                        if !fp.aircraftType.isEmpty {
+                            Text(fp.aircraftType).font(.caption2).foregroundStyle(p.textDim).lineLimit(1)
+                        }
+                        Spacer(minLength: 4)
+                        if fp.isStale {
+                            Label("Update", systemImage: "exclamationmark.triangle.fill")
+                                .font(.caption2.weight(.semibold)).foregroundStyle(p.warn)
+                        } else if !contextReady {
+                            Label("AI context downloading", systemImage: "arrow.down.circle")
+                                .font(.caption2).foregroundStyle(p.textDim)
+                        }
                     }
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 5) {
+                            ForEach(Array(fp.fullRoute.enumerated()), id: \.offset) { i, leg in
+                                if i > 0 {
+                                    Image(systemName: "chevron.compact.right")
+                                        .font(.caption2).foregroundStyle(p.textDim.opacity(0.5))
+                                }
+                                Text(leg.ident)
+                                    .font(.caption.weight(.semibold).monospaced())
+                                    .foregroundStyle(contextReady ? legColor(leg.kind, p) : p.textDim.opacity(0.7))
+                            }
+                        }
+                        .padding(.trailing, 16)
+                    }
+                    .opacity(contextReady ? 1 : 0.55)
                 }
-                Spacer(minLength: 6)
-                if fp.isStale {
-                    Label("Update", systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption2.weight(.semibold)).foregroundStyle(p.warn)
-                }
+                .padding(.horizontal, 16)
             } else {
-                Text("No flight plan — tap to file one").font(.caption).foregroundStyle(p.textDim)
-                Spacer(minLength: 0)
+                HStack(spacing: 10) {
+                    Image(systemName: "briefcase.fill").font(.callout).foregroundStyle(p.textDim)
+                    Text("No flight plan — tap to file one").font(.caption).foregroundStyle(p.textDim)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 16)
             }
         }
-        .padding(.horizontal, 16)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .contentShape(Rectangle())
         .onTapGesture { model.showFlightBag = true }
         .accessibilityIdentifier("carousel-flight-plan")
+    }
+
+    /// Colour per route-leg kind (see the user's spec: airports purple-pink, VOR green, GPS blue).
+    private func legColor(_ kind: RouteKind, _ p: Palette) -> Color {
+        switch kind {
+        case .airport:  return .hex(0xE879F9)   // purple-pink — departure / destination
+        case .vor:      return .hex(0x34D399)   // green — VOR / navaid
+        case .waypoint: return .hex(0x60A5FA)   // blue — RNAV / GPS named fix
+        case .airway:   return .hex(0xF5C451)   // amber — airway designator
+        case .other:    return p.text           // DCT / procedure / unknown
+        }
     }
 }
 

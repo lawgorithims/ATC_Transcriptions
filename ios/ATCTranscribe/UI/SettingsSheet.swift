@@ -120,18 +120,24 @@ struct SettingsSheet: View {
     private func modelButton(_ id: String, _ label: String) -> some View {
         let p = model.palette
         let available = model.modelDownloaded(id)
-        let isActive = model.activeModel == id
+        let isLoading = model.loadingModel == id
+        // While a swap loads, highlight the model being loaded (optimistic) so the tap is reflected
+        // instantly; otherwise highlight the model that's actually active.
+        let isActive = isLoading || (model.loadingModel == nil && model.activeModel == id)
         return Button { model.switchModel(id) } label: {
-            Text(available ? label : "\(label) — not downloaded")
-                .font(.caption.weight(.semibold))
-                .frame(maxWidth: .infinity).padding(.vertical, 9)
-                .background(isActive ? p.accent : p.surfaceAlt)
-                .foregroundStyle(isActive ? p.bg : p.text)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(p.border, lineWidth: 1))
+            HStack(spacing: 6) {
+                if isLoading { ProgressView().controlSize(.small).tint(p.bg) }
+                Text(available ? (isLoading ? "\(label) — loading…" : label) : "\(label) — not downloaded")
+                    .font(.caption.weight(.semibold))
+            }
+            .frame(maxWidth: .infinity).padding(.vertical, 9)
+            .background(isActive ? p.accent : p.surfaceAlt)
+            .foregroundStyle(isActive ? p.bg : p.text)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(p.border, lineWidth: 1))
         }
         .buttonStyle(.plain)
-        .disabled(!available)
+        .disabled(!available || model.loadingModel != nil)   // block a second tap mid-swap
         .opacity(available ? 1 : 0.5)
     }
 

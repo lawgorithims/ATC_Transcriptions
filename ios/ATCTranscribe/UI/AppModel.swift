@@ -58,6 +58,9 @@ final class AppModel: ObservableObject {
     @Published var activeModel = "small" {
         didSet { UserDefaults.standard.set(activeModel, forKey: "atc.activeModel") }
     }
+    /// The whisper id being loaded during a swap (nil when idle). Drives the Settings picker's
+    /// optimistic highlight + spinner and blocks a re-entrant switch; cleared on every swap exit.
+    @Published var loadingModel: String?
     /// Set when the speech model fails to load, so the UI can say *why* instead of a bare
     /// "model unavailable".
     @Published var modelLoadError: String?
@@ -181,6 +184,10 @@ final class AppModel: ObservableObject {
 
     private var engine: TranscriberEngine?
     private var session: TranscriptionSession?
+    // The slow-tier llama.cpp engine, cached so a whisper-model swap doesn't reload the ~400 MB GGUF
+    // (the fixer is independent of which speech model is active). Dropped when the backend leaves .local.
+    private var cachedLLMEngine: LLMEngine?
+    private var cachedLLMBackend: LLMBackend = .off
     private var clips: [DiagnosticClip] = []
     private var liveContext: ATCContext?
     private var feedKey: String?
@@ -270,6 +277,11 @@ final class AppModel: ObservableObject {
         // old session) and seed it into the new session below so the swap isn't destructive.
         let savedRecords = records
         let savedStats = stats
+        // On a swap, release the OLD session/engine (holding the old whisper model, up to ~1.5 GB)
+        // BEFORE loading the new one, so only one model is resident at the load peak. switchModel
+        // already called stop(); `$records` keeps its last value once the binding is severed, and
+        // the snapshot above is re-seeded via session.adopt below, so the console doesn't blank.
+        if preserveHistory { self.session = nil; self.engine = nil }
         let engine = TranscriberEngine(models: models, defaultModel: active,
                                        fallbackModel: models["small"] != nil ? "small" : active,
                                        adaptive: false, cpuOnly: cpuOnly)
@@ -297,12 +309,9 @@ final class AppModel: ObservableObject {
         if let fp = flightPlan { context.setFlightPlan(block: fp.contextBlock, vocab: fp.vocabTerms) }
         self.liveContext = context
 
-        // Build the optional slow-tier LLM off the main actor (loading the GGUF can take ~1s).
-        let cfgCorr = correctionConfig
-        let knowledge = context.knowledge
-        let llm = correctionEnabled
-            ? await Task.detached(priority: .utility) { buildLLMCorrector(config: cfgCorr, knowledge: knowledge, feedKey: feedKey) }.value
-            : nil
+        // Build/reuse the optional slow-tier LLM off the main actor. The GGUF loads at most once per
+        // app run (cached), so a whisper-model swap no longer reloads ~400 MB off disk.
+        let llm = await makeLLMCorrector(knowledge: context.knowledge, feedKey: feedKey)
 
         let pipeline = LivePipeline(transcriber: transcriber, context: context,
                                     preprocessor: AudioPreprocessor(aggressiveRadio: true),
@@ -364,20 +373,39 @@ final class AppModel: ObservableObject {
                                       vocab: flightPlan?.vocabTerms ?? [])
     }
 
-    /// Rebuild and hot-swap the slow-tier LLM backend (off / local llama.cpp / Foundation
-    /// Models). Built off the main actor so a model load never janks the UI.
+    /// Build the slow-tier LLM corrector, REUSING a cached llama.cpp engine for the `.local` backend
+    /// so a whisper-model swap never reloads the ~400 MB GGUF. The engine loads at most once per app
+    /// run; the cheap `LocalLLMCorrector` wrapper (knowledge/feedKey binding) is rebuilt each call.
+    /// `makeLocalLLMEngine` returns nil until the GGUF is on disk, leaving the cache empty so the
+    /// next build retries — so a fixer that finishes downloading later is picked up on the next swap.
+    private func makeLLMCorrector(knowledge: ATCKnowledgeBase, feedKey: String?) async -> LLMCorrector? {
+        guard correctionEnabled else { return nil }
+        switch llmBackend {
+        case .off:
+            return nil
+        case .foundation:
+            return await Task.detached(priority: .utility) {
+                makeFoundationModelsCorrector(knowledge: knowledge, feedKey: feedKey)
+            }.value
+        case .local:
+            if cachedLLMEngine == nil || cachedLLMBackend != .local {
+                cachedLLMEngine = await Task.detached(priority: .utility) { makeLocalLLMEngine() }.value
+                cachedLLMBackend = .local
+            }
+            guard let engine = cachedLLMEngine else { return nil }   // GGUF not present yet — retry next build
+            return LocalLLMCorrector(engine: engine, knowledge: knowledge, feedKey: feedKey)
+        }
+    }
+
+    /// Rebuild and hot-swap the slow-tier LLM backend (off / local llama.cpp / Foundation Models) into
+    /// the running session. Built off the main actor so a model load never janks the UI.
     private func rebuildLLM() {
         guard liveMode, let context = liveContext else { return }
-        let cfg = correctionConfig
+        // Leaving the on-device backend frees the cached llama.cpp engine (and its ~400 MB).
+        if !(correctionEnabled && llmBackend == .local) { cachedLLMEngine = nil; cachedLLMBackend = .off }
         let feedKey = self.feedKey
         let knowledge = context.knowledge
-        let enabled = correctionEnabled
-        Task {
-            let llm = enabled
-                ? await Task.detached(priority: .utility) { buildLLMCorrector(config: cfg, knowledge: knowledge, feedKey: feedKey) }.value
-                : nil
-            session?.setLLM(llm)
-        }
+        Task { session?.setLLM(await makeLLMCorrector(knowledge: knowledge, feedKey: feedKey)) }
     }
 
     // MARK: controls
@@ -568,12 +596,17 @@ final class AppModel: ObservableObject {
     /// Preserves run state: if a source was live it restarts after the new model loads.
     func switchModel(_ id: String) {
         guard liveMode, id != activeModel, modelDirs[id] != nil else { return }
+        guard loadingModel == nil else { return }   // a swap is already loading — ignore the tap
         let wasRunning = isRunning
         if wasRunning { stop() }
+        loadingModel = id                            // picker reflects the choice immediately
         detail = "Loading \(id) model…"
         let models = modelDirs
-        Task { await setupLive(models: models, active: id, audioDir: audioDirPath,
-                               cpuOnly: storedCPUOnly, autostart: wasRunning, preserveHistory: true) }
+        Task {
+            defer { loadingModel = nil }             // clears on success AND every early-return/failure
+            await setupLive(models: models, active: id, audioDir: audioDirPath,
+                            cpuOnly: storedCPUOnly, autostart: wasRunning, preserveHistory: true)
+        }
     }
 
     /// Where the live model comes from, preferring a user-downloaded model over a bundled one.
