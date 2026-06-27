@@ -61,13 +61,25 @@ def segment_block(
     silence_duration_ms: int = 700,
     min_speech_ms: int = 500,
     max_segment_s: float = 12.0,
+    min_block_speech_s: float = 0.0,
     write_sidecar: bool = True,
 ) -> List[SegmentRecord]:
-    """VAD-segment one downloaded block; write clips + sidecars; return records."""
+    """VAD-segment one downloaded block; write clips + sidecars; return records.
+
+    When ``min_block_speech_s > 0``, a cheap VAD speech-yield check runs first and
+    the block is skipped (returns []) if it contains less speech than that — so
+    silent 30-min radio never reaches the GPU.
+    """
     block_path = Path(block_path)
     audio = _load_block(block_path)
     if audio.size == 0:
         return []
+
+    if min_block_speech_s > 0:
+        from dataset.speech_gate import speech_yield
+
+        if speech_yield(audio, vad_aggressiveness).speech_s < min_block_speech_s:
+            return []
 
     seg = VADSegmenter(
         aggressiveness=vad_aggressiveness,

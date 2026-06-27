@@ -26,7 +26,10 @@ archive_downloader  ->  bulk_capture  ->  scored_transcribe + pseudo_label  ->  
 
 | Module | Role |
 |--------|------|
+| `live_recorder.py` | **Record active feeds (Cloudflare-free)** in 30-min chunks; speech-gated. Primary acquisition. |
 | `archive_downloader.py` | Download LiveATC 30-min archive blocks to disk (resumable, idempotent). |
+| `cf_session.py` | Drive Chromium (Playwright) to clear **Cloudflare** for archive downloads. |
+| `speech_gate.py` | Cheap VAD pass to skip silent blocks before the GPU. |
 | `bulk_capture.py` | VAD-segment a block into per-transmission 16 kHz WAV clips. |
 | `scored_transcribe.py` | Whisper decode that also returns avg-logprob / no-speech / compression. |
 | `pseudo_label.py` | Two-model consensus + confidence gates → keep/reject + final label. |
@@ -64,12 +67,31 @@ the ATCO2 real-VHF share high) and re-fine-tune with the existing training scrip
 Re-score on the US eval set; iterate (round 2 re-labels the same audio with the
 improved model as partner B).
 
+## Acquisition: live (default) vs archive
+
+LiveATC's archive **website is behind Cloudflare**, and each 30-min block has no
+guarantee of speech (it can be silent radio). Two paths, both feeding the same
+segment → consensus → label stages:
+
+- **`mode: live` (recommended, Cloudflare-free).** Records currently-active feeds off
+  the Icecast edge servers (the existing ffmpeg path), in 30-min chunks, keeping only
+  chunks with real speech (`min_block_speech_s`). Run during busy local hours under
+  `tmux`/cron. Cross-check what's live now at **skylistening.com/liveatc** and pick
+  busy towers/approaches. Needs `ffmpeg` on PATH.
+- **`mode: archive` (historical / "interesting" recordings).** Pulls 30-min blocks from
+  the archive over a UTC window. Set `cloudflare: true` to clear the challenge via a
+  headless Chromium (`pip install playwright && playwright install chromium`). More
+  fragile; use for targeted pulls. If the first blocks all come back `404`, paste me a
+  real archive mp3 URL and I'll fix the `template`.
+
+Either way the **speech gate** (`speech_gate.py`) drops near-silent blocks before the
+GPU, so dead air never costs transcription time.
+
 ## Configuration
 
-Everything is driven by `config.yaml`: model paths, the UTC harvest window, the feeds
-(airport config + feed keys), acceptance thresholds, and a separate **eval** window
-kept disjoint from training. Times are UTC and must fall within LiveATC's ~30-day
-archive retention.
+Everything is driven by `config.yaml`: acquisition mode + window/feeds, model paths,
+acceptance thresholds, and a separate **eval** window kept disjoint from training.
+Times are UTC; archive windows must fall within LiveATC's ~30-day retention.
 
 ## Notes
 

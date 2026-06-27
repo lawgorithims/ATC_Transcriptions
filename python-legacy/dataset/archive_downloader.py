@@ -131,6 +131,11 @@ def _http_get(url: str, timeout: float = 60.0) -> bytes:
         return resp.read()
 
 
+def _status_of(exc: Exception):
+    """Best-effort HTTP status from an exception (urllib HTTPError or CloudflareError)."""
+    return getattr(exc, "code", None) or getattr(exc, "status", None)
+
+
 def download_block(
     mount: str,
     block_start: datetime,
@@ -141,12 +146,17 @@ def download_block(
     template: str = DEFAULT_ARCHIVE_TEMPLATE,
     retries: int = 4,
     timeout: float = 60.0,
+    fetch=None,
 ) -> DownloadRecord:
     """Download a single 30-minute archive block, with exponential backoff.
 
     A 404 means the block simply isn't archived (gaps are normal) -> status
     "missing" (not retried). Network errors retry up to ``retries`` times.
+
+    ``fetch(url, timeout) -> bytes`` overrides the default urllib GET — pass a
+    ``CloudflareSession.get`` to fetch through a browser past Cloudflare.
     """
+    getter = fetch or _http_get
     url = archive_url(mount, block_start, template)
     stamp = block_start.astimezone(timezone.utc).strftime("%Y%m%dT%H%MZ")
     date_dir = out_dir / airport / feed / block_start.astimezone(timezone.utc).strftime("%Y-%m-%d")
@@ -167,19 +177,15 @@ def download_block(
     backoff = 2.0
     for attempt in range(1, retries + 1):
         try:
-            data = _http_get(url, timeout=timeout)
-        except urllib.error.HTTPError as exc:
-            if exc.code == 404:
+            data = getter(url, timeout=timeout)
+        except Exception as exc:  # urllib.error.* or CloudflareError
+            status = _status_of(exc)
+            if status == 404:
                 rec.status = "missing"
                 rec.note = "404 (block not archived)"
                 return rec
             rec.status = "error"
-            rec.note = f"HTTP {exc.code}"
-            if attempt == retries:
-                return rec
-        except (urllib.error.URLError, OSError, TimeoutError) as exc:
-            rec.status = "error"
-            rec.note = str(exc)[:200]
+            rec.note = (f"HTTP {status}" if status else str(exc)[:200])
             if attempt == retries:
                 return rec
         else:
@@ -209,12 +215,14 @@ def download_archive_range(
     manifest_path: Optional[Path] = None,
     template: str = DEFAULT_ARCHIVE_TEMPLATE,
     on_block: Optional[callable] = None,
+    fetch=None,
 ) -> List[DownloadRecord]:
     """Download every 30-min archive block for a feed over [start, end) (UTC).
 
     Resumable: blocks already marked ok/skipped in the manifest are not re-fetched.
     ``on_block(record)`` is called after each successful download — the streaming
     orchestrator uses this to start segmenting/transcribing immediately.
+    ``fetch`` overrides the HTTP getter (e.g. a ``CloudflareSession.get``).
     """
     entry = _load_feed(feed_config, feed_key)
     airport = entry["_airport_code"]
@@ -230,7 +238,7 @@ def download_archive_range(
             continue
         rec = download_block(
             mount, block_start, out_dir,
-            airport=airport, feed=feed_key, template=template,
+            airport=airport, feed=feed_key, template=template, fetch=fetch,
         )
         _append_manifest(manifest_path, rec)
         records.append(rec)

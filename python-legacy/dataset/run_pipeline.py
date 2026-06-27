@@ -120,20 +120,46 @@ def run(cfg: dict) -> dict:
     )
 
     block_q: "queue.Queue" = queue.Queue(maxsize=int(acq.get("queue_size", 16)))
+    mode = (acq.get("mode") or "live").lower()       # "live" (Cloudflare-free) or "archive"
+    min_block_speech_s = float(acq.get("min_block_speech_s", 0.0))
 
     def _producer():
-        """Download every feed's blocks; enqueue each as it lands."""
-        for job in jobs:
-            def _on_block(rec, _job=job):
-                block_q.put(_BlockItem(_job, Path(rec.path)))
+        """Acquire each feed's blocks; enqueue each as it lands."""
+        cf = None
+        try:
+            if mode == "archive" and acq.get("cloudflare"):
+                # Lazily open one warmed browser session for the whole run.
+                from dataset.cf_session import CloudflareSession
 
-            download_archive_range(
-                job.airport_config, job.feed_key, start, end, raw_dir,
-                manifest_path=out_root / "downloads.jsonl",
-                template=acq.get("template") or DEFAULT_ARCHIVE_TEMPLATE,
-                on_block=_on_block,
-            )
-        block_q.put(None)  # sentinel
+                cf = CloudflareSession(headless=True).__enter__()
+
+            for job in jobs:
+                def _on_block(rec, _job=job):
+                    block_q.put(_BlockItem(_job, Path(rec.path)))
+
+                if mode == "archive":
+                    download_archive_range(
+                        job.airport_config, job.feed_key, start, end, raw_dir,
+                        manifest_path=out_root / "downloads.jsonl",
+                        template=acq.get("template") or DEFAULT_ARCHIVE_TEMPLATE,
+                        on_block=_on_block,
+                        fetch=(cf.get if cf is not None else None),
+                    )
+                else:  # live recording (no Cloudflare)
+                    from dataset.live_recorder import record_feed_chunks
+
+                    record_feed_chunks(
+                        job.airport_config, job.feed_key, raw_dir,
+                        n_chunks=int(acq.get("chunks_per_feed", 1)),
+                        chunk_minutes=float(acq.get("chunk_minutes", 30.0)),
+                        min_speech_s=float(acq.get("min_block_speech_s", 20.0)),
+                        manifest_path=out_root / "downloads.jsonl",
+                        on_chunk=_on_block, on_status=lambda m: print("   ", m),
+                    )
+        finally:
+            if cf is not None:
+                cf.__exit__(None, None, None)
+            block_q.put(None)  # sentinel
 
     producer = threading.Thread(target=_producer, daemon=True)
     producer.start()
@@ -147,6 +173,7 @@ def run(cfg: dict) -> dict:
         job = item.job
         segments = bulk_capture.segment_block(
             item.block_path, seg_dir, airport=job.airport_code, feed=job.feed_key,
+            min_block_speech_s=min_block_speech_s,
         )
         for seg in segments:
             if writer.already_done(seg.seg_id):
