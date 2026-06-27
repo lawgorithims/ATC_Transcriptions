@@ -1,0 +1,16 @@
+{
+  "airport_code": "ZKC",
+  "airport_name": "Kansas City ARTCC (Kansas City Center)",
+  "tracon": "Kansas City Center (ZKC)",
+  "runways": [],
+  "frequencies": {},
+  "streams": {
+    "center": {
+      "label": "Kansas City Center (Springfield 133.475)",
+      "url": "https://d.liveatc.net/ksgf2_zkc_133475",
+      "liveatc_page": "https://www.liveatc.net/hlisten.php?mount=ksgf2_zkc_133475&icao=ksgf",
+      "frequency_mhz": "133.475",
+      "archive_mount": "ksgf2_zkc_133475"
+    }
+  }
+}

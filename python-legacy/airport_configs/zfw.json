@@ -1,0 +1,15 @@
+{
+  "airport_code": "ZFW",
+  "airport_name": "Fort Worth ARTCC (Fort Worth Center)",
+  "tracon": "Fort Worth Center (ZFW)",
+  "runways": [],
+  "frequencies": {},
+  "streams": {
+    "center": {
+      "label": "Fort Worth Center (Paris TX, Sector 42)",
+      "url": "https://d.liveatc.net/kprx1_zfw42",
+      "liveatc_page": "https://www.liveatc.net/hlisten.php?mount=kprx1_zfw42&icao=kprx",
+      "archive_mount": "kprx1_zfw42"
+    }
+  }
+}

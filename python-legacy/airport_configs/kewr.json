@@ -1,0 +1,21 @@
+{
+  "airport_code": "KEWR",
+  "airport_name": "Newark Liberty International Airport",
+  "tracon": "New York TRACON (N90)",
+  "runways": [
+    "4L", "4R", "11", "22L", "22R", "29"
+  ],
+  "frequencies": {
+    "tower": "118.3",
+    "ground": "121.8"
+  },
+  "streams": {
+    "tower_primary": {
+      "label": "KEWR Tower",
+      "url": "https://d.liveatc.net/kewr_twr",
+      "liveatc_page": "https://www.liveatc.net/hlisten.php?mount=kewr_twr&icao=kewr",
+      "frequency_mhz": "118.3",
+      "archive_mount": "kewr_twr"
+    }
+  }
+}

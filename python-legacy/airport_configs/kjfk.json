@@ -34,6 +34,12 @@
       "label": "KJFK Tower #2",
       "url": "https://s1-bos.liveatc.net/kjfk_twr3",
       "liveatc_page": "https://www.liveatc.net/hlisten.php?mount=kjfk_twr3&icao=kjfk"
+    },
+    "sector_9s": {
+      "label": "KJFK (kjfk9_s)",
+      "url": "https://d.liveatc.net/kjfk9_s",
+      "liveatc_page": "https://www.liveatc.net/hlisten.php?mount=kjfk9_s&icao=kjfk",
+      "archive_mount": "kjfk9_s"
     }
   }
 }
