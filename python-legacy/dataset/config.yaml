@@ -19,14 +19,21 @@ acquisition:
   mode: live
   out_dir: data/raw_us        # raw blocks (LOCAL ONLY, never committed)
   queue_size: 16
+  loop: true                  # keep cycling feeds forever (models stay loaded); Ctrl-C to stop
+  loop_sleep_s: 30
 
   # Speech gate: skip blocks/chunks with less than this many seconds of speech
   # (30-min ATC blocks are often near-silent). Keeps dead air off the GPU.
   min_block_speech_s: 20.0
 
   # --- live mode ---
-  chunks_per_feed: 8          # 8 x 30 min = 4 h per feed per run; loop under tmux/cron
+  chunks_per_feed: 1          # 30 min per feed per pass; launch.sh loops over passes
   chunk_minutes: 30.0
+  # Probe each feed before recording and skip ones that aren't active right now
+  # (push-to-talk: silent when there's no traffic). No scraping, no Cloudflare.
+  probe_active: true
+  probe_seconds: 60
+  probe_min_speech_s: 3.0
 
   # --- archive mode (only used when mode: archive) ---
   cloudflare: true            # drive Chromium (Playwright) to clear Cloudflare
@@ -47,8 +54,13 @@ feeds:
     feed_keys:
       - tower_east
       - lone_star_approach_17c_final
+      - lone_star_approach_18r_final
+      # NOTE: lone_star_approach_17l_final is reserved for EVAL -> not listed here.
   - airport_config: airport_configs/kjfk.json
-    feed_keys: []      # fill in once you confirm KJFK feed keys / archive mounts
+    feed_keys:
+      - tower_primary
+      - tower_1191
+      - tower_2
 
 # Acceptance gates for a TRAINING pseudo-label (tune on the eval set).
 thresholds:
