@@ -175,8 +175,13 @@ final class AppModel: ObservableObject {
 
     // MARK: live wiring
 
-    private func setupLive(models: [String: String], active: String, audioDir: String?, cpuOnly: Bool, autostart: Bool) async {
+    private func setupLive(models: [String: String], active: String, audioDir: String?, cpuOnly: Bool,
+                           autostart: Bool, preserveHistory: Bool = false) async {
         guard let modelDir = models[active] else { detail = "Model unavailable."; return }
+        // When swapping models we keep the visible transcript: snapshot it now (it still mirrors the
+        // old session) and seed it into the new session below so the swap isn't destructive.
+        let savedRecords = records
+        let savedStats = stats
         let engine = TranscriberEngine(models: models, defaultModel: active,
                                        fallbackModel: models["small"] != nil ? "small" : active,
                                        adaptive: false, cpuOnly: cpuOnly)
@@ -210,6 +215,7 @@ final class AppModel: ObservableObject {
                                     vadConfig: VADConfig(squelchAuto: squelchAuto,
                                                          squelchLevel: Float(manualSquelch)))
         let session = TranscriptionSession(pipeline: pipeline)
+        if preserveHistory { session.adopt(records: savedRecords, stats: savedStats) }  // survive a model swap
         session.$records.assign(to: &$records)   // mirror live session state into the UI
         session.$status.assign(to: &$status)
         session.$stats.assign(to: &$stats)
@@ -221,7 +227,7 @@ final class AppModel: ObservableObject {
 
         if let audioDir { clips = (try? Self.loadClips(audioDir)) ?? [] }
         detail = clips.isEmpty ? "Model ready (no demo clips)." : "Ready — press Start."
-        if autostart { start() }
+        if autostart { start(resuming: preserveHistory) }
     }
 
     // MARK: correction
@@ -272,7 +278,9 @@ final class AppModel: ObservableObject {
 
     // MARK: controls
 
-    func start() {
+    /// Start (or resume) capture. `resuming: true` keeps the existing transcript/stats instead of
+    /// clearing them (used by standby Resume and a model switch), so the console isn't wiped.
+    func start(resuming: Bool = false) {
         guard liveMode else {           // no model → design/screenshot demo
             status = .live; detail = "Transcribing (demo)."; return
         }
@@ -302,14 +310,15 @@ final class AppModel: ObservableObject {
         // backgrounded (the `audio` background mode is declared). mic/USB record; feed/replay play.
         AudioSessionManager.activate(recording: source == .microphone || source == .usbAudio,
                                      preferUSB: source == .usbAudio)
-        session.start(source: src, label: source.rawValue)
+        session.start(source: src, label: source.rawValue, clearHistory: !resuming)
         sourceLabel = source.rawValue
         detail = "Transcribing."
     }
 
     func stop() {
+        // The session releases the audio session itself (on Stop and on a natural end); the demo
+        // path never activated one, so nothing to release here.
         if let session { session.stop() } else { status = .stopped }
-        AudioSessionManager.deactivate()
         detail = "Stopped."
     }
 
@@ -326,7 +335,7 @@ final class AppModel: ObservableObject {
     /// return to the idle console.
     func exitStandby() {
         standby = false
-        if let s = resumeSource { source = s; start() }
+        if let s = resumeSource { source = s; start(resuming: true) }
         resumeSource = nil
     }
 
@@ -370,7 +379,9 @@ final class AppModel: ObservableObject {
             return defaultWidgets
         }
         let parsed = raw.compactMap(SidebarWidget.init(rawValue:))
-        return parsed.isEmpty ? defaultWidgets : parsed
+        // A deliberately-emptied sidebar (raw == []) is preserved; only fall back to defaults when
+        // the key is absent (first run, handled above) or every saved id is unknown (raw non-empty).
+        return parsed.isEmpty && !raw.isEmpty ? defaultWidgets : parsed
     }
 
     static func saveWidgets(_ w: [SidebarWidget]) {
@@ -418,7 +429,7 @@ final class AppModel: ObservableObject {
         detail = "Loading \(id) model…"
         let models = modelDirs
         Task { await setupLive(models: models, active: id, audioDir: audioDirPath,
-                               cpuOnly: storedCPUOnly, autostart: wasRunning) }
+                               cpuOnly: storedCPUOnly, autostart: wasRunning, preserveHistory: true) }
     }
 
     /// Where the live model comes from, preferring a user-downloaded model over a bundled one.
@@ -450,8 +461,9 @@ final class AppModel: ObservableObject {
         let models = Self.availableModelDirs()
         self.modelDirs = models
         guard !liveMode else {
-            // Already live: if the user just added the higher-accuracy model, switch to it.
-            if entry.id == "turbo", activeModel != "turbo" { switchModel("turbo") }
+            // Already live: if the user just added the higher-accuracy model, switch to it — but
+            // never tear down an ACTIVE run (the Settings picker enables it once modelDirs updates).
+            if entry.id == "turbo", activeModel != "turbo", !isRunning { switchModel("turbo") }
             return
         }
         let active = models["turbo"] != nil ? "turbo" : "small"

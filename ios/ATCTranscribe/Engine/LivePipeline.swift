@@ -214,17 +214,22 @@ actor LivePipeline {
         self.onRefined = onRefined
         await refiner?.setOutcomeHandler(onRefined)
         running = true
+        // Cheap input-level meter (source-agnostic: mic, USB, stream, replay). Quantize to the 7
+        // bars the UI shows and only fire on a step change, so a steady/silent feed dispatches no
+        // per-chunk main-actor work — just the meter, not the transcriber, gates here.
+        var lastLevel: Float = -1
         for await chunk in source.makeStream() {
             if !running { break }
-            // Cheap input-level meter (source-agnostic: mic, USB, stream, replay). RMS → a
-            // perceptual 0…1 level the UI animates, so the user can see audio is flowing.
-            if let onLevel { onLevel(Self.level(chunk)) }
+            if let onLevel {
+                let stepped = (Self.level(chunk) * 7).rounded() / 7
+                if stepped != lastLevel { lastLevel = stepped; onLevel(stepped) }
+            }
             for segment in segmenter.feed(chunk) {
                 if let record = await process(segment) { onRecord(record) }
             }
         }
         running = false
-        onLevel?(0)
+        if lastLevel != 0 { onLevel?(0) }
     }
 
     /// RMS of a chunk mapped to a perceptual 0…1 meter level. Floors near the noise level and
