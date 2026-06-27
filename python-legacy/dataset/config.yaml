@@ -13,10 +13,25 @@ models:
   num_beams_b: 1        # greedy partner is fine; it only needs to (dis)agree
 
 acquisition:
-  out_dir: data/raw_us        # raw downloaded blocks (LOCAL ONLY, never committed)
-  start: "2026-06-20T13:00"   # UTC window to harvest for TRAINING data
-  end: "2026-06-20T17:00"
+  # mode: "live" records active feeds off the Icecast edge servers (NO Cloudflare,
+  # recommended) — needs ffmpeg + to run during busy local hours. "archive" pulls
+  # historical 30-min blocks from the Cloudflare-protected site (set cloudflare: true).
+  mode: live
+  out_dir: data/raw_us        # raw blocks (LOCAL ONLY, never committed)
   queue_size: 16
+
+  # Speech gate: skip blocks/chunks with less than this many seconds of speech
+  # (30-min ATC blocks are often near-silent). Keeps dead air off the GPU.
+  min_block_speech_s: 20.0
+
+  # --- live mode ---
+  chunks_per_feed: 8          # 8 x 30 min = 4 h per feed per run; loop under tmux/cron
+  chunk_minutes: 30.0
+
+  # --- archive mode (only used when mode: archive) ---
+  cloudflare: true            # drive Chromium (Playwright) to clear Cloudflare
+  start: "2026-06-20T13:00"   # UTC window (within ~30-day archive retention)
+  end: "2026-06-20T17:00"
   # template: override only if LiveATC's archive URL format changes.
 
 segments_dir: data/segments
