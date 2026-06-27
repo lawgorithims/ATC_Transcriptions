@@ -24,8 +24,9 @@ extension AppTheme {
     var palette: Palette {
         switch self {
         case .cockpit:
+            // Accent is blue (was teal-green); `good` stays green for semantic PASS/fast status.
             return Palette(bg: .hex(0x0B1117), surface: .hex(0x131E29), surfaceAlt: .hex(0x0F1A23),
-                           text: .hex(0xE6F0F6), textDim: .hex(0x8AA0B0), accent: .hex(0x2EE6A6),
+                           text: .hex(0xE6F0F6), textDim: .hex(0x8AA0B0), accent: .hex(0x3B9EFF),
                            border: .hex(0x223342), good: .hex(0x2EE6A6), warn: .hex(0xF5C451), bad: .hex(0xFF6B6B))
         case .day:
             return Palette(bg: .hex(0xEEF2F6), surface: .hex(0xFFFFFF), surfaceAlt: .hex(0xF6F9FC),

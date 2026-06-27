@@ -67,8 +67,14 @@ final class FileReplaySource: AudioSource {
 final class DeviceAudioSource: AudioSource {
     private let engine = AVAudioEngine()
     private let preferUSB: Bool
+    /// Called (off the main actor) if capture can't start — so the UI can show why instead of the
+    /// stream silently finishing and looking like "nothing happened".
+    private let onFailure: (@Sendable (String) -> Void)?
 
-    init(preferUSB: Bool = false) { self.preferUSB = preferUSB }
+    init(preferUSB: Bool = false, onFailure: (@Sendable (String) -> Void)? = nil) {
+        self.preferUSB = preferUSB
+        self.onFailure = onFailure
+    }
 
     func makeStream() -> AsyncStream<[Float]> {
         AsyncStream { continuation in
@@ -77,9 +83,13 @@ final class DeviceAudioSource: AudioSource {
             // the shared singleton off the main thread here.
             let input = engine.inputNode
             let inputFormat = input.outputFormat(forBus: 0)
-            guard let outputFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32,
+            // A zero sample rate / channel count means there's no usable input (e.g. mic permission
+            // not granted, or no input route) — surface it rather than finishing silently.
+            guard inputFormat.sampleRate > 0, inputFormat.channelCount > 0,
+                  let outputFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32,
                                                    sampleRate: 16000, channels: 1, interleaved: false),
                   let converter = AVAudioConverter(from: inputFormat, to: outputFormat) else {
+                onFailure?("No audio input available. Check the microphone is connected and permitted.")
                 continuation.finish(); return
             }
 
@@ -100,7 +110,11 @@ final class DeviceAudioSource: AudioSource {
                 }
             }
 
-            do { try engine.start() } catch { continuation.finish() }
+            do { try engine.start() }
+            catch {
+                onFailure?("Microphone failed to start: \(error.localizedDescription)")
+                continuation.finish()
+            }
             continuation.onTermination = { [weak self] _ in self?.stop() }
         }
     }

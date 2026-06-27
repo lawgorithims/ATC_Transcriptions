@@ -5,7 +5,7 @@ import UniformTypeIdentifiers
 /// (long-press to edit → add / remove / drag-reorder), so the layout can be trimmed for
 /// iPad Split View / Slide Over. Order is the default layout; persisted in `AppModel`.
 enum SidebarWidget: String, CaseIterable, Identifiable {
-    case latency, proofOfLife, host
+    case latency, proofOfLife, host, diagnostics
     var id: String { rawValue }
 
     var title: String {
@@ -13,6 +13,7 @@ enum SidebarWidget: String, CaseIterable, Identifiable {
         case .latency: return "Latency"
         case .proofOfLife: return "Proof of life"
         case .host: return "Host"
+        case .diagnostics: return "Diagnostics"
         }
     }
 
@@ -21,6 +22,7 @@ enum SidebarWidget: String, CaseIterable, Identifiable {
         case .latency: return "gauge.with.needle"
         case .proofOfLife: return "checkmark.seal"
         case .host: return "cpu"
+        case .diagnostics: return "thermometer.medium"
         }
     }
 
@@ -29,6 +31,7 @@ enum SidebarWidget: String, CaseIterable, Identifiable {
         case .latency: LatencyCard()
         case .proofOfLife: ProofOfLifeCard()
         case .host: HostCard()
+        case .diagnostics: DiagnosticsCard()
         }
     }
 }
@@ -242,6 +245,52 @@ struct HostCard: View {
                 KV("Model", model.activeModel)
                 KV("Platform", "iOS / iPadOS")
             }
+        }
+    }
+}
+
+/// Live CPU / memory / thermal readouts for chasing down heat. Polls ~every 1.5 s, only while the
+/// widget is on screen. iOS exposes no GPU/Neural-Engine % — thermal state is the proxy for that.
+struct DiagnosticsCard: View {
+    @EnvironmentObject var model: AppModel
+    @State private var cpu = 0.0
+    @State private var mem = 0.0
+    @State private var thermal: ProcessInfo.ThermalState = .nominal
+    private let tick = Timer.publish(every: 1.5, on: .main, in: .common).autoconnect()
+
+    var body: some View {
+        let p = model.palette
+        Card(title: "Diagnostics") {
+            VStack(spacing: 8) {
+                KV("CPU (app)", String(format: "%.0f%%", cpu))
+                KV("Memory", String(format: "%.0f MB", mem))
+                HStack {
+                    Text("Thermal").font(.caption).foregroundStyle(p.textDim)
+                    Spacer()
+                    Text(thermal.label).font(.caption.monospaced().weight(.semibold))
+                        .foregroundStyle(thermalColor(p))
+                }
+                Text("GPU / Neural Engine load isn't exposed by iOS — thermal state is the signal.")
+                    .font(.caption2).foregroundStyle(p.textDim)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .onAppear(perform: refresh)
+        .onReceive(tick) { _ in refresh() }
+    }
+
+    private func refresh() {
+        cpu = DeviceLoad.cpuPercent()
+        mem = DeviceLoad.memoryMB()
+        thermal = DeviceLoad.thermalState()
+    }
+
+    private func thermalColor(_ p: Palette) -> Color {
+        switch thermal {
+        case .nominal: return p.good
+        case .fair: return p.warn
+        case .serious, .critical: return p.bad
+        @unknown default: return p.text
         }
     }
 }

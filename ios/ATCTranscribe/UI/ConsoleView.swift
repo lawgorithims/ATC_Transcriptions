@@ -20,6 +20,12 @@ struct ConsoleView: View {
                 hairline
                 mainArea
             }
+            // Standby dims + disables the console (transcript stays readable) rather than covering
+            // it, and floats a Resume control on top.
+            .opacity(model.standby ? 0.35 : 1)
+            .disabled(model.standby)
+            .animation(.easeInOut(duration: 0.2), value: model.standby)
+            if model.standby { StandbyBanner().environmentObject(model) }
         }
         .tint(p.accent)
         .preferredColorScheme(model.theme == .day ? .light : .dark)
@@ -28,9 +34,6 @@ struct ConsoleView: View {
         }
         .fullScreenCover(isPresented: $model.needsOnboarding) {
             OnboardingDownloadView().environmentObject(model).environmentObject(downloads)
-        }
-        .fullScreenCover(isPresented: $model.standby) {
-            StandbyView().environmentObject(model)
         }
         .animation(.easeInOut(duration: 0.25), value: model.theme)
         .onAppear {
@@ -276,37 +279,42 @@ struct ControlsBar: View {
 
 // MARK: - Standby
 
-/// A near-black low-power screen shown while in standby. Capture is stopped and the audio session
-/// released (see `AppModel.enterStandby`), so an unattended quiet feed stops draining the battery;
-/// the dark screen also saves power on OLED iPads. Resume restarts whatever was running.
-struct StandbyView: View {
+/// Floating low-power banner shown over a dimmed (but still visible) console while in standby.
+/// Capture is stopped and the audio session released (see `AppModel.enterStandby`) so an unattended
+/// quiet feed stops draining the battery; the transcript stays on screen. Resume restarts whatever
+/// was running.
+struct StandbyBanner: View {
     @EnvironmentObject var model: AppModel
 
     var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
-            VStack(spacing: 18) {
-                Image(systemName: "moon.zzz.fill")
-                    .font(.system(size: 44)).foregroundStyle(.white.opacity(0.5))
-                Text("Standby").font(.title2.weight(.semibold)).foregroundStyle(.white.opacity(0.85))
-                Text("Capture paused to save power.")
-                    .font(.subheadline).foregroundStyle(.white.opacity(0.4))
+        let p = model.palette
+        VStack {
+            Spacer()
+            VStack(spacing: 12) {
+                HStack(spacing: 8) {
+                    Image(systemName: "moon.zzz.fill").foregroundStyle(p.accent)
+                    Text("Standby — capture paused").font(.subheadline.weight(.semibold))
+                        .foregroundStyle(p.text)
+                }
                 Button { model.exitStandby() } label: {
                     Text(model.resumeSourceLabel.map { "Resume \($0)" } ?? "Resume")
                         .font(.subheadline.weight(.semibold))
                         .padding(.horizontal, 28).padding(.vertical, 12)
-                        .background(.white.opacity(0.12))
-                        .foregroundStyle(.white)
+                        .background(p.accent).foregroundStyle(p.bg)
                         .clipShape(Capsule())
-                        .overlay(Capsule().stroke(.white.opacity(0.2), lineWidth: 1))
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("standby-resume")
-                .padding(.top, 8)
             }
-            .padding(40)
+            .padding(20)
+            .background(p.surface)
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .overlay(RoundedRectangle(cornerRadius: 16).stroke(p.border, lineWidth: 1))
+            .shadow(color: .black.opacity(0.3), radius: 12, y: 4)
+            .padding(.bottom, 36)
         }
-        .preferredColorScheme(.dark)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .transition(.opacity)
     }
 }
 
