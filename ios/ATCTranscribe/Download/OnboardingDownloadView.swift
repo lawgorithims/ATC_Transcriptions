@@ -44,7 +44,8 @@ struct OnboardingDownloadView: View {
 
                 VStack(spacing: 10) {
                     Button {
-                        if isReady { model.finishOnboarding() } else { downloads.download(entry) }
+                        if isReady { model.finishOnboarding() }
+                        else { allEntries.forEach { downloads.download($0) } }
                     } label: {
                         Text(primaryLabel)
                             .font(.subheadline.weight(.semibold))
@@ -70,19 +71,26 @@ struct OnboardingDownloadView: View {
         .preferredColorScheme(model.theme == .day ? .light : .dark)
     }
 
-    private var primaryLabel: String {
-        switch state {
-        case .ready: return "Continue"
-        case .downloading: return "Downloading…"
-        case .failed: return "Retry download"
-        case .notDownloaded: return "Download model (\(entry.sizeLabel))"
-        }
+    /// The transcription models shown on this gate. The big button grabs both ("download all");
+    /// each row can still grab one on its own. (The optional AI fixer LLM lives in Settings.)
+    private var allEntries: [ModelEntry] { [ModelCatalog.small, ModelCatalog.turbo] }
+
+    private var anyDownloading: Bool {
+        allEntries.contains { if case .downloading = downloads.state($0.id) { return true } else { return false } }
     }
 
-    private var primaryEnabled: Bool {
-        if case .downloading = state { return false }
-        return true
+    private var allSizeLabel: String {
+        ByteCountFormatter.string(fromByteCount: allEntries.reduce(0) { $0 + $1.approxBytes }, countStyle: .file)
     }
+
+    private var primaryLabel: String {
+        if isReady { return "Continue" }               // required model present → unlock the console
+        if anyDownloading { return "Downloading…" }
+        return "Download all models (\(allSizeLabel))"
+    }
+
+    /// Allow Continue as soon as the required model is ready, even while the larger one downloads.
+    private var primaryEnabled: Bool { isReady || !anyDownloading }
 }
 
 /// Reusable row showing one model's name/size and a status-driven control: a Download button →
@@ -141,7 +149,7 @@ struct ModelDownloadRow: View {
                 .buttonStyle(.plain)
         case .notDownloaded, .failed:
             Button { downloads.download(entry) } label: {
-                Text(entry.required ? "Download" : "Get")
+                Text("Download")
                     .font(.caption.weight(.semibold))
                     .padding(.horizontal, 12).padding(.vertical, 7)
                     .background(p.accent).foregroundStyle(p.bg)
