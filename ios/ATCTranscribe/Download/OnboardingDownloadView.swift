@@ -36,7 +36,10 @@ struct OnboardingDownloadView: View {
                     // Optional higher-accuracy model — offered up front so testers can grab it
                     // without digging into Settings. Not required to continue.
                     ModelDownloadRow(entry: ModelCatalog.turbo)
-                    Text("The larger model is optional — higher accuracy, larger download. You can also add it later in Settings.")
+                    // The AI context fixer ships alongside whichever speech model is downloaded, so
+                    // correction works out of the box. Shown here for transparency; not required.
+                    ModelDownloadRow(entry: ModelCatalog.llm)
+                    Text("The larger model is optional — higher accuracy, larger download. The AI context fixer installs automatically with the speech model. You can manage all of these later in Settings.")
                         .font(.caption2).foregroundStyle(p.textDim)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -71,9 +74,11 @@ struct OnboardingDownloadView: View {
         .preferredColorScheme(model.theme == .day ? .light : .dark)
     }
 
-    /// The transcription models shown on this gate. The big button grabs both ("download all");
-    /// each row can still grab one on its own. (The optional AI fixer LLM lives in Settings.)
-    private var allEntries: [ModelEntry] { [ModelCatalog.small, ModelCatalog.turbo] }
+    /// The artifacts shown on this gate. The big button grabs them all ("download all"); each row
+    /// can still grab one on its own. The AI context fixer rides along so correction works on the
+    /// first run; the Continue gate still keys off the required speech model only (`isReady`), so a
+    /// fixer download in flight never blocks entry.
+    private var allEntries: [ModelEntry] { [ModelCatalog.small, ModelCatalog.turbo, ModelCatalog.llm] }
 
     private var anyDownloading: Bool {
         allEntries.contains { if case .downloading = downloads.state($0.id) { return true } else { return false } }

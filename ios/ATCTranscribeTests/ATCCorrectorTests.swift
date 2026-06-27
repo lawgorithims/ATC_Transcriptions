@@ -66,6 +66,43 @@ final class ATCCorrectorTests: XCTestCase {
         XCTAssertEqual(r.display, "contact tower")
     }
 
+    // Multi-field fusion fix (see `joinDigitChunks`): a lone digit wedged between two 2-digit
+    // groups marks distinct spoken fields, so the run no longer fuses into one implausible blob —
+    // while digit-by-digit reads (headings/squawks/tail numbers) and grouped flight numbers stay
+    // fused. Battery distilled from a 56-case ATC phraseology review.
+    func testNumberNormalizationBattery() async {
+        let cases: [(String, String)] = [
+            // Reported bug: distinct spoken groups must not fuse into an implausible 5-digit number.
+            ("roger fifty six six eighteen", "roger 56 6 18"),
+            // Headings — read digit-by-digit and fused (leading zero preserved).
+            ("turn left heading three four zero", "turn left heading 340"),
+            ("turn right heading zero niner zero", "turn right heading 090"),
+            ("fly heading three six zero", "fly heading 360"),
+            // Flight levels / speeds.
+            ("flight level three five zero", "flight level 350"),
+            ("maintain two five zero knots", "maintain 250 knots"),
+            // Squawk codes — 4 digits, fused.
+            ("squawk four six seven one", "squawk 4671"),
+            ("squawk seven seven zero zero", "squawk 7700"),
+            ("squawk zero two zero zero", "squawk 0200"),
+            // Grouped (paired) flight numbers stay fused.
+            ("american twelve thirty four turn left heading one eight zero", "american 1234 turn left heading 180"),
+            ("delta eight ninety contact departure", "delta 890 contact departure"),
+            ("speedbird two niner heavy contact tower", "speedbird 29 heavy contact tower"),
+            // Long pure digit-by-digit tail number stays fused.
+            ("november one two three four five descend", "november 12345 descend"),
+            // A number run is split at non-number words; tens+unit merge preserved.
+            ("traffic twelve o'clock five miles flight level three one zero",
+             "traffic 12 o'clock 5 miles flight level 310"),
+            ("runway two seven left", "runway 27 left"),
+            ("climbing nine seventy five", "climbing 975"),
+        ]
+        for (input, expected) in cases {
+            let r = await det().correct(input)
+            XCTAssertEqual(r.display, expected, "input: ‘\(input)’")
+        }
+    }
+
     // MARK: vocab matching
 
     func testCharacterNearMiss() async {

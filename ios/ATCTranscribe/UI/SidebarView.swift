@@ -11,7 +11,7 @@ enum SidebarWidget: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .latency: return "Latency"
-        case .proofOfLife: return "Proof of life"
+        case .proofOfLife: return "Performance check"
         case .host: return "Host"
         case .diagnostics: return "Diagnostics"
         }
@@ -36,9 +36,11 @@ enum SidebarWidget: String, CaseIterable, Identifiable {
     }
 }
 
-/// The right-hand column: a user-customizable stack of widget cards. Long-press any card to
-/// enter edit mode, where cards show a remove control, an "Add widget" tile appears, and cards
-/// can be dragged to reorder. "Done" leaves edit mode.
+/// The right-hand column: a user-customizable stack of widget cards. Long-press any card for a
+/// menu to remove that widget, add one that isn't shown (dropdown), or "Rearrange widgets" — which
+/// enters a drag-to-reorder edit mode (remove controls + Add tile + "Done"). Every widget is
+/// removable; emptying the sidebar hides the whole column so the transcript expands (see
+/// `ConsoleView.mainArea`), and widgets are re-added from the "+" in the transcript header.
 struct SidebarColumn: View {
     @EnvironmentObject var model: AppModel
     @State private var dragging: SidebarWidget?
@@ -97,8 +99,27 @@ struct SidebarColumn: View {
                 .onDrop(of: [.text], delegate:
                     WidgetDropDelegate(item: widget, model: model, dragging: $dragging))
         } else {
-            card.onLongPressGesture(minimumDuration: 0.4) {
-                withAnimation { model.editingWidgets = true }
+            // Long-press any widget to open its menu: remove the touched widget, add one that isn't
+            // shown yet (dropdown), or enter drag-to-reorder. Every sidebar widget is removable
+            // (the transcript isn't a sidebar widget, so it always stays).
+            card.contextMenu {
+                Button(role: .destructive) {
+                    withAnimation { model.removeWidget(widget) }
+                } label: { Label("Remove \(widget.title)", systemImage: "minus.circle") }
+
+                if !model.availableWidgets.isEmpty {
+                    Menu {
+                        ForEach(model.availableWidgets) { w in
+                            Button { withAnimation { model.addWidget(w) } } label: {
+                                Label(w.title, systemImage: w.symbol)
+                            }
+                        }
+                    } label: { Label("Add widget", systemImage: "plus.circle") }
+                }
+
+                Button {
+                    withAnimation { model.editingWidgets = true }
+                } label: { Label("Rearrange widgets", systemImage: "arrow.up.arrow.down") }
             }
         }
     }
@@ -188,7 +209,7 @@ struct ProofOfLifeCard: View {
     @EnvironmentObject var model: AppModel
     var body: some View {
         let p = model.palette
-        Card(title: "Proof of life") {
+        Card(title: "Performance check") {
             if let pol = model.proofOfLife {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 8) {
@@ -218,7 +239,7 @@ struct ProofOfLifeCard: View {
                             Text("Running…").font(.caption.weight(.semibold))
                         }
                     } else {
-                        Label("Run proof-of-life", systemImage: "arrow.clockwise")
+                        Label("Run performance check", systemImage: "arrow.clockwise")
                             .font(.caption.weight(.semibold))
                     }
                 }

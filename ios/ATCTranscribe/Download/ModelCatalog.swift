@@ -61,8 +61,8 @@ enum ModelCatalog {
 
     static let llm = ModelEntry(
         id: "llm",
-        displayName: "AI context fixer (LLM)",
-        detail: "Qwen2.5-0.5B — powers the optional on-device correction layer.",
+        displayName: "AI context fixer",
+        detail: "Powers the on-device transcript correction layer. Installed automatically with the speech model.",
         kind: .ggufFile, approxBytes: 400_000_000, required: false,
         repo: nil, variant: nil,
         directURL: URL(string: ProcessInfo.processInfo.environment["ATC_LLM_URL"]

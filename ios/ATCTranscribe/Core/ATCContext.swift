@@ -19,6 +19,11 @@ final class ATCContext {
     private var staticPrefix: String = ""
     private var vocabTerms: [String] = []
 
+    // Electronic Flight Bag: the filed flight plan packed into the LLM correction context. Set
+    // on the pipeline actor via `LivePipeline.setFlightPlanContext`, so only the actor mutates it.
+    private var flightPlanBlock = ""
+    private var flightPlanVocab: [String] = []
+
     init(config: AirportConfig? = nil,
          feedKey: String? = nil,
          maxHistory: Int = 3,
@@ -97,9 +102,22 @@ final class ATCContext {
 
     /// Retrieve the RAG knowledge block for a transcript (callsigns mentioned, this
     /// facility's names, runways/fixes, the right phraseology, ICAO spelling) plus the
-    /// language-suspect flag. Used by the local-LLM correction stage.
+    /// language-suspect flag. Used by the local-LLM correction stage. When a flight plan is
+    /// filed, its block is prepended (highest priority) so both LLM backends — which consume
+    /// `RetrievedContext.block` — see the pilot's own callsign, airports, and route.
     func retrieveKnowledge(for transcript: String) -> RetrievedContext {
         let r = retriever ?? ATCKnowledgeRetriever(kb: knowledge, config: nil, feedKey: nil)
-        return r.retrieve(transcript: transcript, history: recentHistory)
+        var ctx = r.retrieve(transcript: transcript, history: recentHistory)
+        if !flightPlanBlock.isEmpty {
+            ctx.block = ctx.block.isEmpty ? flightPlanBlock : flightPlanBlock + "\n" + ctx.block
+            ctx.vocab += flightPlanVocab   // let the validator snap a near-miss onto a filed term
+        }
+        return ctx
+    }
+
+    /// Inject (or clear, with an empty block) the filed flight plan as high-priority LLM context.
+    func setFlightPlan(block: String, vocab: [String]) {
+        flightPlanBlock = block
+        flightPlanVocab = vocab
     }
 }

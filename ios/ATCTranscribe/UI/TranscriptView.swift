@@ -1,17 +1,52 @@
 import SwiftUI
 
 /// The live transcript card: each transmission with its timestamp, stream offset,
-/// latency, and any correction edits. Newest at the bottom (auto-scrolled).
+/// latency, and any correction edits. Order is user-selectable (newest at bottom — the default,
+/// auto-scrolled down — or newest at top); a jump-to-newest button snaps to the latest line.
 struct TranscriptCard: View {
     @EnvironmentObject var model: AppModel
+    /// True while the user is pinned to the newest end (so we follow new transmissions); false once
+    /// they scroll into history (auto-scroll pauses, the jump-to-newest button appears).
+    @State private var atNewest = true
+
+    /// Records in display order: reversed (newest first) when the user prefers it, else as stored.
+    private var orderedRecords: [TranscriptRecord] {
+        model.transcriptNewestFirst ? Array(model.records.reversed()) : model.records
+    }
 
     var body: some View {
         let p = model.palette
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
+            HStack(spacing: 12) {
                 Text("Transcript").font(.headline).foregroundStyle(p.text)
-                Spacer()
-                Text(model.sourceLabel).font(.caption).foregroundStyle(p.textDim)
+                Spacer(minLength: 4)
+                Text(model.sourceLabel).font(.caption).foregroundStyle(p.textDim).lineLimit(1)
+                Button { model.transcriptNewestFirst.toggle() } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: model.transcriptNewestFirst ? "arrow.up" : "arrow.down")
+                        Text("Newest")
+                    }
+                    .font(.caption2.weight(.semibold))
+                }
+                .buttonStyle(.plain).foregroundStyle(p.textDim)
+                .accessibilityIdentifier("transcript-sort")
+                .accessibilityLabel(model.transcriptNewestFirst ? "Newest first" : "Newest last")
+                // When the sidebar is empty it's hidden (transcript fills the width), so offer the
+                // widget re-add menu here — the only entry point back to the widgets in that state.
+                if model.widgets.isEmpty {
+                    Menu {
+                        ForEach(model.availableWidgets) { w in
+                            Button { withAnimation { model.addWidget(w) } } label: {
+                                Label(w.title, systemImage: w.symbol)
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "rectangle.stack.badge.plus").font(.caption)
+                    }
+                    .buttonStyle(.plain).foregroundStyle(p.textDim)
+                    .accessibilityIdentifier("transcript-add-widget")
+                    .accessibilityLabel("Add widget")
+                }
                 Button("Clear") { model.clear() }
                     .font(.caption).foregroundStyle(p.textDim).buttonStyle(.plain)
             }
@@ -24,12 +59,18 @@ struct TranscriptCard: View {
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(spacing: 0) {
-                            ForEach(model.records) { TranscriptRow(record: $0) }
-                            Color.clear.frame(height: 1).id("bottom")
+                            newestMarker(isTop: true)
+                            ForEach(orderedRecords) { TranscriptRow(record: $0) }
+                            newestMarker(isTop: false)
                         }
                     }
-                    .onChange(of: model.records.count) { _ in
-                        withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
+                    // Follow new transmissions only while pinned to the newest end, so scrolling
+                    // back to read history isn't yanked away every few seconds (a live feed appends
+                    // constantly). A sort-order flip always snaps to (and re-pins) the newest line.
+                    .onChange(of: model.records.count) { _ in if atNewest { scrollToNewest(proxy) } }
+                    .onChange(of: model.transcriptNewestFirst) { _ in atNewest = true; scrollToNewest(proxy) }
+                    .overlay(alignment: model.transcriptNewestFirst ? .topTrailing : .bottomTrailing) {
+                        if !atNewest { jumpButton(proxy) }
                     }
                 }
             }
@@ -38,6 +79,39 @@ struct TranscriptCard: View {
         .background(p.surface)
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(p.border, lineWidth: 1))
+    }
+
+    /// A 1pt scroll anchor at one end of the list. The marker at the *newest* end (top when
+    /// newest-first, else bottom) drives `atNewest`: on screen → the user is following the latest
+    /// line; scrolled off → they're reading history, so auto-scroll pauses and the jump button shows.
+    @ViewBuilder private func newestMarker(isTop: Bool) -> some View {
+        Color.clear.frame(height: 1).id(isTop ? "top" : "bottom")
+            .onAppear { if isTop == model.transcriptNewestFirst { atNewest = true } }
+            .onDisappear { if isTop == model.transcriptNewestFirst { atNewest = false } }
+    }
+
+    /// Scroll to whichever end holds the newest transmission (top when newest-first, else bottom).
+    private func scrollToNewest(_ proxy: ScrollViewProxy) {
+        let newestIsTop = model.transcriptNewestFirst
+        withAnimation { proxy.scrollTo(newestIsTop ? "top" : "bottom", anchor: newestIsTop ? .top : .bottom) }
+    }
+
+    /// Floating button that snaps to the newest line — only shown while scrolled into history, and
+    /// pinned by the end where the newest line lives.
+    private func jumpButton(_ proxy: ScrollViewProxy) -> some View {
+        let p = model.palette
+        return Button { atNewest = true; scrollToNewest(proxy) } label: {
+            Image(systemName: model.transcriptNewestFirst ? "arrow.up.to.line" : "arrow.down.to.line")
+                .font(.system(size: 15, weight: .semibold))
+                .frame(width: 38, height: 38)
+                .background(p.accent).foregroundStyle(p.bg)
+                .clipShape(Circle())
+                .shadow(color: .black.opacity(0.25), radius: 6, y: 2)
+        }
+        .buttonStyle(.plain)
+        .padding(12)
+        .accessibilityIdentifier("transcript-jump-newest")
+        .accessibilityLabel("Jump to newest")
     }
 
     private var emptyState: some View {

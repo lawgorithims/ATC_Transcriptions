@@ -87,22 +87,51 @@ func isNumberLikeToken(_ norm: String) -> Bool {
 
 private enum NumKind { case unit, teen, tens }
 
-/// Turn a run of number tokens into a spoken-digit string, grouping a tens word with
-/// a following unit ("seventy","five" -> "75"). Port of `_assemble_digits`.
-private func assembleDigits(_ run: [(NumKind, Int)]) -> String {
-    var res: [String] = []
+/// Turn a run of number tokens into spoken-digit chunks, grouping a tens word with a following
+/// unit ("seventy","five" -> "75"). Returns one string per emitted chunk, each tagged as a 2-digit
+/// grouped chunk (teen / tens+unit / bare tens) or a 1-digit standalone unit, so `joinDigitChunks`
+/// can tell a single coherent field (fuse) from two distinct spoken fields (keep apart). Extends
+/// the `_assemble_digits` port to be chunk-aware.
+private func assembleDigits(_ run: [(NumKind, Int)]) -> [(digits: String, grouped: Bool)] {
+    var res: [(digits: String, grouped: Bool)] = []
     var k = 0
     while k < run.count {
         let (kind, val) = run[k]
         if kind == .tens, k + 1 < run.count, run[k + 1].0 == .unit {
-            res.append(String(val + run[k + 1].1))
+            res.append((String(val + run[k + 1].1), true))   // "seventy five" -> 75
             k += 2
+        } else if kind == .unit {
+            res.append((String(val), false))                 // lone spoken digit
+            k += 1
         } else {
-            res.append(String(val))
+            res.append((String(val), true))                  // teen (18) or bare tens (50)
             k += 1
         }
     }
-    return res.joined()
+    return res
+}
+
+/// Join assembled chunks into spoken numbers. A run fuses into ONE number unless it contains a lone
+/// unit (1-digit chunk) wedged between two grouped (2-digit) chunks — the structural signature of
+/// two distinct spoken fields (e.g. "fifty six | six | eighteen" -> 56 6 18, not the implausible
+/// 5-digit 56618). Pure digit-by-digit reads (all 1-digit, e.g. headings/squawks/tail numbers) and
+/// all-grouped reads (paired flight numbers like "twelve thirty four" -> 1234) stay fused.
+private func joinDigitChunks(_ chunks: [(digits: String, grouped: Bool)]) -> [String] {
+    guard chunks.count >= 3 else { return [chunks.map(\.digits).joined()] }
+    var fields: [String] = []
+    var current = ""
+    for (idx, chunk) in chunks.enumerated() {
+        let prevGrouped = idx > 0 && chunks[idx - 1].grouped
+        let nextGrouped = idx + 1 < chunks.count && chunks[idx + 1].grouped
+        if !chunk.grouped, prevGrouped, nextGrouped {
+            if !current.isEmpty { fields.append(current); current = "" }
+            fields.append(chunk.digits)          // the wedged lone unit -> its own field
+        } else {
+            current += chunk.digits
+        }
+    }
+    if !current.isEmpty { fields.append(current) }
+    return fields
 }
 
 /// Collapse runs of spoken number words into digit strings. Vocab-independent;
@@ -127,7 +156,7 @@ private func normalizeNumbers(_ text: String) -> (text: String, edits: [Correcti
             j += 1
         }
         if !run.isEmpty {
-            let digits = assembleDigits(run)
+            let digits = joinDigitChunks(assembleDigits(run)).joined(separator: " ")
             let span = orig.joined(separator: " ")
             if !digits.isEmpty && digits != span {
                 edits.append(CorrectionEdit(from: span, to: digits, reason: "number", backend: "deterministic"))

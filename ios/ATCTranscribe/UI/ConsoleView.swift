@@ -15,7 +15,7 @@ struct ConsoleView: View {
             p.bg.ignoresSafeArea()
             VStack(spacing: 0) {
                 TopBar()
-                StatusBar()
+                NotificationCarousel()
                 ControlsBar()
                 hairline
                 mainArea
@@ -26,6 +26,9 @@ struct ConsoleView: View {
         .sheet(isPresented: $model.showSettings) {
             SettingsSheet().environmentObject(model).environmentObject(downloads)
         }
+        .sheet(isPresented: $model.showFlightBag) {
+            FlightBagSheet().environmentObject(model)
+        }
         .fullScreenCover(isPresented: $model.needsOnboarding) {
             OnboardingDownloadView().environmentObject(model).environmentObject(downloads)
         }
@@ -33,26 +36,40 @@ struct ConsoleView: View {
         .onAppear {
             // Bridge a finished download back to the model so it can load a model that wasn't
             // present at launch (lean TestFlight build → first-run download → live console).
-            downloads.onReady = { entry in model.modelDidDownload(entry) }
+            downloads.onReady = { entry in
+                model.modelDidDownload(entry)
+                // The AI context fixer rides along with whichever speech model the user downloads,
+                // so correction works regardless of which model they picked. Idempotent — a no-op
+                // if the fixer is already present or downloading.
+                if entry.kind == .whisperKit, !ModelStore.isReady(ModelCatalog.llm) {
+                    downloads.download(ModelCatalog.llm)
+                }
+            }
         }
     }
 
     private var hairline: some View { Rectangle().fill(model.palette.border).frame(height: 1) }
 
     @ViewBuilder private var mainArea: some View {
+        // When every widget is removed, drop the sidebar so the transcript reclaims the full width
+        // (re-add widgets from the "+" in the transcript header). Keep the column while editing so
+        // drag-to-reorder still works.
+        let showSidebar = !model.widgets.isEmpty || model.editingWidgets
         if hSize == .regular {
             HStack(alignment: .top, spacing: 14) {
                 transcriptArea.frame(maxWidth: .infinity, maxHeight: .infinity)
-                SidebarColumn().frame(width: 300)
+                if showSidebar { SidebarColumn().frame(width: 300) }
             }
             .padding(14)
+            .animation(.easeInOut(duration: 0.2), value: showSidebar)
         } else {
             ScrollView {
                 VStack(spacing: 14) {
                     transcriptArea.frame(minHeight: 360)
-                    SidebarColumn()
+                    if showSidebar { SidebarColumn() }
                 }
                 .padding(14)
+                .animation(.easeInOut(duration: 0.2), value: showSidebar)
             }
         }
     }
@@ -85,6 +102,21 @@ struct TopBar: View {
             }
             Spacer()
             ThemeSwitcher()
+            // Electronic Flight Bag: file/edit a flight plan. A yellow warning rides the briefcase
+            // when the saved plan is over a week old (refile recommended before the next flight).
+            Button { model.showFlightBag = true } label: {
+                Image(systemName: "briefcase.fill").font(.system(size: 15))
+                    .overlay(alignment: .topTrailing) {
+                        if model.flightPlan?.isStale == true {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.system(size: 9)).foregroundStyle(p.warn)
+                                .offset(x: 6, y: -5)
+                        }
+                    }
+            }
+            .buttonStyle(.plain).foregroundStyle(p.textDim)
+            .accessibilityIdentifier("flight-bag-button")
+            .accessibilityLabel("Flight bag")
             Button { model.enterStandby() } label: {
                 Image(systemName: "power").font(.system(size: 16, weight: .semibold))
             }
@@ -129,7 +161,30 @@ struct ThemeSwitcher: View {
     }
 }
 
-// MARK: - Status strip (pills + badges)
+// MARK: - Notification carousel (paged: status · flight plan · flight data)
+
+/// The top notification strip is a swipeable, paged carousel: page 1 is the live status pills,
+/// page 2 summarizes the filed flight plan, page 3 is reserved for live flight data (GPS). A
+/// fixed height is required — `TabView(.page)` has no intrinsic height.
+struct NotificationCarousel: View {
+    @EnvironmentObject var model: AppModel
+    @State private var page = 0
+
+    var body: some View {
+        let p = model.palette
+        TabView(selection: $page) {
+            StatusBar().tag(0)
+            FlightPlanPage().tag(1)
+            FlightDataPage().tag(2)
+        }
+        .tabViewStyle(.page(indexDisplayMode: .always))
+        .indexViewStyle(.page(backgroundDisplayMode: .interactive))
+        .frame(height: 84)
+        .background(p.bg)
+    }
+}
+
+// MARK: - Status strip (pills + badges) — carousel page 1
 
 struct StatusBar: View {
     @EnvironmentObject var model: AppModel
@@ -137,7 +192,7 @@ struct StatusBar: View {
         let p = model.palette
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                StatusPill(label: "Proof of life",
+                StatusPill(label: "Performance check",
                            state: model.proofOfLife == nil ? .idle : (model.proofOfLife?.passed == true ? .good : .bad))
                 StatusPill(label: "Stream", state: streamState)
                 Badge(text: "device · \(model.deviceLabel)")
@@ -200,6 +255,65 @@ struct Badge: View {
             .background(p.surfaceAlt)
             .clipShape(Capsule())
             .overlay(Capsule().stroke(p.border, lineWidth: 1))
+    }
+}
+
+// MARK: - Carousel page 2: flight plan summary
+
+/// A compact summary of the filed flight plan (callsign · departure → destination · route), or a
+/// prompt to file one. A yellow "Update" chip appears when the plan is over a week old. Tapping
+/// anywhere opens the flight-bag editor.
+struct FlightPlanPage: View {
+    @EnvironmentObject var model: AppModel
+    var body: some View {
+        let p = model.palette
+        HStack(spacing: 10) {
+            Image(systemName: "briefcase.fill").font(.callout).foregroundStyle(p.textDim)
+            if let fp = model.flightPlan {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(fp.summaryLine).font(.caption.weight(.semibold)).foregroundStyle(p.text).lineLimit(1)
+                    if !fp.routeText.isEmpty {
+                        Text(fp.routeText).font(.caption2.monospaced()).foregroundStyle(p.textDim).lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 6)
+                if fp.isStale {
+                    Label("Update", systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption2.weight(.semibold)).foregroundStyle(p.warn)
+                }
+            } else {
+                Text("No flight plan — tap to file one").font(.caption).foregroundStyle(p.textDim)
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(.horizontal, 16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .onTapGesture { model.showFlightBag = true }
+        .accessibilityIdentifier("carousel-flight-plan")
+    }
+}
+
+// MARK: - Carousel page 3: live flight data (location) — placeholder
+
+/// Reserved for live flight data (GPS location, ground speed, altitude). A placeholder for now —
+/// CoreLocation is deferred, so the structure is here and only needs wiring later.
+struct FlightDataPage: View {
+    @EnvironmentObject var model: AppModel
+    var body: some View {
+        let p = model.palette
+        HStack(spacing: 10) {
+            Image(systemName: "location.fill").font(.callout).foregroundStyle(p.textDim)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Live flight data").font(.caption.weight(.semibold)).foregroundStyle(p.text)
+                Text("Location, ground speed & altitude — coming soon")
+                    .font(.caption2).foregroundStyle(p.textDim).lineLimit(1)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .accessibilityIdentifier("carousel-flight-data")
     }
 }
 
