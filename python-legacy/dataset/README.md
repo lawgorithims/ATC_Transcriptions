@@ -26,6 +26,7 @@ archive_downloader  ->  bulk_capture  ->  scored_transcribe + pseudo_label  ->  
 
 | Module | Role |
 |--------|------|
+| `feed_prober.py` | **Find active feeds now** by briefly probing streams for speech (no scraping/Cloudflare). |
 | `live_recorder.py` | **Record active feeds (Cloudflare-free)** in 30-min chunks; speech-gated. Primary acquisition. |
 | `archive_downloader.py` | Download LiveATC 30-min archive blocks to disk (resumable, idempotent). |
 | `cf_session.py` | Drive Chromium (Playwright) to clear **Cloudflare** for archive downloads. |
@@ -39,12 +40,37 @@ archive_downloader  ->  bulk_capture  ->  scored_transcribe + pseudo_label  ->  
 | `tts_synth.py` | OPTIONAL: synthetic US phraseology + radio degradation (Phase 4). |
 | `../atc_diarize.py` | Role attribution (controller vs pilot) + callsign, content-based. |
 
-## Quick start
+## Start collecting ASAP (one command)
+
+On the GPU box, inside `tmux`:
+
+```bash
+cd ATC_Transcriptions/python-legacy
+bash dataset/launch.sh      # installs deps + model, then loops forever:
+                            # probe feeds -> record active -> segment -> consensus -> label
+```
+
+`launch.sh` runs the pipeline with `acquisition.loop: true`, so the models load once
+and it keeps cycling the configured feeds, recording only the ones that are active
+right now (push-to-talk feeds are silent without traffic). Check which feeds are live
+before/while running:
+
+```bash
+python -m dataset.feed_prober --feed-config airport_configs/kdfw.json --seconds 90
+python -m dataset.feed_prober --feed-config airport_configs/kjfk.json --seconds 90
+```
+
+Add more airports by dropping a config in `airport_configs/` (real LiveATC mounts) and
+listing its feeds in `config.yaml`; the prober/speech-gate will ignore any that are
+dead or silent.
+
+## Quick start (manual)
 
 ```bash
 cd python-legacy
 pip install -r requirements-live.txt   # torch, transformers, librosa, soundfile, pyyaml ...
-# (ffmpeg on PATH only needed for live recording, not archive download)
+pip install webrtcvad jiwer            # VAD + WER
+# ffmpeg on PATH required for live recording
 
 # 0) Establish the honest US baseline (the number that actually matters)
 python -m dataset.eval_set build  --config dataset/config.yaml

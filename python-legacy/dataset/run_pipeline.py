@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -119,11 +120,10 @@ def run(cfg: dict) -> dict:
         num_beams=int(models.get("num_beams_b", 1)),
     )
 
-    block_q: "queue.Queue" = queue.Queue(maxsize=int(acq.get("queue_size", 16)))
     mode = (acq.get("mode") or "live").lower()       # "live" (Cloudflare-free) or "archive"
     min_block_speech_s = float(acq.get("min_block_speech_s", 0.0))
 
-    def _producer():
+    def _producer(block_q):
         """Acquire each feed's blocks; enqueue each as it lands."""
         cf = None
         try:
@@ -148,6 +148,21 @@ def run(cfg: dict) -> dict:
                 else:  # live recording (no Cloudflare)
                     from dataset.live_recorder import record_feed_chunks
 
+                    # Optionally probe the feed first and skip it if it's not active
+                    # right now (push-to-talk: nothing transmits when there's no traffic).
+                    if acq.get("probe_active"):
+                        from atc_stream import resolve_stream_url
+                        from dataset.feed_prober import probe_stream
+
+                        url = resolve_stream_url(
+                            feed_config=job.airport_config, feed_key=job.feed_key
+                        )
+                        pr = probe_stream(url, seconds=float(acq.get("probe_seconds", 60)))
+                        if not (pr.ok and pr.speech_s >= float(acq.get("probe_min_speech_s", 3))):
+                            print(f"    skip {job.feed_key}: inactive ({pr.note})")
+                            continue
+                        print(f"    {job.feed_key} active ({pr.note}) -> recording")
+
                     record_feed_chunks(
                         job.airport_config, job.feed_key, raw_dir,
                         n_chunks=int(acq.get("chunks_per_feed", 1)),
@@ -161,44 +176,62 @@ def run(cfg: dict) -> dict:
                 cf.__exit__(None, None, None)
             block_q.put(None)  # sentinel
 
-    producer = threading.Thread(target=_producer, daemon=True)
-    producer.start()
-
-    accepted = 0
-    processed = 0
-    while True:
-        item = block_q.get()
-        if item is None:
-            break
-        job = item.job
-        segments = bulk_capture.segment_block(
-            item.block_path, seg_dir, airport=job.airport_code, feed=job.feed_key,
-            min_block_speech_s=min_block_speech_s,
-        )
-        for seg in segments:
-            if writer.already_done(seg.seg_id):
-                continue
-            import soundfile as sf
-
-            audio, _ = sf.read(seg.audio_path, dtype="float32")
-            decision = evaluate_segment(
-                audio,
-                transcriber_a=transcriber_a,
-                transcriber_b=transcriber_b,
-                corrector=job.corrector,
-                context_prompt=job.prompt,
-                thresholds=thresholds,
+    def harvest_once():
+        """One pass over all feeds: acquire (background) + segment/label (here)."""
+        block_q: "queue.Queue" = queue.Queue(maxsize=int(acq.get("queue_size", 16)))
+        producer = threading.Thread(target=_producer, args=(block_q,), daemon=True)
+        producer.start()
+        accepted = processed = 0
+        while True:
+            item = block_q.get()
+            if item is None:
+                break
+            job = item.job
+            segments = bulk_capture.segment_block(
+                item.block_path, seg_dir, airport=job.airport_code, feed=job.feed_key,
+                min_block_speech_s=min_block_speech_s,
             )
-            row = writer.write(seg, decision)
-            processed += 1
-            if row is not None:
-                accepted += 1
-        print(f"  block {item.block_path.name}: {len(segments)} segs "
-              f"(running: {accepted} accepted / {processed} processed)")
+            for seg in segments:
+                if writer.already_done(seg.seg_id):
+                    continue
+                import soundfile as sf
 
-    producer.join(timeout=5)
+                audio, _ = sf.read(seg.audio_path, dtype="float32")
+                decision = evaluate_segment(
+                    audio,
+                    transcriber_a=transcriber_a,
+                    transcriber_b=transcriber_b,
+                    corrector=job.corrector,
+                    context_prompt=job.prompt,
+                    thresholds=thresholds,
+                )
+                row = writer.write(seg, decision)
+                processed += 1
+                if row is not None:
+                    accepted += 1
+            print(f"  block {item.block_path.name}: {len(segments)} segs "
+                  f"(running: {accepted} accepted / {processed} processed)")
+        producer.join(timeout=5)
+
+    # Loop continuously (re-probing + recording each pass) so models stay loaded,
+    # or run a single pass. Stop with Ctrl-C / killing the process.
+    loop = bool(acq.get("loop"))
+    loop_sleep_s = float(acq.get("loop_sleep_s", 30.0))
+    pass_n = 0
+    while True:
+        pass_n += 1
+        print(f"\n=== harvest pass {pass_n} ===")
+        try:
+            harvest_once()
+        except KeyboardInterrupt:
+            print("Interrupted — stopping.")
+            break
+        if not loop:
+            break
+        time.sleep(loop_sleep_s)
+
     summary = emit_metadata.summarize_scores(writer.scores_path)
-    print(f"\nDone. Accepted {summary['accepted']} / {summary['total']} segments.")
+    print(f"\nTotals so far: accepted {summary['accepted']} / {summary['total']} segments.")
     print("Reasons:", summary["reasons"])
     return summary
 
