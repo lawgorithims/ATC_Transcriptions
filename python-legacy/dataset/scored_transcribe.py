@@ -103,6 +103,10 @@ class ScoredTranscriber:
         feats = self.processor(
             audio, sampling_rate=SAMPLE_RATE, return_tensors="pt"
         ).input_features.to(self.device)
+        # transformers>=5 loads official checkpoints (e.g. whisper-large-v3)
+        # in fp16 while the feature extractor emits fp32; cast to the model
+        # dtype so the encoder conv doesn't raise float-vs-Half.
+        feats = feats.to(self.model.dtype)
         return feats
 
     def _prompt_ids(self, context: Optional[str]) -> Optional[torch.Tensor]:
@@ -153,8 +157,20 @@ class ScoredTranscriber:
         with torch.no_grad():
             out = self.model.generate(input_features, **gen_kwargs)
 
-        sequences = out.sequences
-        text = self.processor.batch_decode(sequences, skip_special_tokens=True)[0].strip()
+        # transformers>=5 leaves prompt tokens in out.sequences and
+        # batch_decode keeps them; when a prompt was supplied, keep only the
+        # transcription (from the last <|startoftranscript|>) so the prompt
+        # isn't echoed into text / the final label.
+        seq0 = out.sequences[0]
+        if prompt_ids is not None:
+            sot_id = self.processor.tokenizer.convert_tokens_to_ids("<|startoftranscript|>")
+            if not isinstance(sot_id, int) or sot_id < 0:
+                sot_id = getattr(self.model.config, "decoder_start_token_id", None)
+            if isinstance(sot_id, int):
+                hits = (seq0 == sot_id).nonzero(as_tuple=True)[0]
+                if hits.numel() > 0:
+                    seq0 = seq0[int(hits[-1]):]
+        text = self.processor.batch_decode(seq0.unsqueeze(0), skip_special_tokens=True)[0].strip()
 
         avg_logprob, n_tokens = self._avg_logprob(out)
         return ScoredResult(

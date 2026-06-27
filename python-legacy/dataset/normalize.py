@@ -128,3 +128,26 @@ def word_error_rate(ref: str, hyp: str, *, normalized: bool = False) -> float:
 def agreement_cer(text_a: str, text_b: str) -> float:
     """Symmetric-ish CER used by the consensus filter (normalizes both sides)."""
     return char_error_rate(text_a, text_b)
+
+
+_NUM_WORDS = {"zero": "0", "oh": "0", "o": "0", "one": "1", "two": "2", "three": "3",
+              "tree": "3", "four": "4", "five": "5", "fife": "5", "six": "6",
+              "seven": "7", "eight": "8", "nine": "9", "niner": "9"}
+
+
+def numeric_canon(text: str) -> str:
+    """Canonicalize numbers for CONSENSUS COMPARISON ONLY (never for stored labels):
+    map spoken digit words to digits and explode multi-digit tokens so "1408" and
+    "one four zero eight" compare equal (ATC reads numbers digit-by-digit)."""
+    out = []
+    for t in (text or "").split():
+        t = _NUM_WORDS.get(t, t)
+        for run in re.findall(r"\d+|[a-z]+", t):
+            out.extend(list(run)) if run.isdigit() else out.append(run)
+    return " ".join(out)
+
+
+def consensus_cer(a: str, b: str) -> float:
+    """CER for the pseudo-label consensus gate: compares number-canonicalized,
+    already-normalized text so digit/word spelling differences don't count."""
+    return char_error_rate(numeric_canon(a), numeric_canon(b), normalized=True)

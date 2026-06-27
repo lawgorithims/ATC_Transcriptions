@@ -234,7 +234,7 @@ def run(cfg: dict) -> dict:
                     transcriber_a=transcriber_a,
                     transcriber_b=transcriber_b,
                     corrector=job.corrector,
-                    context_prompt=job.prompt,
+                    context_prompt=None,  # teacher prompt-free (verbose airport prompt leaked into labels)
                     thresholds=thresholds,
                 )
                 row = writer.write(seg, decision)

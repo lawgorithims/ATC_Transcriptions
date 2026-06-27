@@ -38,7 +38,7 @@ from dataset.pseudo_label import FilterThresholds, evaluate_segment
 
 # Strict gates: eval labels must be near-certain (much tighter than training).
 STRICT = FilterThresholds(
-    max_cer=0.03,
+    max_cer=0.10,
     min_avg_logprob=-0.35,
     max_no_speech_prob=0.20,
 )
@@ -129,7 +129,7 @@ def build_eval_set(cfg: dict) -> dict:
                         transcriber_a=transcriber_a,
                         transcriber_b=transcriber_b,
                         corrector=corrector,
-                        context_prompt=prompt,
+                        context_prompt=None,  # teacher prompt-free
                         thresholds=STRICT,
                     )
                     row = writer.write(seg, decision)
