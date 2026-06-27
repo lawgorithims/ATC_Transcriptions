@@ -61,6 +61,9 @@ feeds:
       - tower_primary
       - tower_1191
       - tower_2
+  - airport_config: airport_configs/kbos.json
+    feed_keys:
+      - tower_primary
 
 # Acceptance gates for a TRAINING pseudo-label (tune on the eval set).
 thresholds:
