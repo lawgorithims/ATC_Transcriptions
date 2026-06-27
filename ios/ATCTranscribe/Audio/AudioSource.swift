@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import os
 
 /// A source of mono 16 kHz float32 PCM chunks for the live pipeline. Implementations:
 /// `FileReplaySource` (replay demo), `MicAudioSource` (device mic), and — added later —
@@ -65,11 +66,15 @@ final class FileReplaySource: AudioSource {
 /// AVAudioEngine, resampled to mono 16 kHz. `preferUSB` routes the session to a USB
 /// input when present. NOTE: device-tested later (no audio input over headless SSH).
 final class DeviceAudioSource: AudioSource {
-    private let engine = AVAudioEngine()
     private let preferUSB: Bool
-    /// Called (off the main actor) if capture can't start — so the UI can show why instead of the
-    /// stream silently finishing and looking like "nothing happened".
+    /// Called (off the main actor) if capture can't start / delivers no audio — so the UI can show
+    /// why instead of the stream silently finishing and looking like "nothing happened".
     private let onFailure: (@Sendable (String) -> Void)?
+    // `engine` + `watchdog` are touched from the pipeline executor (makeStream), the MainActor
+    // (stop), and the stream's onTermination — guard them with a lock to avoid a data race.
+    private let lock = NSLock()
+    private var engine: AVAudioEngine?
+    private var watchdog: Task<Void, Never>?
 
     init(preferUSB: Bool = false, onFailure: (@Sendable (String) -> Void)? = nil) {
         self.preferUSB = preferUSB
@@ -78,9 +83,11 @@ final class DeviceAudioSource: AudioSource {
 
     func makeStream() -> AsyncStream<[Float]> {
         AsyncStream { continuation in
-            // The audio session is already configured + activated on the main actor by
-            // AppModel.start() (via AudioSessionManager) before this source runs — don't re-activate
-            // the shared singleton off the main thread here.
+            // Create the engine HERE — after AppModel.start() has activated the .playAndRecord
+            // session — so the input node binds to a live record route. Building it before the
+            // session is record-ready leaves the input silent (the "mic not registering" bug).
+            let engine = AVAudioEngine()
+            lock.lock(); self.engine = engine; lock.unlock()
             let input = engine.inputNode
             let inputFormat = input.outputFormat(forBus: 0)
             // A zero sample rate / channel count means there's no usable input (e.g. mic permission
@@ -93,34 +100,55 @@ final class DeviceAudioSource: AudioSource {
                 continuation.finish(); return
             }
 
+            // Watchdog flag: did the tap ever deliver a buffer? Distinguishes a dead route (real
+            // bug — tap never fires) from a live-but-quiet mic (user just isn't talking).
+            let gotAudio = OSAllocatedUnfairLock(initialState: false)
             input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { buffer, _ in
+                gotAudio.withLock { $0 = true }
                 let ratio = outputFormat.sampleRate / inputFormat.sampleRate
                 let capacity = AVAudioFrameCount(Double(buffer.frameLength) * ratio) + 16
                 guard let out = AVAudioPCMBuffer(pcmFormat: outputFormat, frameCapacity: capacity) else { return }
                 var consumed = false
                 var error: NSError?
-                converter.convert(to: out, error: &error) { _, status in
-                    if consumed { status.pointee = .noDataNow; return nil }
+                let status = converter.convert(to: out, error: &error) { _, s in
+                    if consumed { s.pointee = .noDataNow; return nil }
                     consumed = true
-                    status.pointee = .haveData
+                    s.pointee = .haveData
                     return buffer
                 }
-                if let channel = out.floatChannelData, out.frameLength > 0 {
-                    continuation.yield(Array(UnsafeBufferPointer(start: channel[0], count: Int(out.frameLength))))
-                }
+                guard status != .error, let channel = out.floatChannelData, out.frameLength > 0 else { return }
+                continuation.yield(Array(UnsafeBufferPointer(start: channel[0], count: Int(out.frameLength))))
             }
 
+            engine.prepare()
             do { try engine.start() }
             catch {
                 onFailure?("Microphone failed to start: \(error.localizedDescription)")
-                continuation.finish()
+                continuation.finish(); return
             }
+            // If the tap never fired after a few seconds, the route is dead (not just quiet).
+            let onFailure = self.onFailure
+            let watchdog = Task {
+                try? await Task.sleep(nanoseconds: 3_500_000_000)
+                if Task.isCancelled { return }   // stopped before the first buffer — not a failure
+                if !gotAudio.withLock({ $0 }) {
+                    onFailure?("No audio from the microphone — it may be muted or used by another app.")
+                }
+            }
+            lock.lock(); self.watchdog = watchdog; lock.unlock()
             continuation.onTermination = { [weak self] _ in self?.stop() }
         }
     }
 
     func stop() {
-        engine.inputNode.removeTap(onBus: 0)
-        if engine.isRunning { engine.stop() }
+        // Atomically take ownership of the engine + watchdog so a double stop() (MainActor Stop
+        // racing the stream's onTermination) can't both tear down the same engine.
+        lock.lock()
+        let e = engine; engine = nil
+        let w = watchdog; watchdog = nil
+        lock.unlock()
+        w?.cancel()
+        e?.inputNode.removeTap(onBus: 0)
+        if e?.isRunning == true { e?.stop() }
     }
 }
