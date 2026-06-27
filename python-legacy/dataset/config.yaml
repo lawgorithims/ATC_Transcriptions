@@ -17,9 +17,9 @@ models:
   # Teacher A: most accurate Whisper available (accuracy > speed for a labeler).
   teacher_a: openai/whisper-large-v3
   # Consensus partner B: the project's fine-tuned ATC model, decoded PROMPT-FREE.
-  partner_b: models/whisper-atc-turbo
+  partner_b: openai/whisper-large-v3-turbo   # strong general partner; fine-tuned turbo too noisy on US audio for consensus
   device: auto          # cuda on the H100/L40S box
-  num_beams_a: 5        # beam search for the teacher (affordable on H100)
+  num_beams_a: 1        # greedy: transformers beam-search+prompt triggers a CUDA index assert
   num_beams_b: 1        # greedy partner is fine; it only needs to (dis)agree
 
 acquisition:
@@ -37,7 +37,7 @@ acquisition:
 
   # --- live mode ---
   chunks_per_feed: 1          # 30 min per feed per pass; launch.sh loops over passes
-  chunk_minutes: 30.0
+  chunk_minutes: 10.0   # shorter chunks: better feed breadth + faster first data
   # Probe each feed before recording and skip ones that aren't active right now
   # (push-to-talk: silent when there's no traffic). No scraping, no Cloudflare.
   probe_active: true
@@ -102,7 +102,7 @@ feeds:
 
 # Acceptance gates for a TRAINING pseudo-label (tune on the eval set).
 thresholds:
-  max_cer: 0.10
+  max_cer: 0.30   # number-canon CER between two strong general models
   min_avg_logprob: -0.55
   max_no_speech_prob: 0.30
   max_compression_ratio: 2.4

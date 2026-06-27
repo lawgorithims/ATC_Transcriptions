@@ -89,7 +89,7 @@ def evaluate_segment(
 
     norm_a = normalize.normalize_transcript(res_a.text)
     norm_b = normalize.normalize_transcript(res_b.text)
-    cer = normalize.char_error_rate(norm_a, norm_b, normalized=True)
+    cer = normalize.consensus_cer(norm_a, norm_b)
     words = norm_a.split()
 
     metrics = {
