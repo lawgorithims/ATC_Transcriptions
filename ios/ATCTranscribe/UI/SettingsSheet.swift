@@ -46,6 +46,15 @@ struct SettingsSheet: View {
                     Card(title: "Squelch") {
                         SquelchControls()
                     }
+                    Card(title: "Speakers") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Toggle(isOn: $model.diarizationEnabled) {
+                                Text("Separate speakers").font(.caption).foregroundStyle(p.text)
+                            }
+                            Text("Splits a transmission at push-to-talk / squelch breaks and tags each speaker (S1, S2…) on its own line — so ATC and the aircraft don't share a line. Heuristic and on-device; it can't separate people talking over each other simultaneously.")
+                                .font(.caption2).foregroundStyle(p.textDim)
+                        }
+                    }
                     Card(title: "Adaptive selection") {
                         VStack(alignment: .leading, spacing: 10) {
                             HStack {

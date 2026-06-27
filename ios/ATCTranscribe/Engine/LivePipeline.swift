@@ -35,6 +35,8 @@ struct TranscriptRecord: Sendable, Identifiable {
     var llmMs: Double = 0
     /// Why the confidence gate skipped (or would run) the LLM — shown when `.skippedConfident`.
     var gateReason: String = ""
+    /// Diarization speaker id (0-based), or nil when diarization is off. Stable across the session.
+    var speaker: Int? = nil
 
     /// What the UI shows: the LLM-refined text if present, else the inline-corrected text, else
     /// the raw transcript.
@@ -122,6 +124,10 @@ actor LivePipeline {
     private var gate = ConfidenceGate()
     private var gateEnabled = true
 
+    /// Heuristic speaker diarization: splits a VAD segment into per-speaker pieces (separate lines).
+    private let diarizer = Diarizer()
+    private var diarizationEnabled = true
+
     private static let timeFormatter: DateFormatter = {
         let f = DateFormatter(); f.dateFormat = "HH:mm:ss"; f.locale = Locale(identifier: "en_US_POSIX"); return f
     }()
@@ -133,6 +139,7 @@ actor LivePipeline {
          llm: LLMCorrector? = nil,
          gateEnabled: Bool = true,
          gateSensitivity: GateSensitivity = .conservative,
+         diarizationEnabled: Bool = true,
          vadConfig: VADConfig = VADConfig()) {
         self.transcriber = transcriber
         self.context = context
@@ -142,11 +149,15 @@ actor LivePipeline {
         self.refiner = llm.map { LLMRefiner(corrector: $0) }
         self.gateEnabled = gateEnabled
         self.gate.sensitivity = gateSensitivity
+        self.diarizationEnabled = diarizationEnabled
     }
 
+    /// Toggle diarization at runtime (Settings). Takes effect on the next segment.
+    func setDiarization(_ on: Bool) { diarizationEnabled = on }
+
     /// Transcribe one speech segment into a record, or nil when nothing usable was
-    /// decoded. Port of `_transcribe_segment`.
-    func process(_ segment: SpeechSegment) async -> TranscriptRecord? {
+    /// decoded. `speaker` tags the record with a diarization speaker id. Port of `_transcribe_segment`.
+    func process(_ segment: SpeechSegment, speaker: Int? = nil) async -> TranscriptRecord? {
         let prompt = context.buildPrompt()
         let audio = preprocessor?.preprocess(segment.audio) ?? segment.audio
 
@@ -188,6 +199,7 @@ actor LivePipeline {
             corrected: inlineCorrected,
             corrections: correction.changed ? correction.edits : [],
             timestamp: Self.timeFormatter.string(from: Date()))
+        record.speaker = speaker
 
         // Slow tier: hand the best-so-far text to the background LLM, OFF the hot path. The RAG
         // context is retrieved HERE, on the actor, so the refiner never touches mutable state. The
@@ -230,7 +242,19 @@ actor LivePipeline {
                 if stepped != lastLevel { lastLevel = stepped; onLevel(stepped) }
             }
             for segment in segmenter.feed(chunk) {
-                if let record = await process(segment) { onRecord(record) }
+                if diarizationEnabled {
+                    // Split the segment into per-speaker pieces (back-to-back ATC↔aircraft
+                    // transmissions the VAD merged) and transcribe each onto its own line.
+                    for piece in diarizer.diarize(segment.audio) {
+                        let startS = segment.streamStartS + Double(piece.startSample) / 16000.0
+                        let sub = SpeechSegment(audio: piece.audio, streamStartS: startS,
+                                                streamEndS: startS + Double(piece.audio.count) / 16000.0,
+                                                finalizedWallTime: segment.finalizedWallTime)
+                        if let record = await process(sub, speaker: piece.speaker) { onRecord(record) }
+                    }
+                } else if let record = await process(segment) {
+                    onRecord(record)
+                }
             }
         }
         running = false
