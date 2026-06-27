@@ -78,6 +78,32 @@ final class FlightPlanTests: XCTestCase {
         XCTAssertTrue(plan.vocabTerms.contains("BLECO"))
     }
 
+    // MARK: route classification (for the colour-coded route bar)
+
+    func testRouteLegClassification() {
+        XCTAssertEqual(RouteLeg.classify("KDFW"), .airport)   // 4-letter ICAO
+        XCTAssertEqual(RouteLeg.classify("BLECO"), .waypoint) // 5-letter RNAV/GPS fix
+        XCTAssertEqual(RouteLeg.classify("LFK"), .vor)        // 3-letter navaid
+        XCTAssertEqual(RouteLeg.classify("Q105"), .airway)
+        XCTAssertEqual(RouteLeg.classify("J42"), .airway)
+        XCTAssertEqual(RouteLeg.classify("UL607"), .airway)
+        XCTAssertEqual(RouteLeg.classify("V16"), .airway)
+        XCTAssertEqual(RouteLeg.classify("DCT"), .other)
+        XCTAssertEqual(RouteLeg.classify("DARTZ4"), .other)   // SID/STAR procedure — not a fix/airway
+    }
+
+    func testFullRouteOrdersAndTagsEndpoints() {
+        var plan = FlightPlan()
+        plan.departure = "KDFW"
+        plan.destination = "KAUS"
+        plan.route = ["BLECO", "Q105", "LFK"]
+        let legs = plan.fullRoute
+        XCTAssertEqual(legs.map(\.ident), ["KDFW", "BLECO", "Q105", "LFK", "KAUS"])
+        XCTAssertEqual(legs.first?.kind, .airport)   // departure forced to airport
+        XCTAssertEqual(legs.last?.kind, .airport)    // destination forced to airport
+        XCTAssertEqual(legs[2].kind, .airway)        // Q105
+    }
+
     // MARK: staleness
 
     func testStaleAfterSevenDays() {

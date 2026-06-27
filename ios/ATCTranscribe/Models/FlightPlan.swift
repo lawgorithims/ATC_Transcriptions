@@ -28,6 +28,17 @@ struct FlightPlan: Codable, Equatable {
     /// The route as one editable/display string (space-joined).
     var routeText: String { route.joined(separator: " ") }
 
+    /// The whole filed path as ordered, classified legs — departure airport, each route element,
+    /// then the destination airport — so the notification bar can show and colour-code the full
+    /// route (airports vs VOR navaids vs RNAV/GPS fixes vs airways).
+    var fullRoute: [RouteLeg] {
+        var legs: [RouteLeg] = []
+        if !departure.isEmpty { legs.append(RouteLeg(ident: departure.uppercased(), kind: .airport)) }
+        for tok in route where !tok.isEmpty { legs.append(RouteLeg(ident: tok.uppercased(), kind: RouteLeg.classify(tok))) }
+        if !destination.isEmpty { legs.append(RouteLeg(ident: destination.uppercased(), kind: .airport)) }
+        return legs
+    }
+
     /// One-line summary for the notification carousel's flight-plan page.
     var summaryLine: String {
         let leg = [departure, destination].filter { !$0.isEmpty }.joined(separator: " → ")
@@ -107,4 +118,34 @@ struct FlightPlan: Codable, Equatable {
     }
 
     static func clear() { UserDefaults.standard.removeObject(forKey: storageKey) }
+}
+
+/// One element of a filed route, with a heuristic classification so the UI can colour-code it.
+struct RouteLeg: Identifiable, Equatable {
+    let ident: String
+    let kind: RouteKind
+    var id: String { ident + "\(kind)" }
+
+    /// Classify a single route token. Heuristic (no nav database on-device): airways are a
+    /// letter(s)+digits identifier (Q105, J42, V16, UL607); a 4-letter token is an ICAO airport;
+    /// a 5-letter token is an RNAV/GPS waypoint (named fix); a 3-letter token is a VOR/navaid.
+    /// `DCT`/`DIRECT` and anything else (SID/STAR procedure names, etc.) fall through to `.other`.
+    static func classify(_ token: String) -> RouteKind {
+        let t = token.uppercased()
+        if t == "DCT" || t == "DIRECT" { return .other }
+        if t.range(of: "^[A-Z]{1,2}[0-9]{1,4}[A-Z]?$", options: .regularExpression) != nil { return .airway }
+        if t.range(of: "^[A-Z]{4}$", options: .regularExpression) != nil { return .airport }
+        if t.range(of: "^[A-Z]{5}$", options: .regularExpression) != nil { return .waypoint }
+        if t.range(of: "^[A-Z]{3}$", options: .regularExpression) != nil { return .vor }
+        return .other
+    }
+}
+
+/// Kind of route leg, used to colour the route on the notification bar.
+enum RouteKind {
+    case airport    // departure / destination (ICAO) — purple-pink
+    case vor        // 3-letter VOR / navaid — green
+    case waypoint   // 5-letter RNAV / GPS named fix — blue
+    case airway     // airway designator (Q105, J42, V16…) — amber
+    case other      // DCT, SID/STAR procedure, unknown
 }
