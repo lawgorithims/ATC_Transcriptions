@@ -15,6 +15,26 @@ final class ATCCorrectorTests: XCTestCase {
                                phonetic: phonetic, phoneticMin: phoneticMin, numbers: true)
     }
 
+    // MARK: hallucination filter
+
+    func testHallucinationFilterRemovesPhantomPhrase() async {
+        let r = await HallucinationFilter().correct("contact no call of departure", history: [])
+        XCTAssertTrue(r.changed)
+        XCTAssertEqual(r.corrected, "contact departure")
+    }
+
+    func testHallucinationFilterLeavesCleanText() async {
+        let r = await HallucinationFilter().correct("contact departure", history: [])
+        XCTAssertFalse(r.changed)
+    }
+
+    // A wholly-phantom transmission deletes to empty (the pipeline then drops it) — not resurrected.
+    func testHallucinationFilterDeletesWhollyPhantom() async {
+        let r = await HallucinationFilter().correct("no call of", history: [])
+        XCTAssertTrue(r.changed)
+        XCTAssertEqual(r.corrected, "")
+    }
+
     // MARK: SequenceMatcher.ratio() vs known difflib values
 
     func testRatioMatchesDifflib() {

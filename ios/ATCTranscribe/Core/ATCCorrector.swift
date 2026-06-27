@@ -247,6 +247,35 @@ struct DeterministicCorrector: Corrector {
     }
 }
 
+// MARK: - Hallucination filter
+
+/// Strips known Whisper phantom phrases that aren't ATC phraseology and recur as insertions —
+/// e.g. "no call of" in "contact no call of departure" (Whisper inventing words over static/noise).
+/// Whole-phrase, case-insensitive, word-bounded; conservative — only exact known phrases.
+struct HallucinationFilter: Corrector {
+    /// Lowercased phrases to delete. Extend as new recurring mis-hears surface.
+    static let phrases = ["no call of"]
+
+    func correct(_ text: String, history: [String]) async -> Correction {
+        var current = text
+        var edits: [CorrectionEdit] = []
+        for phrase in Self.phrases {
+            let pattern = "\\s*\\b" + NSRegularExpression.escapedPattern(for: phrase) + "\\b"
+            let replaced = current.replacingOccurrences(of: pattern, with: "",
+                                                        options: [.regularExpression, .caseInsensitive])
+            if replaced != current {
+                edits.append(CorrectionEdit(from: phrase, to: "", reason: "removed mis-hear",
+                                            backend: "deterministic"))
+                current = replaced
+            }
+        }
+        current = current.replacingOccurrences(of: "\\s{2,}", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+        if edits.isEmpty || current == text { return .unchanged(text, backend: "deterministic") }
+        return Correction(raw: text, corrected: current, changed: true, edits: edits, backend: "deterministic")
+    }
+}
+
 // MARK: - Chain
 
 /// Run correctors in order, threading the text through and merging edits. Each stage
@@ -262,7 +291,9 @@ struct ChainCorrector: Corrector {
         var backends: [String] = []
         for c in correctors {
             let res = await c.correct(current, history: history)
-            if res.changed, !res.corrected.isEmpty {
+            // Thread any change — including an intentional delete-to-empty (a wholly-hallucinated
+            // transmission stripped by HallucinationFilter), which the pipeline then drops.
+            if res.changed {
                 edits.append(contentsOf: res.edits)
                 backends.append(res.backend)
                 current = res.corrected
@@ -315,6 +346,7 @@ func buildCorrector(config: CorrectionConfig, vocab: @escaping () -> [String]) -
     guard config.enabled else { return NullCorrector() }
 
     var stages: [Corrector] = []
+    stages.append(HallucinationFilter())   // strip known Whisper phantom phrases first
     if config.repetition { stages.append(RepetitionCollapse()) }
     if config.deterministic {
         stages.append(DeterministicCorrector(

@@ -169,6 +169,11 @@ actor LivePipeline {
         // Fast inline tier (NullCorrector by default — a no-op): repetition collapse +
         // deterministic vocab/number fixes. Instant, never blocks. `text` stays the raw output.
         let correction = await corrector.correct(text, history: context.recentHistory)
+        // Drop a wholly-hallucinated transmission: the corrector removed everything (e.g. pure
+        // static decoded as a phantom phrase), so there's nothing real to show.
+        if correction.changed, correction.corrected.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return nil
+        }
         let inlineCorrected = correction.changed ? correction.corrected : ""
 
         var record = TranscriptRecord(

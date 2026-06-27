@@ -203,6 +203,7 @@ struct Badge: View {
 
 struct ControlsBar: View {
     @EnvironmentObject var model: AppModel
+    @State private var showSquelch = false
     static let freqs = ["auto", "approach", "departure", "tower", "ground", "clearance", "center", "ctaf"]
 
     var body: some View {
@@ -236,7 +237,18 @@ struct ControlsBar: View {
                     .accessibilityLabel("Listen to feed")
                 }
 
-                if model.isRunning { InputLevelMeter() }
+                // Tap the input meter to open squelch (set the minimum energy that wakes Whisper).
+                if model.isRunning {
+                    Button { showSquelch = true } label: { InputLevelMeter() }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("input-level-meter")
+                        .accessibilityLabel("Input level / squelch")
+                        .popover(isPresented: $showSquelch) {
+                            SquelchControls().environmentObject(model)
+                                .padding(16).frame(width: 300)
+                                .presentationCompactAdaptation(.popover)
+                        }
+                }
 
                 Button { model.isRunning ? model.stop() : model.start() } label: {
                     Label(model.isRunning ? "Stop" : "Start",
@@ -362,8 +374,47 @@ struct InputLevelMeter: View {
         .padding(.horizontal, 8).padding(.vertical, 5)
         .background(p.surfaceAlt).clipShape(Capsule())
         .overlay(Capsule().stroke(p.border, lineWidth: 1))
-        .accessibilityIdentifier("input-level-meter")
         .accessibilityLabel("Input level")
+    }
+}
+
+// MARK: - Squelch controls
+
+/// Reusable squelch editor — used in Settings AND in the popover from the input meter. The
+/// threshold slider is ALWAYS visible (disabled while Auto is on) so there's a clear way to set the
+/// minimum energy that wakes the transcriber, with a live input-level reference while running.
+struct SquelchControls: View {
+    @EnvironmentObject var model: AppModel
+    var body: some View {
+        let p = model.palette
+        return VStack(alignment: .leading, spacing: 10) {
+            Toggle(isOn: $model.squelchAuto) {
+                Text("Auto squelch").font(.caption).foregroundStyle(p.text)
+            }
+            Text("Auto learns the channel's noise floor from the gaps between transmissions and only wakes the transcriber on real speech. Turn it off to set the minimum energy yourself.")
+                .font(.caption2).foregroundStyle(p.textDim)
+                .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 10) {
+                Image(systemName: "speaker.wave.1").font(.caption2).foregroundStyle(p.textDim)
+                Slider(value: $model.manualSquelch, in: 0...1)
+                Image(systemName: "speaker.wave.3").font(.caption2).foregroundStyle(p.textDim)
+            }
+            .disabled(model.squelchAuto)
+            .opacity(model.squelchAuto ? 0.4 : 1)
+            .accessibilityIdentifier("squelch-slider")
+            Text(model.squelchAuto
+                 ? "Threshold is automatic — turn off Auto to set it manually."
+                 : "Higher = needs a louder signal to start transcribing (fewer false wakes); lower = more sensitive.")
+                .font(.caption2).foregroundStyle(p.textDim)
+                .fixedSize(horizontal: false, vertical: true)
+            if model.isRunning {
+                HStack(spacing: 8) {
+                    Text("Live input").font(.caption2).foregroundStyle(p.textDim)
+                    InputLevelMeter()
+                }
+                .padding(.top, 2)
+            }
+        }
     }
 }
 
