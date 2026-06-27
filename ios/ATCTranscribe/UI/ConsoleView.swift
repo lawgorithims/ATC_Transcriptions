@@ -222,6 +222,20 @@ struct ControlsBar: View {
 
                 Spacer(minLength: 0)
 
+                // Listen to the live feed through the speakers (verify it's arriving). Feed only —
+                // mic/USB would feed back.
+                if model.source == .liveFeed {
+                    Button { model.monitorEnabled.toggle() } label: {
+                        Image(systemName: model.monitorEnabled ? "speaker.wave.2.fill" : "speaker.slash.fill")
+                            .font(.system(size: 15))
+                            .foregroundStyle(model.monitorEnabled ? p.accent : p.textDim)
+                            .frame(width: 30, height: 26)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("monitor-toggle")
+                    .accessibilityLabel("Listen to feed")
+                }
+
                 if model.isRunning { InputLevelMeter() }
 
                 Button { model.isRunning ? model.stop() : model.start() } label: {

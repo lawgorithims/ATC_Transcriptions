@@ -88,6 +88,14 @@ final class AppModel: ObservableObject {
         didSet { UserDefaults.standard.set(manualSquelch, forKey: "atc.manualSquelch"); applySquelch() }
     }
 
+    // Live-feed monitor: play the internet feed out the speakers so it can be heard/verified (mic &
+    // USB are NOT monitored — feedback). Persisted; toggled by the speaker button. Muting just sets
+    // the player volume so it doesn't disrupt the running stream.
+    @Published var monitorEnabled = (UserDefaults.standard.object(forKey: "atc.monitorEnabled") as? Bool) ?? true {
+        didSet { UserDefaults.standard.set(monitorEnabled, forKey: "atc.monitorEnabled"); audioMonitor.setMuted(!monitorEnabled) }
+    }
+    private let audioMonitor = AudioMonitor()
+
     // Standby: a one-tap low-power state that stops capture (and releases the audio session) and
     // dims to a dark screen, so leaving the app monitoring a quiet feed doesn't drain the battery.
     @Published var standby = false
@@ -346,7 +354,10 @@ final class AppModel: ObservableObject {
                   let url = URL(string: resolved) else {
                 detail = "Enter a valid LiveATC link or stream URL."; return
             }
-            src = StreamAudioSource(url: url)
+            // Wrap the feed so it also plays out the speakers (audible monitor); the speaker toggle
+            // mutes via volume without disrupting the stream.
+            audioMonitor.setMuted(!monitorEnabled)
+            src = MonitoredSource(StreamAudioSource(url: url), monitor: audioMonitor)
         }
         // Hold an active audio session for every source so transcription continues when the app is
         // backgrounded (the `audio` background mode is declared). mic/USB record; feed/replay play.
