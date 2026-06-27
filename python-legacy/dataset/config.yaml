@@ -63,15 +63,17 @@ thresholds:
   max_corrector_delta: 0.30
   require_english: true
 
-# EVAL set: a DIFFERENT time window (and/or feeds) than training, so the held-out
-# US eval set is disjoint by feed/airport/time. Built with STRICT thresholds.
+# EVAL set: kept DISJOINT from training by feed/airport/time, built with STRICT
+# thresholds. In live mode, run the eval `build` at a different wall-clock time than
+# the training harvest AND use a different feed (below) so there is no overlap.
 eval:
+  # mode: inherits acquisition.mode if omitted. For archive mode add start/end.
   output_root: data/us_eval
   out_dir: data/raw_us_eval
   segments_dir: data/segments_eval
-  start: "2026-06-21T13:00"
-  end: "2026-06-21T15:00"
+  chunks_per_feed: 4          # ~2 h of eval audio per feed (live mode)
+  min_block_speech_s: 20.0
   feeds:
     - airport_config: airport_configs/kdfw.json
       feed_keys:
-        - tower_east
+        - lone_star_approach_17l_final   # NOT a training feed -> disjoint
