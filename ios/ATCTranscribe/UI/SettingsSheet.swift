@@ -44,22 +44,7 @@ struct SettingsSheet: View {
                         }
                     }
                     Card(title: "Squelch") {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Toggle(isOn: $model.squelchAuto) {
-                                Text("Auto squelch").font(.caption).foregroundStyle(p.text)
-                            }
-                            Text("ATC is bursty — talk, then silence. Auto learns the channel's noise level from the gaps between transmissions and only wakes the transcriber on real speech, so a quiet feed doesn't drain the battery. Turn off to set the threshold yourself.")
-                                .font(.caption2).foregroundStyle(p.textDim)
-                            if !model.squelchAuto {
-                                HStack(spacing: 10) {
-                                    Image(systemName: "speaker.wave.1").font(.caption2).foregroundStyle(p.textDim)
-                                    Slider(value: $model.manualSquelch, in: 0...1)
-                                    Image(systemName: "speaker.wave.3").font(.caption2).foregroundStyle(p.textDim)
-                                }
-                                Text("Higher = needs a louder signal (more squelch, fewer false wakes); lower = more sensitive. Watch the input meter by Start/Stop to set it.")
-                                    .font(.caption2).foregroundStyle(p.textDim)
-                            }
-                        }
+                        SquelchControls()
                     }
                     Card(title: "Adaptive selection") {
                         VStack(alignment: .leading, spacing: 10) {

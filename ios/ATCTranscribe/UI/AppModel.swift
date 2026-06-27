@@ -75,8 +75,18 @@ final class AppModel: ObservableObject {
     // Performance / debug readouts (per-transmission RTF + latency). Off by default — most users
     // don't want the numbers; toggle on in Settings. Persisted.
     @Published var showDebug = UserDefaults.standard.bool(forKey: "atc.showDebug") {
-        didSet { UserDefaults.standard.set(showDebug, forKey: "atc.showDebug") }
+        didSet {
+            UserDefaults.standard.set(showDebug, forKey: "atc.showDebug")
+            // Turning on "Show performance data" surfaces the debug widgets (CPU/thermal + latency)
+            // so they're discoverable without the long-press Add-widget menu. Only on a genuine
+            // user toggle (`didFinishInit`) — not the `--debug` launch flag, which shouldn't mutate
+            // the saved sidebar layout.
+            if showDebug, didFinishInit {
+                for w in [SidebarWidget.diagnostics, .latency] where !widgets.contains(w) { widgets.append(w) }
+            }
+        }
     }
+    private var didFinishInit = false
 
     // Squelch: Auto (default) learns the channel noise floor from the gaps between transmissions
     // so the transcriber only wakes on real speech (saves battery on a quiet feed); Manual uses a
@@ -180,6 +190,7 @@ final class AppModel: ObservableObject {
             // explicit flag or the user already chose to skip on a previous launch.
             needsOnboarding = explicitModel == nil && !Self.onboardingDismissed
         }
+        didFinishInit = true   // from here, a showDebug toggle may add the debug widgets
     }
 
     var palette: Palette { theme.palette }
