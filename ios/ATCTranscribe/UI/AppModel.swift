@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import Combine
+import AVFoundation
 
 /// Audio source choices in the UI's Source picker.
 enum SourceKind: String, CaseIterable, Identifiable {
@@ -40,6 +41,9 @@ final class AppModel: ObservableObject {
 
     // Engine / device
     @Published var activeModel = "small"
+    /// Set when the speech model fails to load, so the UI can say *why* instead of a bare
+    /// "model unavailable".
+    @Published var modelLoadError: String?
     @Published var deviceLabel = "Neural Engine"
     @Published var measuredSpeed: Double? = 12.5
     @Published var minRealtimeSpeed: Double = 1.2
@@ -186,7 +190,11 @@ final class AppModel: ObservableObject {
                                        fallbackModel: models["small"] != nil ? "small" : active,
                                        adaptive: false, cpuOnly: cpuOnly)
         let transcriber = ATCTranscriber(modelFolder: modelDir, cpuOnly: cpuOnly)
-        do { try await transcriber.load() } catch {
+        do {
+            try await transcriber.load()
+            modelLoadError = nil
+        } catch {
+            modelLoadError = error.localizedDescription
             detail = "Model failed to load: \(error.localizedDescription)"
             return
         }
@@ -285,7 +293,41 @@ final class AppModel: ObservableObject {
             status = .live; detail = "Transcribing (demo)."; return
         }
         guard let session else {        // live build whose model failed to load
-            status = .error; detail = "Model unavailable — cannot start."; return
+            status = .error
+            detail = modelLoadError.map { "Speech model unavailable — \($0)" }
+                ?? "Speech model isn't loaded yet. Re-download it in Settings › Models."
+            return
+        }
+        // Microphone / USB capture needs an explicit permission grant first — without it
+        // AVAudioEngine yields no input and the run just ends ("not activating").
+        if source == .microphone || source == .usbAudio {
+            AVAudioApplication.requestRecordPermission { [weak self] granted in
+                Task { @MainActor in
+                    guard let self else { return }
+                    if granted {
+                        self.beginCapture(session: session, resuming: resuming)
+                    } else {
+                        self.status = .error
+                        self.detail = "Microphone access denied. Enable it in Settings › CommSight › Microphone."
+                    }
+                }
+            }
+            return
+        }
+        beginCapture(session: session, resuming: resuming)
+    }
+
+    /// Build the chosen source and start the session. mic/USB failures are surfaced to `detail`.
+    private func beginCapture(session: TranscriptionSession, resuming: Bool) {
+        let micFailure: @Sendable (String) -> Void = { [weak self] msg in
+            Task { @MainActor in
+                self?.status = .error
+                self?.detail = msg
+                // The session was activated before capture started; a mic failure flips status to
+                // .error, which makes the session's own teardown guard (`== .live`) skip — so
+                // release it here, otherwise the .playAndRecord session leaks (mic light stays on).
+                AudioSessionManager.deactivate()
+            }
         }
         let src: AudioSource
         switch source {
@@ -296,9 +338,9 @@ final class AppModel: ObservableObject {
             for c in clips { feed += c.audio; feed += silence }
             src = ArrayAudioSource(feed, chunkSamples: 8000, realtime: false)
         case .microphone:
-            src = DeviceAudioSource(preferUSB: false)
+            src = DeviceAudioSource(preferUSB: false, onFailure: micFailure)
         case .usbAudio:
-            src = DeviceAudioSource(preferUSB: true)
+            src = DeviceAudioSource(preferUSB: true, onFailure: micFailure)
         case .liveFeed:
             guard let resolved = try? StreamURLResolver.resolve(streamURL: streamURL.isEmpty ? nil : streamURL),
                   let url = URL(string: resolved) else {
