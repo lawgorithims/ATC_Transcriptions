@@ -36,6 +36,7 @@ final class AppModel: ObservableObject {
     @Published var sourceLabel = "Replay demo"
     @Published var records: [TranscriptRecord] = []
     @Published var stats = LatencyStats()
+    @Published var inputLevel: Float = 0   // live audio level (0…1) for the input meter
 
     // Engine / device
     @Published var activeModel = "small"
@@ -61,6 +62,35 @@ final class AppModel: ObservableObject {
 
     @Published var showSettings = false
 
+    // Sidebar widget customization: which cards are shown, in what order. Edited in-place via a
+    // long-press (add / remove / drag-reorder) so the layout can be trimmed for iPad Split View /
+    // Slide Over. Persisted so the choice survives relaunch.
+    @Published var widgets: [SidebarWidget] = AppModel.loadWidgets() { didSet { Self.saveWidgets(widgets) } }
+    @Published var editingWidgets = false
+
+    // Performance / debug readouts (per-transmission RTF + latency). Off by default — most users
+    // don't want the numbers; toggle on in Settings. Persisted.
+    @Published var showDebug = UserDefaults.standard.bool(forKey: "atc.showDebug") {
+        didSet { UserDefaults.standard.set(showDebug, forKey: "atc.showDebug") }
+    }
+
+    // Squelch: Auto (default) learns the channel noise floor from the gaps between transmissions
+    // so the transcriber only wakes on real speech (saves battery on a quiet feed); Manual uses a
+    // fixed threshold. Persisted; hot-applied to the running VAD.
+    @Published var squelchAuto = (UserDefaults.standard.object(forKey: "atc.squelchAuto") as? Bool) ?? true {
+        didSet { UserDefaults.standard.set(squelchAuto, forKey: "atc.squelchAuto"); applySquelch() }
+    }
+    @Published var manualSquelch = (UserDefaults.standard.object(forKey: "atc.manualSquelch") as? Double) ?? 0.2 {
+        didSet { UserDefaults.standard.set(manualSquelch, forKey: "atc.manualSquelch"); applySquelch() }
+    }
+
+    // Standby: a one-tap low-power state that stops capture (and releases the audio session) and
+    // dims to a dark screen, so leaving the app monitoring a quiet feed doesn't drain the battery.
+    @Published var standby = false
+    private var resumeSource: SourceKind?
+    /// The source that will restart on Resume (nil if nothing was running when standby began).
+    var resumeSourceLabel: String? { resumeSource?.rawValue }
+
     // First-launch model download gate: true when no Whisper model is bundled or downloaded yet.
     // Drives the full-screen `OnboardingDownloadView`. `modelSource` is a small status badge.
     @Published var needsOnboarding = false
@@ -73,6 +103,8 @@ final class AppModel: ObservableObject {
     private var feedKey: String?
     private var liveMode = false
     private var storedCPUOnly = false
+    private var modelDirs: [String: String] = [:]   // whisper variant id → on-disk model folder
+    private var audioDirPath: String?               // demo clips dir, kept for model re-load on switch
 
     init() {
         let args = CommandLine.arguments
@@ -89,6 +121,7 @@ final class AppModel: ObservableObject {
         default: break
         }
         if let link = value("--link") { streamURL = link }
+        if args.contains("--debug") { showDebug = true }   // surface perf metrics (verification)
         if args.contains("--correct") { correctionEnabled = true }
         if args.contains("--llm") { correctionEnabled = true; llmBackend = .local }
         if args.contains("--llm-foundation") { correctionEnabled = true; llmBackend = .foundation }
@@ -106,9 +139,16 @@ final class AppModel: ObservableObject {
         // bundled into the app. A TestFlight build ships without the heavy model, so on first
         // launch nothing resolves and we gate on the download onboarding step.
         let explicitModel = value("--model-dir")
-        let modelDir = explicitModel ?? Self.resolvedModelDir()
         let audioDir = value("--audio-dir") ?? Self.bundledDemoClipsDir()
-        if let modelDir {
+        self.audioDirPath = audioDir
+        // Build the variant→folder map. An explicit --model-dir (Simulator verification) wins and
+        // is treated as the "small" slot; otherwise gather every downloaded/bundled variant so the
+        // Settings picker can switch between Small and Large at runtime.
+        let models = explicitModel.map { ["small": $0] } ?? Self.availableModelDirs()
+        self.modelDirs = models
+        // Prefer the larger (higher-accuracy) model when it's present; fall back to small/bundled.
+        let active = models["turbo"] != nil ? "turbo" : "small"
+        if let active = models[active] != nil ? active : models.keys.sorted().first {
             liveMode = true
             records = []
             stats = LatencyStats()
@@ -121,7 +161,7 @@ final class AppModel: ObservableObject {
             // (the picker can still switch to the live feed / mic). An explicit --source wins.
             if value("--source") == nil, audioDir != nil { source = .replay }
             let autostart = args.contains("--autostart")
-            Task { await setupLive(modelDir: modelDir, audioDir: audioDir, cpuOnly: cpuOnly, autostart: autostart) }
+            Task { await setupLive(models: models, active: active, audioDir: audioDir, cpuOnly: cpuOnly, autostart: autostart) }
         } else {
             seedSampleData()   // no model yet — populated demo layout behind the download gate
             // Gate the first launch on downloading the required model, unless launched with an
@@ -135,9 +175,11 @@ final class AppModel: ObservableObject {
 
     // MARK: live wiring
 
-    private func setupLive(modelDir: String, audioDir: String?, cpuOnly: Bool, autostart: Bool) async {
-        let engine = TranscriberEngine(models: ["small": modelDir], defaultModel: "small",
-                                       fallbackModel: "small", adaptive: false, cpuOnly: cpuOnly)
+    private func setupLive(models: [String: String], active: String, audioDir: String?, cpuOnly: Bool, autostart: Bool) async {
+        guard let modelDir = models[active] else { detail = "Model unavailable."; return }
+        let engine = TranscriberEngine(models: models, defaultModel: active,
+                                       fallbackModel: models["small"] != nil ? "small" : active,
+                                       adaptive: false, cpuOnly: cpuOnly)
         let transcriber = ATCTranscriber(modelFolder: modelDir, cpuOnly: cpuOnly)
         do { try await transcriber.load() } catch {
             detail = "Model failed to load: \(error.localizedDescription)"
@@ -164,14 +206,18 @@ final class AppModel: ObservableObject {
         let pipeline = LivePipeline(transcriber: transcriber, context: context,
                                     preprocessor: AudioPreprocessor(aggressiveRadio: true),
                                     corrector: currentCorrector(), llm: llm,
-                                    gateEnabled: skipWhenConfident, gateSensitivity: gateSensitivity)
+                                    gateEnabled: skipWhenConfident, gateSensitivity: gateSensitivity,
+                                    vadConfig: VADConfig(squelchAuto: squelchAuto,
+                                                         squelchLevel: Float(manualSquelch)))
         let session = TranscriptionSession(pipeline: pipeline)
         session.$records.assign(to: &$records)   // mirror live session state into the UI
         session.$status.assign(to: &$status)
         session.$stats.assign(to: &$stats)
+        session.$inputLevel.assign(to: &$inputLevel)
         self.session = session
         self.engine = engine
-        self.activeModel = "small"
+        self.modelDirs = models
+        self.activeModel = active
 
         if let audioDir { clips = (try? Self.loadClips(audioDir)) ?? [] }
         detail = clips.isEmpty ? "Model ready (no demo clips)." : "Ready — press Start."
@@ -201,6 +247,11 @@ final class AppModel: ObservableObject {
     /// Push the confidence-gate settings into the running session (a toggle/sensitivity changed).
     private func applyGate() {
         session?.setGate(enabled: skipWhenConfident, sensitivity: gateSensitivity)
+    }
+
+    /// Push the squelch (auto / manual threshold) into the running VAD (a Settings change).
+    private func applySquelch() {
+        session?.setSquelch(auto: squelchAuto, level: Float(manualSquelch))
     }
 
     /// Rebuild and hot-swap the slow-tier LLM backend (off / local llama.cpp / Foundation
@@ -247,6 +298,10 @@ final class AppModel: ObservableObject {
             }
             src = StreamAudioSource(url: url)
         }
+        // Hold an active audio session for every source so transcription continues when the app is
+        // backgrounded (the `audio` background mode is declared). mic/USB record; feed/replay play.
+        AudioSessionManager.activate(recording: source == .microphone || source == .usbAudio,
+                                     preferUSB: source == .usbAudio)
         session.start(source: src, label: source.rawValue)
         sourceLabel = source.rawValue
         detail = "Transcribing."
@@ -254,7 +309,25 @@ final class AppModel: ObservableObject {
 
     func stop() {
         if let session { session.stop() } else { status = .stopped }
+        AudioSessionManager.deactivate()
         detail = "Stopped."
+    }
+
+    /// Enter standby: stop capture and release the audio session so a quiet, unattended feed
+    /// stops draining the battery. Remembers whether a source was running so Resume can pick up
+    /// where it left off.
+    func enterStandby() {
+        if isRunning { resumeSource = source; stop() } else { resumeSource = nil }
+        detail = "Standby — capture paused."
+        standby = true
+    }
+
+    /// Leave standby. If a source was running when standby began, restart it; otherwise just
+    /// return to the idle console.
+    func exitStandby() {
+        standby = false
+        if let s = resumeSource { source = s; start() }
+        resumeSource = nil
     }
 
     func clear() {
@@ -281,7 +354,72 @@ final class AppModel: ObservableObject {
         }
     }
 
-    // MARK: model resolution + download gate
+    // MARK: sidebar widget customization
+
+    private static let widgetsKey = "atc.sidebarWidgets"
+
+    /// Load the saved widget order, falling back to all widgets (declaration order) on first run
+    /// or if the saved value is empty/corrupt.
+    /// Default sidebar on a fresh install: the at-a-glance health (proof of life) + host info.
+    /// The Latency widget (RTF/timing) is intentionally NOT shown by default — it's debug data the
+    /// user can add from the "Add widget" menu (mirrors the `showDebug` default).
+    static let defaultWidgets: [SidebarWidget] = [.proofOfLife, .host]
+
+    static func loadWidgets() -> [SidebarWidget] {
+        guard let raw = UserDefaults.standard.array(forKey: widgetsKey) as? [String] else {
+            return defaultWidgets
+        }
+        let parsed = raw.compactMap(SidebarWidget.init(rawValue:))
+        return parsed.isEmpty ? defaultWidgets : parsed
+    }
+
+    static func saveWidgets(_ w: [SidebarWidget]) {
+        UserDefaults.standard.set(w.map(\.rawValue), forKey: widgetsKey)
+    }
+
+    /// Widgets not currently on the sidebar — the candidates the "Add widget" menu offers.
+    var availableWidgets: [SidebarWidget] { SidebarWidget.allCases.filter { !widgets.contains($0) } }
+
+    func addWidget(_ w: SidebarWidget) { guard !widgets.contains(w) else { return }; widgets.append(w) }
+    func removeWidget(_ w: SidebarWidget) { widgets.removeAll { $0 == w } }
+
+    /// Reorder during a drag: move `w` to sit immediately before `target`.
+    func moveWidget(_ w: SidebarWidget, before target: SidebarWidget) {
+        guard w != target, let from = widgets.firstIndex(of: w) else { return }
+        widgets.remove(at: from)
+        if let to = widgets.firstIndex(of: target) { widgets.insert(w, at: to) }
+        else { widgets.append(w) }
+    }
+
+    // MARK: model selection + download gate
+
+    /// All whisper variants present on disk: a downloaded folder per variant, with the bundled
+    /// model filling the "small" slot when nothing was downloaded for it. Drives the engine's
+    /// model map (so the Settings picker can switch between Small and Large).
+    static func availableModelDirs() -> [String: String] {
+        var m: [String: String] = [:]
+        for e in [ModelCatalog.small, ModelCatalog.turbo] where ModelStore.isReady(e) {
+            m[e.id] = ModelStore.localURL(for: e).path
+        }
+        if m["small"] == nil, let bundled = bundledModelDir() { m["small"] = bundled }
+        return m
+    }
+
+    /// Is a given whisper variant present on disk? Drives the Settings picker's enablement.
+    func modelDownloaded(_ id: String) -> Bool { modelDirs[id] != nil }
+
+    /// Switch the active transcription model (Settings picker). Rebuilds the engine + live session
+    /// against the chosen variant's folder. No-op if it isn't downloaded or is already active.
+    /// Preserves run state: if a source was live it restarts after the new model loads.
+    func switchModel(_ id: String) {
+        guard liveMode, id != activeModel, modelDirs[id] != nil else { return }
+        let wasRunning = isRunning
+        if wasRunning { stop() }
+        detail = "Loading \(id) model…"
+        let models = modelDirs
+        Task { await setupLive(models: models, active: id, audioDir: audioDirPath,
+                               cpuOnly: storedCPUOnly, autostart: wasRunning) }
+    }
 
     /// Where the live model comes from, preferring a user-downloaded model over a bundled one.
     /// Returns nil when neither exists (a lean TestFlight build before the first download).
@@ -309,11 +447,19 @@ final class AppModel: ObservableObject {
     func modelDidDownload(_ entry: ModelEntry) {
         guard entry.kind == .whisperKit else { return }
         modelSource = "downloaded"
-        guard !liveMode, let dir = Self.resolvedModelDir() else { return }
+        let models = Self.availableModelDirs()
+        self.modelDirs = models
+        guard !liveMode else {
+            // Already live: if the user just added the higher-accuracy model, switch to it.
+            if entry.id == "turbo", activeModel != "turbo" { switchModel("turbo") }
+            return
+        }
+        let active = models["turbo"] != nil ? "turbo" : "small"
+        guard models[active] != nil else { return }
         liveMode = true
         detail = "Loading model…"
         if value(forFlag: "--source") == nil, Self.bundledDemoClipsDir() != nil { source = .replay }
-        Task { await setupLive(modelDir: dir, audioDir: Self.bundledDemoClipsDir(),
+        Task { await setupLive(models: models, active: active, audioDir: Self.bundledDemoClipsDir(),
                                cpuOnly: storedCPUOnly, autostart: false) }
     }
 
