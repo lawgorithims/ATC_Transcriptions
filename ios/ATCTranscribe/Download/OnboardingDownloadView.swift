@@ -19,20 +19,28 @@ struct OnboardingDownloadView: View {
             VStack(spacing: 22) {
                 Spacer()
                 VStack(spacing: 10) {
-                    Text("ATC")
-                        .font(.system(size: 22, weight: .heavy, design: .rounded))
-                        .padding(.horizontal, 12).padding(.vertical, 8)
-                        .background(p.accent).foregroundStyle(p.bg)
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                    Text("ATC_Transcribe").font(.title2.weight(.bold)).foregroundStyle(p.text)
-                    Text("On-device ATC transcription runs a speech model that lives on your device. Download it once to get started — it stays offline afterward.")
+                    Image("BrandMark")
+                        .resizable().scaledToFit()
+                        .frame(width: 64, height: 64)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                    Text("CommSight").font(.title2.weight(.bold)).foregroundStyle(p.text)
+                    Text("On-device air-traffic-control transcription runs a speech model that lives on your device. Download it once to get started — it stays offline afterward.")
                         .font(.subheadline).foregroundStyle(p.textDim)
                         .multilineTextAlignment(.center)
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.horizontal, 8)
                 }
 
-                ModelDownloadRow(entry: entry).padding(.horizontal, 4)
+                VStack(spacing: 10) {
+                    ModelDownloadRow(entry: entry)
+                    // Optional higher-accuracy model — offered up front so testers can grab it
+                    // without digging into Settings. Not required to continue.
+                    ModelDownloadRow(entry: ModelCatalog.turbo)
+                    Text("The larger model is optional — higher accuracy, larger download. You can also add it later in Settings.")
+                        .font(.caption2).foregroundStyle(p.textDim)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(.horizontal, 4)
 
                 VStack(spacing: 10) {
                     Button {

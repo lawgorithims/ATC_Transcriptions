@@ -109,15 +109,8 @@ final class DeviceAudioSource: AudioSource {
     }
 
     private func configureSession() {
-        #if os(iOS)
-        let session = AVAudioSession.sharedInstance()
-        try? session.setCategory(.playAndRecord, mode: .measurement, options: [.allowBluetooth, .defaultToSpeaker])
-        try? session.setActive(true)
-        if preferUSB, let usb = session.availableInputs?.first(where: { $0.portType == .usbAudio }) {
-            try? session.setPreferredInput(usb)
-        } else if !preferUSB, let mic = session.availableInputs?.first(where: { $0.portType == .builtInMic }) {
-            try? session.setPreferredInput(mic)
-        }
-        #endif
+        // Shared with the non-mic sources via AudioSessionManager so the active session (and thus
+        // background execution) is configured the same way everywhere. Idempotent.
+        AudioSessionManager.activate(recording: true, preferUSB: preferUSB)
     }
 }

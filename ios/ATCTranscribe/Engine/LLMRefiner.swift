@@ -51,8 +51,10 @@ actor LLMRefiner {
         while true {
             guard !queue.isEmpty else { working = false; return }
             let req = queue.removeFirst()
+            let t0 = Date()
             let correction = await corrector.correct(text: req.text, history: req.history, retrieved: req.retrieved)
-            onOutcome?(req.id, correction.changed ? .refined(correction) : .clean)
+            let ms = Date().timeIntervalSince(t0) * 1000.0
+            onOutcome?(req.id, correction.changed ? .refined(correction, ms: ms) : .clean(ms: ms))
         }
     }
 }

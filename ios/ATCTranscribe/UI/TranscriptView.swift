@@ -66,36 +66,82 @@ struct TranscriptRow: View {
                     Text(String(format: "stream %.1fs", record.streamStartS))
                         .font(.caption2.monospaced()).foregroundStyle(p.textDim)
                     Spacer()
-                    Text(String(format: "%.0f ms · RTF %.2f", record.transcribeMs, record.realTimeFactor))
-                        .font(.caption2.monospaced()).foregroundStyle(p.textDim)
+                    if model.showDebug {
+                        let speed = record.realTimeFactor > 0 ? 1.0 / record.realTimeFactor : 0
+                        (Text(String(format: "%.0f ms · ", record.transcribeMs)).foregroundStyle(p.textDim)
+                            + Text(speedLabel(record.realTimeFactor)).foregroundStyle(p.speedColor(realtime: speed)))
+                            .font(.caption2.monospaced())
+                    }
                 }
-                Text(record.display).font(.callout).foregroundStyle(p.text)
+                // Corrected words are tinted amber inline so they stand out at a glance.
+                Text(highlighted(record.display, edits: record.allEdits, color: p.warn))
+                    .font(.callout).foregroundStyle(p.text)
                     .textSelection(.enabled)
-                if record.refinementState == .pending {
-                    HStack(spacing: 6) {
-                        ProgressView().controlSize(.mini)
-                        Text("refining…").font(.caption2)
-                    }
-                    .foregroundStyle(p.textDim)
-                } else if record.refinementState == .skippedConfident {
-                    HStack(spacing: 5) {
-                        Image(systemName: "checkmark.seal").font(.caption2)
-                        Text("high confidence").font(.caption2)
-                    }
-                    .foregroundStyle(p.textDim)
-                }
+                refinementStatus(p)
                 if !record.allEdits.isEmpty {
                     HStack(spacing: 6) {
                         Image(systemName: "wand.and.stars").font(.caption2)
                         Text(record.allEdits.map { "\($0.from) → \($0.to)" }.joined(separator: ",  "))
                             .font(.caption2)
                     }
-                    .foregroundStyle(p.accent)
+                    .foregroundStyle(p.warn)
                 }
             }
             .padding(.horizontal, 14).padding(.vertical, 10)
             .frame(maxWidth: .infinity, alignment: .leading)
             Rectangle().fill(p.border.opacity(0.6)).frame(height: 1)
         }
+    }
+
+    /// The AI-fixer status line under the transcript: a live "running…" spinner, then the
+    /// outcome with how long the AI fixer actually took (its real-time cost, on screen).
+    @ViewBuilder private func refinementStatus(_ p: Palette) -> some View {
+        let ms = String(format: "%.0f ms", record.llmMs)
+        switch record.refinementState {
+        case .pending:
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.mini)
+                Text("AI fixer running…").font(.caption2)
+            }
+            .foregroundStyle(p.textDim)
+        case .refined:
+            statusLine("wand.and.stars", "AI fixed · \(ms)", p.warn)
+        case .clean:
+            statusLine("checkmark.seal", "AI checked · \(ms)", p.textDim)
+        case .skippedConfident:
+            statusLine("checkmark.seal", "high confidence", p.textDim)
+        case .none, .skipped:
+            EmptyView()
+        }
+    }
+
+    private func statusLine(_ symbol: String, _ text: String, _ color: Color) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: symbol).font(.caption2)
+            Text(text).font(.caption2)
+        }
+        .foregroundStyle(color)
+    }
+
+    /// Per-transmission speed as a human-friendly multiple of real time (inverse of RTF).
+    private func speedLabel(_ rtf: Double) -> String {
+        guard rtf > 0 else { return "—" }
+        return String(format: "%.1f× real-time", 1.0 / rtf)
+    }
+
+    /// Build an attributed transcript where each correction's replacement (`to`) is tinted, so
+    /// corrected words pop inline. Plain text when there are no edits.
+    private func highlighted(_ text: String, edits: [CorrectionEdit], color: Color) -> AttributedString {
+        var attr = AttributedString(text)
+        let targets = Set(edits.map(\.to).filter { !$0.isEmpty })
+        for target in targets {
+            var idx = attr.startIndex
+            while idx < attr.endIndex, let r = attr[idx...].range(of: target) {
+                attr[r].foregroundColor = color
+                attr[r].font = .callout.weight(.semibold)
+                idx = r.upperBound
+            }
+        }
+        return attr
     }
 }

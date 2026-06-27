@@ -29,6 +29,9 @@ struct ConsoleView: View {
         .fullScreenCover(isPresented: $model.needsOnboarding) {
             OnboardingDownloadView().environmentObject(model).environmentObject(downloads)
         }
+        .fullScreenCover(isPresented: $model.standby) {
+            StandbyView().environmentObject(model)
+        }
         .animation(.easeInOut(duration: 0.25), value: model.theme)
         .onAppear {
             // Bridge a finished download back to the model so it can load a model that wasn't
@@ -65,17 +68,22 @@ struct TopBar: View {
     var body: some View {
         let p = model.palette
         HStack(spacing: 12) {
-            Text("ATC")
-                .font(.system(size: 15, weight: .heavy, design: .rounded))
-                .padding(.horizontal, 8).padding(.vertical, 5)
-                .background(p.accent).foregroundStyle(p.bg)
+            Image("BrandMark")
+                .resizable().scaledToFit()
+                .frame(width: 30, height: 30)
                 .clipShape(RoundedRectangle(cornerRadius: 7))
             VStack(alignment: .leading, spacing: 1) {
-                Text("ATC_Transcribe").font(.headline).foregroundStyle(p.text)
+                Text("CommSight").font(.headline).foregroundStyle(p.text)
                 Text("On-device ATC transcription").font(.caption2).foregroundStyle(p.textDim)
             }
             Spacer()
             ThemeSwitcher()
+            Button { model.enterStandby() } label: {
+                Image(systemName: "moon.fill").font(.system(size: 16))
+            }
+            .buttonStyle(.plain).foregroundStyle(p.textDim)
+            .accessibilityIdentifier("standby-button")
+            .accessibilityLabel("Standby")
             Button { model.showSettings = true } label: {
                 Image(systemName: "gearshape.fill").font(.system(size: 17))
             }
@@ -211,6 +219,8 @@ struct ControlsBar: View {
 
                 Spacer(minLength: 0)
 
+                if model.isRunning { InputLevelMeter() }
+
                 Button { model.isRunning ? model.stop() : model.start() } label: {
                     Label(model.isRunning ? "Stop" : "Start",
                           systemImage: model.isRunning ? "stop.fill" : "play.fill")
@@ -261,6 +271,77 @@ struct ControlsBar: View {
         .background(p.surfaceAlt).clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(p.border, lineWidth: 1))
         .frame(maxWidth: .infinity)
+    }
+}
+
+// MARK: - Standby
+
+/// A near-black low-power screen shown while in standby. Capture is stopped and the audio session
+/// released (see `AppModel.enterStandby`), so an unattended quiet feed stops draining the battery;
+/// the dark screen also saves power on OLED iPads. Resume restarts whatever was running.
+struct StandbyView: View {
+    @EnvironmentObject var model: AppModel
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            VStack(spacing: 18) {
+                Image(systemName: "moon.zzz.fill")
+                    .font(.system(size: 44)).foregroundStyle(.white.opacity(0.5))
+                Text("Standby").font(.title2.weight(.semibold)).foregroundStyle(.white.opacity(0.85))
+                Text("Capture paused to save power.")
+                    .font(.subheadline).foregroundStyle(.white.opacity(0.4))
+                Button { model.exitStandby() } label: {
+                    Text(model.resumeSourceLabel.map { "Resume \($0)" } ?? "Resume")
+                        .font(.subheadline.weight(.semibold))
+                        .padding(.horizontal, 28).padding(.vertical, 12)
+                        .background(.white.opacity(0.12))
+                        .foregroundStyle(.white)
+                        .clipShape(Capsule())
+                        .overlay(Capsule().stroke(.white.opacity(0.2), lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("standby-resume")
+                .padding(.top, 8)
+            }
+            .padding(40)
+        }
+        .preferredColorScheme(.dark)
+    }
+}
+
+// MARK: - Input level meter
+
+/// A compact live audio-level meter shown next to Start/Stop while a source is running.
+/// Source-agnostic (mic, USB, internet feed, replay) — proof that audio is actually flowing.
+struct InputLevelMeter: View {
+    @EnvironmentObject var model: AppModel
+    private let bars = 7
+
+    var body: some View {
+        let p = model.palette
+        let level = model.inputLevel
+        let active = level > 0.02
+        return HStack(spacing: 4) {
+            Image(systemName: model.source == .liveFeed ? "dot.radiowaves.left.and.right" : "mic.fill")
+                .font(.caption2)
+                .foregroundStyle(active ? p.accent : p.textDim)
+            HStack(alignment: .bottom, spacing: 2) {
+                ForEach(0..<bars, id: \.self) { i in
+                    let threshold = Float(i + 1) / Float(bars)
+                    RoundedRectangle(cornerRadius: 1)
+                        .fill(level >= threshold ? p.accent : p.border)
+                        .frame(width: 3, height: 5 + CGFloat(i) * 1.6)
+                }
+            }
+            .frame(height: 18, alignment: .bottom)
+            .animation(.easeOut(duration: 0.12), value: level)
+        }
+        .padding(.horizontal, 8).padding(.vertical, 5)
+        .background(p.surfaceAlt).clipShape(Capsule())
+        .overlay(Capsule().stroke(p.border, lineWidth: 1))
+        .accessibilityIdentifier("input-level-meter")
+        .accessibilityLabel("Input level")
     }
 }
 

@@ -36,4 +36,17 @@ final class VADSegmenterTests: XCTestCase {
     func testSilenceOnlyEmitsNothing() {
         XCTAssertTrue(seg().feed(frames(50, 0.0)).isEmpty)
     }
+
+    // Manual squelch at max raises the gate (0.05 RMS) so a moderate 0.03 signal is squelched —
+    // no segment opens, so the transcriber never wakes on a low-level/noisy channel.
+    func testManualSquelchSuppressesBelowThreshold() {
+        let s = VADSegmenter(config: VADConfig(squelchAuto: false, squelchLevel: 1.0), now: { 0 })
+        XCTAssertTrue(s.feed(frames(30, 0.03) + frames(23, 0.0)).isEmpty)
+    }
+
+    // Manual squelch wide open passes the same 0.03 signal through as one segment.
+    func testManualSquelchOpenPassesSignal() {
+        let s = VADSegmenter(config: VADConfig(squelchAuto: false, squelchLevel: 0.0), now: { 0 })
+        XCTAssertEqual(s.feed(frames(20, 0.03) + frames(23, 0.0)).count, 1)
+    }
 }

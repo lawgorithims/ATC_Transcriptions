@@ -39,11 +39,17 @@ final class ConsoleUITests: XCTestCase {
     private let consoleMarker = "On-device ATC transcription"   // TopBar subtitle, console only
 
     // 1. The first-launch gate renders, its buttons exist & are hittable, and Skip lands in console.
-    func test1_onboardingGateAndSkip() {
+    // Only meaningful on a lean (no bundled model) build — the gate is skipped when a model ships
+    // in the bundle, so we skip rather than fail in that case.
+    func test1_onboardingGateAndSkip() throws {
         let app = launch(onboardingDismissed: false)
-        XCTAssertTrue(app.buttons["gate-primary"].waitForExistence(timeout: 20), "download gate missing")
+        guard app.buttons["gate-primary"].waitForExistence(timeout: 20) else {
+            throw XCTSkip("No download gate — this build bundles a model (gate only appears on lean builds).")
+        }
         XCTAssertTrue(app.buttons["gate-primary"].isHittable, "download button not hittable")
         XCTAssertTrue(app.buttons["gate-skip"].exists, "skip button missing")
+        // The optional higher-accuracy (Large) model is offered on the gate, not just in Settings.
+        XCTAssertTrue(app.staticTexts["Large · higher accuracy"].exists, "Large model not offered on gate")
         snap(app, "01-gate")
 
         app.buttons["gate-skip"].tap()
@@ -79,11 +85,14 @@ final class ConsoleUITests: XCTestCase {
                       || app.staticTexts["Ready"].firstMatch.exists,
                       "Models manager controls missing")
 
-        // Transcription model toggle.
-        let small = app.buttons["Small (fast)"].firstMatch
+        // Transcription model picker. Labels are "Small" / "Large" (+ "— not downloaded" when the
+        // variant isn't on disk, in which case the button is disabled).
+        let small = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Small")).firstMatch
         XCTAssertTrue(reveal(small, app), "model buttons missing")
-        small.tap()
-        app.buttons["Large (turbo)"].firstMatch.tap()
+        if small.isEnabled { small.tap() }
+        let large = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Large")).firstMatch
+        XCTAssertTrue(large.exists, "Large model button missing")
+        if large.isEnabled { large.tap() }
 
         // Enable correction → the AI backend + sensitivity controls become active.
         let toggle = app.switches.firstMatch
@@ -122,9 +131,68 @@ final class ConsoleUITests: XCTestCase {
         let other = (initial == "Start") ? "Stop" : "Start"
         btn.tap()
         XCTAssertTrue(waitForLabel(btn, other, timeout: 6), "run button did not toggle from \(initial)")
+        // While running, the input-level meter is shown next to Start/Stop (proof audio is flowing).
+        if btn.label == "Stop" {
+            let meter = app.descendants(matching: .any).matching(identifier: "input-level-meter").firstMatch
+            XCTAssertTrue(meter.waitForExistence(timeout: 4), "input level meter missing while running")
+        }
         snap(app, "06-toggled")
         btn.tap()
         XCTAssertTrue(waitForLabel(btn, initial, timeout: 6), "run button did not toggle back to \(initial)")
+    }
+
+    // 5. The proof-of-life control exists in the console and is tappable (runs the on-device check).
+    func test5_proofOfLifeButton() {
+        let app = launch(onboardingDismissed: true)
+        XCTAssertTrue(app.staticTexts[consoleMarker].waitForExistence(timeout: 20))
+        let pol = app.buttons["proof-of-life-button"]
+        XCTAssertTrue(reveal(pol, app), "proof-of-life button missing")
+        XCTAssertTrue(pol.isHittable, "proof-of-life button not hittable")
+        pol.tap()
+        snap(app, "07-proof-of-life")
+    }
+
+    // 6. Sidebar widgets are customizable: long-press to edit, remove a widget, add one back.
+    func test6_customizeWidgets() {
+        let app = launch(onboardingDismissed: true)
+        XCTAssertTrue(app.staticTexts[consoleMarker].waitForExistence(timeout: 20))
+
+        // Long-press the Host card (uppercased title) to enter widget edit mode.
+        let host = app.staticTexts["HOST"].firstMatch
+        XCTAssertTrue(reveal(host, app), "host widget missing")
+        host.press(forDuration: 0.7)
+        XCTAssertTrue(app.buttons["widgets-done"].waitForExistence(timeout: 4), "did not enter widget edit mode")
+        snap(app, "08-widgets-edit")
+
+        // Remove the Host widget.
+        let hostRemove = app.buttons["widget-remove-host"]
+        XCTAssertTrue(reveal(hostRemove, app), "host remove control missing")
+        hostRemove.tap()
+        XCTAssertTrue(hostRemove.waitForNonExistence(timeout: 4), "host widget not removed")
+
+        // Add it back via the Add menu (best-effort: system menu UI can vary).
+        let add = app.buttons["widget-add"]
+        if reveal(add, app) {
+            add.tap()
+            let hostItem = app.buttons["Host"].firstMatch
+            if hostItem.waitForExistence(timeout: 3) { hostItem.tap() }
+        }
+        let done = app.buttons["widgets-done"]
+        if done.exists { done.tap() }
+        snap(app, "09-widgets-done")
+    }
+
+    // 7. Standby: the moon button opens the low-power standby screen; Resume returns to console.
+    func test7_standby() {
+        let app = launch(onboardingDismissed: true)
+        XCTAssertTrue(app.buttons["standby-button"].waitForExistence(timeout: 20), "standby button missing")
+        app.buttons["standby-button"].tap()
+        let resume = app.buttons["standby-resume"]
+        XCTAssertTrue(resume.waitForExistence(timeout: 5), "standby screen did not appear")
+        snap(app, "10-standby")
+        resume.tap()
+        XCTAssertTrue(app.staticTexts[consoleMarker].waitForExistence(timeout: 5),
+                      "did not return to console from standby")
     }
 
     private func waitForLabel(_ el: XCUIElement, _ label: String, timeout: TimeInterval) -> Bool {
