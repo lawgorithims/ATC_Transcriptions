@@ -61,9 +61,10 @@ def build_eval_set(cfg: dict) -> dict:
     if not ev.get("feeds"):
         raise ValueError("config 'eval' section needs 'feeds', 'start', 'end'.")
     models = cfg.get("models") or {}
-    out_root = Path(ev.get("output_root", "data/us_eval"))
-    raw_dir = Path(ev.get("out_dir", "data/raw_us_eval"))
-    seg_dir = Path(ev.get("segments_dir", "data/segments_eval"))
+    storage_root = Path(cfg.get("storage_root", "data"))
+    out_root = Path(ev.get("output_root") or storage_root / "us_eval")
+    raw_dir = Path(ev.get("out_dir") or storage_root / "raw_us_eval")
+    seg_dir = Path(ev.get("segments_dir") or storage_root / "segments_eval")
     # start/end only needed for archive mode.
     start = _parse_dt(ev["start"]) if ev.get("start") else None
     end = _parse_dt(ev["end"]) if ev.get("end") else None
@@ -225,8 +226,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         build_eval_set(cfg)
     elif args.cmd == "score":
         ev = cfg.get("eval") or {}
+        storage_root = Path(cfg.get("storage_root", "data"))
+        eval_root = Path(ev.get("output_root") or storage_root / "us_eval")
         score_model(
-            Path(ev.get("output_root", "data/us_eval")),
+            eval_root,
             args.model,
             device=(cfg.get("models") or {}).get("device", "auto"),
             use_prompt=args.use_prompt,

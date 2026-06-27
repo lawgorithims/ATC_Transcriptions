@@ -31,8 +31,16 @@ pip install -q webrtcvad jiwer        # better VAD + WER tooling
 [ -d models/whisper-atc-turbo ] || python scripts/download_model.py || \
   echo "WARN: could not auto-download models/whisper-atc-turbo — set models.partner_b in dataset/config.yaml"
 
-mkdir -p data logs
+mkdir -p logs
 echo "GPU:"; nvidia-smi -L || true
+
+# Persistent storage reminder: data goes under config 'storage_root'. On the H100,
+# mount your block volume and set storage_root to it so data survives teardown, e.g.:
+#   lsblk; mkdir -p /mnt/atc-data
+#   mount /dev/sdb /mnt/atc-data        # (format once: mkfs.ext4 /dev/sdb)
+#   # set  storage_root: /mnt/atc-data  in dataset/config.yaml
+echo "Storage root from config:"; grep -E '^storage_root:' dataset/config.yaml || echo "  (defaults to ./data — EPHEMERAL; set storage_root to a mounted volume)"
+echo "Monitor data health any time:  python -m dataset.monitor --config dataset/config.yaml --watch 30"
 
 # Continuous harvest. The pipeline itself loops (acquisition.loop: true), so models
 # load once and stay resident. Logs to logs/harvest.log as well as the console.
