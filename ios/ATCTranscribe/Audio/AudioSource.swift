@@ -72,7 +72,9 @@ final class DeviceAudioSource: AudioSource {
 
     func makeStream() -> AsyncStream<[Float]> {
         AsyncStream { continuation in
-            configureSession()
+            // The audio session is already configured + activated on the main actor by
+            // AppModel.start() (via AudioSessionManager) before this source runs — don't re-activate
+            // the shared singleton off the main thread here.
             let input = engine.inputNode
             let inputFormat = input.outputFormat(forBus: 0)
             guard let outputFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32,
@@ -106,18 +108,5 @@ final class DeviceAudioSource: AudioSource {
     func stop() {
         engine.inputNode.removeTap(onBus: 0)
         if engine.isRunning { engine.stop() }
-    }
-
-    private func configureSession() {
-        #if os(iOS)
-        let session = AVAudioSession.sharedInstance()
-        try? session.setCategory(.playAndRecord, mode: .measurement, options: [.allowBluetooth, .defaultToSpeaker])
-        try? session.setActive(true)
-        if preferUSB, let usb = session.availableInputs?.first(where: { $0.portType == .usbAudio }) {
-            try? session.setPreferredInput(usb)
-        } else if !preferUSB, let mic = session.availableInputs?.first(where: { $0.portType == .builtInMic }) {
-            try? session.setPreferredInput(mic)
-        }
-        #endif
     }
 }

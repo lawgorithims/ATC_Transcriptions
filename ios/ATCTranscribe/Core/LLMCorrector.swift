@@ -26,9 +26,10 @@ struct RefinementRequest: Sendable, Identifiable {
     let retrieved: RetrievedContext
 }
 
-/// Result delivered back for a queued request.
+/// Result delivered back for a queued request. `ms` is the wall-clock the LLM spent on this
+/// transmission (surfaced in the UI so the user can see the AI fixer's real-time cost).
 enum RefinementOutcome: Sendable {
-    case refined(Correction)   // the LLM produced a change
-    case clean                 // the LLM ran and made no change
-    case skipped               // dropped under load (queue overflow) — never ran
+    case refined(Correction, ms: Double)   // the LLM produced a change
+    case clean(ms: Double)                 // the LLM ran and made no change
+    case skipped                           // dropped under load (queue overflow) — never ran
 }

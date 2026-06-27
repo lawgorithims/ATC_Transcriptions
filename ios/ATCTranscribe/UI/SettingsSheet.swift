@@ -29,8 +29,35 @@ struct SettingsSheet: View {
                                 KV("Measured speed", String(format: "%.1f× real-time", s))
                             }
                             HStack(spacing: 8) {
-                                modelButton("turbo", "Large (turbo)")
-                                modelButton("small", "Small (fast)")
+                                modelButton("turbo", "Large")
+                                modelButton("small", "Small")
+                            }
+                        }
+                    }
+                    Card(title: "Display") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Toggle(isOn: $model.showDebug) {
+                                Text("Show performance data").font(.caption).foregroundStyle(p.text)
+                            }
+                            Text("Shows the per-transmission speed and latency (RTF) next to each line, color-coded green / amber / red as the device keeps up or falls behind. Off by default. The Latency widget can also be added to the sidebar by long-pressing it.")
+                                .font(.caption2).foregroundStyle(p.textDim)
+                        }
+                    }
+                    Card(title: "Squelch") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Toggle(isOn: $model.squelchAuto) {
+                                Text("Auto squelch").font(.caption).foregroundStyle(p.text)
+                            }
+                            Text("ATC is bursty — talk, then silence. Auto learns the channel's noise level from the gaps between transmissions and only wakes the transcriber on real speech, so a quiet feed doesn't drain the battery. Turn off to set the threshold yourself.")
+                                .font(.caption2).foregroundStyle(p.textDim)
+                            if !model.squelchAuto {
+                                HStack(spacing: 10) {
+                                    Image(systemName: "speaker.wave.1").font(.caption2).foregroundStyle(p.textDim)
+                                    Slider(value: $model.manualSquelch, in: 0...1)
+                                    Image(systemName: "speaker.wave.3").font(.caption2).foregroundStyle(p.textDim)
+                                }
+                                Text("Higher = needs a louder signal (more squelch, fewer false wakes); lower = more sensitive. Watch the input meter by Start/Stop to set it.")
+                                    .font(.caption2).foregroundStyle(p.textDim)
                             }
                         }
                     }
@@ -98,15 +125,20 @@ struct SettingsSheet: View {
 
     private func modelButton(_ id: String, _ label: String) -> some View {
         let p = model.palette
-        return Button { model.activeModel = id } label: {
-            Text(label).font(.caption.weight(.semibold))
+        let available = model.modelDownloaded(id)
+        let isActive = model.activeModel == id
+        return Button { model.switchModel(id) } label: {
+            Text(available ? label : "\(label) — not downloaded")
+                .font(.caption.weight(.semibold))
                 .frame(maxWidth: .infinity).padding(.vertical, 9)
-                .background(model.activeModel == id ? p.accent : p.surfaceAlt)
-                .foregroundStyle(model.activeModel == id ? p.bg : p.text)
+                .background(isActive ? p.accent : p.surfaceAlt)
+                .foregroundStyle(isActive ? p.bg : p.text)
                 .clipShape(RoundedRectangle(cornerRadius: 8))
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(p.border, lineWidth: 1))
         }
         .buttonStyle(.plain)
+        .disabled(!available)
+        .opacity(available ? 1 : 0.5)
     }
 
     private func backendButton(_ b: LLMBackend, _ label: String) -> some View {
