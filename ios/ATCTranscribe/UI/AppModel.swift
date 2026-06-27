@@ -23,13 +23,27 @@ enum SourceKind: String, CaseIterable, Identifiable {
 /// `--audio-dir <diagnostic_data>`, `--autostart`.
 @MainActor
 final class AppModel: ObservableObject {
-    @Published var theme: AppTheme = .cockpit
+    // UI theme — persisted so the app reopens in the same look (was resetting to cockpit each launch).
+    @Published var theme: AppTheme =
+        (UserDefaults.standard.string(forKey: "atc.theme").flatMap(AppTheme.init(rawValue:)) ?? .cockpit) {
+        didSet { UserDefaults.standard.set(theme.rawValue, forKey: "atc.theme") }
+    }
 
-    // Source controls
-    @Published var source: SourceKind = .liveFeed
-    @Published var streamURL = ""
-    @Published var airport = ""
-    @Published var frequency = "auto"
+    // Source controls — persisted so the app reopens to the input / LiveATC link / airport you left
+    // on. The first-launch "default to Replay demo" still applies only when no source was ever saved.
+    @Published var source: SourceKind =
+        (UserDefaults.standard.string(forKey: "atc.source").flatMap(SourceKind.init(rawValue:)) ?? .liveFeed) {
+        didSet { UserDefaults.standard.set(source.rawValue, forKey: "atc.source") }
+    }
+    @Published var streamURL = UserDefaults.standard.string(forKey: "atc.streamURL") ?? "" {
+        didSet { UserDefaults.standard.set(streamURL, forKey: "atc.streamURL") }
+    }
+    @Published var airport = UserDefaults.standard.string(forKey: "atc.airport") ?? "" {
+        didSet { UserDefaults.standard.set(airport, forKey: "atc.airport") }
+    }
+    @Published var frequency = UserDefaults.standard.string(forKey: "atc.frequency") ?? "auto" {
+        didSet { UserDefaults.standard.set(frequency, forKey: "atc.frequency") }
+    }
 
     // Session state (forwarded from TranscriptionSession in live mode)
     @Published var status: SessionStatus = .idle
@@ -39,32 +53,70 @@ final class AppModel: ObservableObject {
     @Published var stats = LatencyStats()
     @Published var inputLevel: Float = 0   // live audio level (0…1) for the input meter
 
-    // Engine / device
-    @Published var activeModel = "small"
+    // Engine / device. `activeModel` (small/large) is persisted so the app reopens on the model you
+    // left on, instead of always preferring the larger one — see the restore logic in `init`.
+    @Published var activeModel = "small" {
+        didSet { UserDefaults.standard.set(activeModel, forKey: "atc.activeModel") }
+    }
     /// Set when the speech model fails to load, so the UI can say *why* instead of a bare
     /// "model unavailable".
     @Published var modelLoadError: String?
     @Published var deviceLabel = "Neural Engine"
     @Published var measuredSpeed: Double? = 12.5
-    @Published var minRealtimeSpeed: Double = 1.2
+    @Published var minRealtimeSpeed = (UserDefaults.standard.object(forKey: "atc.minRealtimeSpeed") as? Double) ?? 1.2 {
+        didSet { UserDefaults.standard.set(minRealtimeSpeed, forKey: "atc.minRealtimeSpeed") }
+    }
 
     // Proof of life
     @Published var proofOfLife: ProofOfLifeResult?
     @Published var polRunning = false
 
-    // Correction layer (off by default — port of the `correction:` config block).
-    // `correctionEnabled` runs the fast inline tier (repetition collapse + deterministic
-    // vocab/number fixer); `llmBackend` picks the optional slow-tier LLM (off / local llama.cpp
-    // on the CPU / Apple Foundation Models). Toggling either hot-swaps into the live session.
-    @Published var correctionEnabled = false { didSet { rebuildCorrector(); rebuildLLM() } }
-    @Published var llmBackend: LLMBackend = .off { didSet { if llmBackend != oldValue { rebuildLLM() } } }
+    // Correction layer (ON by default — corrects spoken numbers/callsigns/phraseology out of the
+    // box). `correctionEnabled` runs the fast inline tier (repetition collapse + deterministic
+    // vocab/number fixer); `llmBackend` picks the slow-tier AI fixer (off / on-device llama.cpp on
+    // the CPU / Apple Foundation Models). Defaults are persisted (keys mirror `atc.diarization`):
+    // on / on-device / Balanced. The on-device fixer degrades to vocabulary-only until the GGUF
+    // finishes downloading. Toggling either hot-swaps into the live session.
+    @Published var correctionEnabled = (UserDefaults.standard.object(forKey: "atc.correctionEnabled") as? Bool) ?? true {
+        didSet { UserDefaults.standard.set(correctionEnabled, forKey: "atc.correctionEnabled"); rebuildCorrector(); rebuildLLM() }
+    }
+    @Published var llmBackend: LLMBackend =
+        (UserDefaults.standard.string(forKey: "atc.llmBackend").flatMap(LLMBackend.init(rawValue:)) ?? .local) {
+        didSet {
+            UserDefaults.standard.set(llmBackend.rawValue, forKey: "atc.llmBackend")
+            if llmBackend != oldValue { rebuildLLM() }
+        }
+    }
 
     // Confidence gate: only run the AI fixer when a transmission looks suspicious. `skipWhenConfident`
-    // toggles the gate; `gateSensitivity` trades correction coverage against CPU savings.
-    @Published var skipWhenConfident = true { didSet { applyGate() } }
-    @Published var gateSensitivity: GateSensitivity = .conservative { didSet { applyGate() } }
+    // toggles the gate; `gateSensitivity` trades correction coverage against CPU savings (persisted).
+    @Published var skipWhenConfident = (UserDefaults.standard.object(forKey: "atc.skipWhenConfident") as? Bool) ?? true {
+        didSet { UserDefaults.standard.set(skipWhenConfident, forKey: "atc.skipWhenConfident"); applyGate() }
+    }
+    @Published var gateSensitivity: GateSensitivity =
+        (UserDefaults.standard.string(forKey: "atc.gateSensitivity").flatMap(GateSensitivity.init(rawValue:)) ?? .balanced) {
+        didSet { UserDefaults.standard.set(gateSensitivity.rawValue, forKey: "atc.gateSensitivity"); applyGate() }
+    }
 
     @Published var showSettings = false
+
+    // Electronic Flight Bag: the filed flight plan (ForeFlight-style). Persisted as JSON; whenever
+    // it changes, its context block is packed into the live correction layer (both LLM backends)
+    // and saved. `showFlightBag` drives the briefcase editor sheet.
+    @Published var flightPlan: FlightPlan? = FlightPlan.load() {
+        didSet {
+            if let fp = flightPlan { fp.save() } else { FlightPlan.clear() }
+            pushFlightPlanContext()
+        }
+    }
+    @Published var showFlightBag = false
+
+    // Transcript ordering: false = newest at the bottom (default, auto-scrolls down); true = newest
+    // at the top, so new transmissions appear without scrolling. Persisted; toggled from the
+    // transcript card's sort control.
+    @Published var transcriptNewestFirst = UserDefaults.standard.bool(forKey: "atc.transcriptNewestFirst") {
+        didSet { UserDefaults.standard.set(transcriptNewestFirst, forKey: "atc.transcriptNewestFirst") }
+    }
 
     // Sidebar widget customization: which cards are shown, in what order. Edited in-place via a
     // long-press (add / remove / drag-reorder) so the layout can be trimmed for iPad Split View /
@@ -177,9 +229,12 @@ final class AppModel: ObservableObject {
         // Settings picker can switch between Small and Large at runtime.
         let models = explicitModel.map { ["small": $0] } ?? Self.availableModelDirs()
         self.modelDirs = models
-        // Prefer the larger (higher-accuracy) model when it's present; fall back to small/bundled.
-        let active = models["turbo"] != nil ? "turbo" : "small"
-        if let active = models[active] != nil ? active : models.keys.sorted().first {
+        // Restore the model the user last had active (persisted) when it's still available; else
+        // prefer the larger (higher-accuracy) model when present, falling back to small/bundled.
+        let savedActive = UserDefaults.standard.string(forKey: "atc.activeModel")
+        let preferred = savedActive.flatMap { models[$0] != nil ? $0 : nil }
+            ?? (models["turbo"] != nil ? "turbo" : "small")
+        if let active = models[preferred] != nil ? preferred : models.keys.sorted().first {
             liveMode = true
             records = []
             stats = LatencyStats()
@@ -187,10 +242,11 @@ final class AppModel: ObservableObject {
             detail = "Loading model…"
             modelSource = explicitModel != nil ? "launch"
                 : (ModelStore.downloadedWhisperDir() != nil ? "downloaded" : "bundled")
-            // Default to the self-contained Replay demo when clips ship with the app, so a
-            // fresh install transcribes on the first Start with no network or mic needed
-            // (the picker can still switch to the live feed / mic). An explicit --source wins.
-            if value("--source") == nil, audioDir != nil { source = .replay }
+            // First launch only (no source ever saved): default to the self-contained Replay demo
+            // so a fresh install transcribes on the first Start with no network or mic needed. A
+            // saved source preference (or an explicit --source) wins on later launches.
+            if value("--source") == nil, UserDefaults.standard.string(forKey: "atc.source") == nil,
+               audioDir != nil { source = .replay }
             let autostart = args.contains("--autostart")
             Task { await setupLive(models: models, active: active, audioDir: audioDir, cpuOnly: cpuOnly, autostart: autostart) }
         } else {
@@ -235,6 +291,10 @@ final class AppModel: ObservableObject {
         let feedKey = cfg?.streams?.keys.sorted().first
         self.feedKey = feedKey
         let context = ATCContext(config: cfg, feedKey: feedKey)
+        // Seed the filed flight plan (Electronic Flight Bag) before the pipeline starts using the
+        // context, so the first transmission's LLM correction already sees the pilot's own callsign,
+        // airports, and route. Live edits afterward go through `pushFlightPlanContext`.
+        if let fp = flightPlan { context.setFlightPlan(block: fp.contextBlock, vocab: fp.vocabTerms) }
         self.liveContext = context
 
         // Build the optional slow-tier LLM off the main actor (loading the GGUF can take ~1s).
@@ -295,6 +355,13 @@ final class AppModel: ObservableObject {
     /// Push the squelch (auto / manual threshold) into the running VAD (a Settings change).
     private func applySquelch() {
         session?.setSquelch(auto: squelchAuto, level: Float(manualSquelch))
+    }
+
+    /// Push the filed flight plan into the running correction context (or clear it). Called when
+    /// the plan changes; the initial value is seeded directly onto the context in `setupLive`.
+    func pushFlightPlanContext() {
+        session?.setFlightPlanContext(block: flightPlan?.contextBlock ?? "",
+                                      vocab: flightPlan?.vocabTerms ?? [])
     }
 
     /// Rebuild and hot-swap the slow-tier LLM backend (off / local llama.cpp / Foundation
@@ -449,6 +516,9 @@ final class AppModel: ObservableObject {
     static let defaultWidgets: [SidebarWidget] = [.proofOfLife, .host]
 
     static func loadWidgets() -> [SidebarWidget] {
+        // UI-test determinism: ignore any persisted layout and start from defaults (the sidebar
+        // layout otherwise carries across Simulator launches, polluting widget tests).
+        if CommandLine.arguments.contains("--reset-widgets") { return defaultWidgets }
         guard let raw = UserDefaults.standard.array(forKey: widgetsKey) as? [String] else {
             return defaultWidgets
         }
@@ -540,11 +610,15 @@ final class AppModel: ObservableObject {
             if entry.id == "turbo", activeModel != "turbo", !isRunning { switchModel("turbo") }
             return
         }
-        let active = models["turbo"] != nil ? "turbo" : "small"
+        // Honor a previously-saved model choice when it's now available, else prefer the larger one.
+        let savedActive = UserDefaults.standard.string(forKey: "atc.activeModel")
+        let active = savedActive.flatMap { models[$0] != nil ? $0 : nil }
+            ?? (models["turbo"] != nil ? "turbo" : "small")
         guard models[active] != nil else { return }
         liveMode = true
         detail = "Loading model…"
-        if value(forFlag: "--source") == nil, Self.bundledDemoClipsDir() != nil { source = .replay }
+        if value(forFlag: "--source") == nil, UserDefaults.standard.string(forKey: "atc.source") == nil,
+           Self.bundledDemoClipsDir() != nil { source = .replay }
         Task { await setupLive(models: models, active: active, audioDir: Self.bundledDemoClipsDir(),
                                cpuOnly: storedCPUOnly, autostart: false) }
     }

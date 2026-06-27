@@ -118,6 +118,13 @@ final class TranscriptionSession: ObservableObject {
         Task { await pipeline.setDiarization(on) }
     }
 
+    /// Push the filed flight plan into the live correction context (Electronic Flight Bag). Safe
+    /// while a run is active; takes effect on the next transmission.
+    func setFlightPlanContext(block: String, vocab: [String]) {
+        let pipeline = self.pipeline
+        Task { await pipeline.setFlightPlanContext(block: block, vocab: vocab) }
+    }
+
     /// Apply a background-refinement outcome to the matching record (updates the `@Published`
     /// array element so the UI flips "refining…" → refined text). No-op if the record is gone.
     private func applyRefinement(id: UUID, outcome: RefinementOutcome) {

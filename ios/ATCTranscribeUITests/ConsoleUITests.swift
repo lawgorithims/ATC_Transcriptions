@@ -14,9 +14,12 @@ final class ConsoleUITests: XCTestCase {
     override func setUp() { continueAfterFailure = false }
 
     @discardableResult
-    private func launch(onboardingDismissed: Bool) -> XCUIApplication {
+    private func launch(onboardingDismissed: Bool, resetWidgets: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments += ["-atc.onboardingDismissed", onboardingDismissed ? "YES" : "NO"]
+        // Start widget tests from the default layout — the sidebar persists across launches, so a
+        // prior run that removed a widget would otherwise leak into this one.
+        if resetWidgets { app.launchArguments += ["--reset-widgets"] }
         app.launch()
         return app
     }
@@ -152,34 +155,35 @@ final class ConsoleUITests: XCTestCase {
         snap(app, "07-proof-of-life")
     }
 
-    // 6. Sidebar widgets are customizable: long-press to edit, remove a widget, add one back.
+    // 6. Sidebar widgets are customizable: long-press a card for a context menu to remove the
+    // touched widget, or add one that isn't shown (dropdown).
     func test6_customizeWidgets() {
-        let app = launch(onboardingDismissed: true)
+        let app = launch(onboardingDismissed: true, resetWidgets: true)
         XCTAssertTrue(app.staticTexts[consoleMarker].waitForExistence(timeout: 20))
 
-        // Long-press the Host card (uppercased title) to enter widget edit mode.
+        // Long-press the Host card (uppercased title) to open its context menu, then Remove it.
         let host = app.staticTexts["HOST"].firstMatch
         XCTAssertTrue(reveal(host, app), "host widget missing")
         host.press(forDuration: 0.7)
-        XCTAssertTrue(app.buttons["widgets-done"].waitForExistence(timeout: 4), "did not enter widget edit mode")
-        snap(app, "08-widgets-edit")
+        let removeHost = app.buttons["Remove Host"].firstMatch
+        XCTAssertTrue(removeHost.waitForExistence(timeout: 5), "context-menu Remove control missing")
+        snap(app, "08-widget-menu")
+        removeHost.tap()
+        XCTAssertTrue(app.staticTexts["HOST"].waitForNonExistence(timeout: 4), "host widget not removed")
 
-        // Remove the Host widget.
-        let hostRemove = app.buttons["widget-remove-host"]
-        XCTAssertTrue(reveal(hostRemove, app), "host remove control missing")
-        hostRemove.tap()
-        XCTAssertTrue(hostRemove.waitForNonExistence(timeout: 4), "host widget not removed")
-
-        // Add it back via the Add menu (best-effort: system menu UI can vary).
-        let add = app.buttons["widget-add"]
-        if reveal(add, app) {
-            add.tap()
-            let hostItem = app.buttons["Host"].firstMatch
-            if hostItem.waitForExistence(timeout: 3) { hostItem.tap() }
+        // Re-add Host via another widget's context menu → "Add widget" dropdown (best-effort:
+        // nested-menu UI can vary in the Simulator).
+        let perf = app.staticTexts["PERFORMANCE CHECK"].firstMatch
+        if reveal(perf, app) {
+            perf.press(forDuration: 0.7)
+            let addMenu = app.buttons["Add widget"].firstMatch
+            if addMenu.waitForExistence(timeout: 3) {
+                addMenu.tap()
+                let hostItem = app.buttons["Host"].firstMatch
+                if hostItem.waitForExistence(timeout: 3) { hostItem.tap() }
+            }
         }
-        let done = app.buttons["widgets-done"]
-        if done.exists { done.tap() }
-        snap(app, "09-widgets-done")
+        snap(app, "09-widget-readded")
     }
 
     // 7. Standby: the moon button opens the low-power standby screen; Resume returns to console.
