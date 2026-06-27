@@ -64,7 +64,9 @@ def build_eval_set(cfg: dict) -> dict:
     out_root = Path(ev.get("output_root", "data/us_eval"))
     raw_dir = Path(ev.get("out_dir", "data/raw_us_eval"))
     seg_dir = Path(ev.get("segments_dir", "data/segments_eval"))
-    start, end = _parse_dt(ev["start"]), _parse_dt(ev["end"])
+    # start/end only needed for archive mode.
+    start = _parse_dt(ev["start"]) if ev.get("start") else None
+    end = _parse_dt(ev["end"]) if ev.get("end") else None
 
     transcriber_a = ScoredTranscriber(
         models.get("teacher_a", "openai/whisper-large-v3"),
@@ -79,6 +81,9 @@ def build_eval_set(cfg: dict) -> dict:
 
     writer = emit_metadata.MetadataWriter(out_root)
     excluded_blocks = set()
+    # Acquire the same way as training (live = Cloudflare-free) unless told otherwise.
+    mode = (ev.get("mode") or (cfg.get("acquisition") or {}).get("mode") or "live").lower()
+    min_speech_s = float(ev.get("min_block_speech_s", 20.0))
 
     for feed in ev["feeds"]:
         config_path = Path(feed["airport_config"])
@@ -89,10 +94,23 @@ def build_eval_set(cfg: dict) -> dict:
             ctx = ATCContext(feed_config=config_path, feed_key=feed_key)
             corrector = DeterministicCorrector(ctx.vocab)
             prompt = ctx.build_prompt()
-            recs = download_archive_range(
-                config_path, feed_key, start, end, raw_dir,
-                manifest_path=out_root / "downloads.jsonl",
-            )
+            if mode == "archive":
+                recs = download_archive_range(
+                    config_path, feed_key, start, end, raw_dir,
+                    manifest_path=out_root / "downloads.jsonl",
+                )
+            else:  # live recording — run this at a different wall-clock time than
+                   # training so the eval set stays time-disjoint.
+                from dataset.live_recorder import record_feed_chunks
+
+                recs = record_feed_chunks(
+                    config_path, feed_key, raw_dir,
+                    n_chunks=int(ev.get("chunks_per_feed", 4)),
+                    chunk_minutes=float(ev.get("chunk_minutes", 30.0)),
+                    min_speech_s=min_speech_s,
+                    manifest_path=out_root / "downloads.jsonl",
+                    on_status=lambda m: print("   ", m),
+                )
             for rec in recs:
                 if rec.status not in ("ok", "skipped") or not rec.path:
                     continue
