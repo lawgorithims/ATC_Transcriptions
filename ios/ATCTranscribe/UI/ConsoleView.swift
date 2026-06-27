@@ -20,12 +20,6 @@ struct ConsoleView: View {
                 hairline
                 mainArea
             }
-            // Standby dims + disables the console (transcript stays readable) rather than covering
-            // it, and floats a Resume control on top.
-            .opacity(model.standby ? 0.35 : 1)
-            .disabled(model.standby)
-            .animation(.easeInOut(duration: 0.2), value: model.standby)
-            if model.standby { StandbyBanner().environmentObject(model) }
         }
         .tint(p.accent)
         .preferredColorScheme(model.theme == .day ? .light : .dark)
@@ -48,19 +42,29 @@ struct ConsoleView: View {
     @ViewBuilder private var mainArea: some View {
         if hSize == .regular {
             HStack(alignment: .top, spacing: 14) {
-                TranscriptCard().frame(maxWidth: .infinity, maxHeight: .infinity)
+                transcriptArea.frame(maxWidth: .infinity, maxHeight: .infinity)
                 SidebarColumn().frame(width: 300)
             }
             .padding(14)
         } else {
             ScrollView {
                 VStack(spacing: 14) {
-                    TranscriptCard().frame(minHeight: 360)
+                    transcriptArea.frame(minHeight: 360)
                     SidebarColumn()
                 }
                 .padding(14)
             }
         }
+    }
+
+    /// Standby dims + disables ONLY the transcript box (the rest of the console stays usable) and
+    /// floats the Resume banner over it.
+    private var transcriptArea: some View {
+        TranscriptCard()
+            .opacity(model.standby ? 0.4 : 1)
+            .disabled(model.standby)
+            .overlay { if model.standby { StandbyBanner().environmentObject(model) } }
+            .animation(.easeInOut(duration: 0.2), value: model.standby)
     }
 }
 
@@ -82,7 +86,7 @@ struct TopBar: View {
             Spacer()
             ThemeSwitcher()
             Button { model.enterStandby() } label: {
-                Image(systemName: "moon.fill").font(.system(size: 16))
+                Image(systemName: "power").font(.system(size: 16, weight: .semibold))
             }
             .buttonStyle(.plain).foregroundStyle(p.textDim)
             .accessibilityIdentifier("standby-button")
@@ -318,7 +322,7 @@ struct StandbyBanner: View {
             Spacer()
             VStack(spacing: 12) {
                 HStack(spacing: 8) {
-                    Image(systemName: "moon.zzz.fill").foregroundStyle(p.accent)
+                    Image(systemName: "power").foregroundStyle(p.accent)
                     Text("Standby — capture paused").font(.subheadline.weight(.semibold))
                         .foregroundStyle(p.text)
                 }
@@ -337,7 +341,7 @@ struct StandbyBanner: View {
             .clipShape(RoundedRectangle(cornerRadius: 16))
             .overlay(RoundedRectangle(cornerRadius: 16).stroke(p.border, lineWidth: 1))
             .shadow(color: .black.opacity(0.3), radius: 12, y: 4)
-            .padding(.bottom, 36)
+            Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .transition(.opacity)
