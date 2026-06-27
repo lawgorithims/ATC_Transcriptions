@@ -31,6 +31,8 @@ struct TranscriptRecord: Sendable, Identifiable {
     var refinementState: RefinementState = .none
     var llmCorrected: String = ""
     var llmEdits: [CorrectionEdit] = []
+    /// Wall-clock the background AI fixer spent on this transmission (0 until it runs).
+    var llmMs: Double = 0
     /// Why the confidence gate skipped (or would run) the LLM — shown when `.skippedConfident`.
     var gateReason: String = ""
 
@@ -48,12 +50,14 @@ struct TranscriptRecord: Sendable, Identifiable {
     func applying(_ outcome: RefinementOutcome) -> TranscriptRecord {
         var copy = self
         switch outcome {
-        case .refined(let c):
+        case .refined(let c, let ms):
             copy.refinementState = .refined
             copy.llmCorrected = c.corrected
             copy.llmEdits = c.edits
-        case .clean:
+            copy.llmMs = round1(ms)
+        case .clean(let ms):
             copy.refinementState = .clean
+            copy.llmMs = round1(ms)
         case .skipped:
             copy.refinementState = (copy.refinementState == .pending) ? .skipped : copy.refinementState
         }
@@ -205,17 +209,36 @@ actor LivePipeline {
     /// `stop()`. Port of the run loop, plus the decoupled refinement fan-out.
     func run(source: AudioSource,
              onRecord: @escaping @Sendable (TranscriptRecord) -> Void,
-             onRefined: @escaping @Sendable (UUID, RefinementOutcome) -> Void = { _, _ in }) async {
+             onRefined: @escaping @Sendable (UUID, RefinementOutcome) -> Void = { _, _ in },
+             onLevel: (@Sendable (Float) -> Void)? = nil) async {
         self.onRefined = onRefined
         await refiner?.setOutcomeHandler(onRefined)
         running = true
+        // Cheap input-level meter (source-agnostic: mic, USB, stream, replay). Quantize to the 7
+        // bars the UI shows and only fire on a step change, so a steady/silent feed dispatches no
+        // per-chunk main-actor work — just the meter, not the transcriber, gates here.
+        var lastLevel: Float = -1
         for await chunk in source.makeStream() {
             if !running { break }
+            if let onLevel {
+                let stepped = (Self.level(chunk) * 7).rounded() / 7
+                if stepped != lastLevel { lastLevel = stepped; onLevel(stepped) }
+            }
             for segment in segmenter.feed(chunk) {
                 if let record = await process(segment) { onRecord(record) }
             }
         }
         running = false
+        if lastLevel != 0 { onLevel?(0) }
+    }
+
+    /// RMS of a chunk mapped to a perceptual 0…1 meter level. Floors near the noise level and
+    /// scales by a ~50 dB window so quiet radio still registers without pinning to full.
+    private static func level(_ chunk: [Float]) -> Float {
+        guard !chunk.isEmpty else { return 0 }
+        let rms = (chunk.reduce(0) { $0 + $1 * $1 } / Float(chunk.count)).squareRoot()
+        let db = 20 * log10(max(rms, 1e-7))            // ~ -140 (silence) … 0 (full scale)
+        return max(0, min(1, (db + 50) / 50))          // -50 dB → 0, 0 dB → 1
     }
 
     func stop() { running = false }
@@ -239,4 +262,8 @@ actor LivePipeline {
         gateEnabled = enabled
         gate.sensitivity = sensitivity
     }
+
+    /// Update the squelch (Settings) at runtime. Auto re-learns the channel noise floor; manual
+    /// uses a fixed threshold. Takes effect on the next audio frame.
+    func setSquelch(auto: Bool, level: Float) { segmenter.setSquelch(auto: auto, level: level) }
 }

@@ -47,14 +47,14 @@ enum ModelCatalog {
 
     static let small = ModelEntry(
         id: "small",
-        displayName: "Whisper · Small (fast)",
+        displayName: "Small · fast",
         detail: "Fine-tuned ATC speech model — required to transcribe.",
         kind: .whisperKit, approxBytes: 465_000_000, required: true,
         repo: whisperRepo, variant: "small", directURL: nil, fileName: nil)
 
     static let turbo = ModelEntry(
         id: "turbo",
-        displayName: "Whisper · Large (turbo)",
+        displayName: "Large · higher accuracy",
         detail: "Higher accuracy, ~2× slower. Optional — used on capable devices.",
         kind: .whisperKit, approxBytes: 1_500_000_000, required: false,
         repo: whisperRepo, variant: "turbo", directURL: nil, fileName: nil)

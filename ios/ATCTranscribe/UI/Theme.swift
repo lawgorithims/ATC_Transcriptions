@@ -39,6 +39,18 @@ extension AppTheme {
     }
 }
 
+extension Palette {
+    /// Color for a transcription speed (× real-time, = 1/RTF): green when comfortably keeping up,
+    /// amber when it's getting tight, red when it can't keep up with real time. Drives the
+    /// RTF/speed readouts so a degrading device is obvious at a glance.
+    func speedColor(realtime speed: Double) -> Color {
+        if speed <= 0 { return textDim }
+        if speed >= 1.2 { return good }   // comfortably faster than real time
+        if speed >= 1.0 { return warn }   // keeping up, but tight
+        return bad                        // falling behind real time
+    }
+}
+
 extension Color {
     static func hex(_ value: UInt) -> Color {
         Color(.sRGB,

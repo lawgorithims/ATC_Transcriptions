@@ -74,10 +74,10 @@ targets:
     info:
       path: ATCTranscribe/Info.plist
       properties:
-        CFBundleDisplayName: ATC_Transcribe
+        CFBundleDisplayName: CommSight
         UILaunchScreen: {}
         ITSAppUsesNonExemptEncryption: false
-        NSMicrophoneUsageDescription: "ATC_Transcribe uses the microphone to capture and transcribe live ATC audio."
+        NSMicrophoneUsageDescription: "CommSight uses the microphone to capture and transcribe live ATC audio."
         UIBackgroundModes:
           - audio
         UISupportedInterfaceOrientations:
