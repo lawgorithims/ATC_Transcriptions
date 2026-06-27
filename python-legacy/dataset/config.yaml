@@ -1,0 +1,62 @@
+# Configuration for the US ATC pseudo-labeling pipeline.
+#
+# Times are UTC. Adjust the windows to recent dates within LiveATC's ~30-day
+# archive retention. Pick busy daytime-local hours for dense, diverse phraseology.
+
+models:
+  # Teacher A: most accurate Whisper available (accuracy > speed for a labeler).
+  teacher_a: openai/whisper-large-v3
+  # Consensus partner B: the project's fine-tuned ATC model, decoded PROMPT-FREE.
+  partner_b: models/whisper-atc-turbo
+  device: auto          # cuda on the H100/L40S box
+  num_beams_a: 5        # beam search for the teacher (affordable on H100)
+  num_beams_b: 1        # greedy partner is fine; it only needs to (dis)agree
+
+acquisition:
+  out_dir: data/raw_us        # raw downloaded blocks (LOCAL ONLY, never committed)
+  start: "2026-06-20T13:00"   # UTC window to harvest for TRAINING data
+  end: "2026-06-20T17:00"
+  queue_size: 16
+  # template: override only if LiveATC's archive URL format changes.
+
+segments_dir: data/segments
+output_root: data/us_pseudo    # manifest.jsonl + transcripts/ + scores.jsonl
+
+correction:
+  enabled: true        # run the deterministic corrector on the final label
+
+# Feeds to harvest for TRAINING. Start with the shipped KDFW/KJFK configs and add
+# more airports/frequency-types (tower/ground/approach/clearance) for diversity.
+feeds:
+  - airport_config: airport_configs/kdfw.json
+    feed_keys:
+      - tower_east
+      - lone_star_approach_17c_final
+  - airport_config: airport_configs/kjfk.json
+    feed_keys: []      # fill in once you confirm KJFK feed keys / archive mounts
+
+# Acceptance gates for a TRAINING pseudo-label (tune on the eval set).
+thresholds:
+  max_cer: 0.10
+  min_avg_logprob: -0.55
+  max_no_speech_prob: 0.30
+  max_compression_ratio: 2.4
+  min_duration_s: 0.8
+  max_duration_s: 12.0
+  min_words: 2
+  max_words: 60
+  max_corrector_delta: 0.30
+  require_english: true
+
+# EVAL set: a DIFFERENT time window (and/or feeds) than training, so the held-out
+# US eval set is disjoint by feed/airport/time. Built with STRICT thresholds.
+eval:
+  output_root: data/us_eval
+  out_dir: data/raw_us_eval
+  segments_dir: data/segments_eval
+  start: "2026-06-21T13:00"
+  end: "2026-06-21T15:00"
+  feeds:
+    - airport_config: airport_configs/kdfw.json
+      feed_keys:
+        - tower_east
