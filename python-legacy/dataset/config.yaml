@@ -99,6 +99,19 @@ feeds:
   - airport_config: airport_configs/zfw.json
     feed_keys:
       - center
+  # --- added 2026-06-28: probe-verified extra US hubs (tower) ---
+  - airport_config: airport_configs/kbna.json
+    feed_keys:
+      - tower_primary
+  - airport_config: airport_configs/kdtw.json
+    feed_keys:
+      - tower_primary
+  - airport_config: airport_configs/klga.json
+    feed_keys:
+      - tower_primary
+  - airport_config: airport_configs/ksdf.json
+    feed_keys:
+      - tower_primary
 
 # Acceptance gates for a TRAINING pseudo-label (tune on the eval set).
 thresholds:
