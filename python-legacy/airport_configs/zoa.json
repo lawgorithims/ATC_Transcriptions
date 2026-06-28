@@ -1,0 +1,15 @@
+{
+  "airport_code": "ZOA",
+  "airport_name": "Oakland ARTCC (Oakland Center)",
+  "tracon": "Oakland Center (ZOA)",
+  "runways": [],
+  "frequencies": {},
+  "streams": {
+    "center": {
+      "label": "Oakland Center (Sector 35)",
+      "url": "https://d.liveatc.net/zoa_35",
+      "liveatc_page": "https://www.liveatc.net/hlisten.php?mount=zoa_35&icao=ksfo",
+      "archive_mount": "zoa_35"
+    }
+  }
+}

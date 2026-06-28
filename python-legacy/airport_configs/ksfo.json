@@ -1,0 +1,21 @@
+{
+  "airport_code": "KSFO",
+  "airport_name": "San Francisco International Airport",
+  "tracon": "NORCAL Approach (NCT)",
+  "runways": [
+    "1L", "1R", "10L", "10R", "19L", "19R", "28L", "28R"
+  ],
+  "frequencies": {
+    "tower": "120.5",
+    "ground": "121.8"
+  },
+  "streams": {
+    "tower_primary": {
+      "label": "KSFO Tower",
+      "url": "https://d.liveatc.net/ksfo_twr",
+      "liveatc_page": "https://www.liveatc.net/hlisten.php?mount=ksfo_twr&icao=ksfo",
+      "frequency_mhz": "120.5",
+      "archive_mount": "ksfo_twr"
+    }
+  }
+}
