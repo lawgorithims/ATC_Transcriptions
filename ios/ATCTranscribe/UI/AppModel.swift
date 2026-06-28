@@ -205,6 +205,10 @@ final class AppModel: ObservableObject {
     @Published private(set) var aircraft: [Aircraft] = []
     @Published private(set) var aircraftUpdatedAt: Date?
     @Published private(set) var adsbStatus: ADSBStatus = .idle
+    /// Uppercased callsign/registration keys of the current fresh in-range contacts. A transcript
+    /// row's ✈ chip derives "in range" from this at render time, so the live badge tracks the feed
+    /// instead of freezing whatever was true when the line was decoded.
+    @Published private(set) var inRangeCallsignKeys: Set<String> = []
     /// Absolute trust window (seconds) stamped on the injected traffic block; the corrector consumes
     /// it only while `Date() < snapshotAt + this`. Keep ≈2.4× the service poll interval.
     private let adsbTrustWindow: TimeInterval = 12
@@ -293,10 +297,7 @@ final class AppModel: ObservableObject {
         self.modelDirs = models
         // Restore the model the user last had active (persisted) when it's still available; else
         // prefer the larger (higher-accuracy) model when present, falling back to small/bundled.
-        let savedActive = UserDefaults.standard.string(forKey: "atc.activeModel")
-        let preferred = savedActive.flatMap { models[$0] != nil ? $0 : nil }
-            ?? (models["turbo"] != nil ? "turbo" : "small")
-        if let active = models[preferred] != nil ? preferred : models.keys.sorted().first {
+        if let active = Self.preferredActiveModel(from: models) {
             liveMode = true
             records = []
             stats = LatencyStats()
@@ -322,6 +323,9 @@ final class AppModel: ObservableObject {
 
     var palette: Palette { theme.palette }
     var isRunning: Bool { status == .live || status == .connecting || status == .starting }
+    /// Friendly name of the active model for the status badge / sidebar (maps the raw id, e.g.
+    /// "cleanturbo" → "Large V2", so the internal id never leaks into the UI).
+    var activeModelLabel: String { ModelCatalog.shortLabel(forID: activeModel) }
 
     // MARK: live wiring
 
@@ -464,9 +468,13 @@ final class AppModel: ObservableObject {
     /// so it can arrive after the synchronous clearTraffic()).
     private func applyTraffic(_ list: [Aircraft], snapshotAt: Date) {
         let active = adsbActive
-        aircraft = active ? list : []
+        let shown = active ? list : []
+        aircraft = shown
         aircraftUpdatedAt = (active && snapshotAt != .distantPast) ? snapshotAt : nil
-        injectTraffic(from: active ? list : [], snapshotAt: active ? snapshotAt : .distantPast)
+        inRangeCallsignKeys = Set(shown.flatMap { ac in
+            [ac.callsign, ac.registration].compactMap { $0?.uppercased() }
+        })
+        injectTraffic(from: shown, snapshotAt: active ? snapshotAt : .distantPast)
     }
 
     /// Inject (or clear) the live-traffic block into the running correction context. Injects ONLY
@@ -506,6 +514,7 @@ final class AppModel: ObservableObject {
         trafficEpoch += 1
         aircraft = []
         aircraftUpdatedAt = nil
+        inRangeCallsignKeys = []
         session?.clearTrafficContext(epoch: trafficEpoch)
     }
 
@@ -625,6 +634,7 @@ final class AppModel: ObservableObject {
         AudioSessionManager.activate(recording: source == .microphone || source == .usbAudio,
                                      preferUSB: source == .usbAudio)
         session.start(source: src, label: source.rawValue, clearHistory: !resuming)
+        if !resuming { callsignFilter = nil }   // a fresh transcript replaces history → drop a stale filter
         sourceLabel = source.rawValue
         detail = "Transcribing."
         syncADSB()   // a live session started → begin ADS-B polling if streaming is enabled
@@ -729,11 +739,25 @@ final class AppModel: ObservableObject {
     /// model map (so the Settings picker can switch between Small and Large).
     static func availableModelDirs() -> [String: String] {
         var m: [String: String] = [:]
-        for e in [ModelCatalog.small, ModelCatalog.turbo] where ModelStore.isReady(e) {
+        // Map key is the short `id` (what the picker + persisted `atc.activeModel` use); the value is
+        // the on-disk folder, resolved via the entry's `variant` (≠ id for the stock "Large V2").
+        for e in ModelCatalog.whisperEntries where ModelStore.isReady(e) {
             m[e.id] = ModelStore.localURL(for: e).path
         }
         if m["small"] == nil, let bundled = bundledModelDir() { m["small"] = bundled }
         return m
+    }
+
+    /// Pick which model to activate from what's on disk: the user's saved choice when still present,
+    /// else the highest-accuracy fine-tuned model (turbo → small), else any available variant (covers
+    /// a box where only the stock "Large V2" was downloaded). Nil when nothing is available.
+    /// Shared by first-launch (`init`) and post-download (`modelDidDownload`) so they never diverge.
+    static func preferredActiveModel(from models: [String: String]) -> String? {
+        if let saved = UserDefaults.standard.string(forKey: "atc.activeModel"), models[saved] != nil {
+            return saved
+        }
+        for id in ["turbo", "small"] where models[id] != nil { return id }
+        return models.keys.sorted().first
     }
 
     /// Is a given whisper variant present on disk? Drives the Settings picker's enablement.
@@ -748,7 +772,7 @@ final class AppModel: ObservableObject {
         let wasRunning = isRunning
         if wasRunning { stop() }
         loadingModel = id                            // picker reflects the choice immediately
-        detail = "Loading \(id) model…"
+        detail = "Loading \(ModelCatalog.shortLabel(forID: id)) model…"   // friendly name, not the raw id
         let models = modelDirs
         Task {
             defer { loadingModel = nil }             // clears on success AND every early-return/failure
@@ -791,11 +815,9 @@ final class AppModel: ObservableObject {
             if entry.id == "turbo", activeModel != "turbo", !isRunning { switchModel("turbo") }
             return
         }
-        // Honor a previously-saved model choice when it's now available, else prefer the larger one.
-        let savedActive = UserDefaults.standard.string(forKey: "atc.activeModel")
-        let active = savedActive.flatMap { models[$0] != nil ? $0 : nil }
-            ?? (models["turbo"] != nil ? "turbo" : "small")
-        guard models[active] != nil else { return }
+        // Honor a previously-saved model choice when it's now available, else prefer the larger one
+        // (or any available variant — covers a box where only the stock "Large V2" was downloaded).
+        guard let active = Self.preferredActiveModel(from: models) else { return }
         liveMode = true
         detail = "Loading model…"
         if value(forFlag: "--source") == nil, UserDefaults.standard.string(forKey: "atc.source") == nil,

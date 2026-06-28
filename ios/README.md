@@ -292,6 +292,10 @@ WhisperKit's `modelFolder` at one of these (the engine picks turbo vs small by d
 capability, mirroring the web console's adaptive downgrade). The exact subfolder name
 is the sanitized model id — locate it with `find $OUT_DIR -name AudioEncoder.mlmodelc`.
 
+**Optional stock model ("Large V2"):** an *un*-fine-tuned OpenAI large-v3-turbo is also offered for
+real-world accuracy comparison. It needs **no** conversion or upload — it downloads from WhisperKit's
+public CoreML catalog (`argmaxinc/whisperkit-coreml`); see [`Tools/publish_models.md`](Tools/publish_models.md).
+
 ### Runtime download (the shipping path) vs bundling
 
 The TestFlight build ships **without** the heavy models and **downloads them on-device** from
@@ -301,8 +305,10 @@ HuggingFace, so the app binary stays small. The download layer lives in
 - **First-launch gate** (`OnboardingDownloadView`) — if no Whisper model is bundled or downloaded,
   the app gates on a download step with a **progress bar** and a green **"Model ready"**
   confirmation, then unlocks the console (or "Skip" to browse demo data).
-- **Settings → Models** — a manager listing each model (`small`, `turbo`, GGUF) with a Download
-  button → progress bar → **"Ready ✓"** badge, for on-demand downloads later.
+- **Settings → Models** — a manager listing each model (`small`, `turbo`, the optional stock
+  `Large V2`, GGUF) with a Download button → progress bar → **"Ready ✓"** badge, for on-demand
+  downloads later. *Settings → Transcription model* switches the active speech model (Small / Large /
+  Large V2).
 - Downloads land in **Application Support** (`ModelStore`) and are preferred over any bundled copy
   (`AppModel.resolvedModelDir`, `makeLocalLLMEngine`). The Whisper model uses WhisperKit's native
   HF download (built-in progress); the GGUF uses a `URLSession` download task.

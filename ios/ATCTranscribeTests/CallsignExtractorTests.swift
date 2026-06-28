@@ -6,7 +6,8 @@ import XCTest
 final class CallsignExtractorTests: XCTestCase {
 
     private let kb = ATCKnowledgeBase(
-        airlineTelephony: ["AAL": "American", "JBU": "JetBlue", "DAL": "Delta", "ACA": "Air Canada"],
+        airlineTelephony: ["AAL": "American", "JBU": "JetBlue", "DAL": "Delta", "ACA": "Air Canada",
+                           "SWA": "Southwest", "EZY": "Easy"],
         spokenNamesByAirport: [:], spokenBaseByAirport: [:], phrasesByType: [:], spellingByType: [:],
         phonetic: ["A": "alpha", "B": "bravo", "C": "charlie", "M": "mike", "N": "november", "W": "whiskey"],
         digits: [:])
@@ -52,5 +53,31 @@ final class CallsignExtractorTests: XCTestCase {
         // The same aircraft yields the SAME display key in different transmissions, so they group.
         XCTAssertEqual(cs("american twelve thirty four turn left heading one eight zero")?.display,
                        cs("roger american twelve thirty four")?.display)
+    }
+
+    func testGreedyDigitFusionSameKeyAcrossPhrasing() {
+        // normalizeNumbers may split an ambiguous run ("fifty six six eighteen" -> "56 6 18"); the
+        // extractor must re-fuse so a split phrasing and a digit-by-digit one give the SAME key.
+        let split = cs("american fifty six six eighteen cleared to land")
+        let byDigit = cs("american five six six one eight cleared to land")
+        XCTAssertEqual(split?.icaoKey, "AAL56618")
+        XCTAssertEqual(split?.icaoKey, byDigit?.icaoKey)
+    }
+
+    func testEnglishWordTelephonyDoesNotMisfire() {
+        // "Easy" (EZY) is a telephony name AND an ordinary word; a single trailing digit must not
+        // synthesize a callsign on an instruction with no aircraft.
+        XCTAssertNil(cs("climb easy three thousand"))
+    }
+
+    func testTrafficAdvisoryPicksAddressedAircraft() {
+        // The addressed aircraft's callsign precedes the instruction word, not the leading traffic.
+        let c = cs("traffic delta eight ninety southwest twelve thirty four cleared to land")
+        XCTAssertEqual(c?.display, "Southwest 1234")
+    }
+
+    func testBareNovemberDoesNotFabricateTail() {
+        XCTAssertNil(cs("november five seven contact tower"))          // 2 digits, no letter → reject
+        XCTAssertEqual(cs("november one two three contact")?.display, "N123")   // ≥3 digits → accept
     }
 }

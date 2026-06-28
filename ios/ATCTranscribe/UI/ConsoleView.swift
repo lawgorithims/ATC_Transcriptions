@@ -212,7 +212,7 @@ struct StatusBar: View {
                            state: model.proofOfLife == nil ? .idle : (model.proofOfLife?.passed == true ? .good : .bad))
                 StatusPill(label: "Stream", state: streamState)
                 Badge(text: "device · \(model.deviceLabel)")
-                Badge(text: "model · \(model.activeModel)")
+                Badge(text: "model · \(model.activeModelLabel)")
                 Badge(text: "src · \(model.modelSource)")
                 if let s = model.measuredSpeed { Badge(text: String(format: "%.1f× real-time", s)) }
             }

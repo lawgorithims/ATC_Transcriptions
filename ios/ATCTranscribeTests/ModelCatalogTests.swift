@@ -26,6 +26,39 @@ final class ModelCatalogTests: XCTestCase {
         XCTAssertNotNil(ModelCatalog.llm.directURL)
     }
 
+    func testStockCleanModelEntry() {
+        // Optional, non-fine-tuned WhisperKit model exposed as "Large V2".
+        let clean = ModelCatalog.cleanturbo
+        XCTAssertEqual(clean.id, "cleanturbo")
+        XCTAssertEqual(clean.shortLabel, "Large V2")
+        XCTAssertEqual(clean.kind, .whisperKit)
+        XCTAssertFalse(clean.required)
+        XCTAssertNotNil(clean.repo)
+        XCTAssertFalse(clean.variant?.isEmpty ?? true)
+        XCTAssertTrue(ModelCatalog.all.contains { $0.id == "cleanturbo" })
+        // Picker order (smallest → largest) and id→label mapping used by the badge/sidebar.
+        XCTAssertEqual(ModelCatalog.whisperEntries.map(\.id), ["small", "turbo", "cleanturbo"])
+        XCTAssertEqual(ModelCatalog.shortLabel(forID: "turbo"), "Large")
+        XCTAssertEqual(ModelCatalog.shortLabel(forID: "cleanturbo"), "Large V2")
+        XCTAssertEqual(ModelCatalog.shortLabel(forID: "mystery"), "mystery")   // unknown → raw id
+    }
+
+    func testStockModelResolvesByItsVariantFolder() throws {
+        let fm = FileManager.default
+        let clean = ModelCatalog.cleanturbo
+        // The stock model's on-disk folder is its long WhisperKit variant id, NOT its short "cleanturbo" id.
+        XCTAssertNotEqual(clean.variant, clean.id)
+        try fm.createDirectory(at: ModelStore.localURL(for: clean).appendingPathComponent("AudioEncoder.mlmodelc"),
+                               withIntermediateDirectories: true)
+        XCTAssertTrue(ModelStore.isReady(clean))
+        // Alone, it's the resolved downloaded model…
+        XCTAssertEqual(ModelStore.downloadedWhisperDir(), ModelStore.localURL(for: clean).path)
+        // …but the fine-tuned turbo is still preferred when both are present.
+        try fm.createDirectory(at: ModelStore.whisperDir("turbo").appendingPathComponent("AudioEncoder.mlmodelc"),
+                               withIntermediateDirectories: true)
+        XCTAssertEqual(ModelStore.downloadedWhisperDir(), ModelStore.whisperDir("turbo").path)
+    }
+
     func testDestinationPaths() {
         // Layout below the store root (the test overrides root, so don't assert on "Models").
         XCTAssertTrue(ModelStore.whisperDir("small").path.hasSuffix("whisper/small"))

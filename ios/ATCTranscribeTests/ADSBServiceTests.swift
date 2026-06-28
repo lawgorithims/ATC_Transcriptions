@@ -92,20 +92,6 @@ final class ADSBServiceTests: XCTestCase {
         XCTAssertFalse(ctx.retrieveKnowledge(for: "x").block.contains("N10WN"))   // ignored
     }
 
-    // MARK: in-range callsign confirmation (isTrafficCallsign)
-
-    func testIsTrafficCallsignRespectsFreshness() {
-        let ctx = ATCContext(config: nil, feedKey: nil)
-        ctx.setTraffic(block: "Traffic in range (live ADS-B): JBU771, N9133M.", vocab: ["JBU771", "N9133M"],
-                       expiry: Date().addingTimeInterval(10), epoch: 1)
-        XCTAssertTrue(ctx.isTrafficCallsign("JBU771"))
-        XCTAssertTrue(ctx.isTrafficCallsign("n9133m"))     // case-insensitive
-        XCTAssertFalse(ctx.isTrafficCallsign("DAL890"))    // not in range
-        // An expired snapshot is never in-range.
-        ctx.setTraffic(block: "x", vocab: ["JBU771"], expiry: Date().addingTimeInterval(-1), epoch: 2)
-        XCTAssertFalse(ctx.isTrafficCallsign("JBU771"))
-    }
-
     // MARK: service (fake fetcher)
 
     func testServicePublishesFreshAndPrunesStale() async {
