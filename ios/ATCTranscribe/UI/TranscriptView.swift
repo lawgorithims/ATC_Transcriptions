@@ -146,6 +146,16 @@ struct TranscriptRow: View {
                             .overlay(Capsule().stroke(speakerColor(spk).opacity(0.5), lineWidth: 1))
                             .accessibilityIdentifier("speaker-chip")
                     }
+                    if let cs = record.adsbCallsign {
+                        HStack(spacing: 2) {
+                            Image(systemName: "airplane").font(.system(size: 8))
+                            Text(cs).font(.caption2.weight(.bold))
+                        }
+                        .padding(.horizontal, 6).padding(.vertical, 1)
+                        .background(p.accent.opacity(0.18)).foregroundStyle(p.accent)
+                        .clipShape(Capsule())
+                        .accessibilityIdentifier("adsb-chip")
+                    }
                     Text(record.timestamp).font(.caption2.monospaced()).foregroundStyle(p.accent)
                     Text(String(format: "stream %.1fs", record.streamStartS))
                         .font(.caption2.monospaced()).foregroundStyle(p.textDim)

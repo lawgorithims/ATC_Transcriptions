@@ -24,6 +24,15 @@ final class ATCContext {
     private var flightPlanBlock = ""
     private var flightPlanVocab: [String] = []
 
+    // Live ADS-B traffic in range — a FRESHNESS-SELF-ENFORCING channel. The block is consumed only
+    // while `Date() < trafficExpiry`, so a stalled/failed poller self-expires within the trust
+    // window and stale aircraft can never leak into a prompt or the snap-vocab. `trafficEpoch` lets
+    // a clear (toggle-off / standby / airport-change) win over any in-flight re-inject.
+    private var trafficBlock = ""
+    private var trafficVocab: [String] = []
+    private var trafficExpiry = Date.distantPast
+    private var trafficEpoch = 0
+
     init(config: AirportConfig? = nil,
          feedKey: String? = nil,
          maxHistory: Int = 3,
@@ -108,6 +117,16 @@ final class ATCContext {
     func retrieveKnowledge(for transcript: String) -> RetrievedContext {
         let r = retriever ?? ATCKnowledgeRetriever(kb: knowledge, config: nil, feedKey: nil)
         var ctx = r.retrieve(transcript: transcript, history: recentHistory)
+        // Order (top → bottom): own flight plan, then live traffic, then the retrieved RAG. The
+        // traffic block is the LOAD-BEARING freshness gate: it's only injected while unexpired, so a
+        // stalled poller self-expires and stale aircraft never reach the prompt or snap-vocab.
+        if !trafficBlock.isEmpty, Date() < trafficExpiry {
+            // Traffic feeds the LLM PROMPT (context) only — deliberately NOT the corrector's
+            // snap-vocab. Adding raw ADS-B codes (e.g. AAL1234) to the validator's allowed set would
+            // let the LLM rewrite a readable spoken callsign ("american 1234") into the code form on
+            // a safety feed. `matchTraffic` keeps its own copy of these labels for the chip.
+            ctx.block = ctx.block.isEmpty ? trafficBlock : trafficBlock + "\n" + ctx.block
+        }
         if !flightPlanBlock.isEmpty {
             ctx.block = ctx.block.isEmpty ? flightPlanBlock : flightPlanBlock + "\n" + ctx.block
             ctx.vocab += flightPlanVocab   // let the validator snap a near-miss onto a filed term
@@ -119,5 +138,35 @@ final class ATCContext {
     func setFlightPlan(block: String, vocab: [String]) {
         flightPlanBlock = block
         flightPlanVocab = vocab
+    }
+
+    /// Inject the fresh in-range ADS-B traffic block with an absolute read-site `expiry`. Stored
+    /// only when `epoch >= trafficEpoch` (a stale-epoch write loses to a more-recent clear); an
+    /// empty block clears unconditionally.
+    func setTraffic(block: String, vocab: [String], expiry: Date, epoch: Int) {
+        guard epoch >= trafficEpoch else { return }
+        trafficEpoch = epoch
+        if block.isEmpty {
+            trafficBlock = ""; trafficVocab = []; trafficExpiry = .distantPast
+        } else {
+            trafficBlock = block; trafficVocab = vocab; trafficExpiry = expiry
+        }
+    }
+
+    /// Clear traffic and advance the epoch so any in-flight non-empty write becomes a no-op
+    /// (toggle-off / standby / airport-change).
+    func clearTraffic(epoch: Int) {
+        trafficEpoch = max(trafficEpoch, epoch)
+        trafficBlock = ""; trafficVocab = []; trafficExpiry = .distantPast
+    }
+
+    /// If a token of `text` matches a FRESH in-range ADS-B label (callsign or N-number), return it —
+    /// the aircraft this transmission appears to be about. Respects the same `trafficExpiry` gate as
+    /// the injected block, so a stale snapshot can never tag a transmission.
+    func matchTraffic(in text: String) -> String? {
+        guard Date() < trafficExpiry, !trafficVocab.isEmpty else { return nil }
+        let tokens = Set(text.split(whereSeparator: { !($0.isLetter || $0.isNumber) }).map { $0.uppercased() })
+        guard !tokens.isEmpty else { return nil }
+        return trafficVocab.first { tokens.contains($0.uppercased()) }
     }
 }

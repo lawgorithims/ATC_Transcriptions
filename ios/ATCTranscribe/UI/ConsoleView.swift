@@ -8,6 +8,7 @@ struct ConsoleView: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var downloads: ModelDownloadManager
     @Environment(\.horizontalSizeClass) private var hSize
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         let p = model.palette
@@ -45,6 +46,10 @@ struct ConsoleView: View {
                     downloads.download(ModelCatalog.llm)
                 }
             }
+        }
+        .onChange(of: scenePhase) { _, newPhase in
+            // Pause ADS-B polling + drop injected traffic in the background; resume on return.
+            model.setScenePhaseActive(newPhase == .active)
         }
     }
 
@@ -352,24 +357,67 @@ struct FlightPlanPage: View {
 
 // MARK: - Carousel page 3: live flight data (location) — placeholder
 
-/// Reserved for live flight data (GPS location, ground speed, altitude). A placeholder for now —
-/// CoreLocation is deferred, so the structure is here and only needs wiring later.
+/// Live ADS-B traffic in range (airplanes.live). Renders `model.aircraft` verbatim — the freshness
+/// authority is the `ADSBService` actor, not this view — across three states: off, searching/empty,
+/// and populated (count + nearest callsigns + a live "updated … ago" stamp).
 struct FlightDataPage: View {
     @EnvironmentObject var model: AppModel
     var body: some View {
         let p = model.palette
-        HStack(spacing: 10) {
-            Image(systemName: "location.fill").font(.callout).foregroundStyle(p.textDim)
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Live flight data").font(.caption.weight(.semibold)).foregroundStyle(p.text)
-                Text("Location, ground speed & altitude — coming soon")
-                    .font(.caption2).foregroundStyle(p.textDim).lineLimit(1)
+        Group {
+            if !model.adsbStreamingEnabled {
+                offState(p, "antenna.radiowaves.left.and.right.slash", "Online ADS-B off — enable in Settings")
+            } else if model.aircraft.isEmpty {
+                offState(p, "antenna.radiowaves.left.and.right", emptyText)
+            } else {
+                VStack(alignment: .leading, spacing: 5) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "antenna.radiowaves.left.and.right").font(.caption2).foregroundStyle(p.accent)
+                        Text("\(model.aircraft.count) in range").font(.caption.weight(.semibold)).foregroundStyle(p.text)
+                        Spacer(minLength: 4)
+                        if let at = model.aircraftUpdatedAt {
+                            Text(updatedLabel(at)).font(.caption2).foregroundStyle(p.textDim).lineLimit(1)
+                        }
+                    }
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 5) {
+                            ForEach(model.aircraft.prefix(20)) { ac in
+                                Text(ac.label ?? ac.hex)
+                                    .font(.caption2.weight(.semibold).monospaced()).foregroundStyle(p.text)
+                                    .padding(.horizontal, 6).padding(.vertical, 2)
+                                    .background(p.surfaceAlt).clipShape(Capsule())
+                            }
+                        }
+                        .padding(.trailing, 16)
+                    }
+                }
+                .padding(.horizontal, 16)
             }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .accessibilityIdentifier("carousel-flight-data")
+    }
+
+    private var emptyText: String {
+        if case .error = model.adsbStatus { return "ADS-B feed unavailable — retrying" }
+        let icao = model.airport.isEmpty ? "KDFW" : model.airport.uppercased()
+        return "Searching for traffic near \(icao)…"
+    }
+
+    /// Manual "updated …" stamp — avoids the future-tense flicker ("in 0 seconds") that the relative
+    /// formatter emits on a sub-second-old snapshot. Refreshes each poll (every ~5 s).
+    private func updatedLabel(_ at: Date) -> String {
+        let s = max(0, Date().timeIntervalSince(at))
+        return s < 2 ? "updated just now" : "updated \(Int(s))s ago"
+    }
+
+    private func offState(_ p: Palette, _ icon: String, _ text: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon).font(.callout).foregroundStyle(p.textDim)
+            Text(text).font(.caption).foregroundStyle(p.textDim).lineLimit(2)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 16)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .accessibilityIdentifier("carousel-flight-data")
     }
 }
 

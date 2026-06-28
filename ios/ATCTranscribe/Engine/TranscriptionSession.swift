@@ -125,6 +125,17 @@ final class TranscriptionSession: ObservableObject {
         Task { await pipeline.setFlightPlanContext(block: block, vocab: vocab) }
     }
 
+    /// Push fresh in-range ADS-B traffic into the live correction context (with its read-site
+    /// expiry/epoch). Safe while a run is active; takes effect on the next transmission.
+    func setTrafficContext(block: String, vocab: [String], expiry: Date, epoch: Int) {
+        let pipeline = self.pipeline
+        Task { await pipeline.setTrafficContext(block: block, vocab: vocab, expiry: expiry, epoch: epoch) }
+    }
+    func clearTrafficContext(epoch: Int) {
+        let pipeline = self.pipeline
+        Task { await pipeline.clearTrafficContext(epoch: epoch) }
+    }
+
     /// Apply a background-refinement outcome to the matching record (updates the `@Published`
     /// array element so the UI flips "refining…" → refined text). No-op if the record is gone.
     private func applyRefinement(id: UUID, outcome: RefinementOutcome) {

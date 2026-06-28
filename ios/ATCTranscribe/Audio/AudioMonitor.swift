@@ -78,6 +78,9 @@ final class AudioMonitor: @unchecked Sendable {
 final class MonitoredSource: AudioSource {
     private let wrapped: AudioSource
     private let monitor: AudioMonitor
+    // `task` is assigned in makeStream() (runs on the LivePipeline actor's executor) and cancelled
+    // in stop() (MainActor) — two executors, so guard it with a lock (same as DeviceAudioSource).
+    private let lock = NSLock()
     private var task: Task<Void, Never>?
 
     init(_ wrapped: AudioSource, monitor: AudioMonitor) {
@@ -97,13 +100,14 @@ final class MonitoredSource: AudioSource {
                 monitor.stop()
                 continuation.finish()
             }
-            self.task = t
+            lock.lock(); self.task = t; lock.unlock()
             continuation.onTermination = { _ in t.cancel() }
         }
     }
 
     func stop() {
-        task?.cancel()
+        lock.lock(); let t = task; task = nil; lock.unlock()
+        t?.cancel()
         wrapped.stop()
         monitor.stop()
     }

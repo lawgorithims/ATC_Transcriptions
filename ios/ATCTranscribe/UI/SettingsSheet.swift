@@ -55,6 +55,18 @@ struct SettingsSheet: View {
                                 .font(.caption2).foregroundStyle(p.textDim)
                         }
                     }
+                    Card(title: "Live traffic") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Toggle(isOn: $model.adsbStreamingEnabled) {
+                                Text("Online ADS-B streaming").font(.caption).foregroundStyle(p.text)
+                            }
+                            .accessibilityIdentifier("adsb-toggle")
+                            Text("Fetches aircraft within 30 NM of the airport from a public ADS-B feed so the AI fixer can lock a misheard callsign onto a plane actually on frequency. Needs a network connection and an airport; only runs while transcribing; off by default. Live data only — stale contacts are dropped and never used.")
+                                .font(.caption2).foregroundStyle(p.textDim)
+                            Text(ADSBService.attribution)
+                                .font(.caption2).foregroundStyle(p.textDim.opacity(0.8))
+                        }
+                    }
                     Card(title: "Adaptive selection") {
                         VStack(alignment: .leading, spacing: 10) {
                             HStack {

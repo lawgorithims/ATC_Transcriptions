@@ -37,6 +37,9 @@ struct TranscriptRecord: Sendable, Identifiable {
     var gateReason: String = ""
     /// Diarization speaker id (0-based), or nil when diarization is off. Stable across the session.
     var speaker: Int? = nil
+    /// The in-range ADS-B aircraft this transmission appears to be about — a callsign / N-number
+    /// matched against the live feed — or nil. Set only from a FRESH traffic snapshot.
+    var adsbCallsign: String? = nil
 
     /// What the UI shows: the LLM-refined text if present, else the inline-corrected text, else
     /// the raw transcript.
@@ -200,6 +203,10 @@ actor LivePipeline {
             corrections: correction.changed ? correction.edits : [],
             timestamp: Self.timeFormatter.string(from: Date()))
         record.speaker = speaker
+        // Tag the transmission with the in-range aircraft it appears to address (live ADS-B), when a
+        // callsign / N-number token matches a fresh snapshot. Honest: fires when the spoken form
+        // resolves to a real label; full phonetic callsign linking is a later enhancement.
+        record.adsbCallsign = context.matchTraffic(in: record.display)
 
         // Slow tier: hand the best-so-far text to the background LLM, OFF the hot path. The RAG
         // context is retrieved HERE, on the actor, so the refiner never touches mutable state. The
@@ -301,4 +308,11 @@ actor LivePipeline {
     func setFlightPlanContext(block: String, vocab: [String]) {
         context.setFlightPlan(block: block, vocab: vocab)
     }
+
+    /// Inject the fresh in-range ADS-B traffic into the LLM correction context, with its read-site
+    /// `expiry` and `epoch`. Takes effect on the next transmission.
+    func setTrafficContext(block: String, vocab: [String], expiry: Date, epoch: Int) {
+        context.setTraffic(block: block, vocab: vocab, expiry: expiry, epoch: epoch)
+    }
+    func clearTrafficContext(epoch: Int) { context.clearTraffic(epoch: epoch) }
 }
