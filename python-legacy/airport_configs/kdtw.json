@@ -1,0 +1,14 @@
+{
+  "airport_code": "KDTW",
+  "airport_name": "Detroit Metropolitan Wayne County Airport",
+  "runways": [],
+  "frequencies": {},
+  "streams": {
+    "tower_primary": {
+      "label": "KDTW Tower",
+      "url": "https://d.liveatc.net/kdtw_twr",
+      "liveatc_page": "https://www.liveatc.net/hlisten.php?mount=kdtw_twr",
+      "archive_mount": "kdtw_twr"
+    }
+  }
+}
