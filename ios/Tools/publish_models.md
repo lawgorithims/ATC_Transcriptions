@@ -41,6 +41,16 @@ Verify the repo shows `small/AudioEncoder.mlmodelc` etc. at the top of each vari
 If the repo is **private**, the app needs a read token — pass one via WhisperKit's `token:`
 argument in `LiveModelDownloader.downloadWhisper` (kept out of the default public path here).
 
+## 1b. Stock "Large V2" model — nothing to publish
+
+The optional **Large V2** model (`ModelCatalog.cleanturbo`) is the *stock* OpenAI large-v3-turbo,
+**not** fine-tuned, offered for real-world accuracy comparison against the fine-tuned `turbo`. It
+downloads straight from WhisperKit's own public CoreML catalog (`argmaxinc/whisperkit-coreml`,
+variant `openai_whisper-large-v3-v20240930_turbo`), so there is **nothing to convert or upload** — it
+works the moment the app ships. To self-host instead (or pin a different turbo build), upload a
+WhisperKit folder and set `ATC_CLEAN_REPO` / `ATC_CLEAN_VARIANT` (env, dev/Simulator) or change
+`cleanRepo` / `cleanVariant` in `ModelCatalog.swift`.
+
 ## 2. GGUF LLM — nothing to do
 
 `ModelCatalog.llm` points at the public

@@ -40,9 +40,10 @@ struct TranscriptRecord: Sendable, Identifiable {
     /// The canonical callsign this transmission is about (airline "American 1234" or GA "N345AB"),
     /// extracted from the transcript — the key that groups one aircraft's conversation. nil if none.
     var callsign: String? = nil
-    /// True when `callsign` matches a fresh in-range ADS-B contact (live confirmation). Always false
-    /// when ADS-B streaming is off / there's no fresh snapshot.
-    var callsignInRange: Bool = false
+    /// The ICAO / registration key for `callsign` ("AAL1234" / "N345AB"). The live in-range badge is
+    /// derived at RENDER time by testing this against the current ADS-B snapshot, so it tracks the
+    /// feed (rather than freezing whatever was true at the instant the line was decoded).
+    var callsignKey: String? = nil
 
     /// What the UI shows: the LLM-refined text if present, else the inline-corrected text, else
     /// the raw transcript.
@@ -211,7 +212,7 @@ actor LivePipeline {
         // is present.
         if let cs = CallsignExtractor.extract(record.display, knowledge: context.knowledge) {
             record.callsign = cs.display
-            record.callsignInRange = context.isTrafficCallsign(cs.icaoKey)
+            record.callsignKey = cs.icaoKey
         }
 
         // Slow tier: hand the best-so-far text to the background LLM, OFF the hot path. The RAG

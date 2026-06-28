@@ -160,12 +160,4 @@ final class ATCContext {
         trafficBlock = ""; trafficVocab = []; trafficExpiry = .distantPast
     }
 
-    /// True when `key` (an extracted callsign's ICAO / registration form, e.g. "AAL1234" / "N345AB")
-    /// matches a FRESH in-range ADS-B contact. Respects the same `trafficExpiry` gate as the injected
-    /// block, so a stale snapshot can never mark a transmission as in-range.
-    func isTrafficCallsign(_ key: String) -> Bool {
-        guard Date() < trafficExpiry, !trafficVocab.isEmpty else { return false }
-        let k = key.uppercased()
-        return trafficVocab.contains { $0.uppercased() == k }
-    }
 }

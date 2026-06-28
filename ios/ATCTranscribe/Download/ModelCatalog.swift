@@ -16,6 +16,9 @@ enum ModelKind: Sendable {
 struct ModelEntry: Identifiable, Sendable {
     let id: String
     let displayName: String
+    /// Compact name for the active-model picker / status badges (e.g. "Small", "Large", "Large V2"),
+    /// distinct from the longer `displayName` shown in the download list ("Small · fast").
+    let shortLabel: String
     let detail: String
     let kind: ModelKind
     let approxBytes: Int64
@@ -45,9 +48,21 @@ enum ModelCatalog {
         ProcessInfo.processInfo.environment["ATC_WHISPER_REPO"] ?? "SingularityUS/atc-whisperkit"
     }
 
+    /// HuggingFace repo + variant subfolder for the optional **stock** (non-fine-tuned) speech model
+    /// ("Large V2" in the UI). Defaults to WhisperKit's own public catalog, where OpenAI's
+    /// large-v3-turbo is already converted to CoreML — so this model needs **no** conversion/upload
+    /// (unlike the fine-tuned ones). Override either with an env var for a self-hosted copy.
+    static var cleanRepo: String {
+        ProcessInfo.processInfo.environment["ATC_CLEAN_REPO"] ?? "argmaxinc/whisperkit-coreml"
+    }
+    static var cleanVariant: String {
+        ProcessInfo.processInfo.environment["ATC_CLEAN_VARIANT"] ?? "openai_whisper-large-v3-v20240930_turbo"
+    }
+
     static let small = ModelEntry(
         id: "small",
         displayName: "Small · fast",
+        shortLabel: "Small",
         detail: "Fine-tuned ATC speech model — required to transcribe.",
         kind: .whisperKit, approxBytes: 465_000_000, required: true,
         repo: whisperRepo, variant: "small", directURL: nil, fileName: nil)
@@ -55,13 +70,26 @@ enum ModelCatalog {
     static let turbo = ModelEntry(
         id: "turbo",
         displayName: "Large · higher accuracy",
+        shortLabel: "Large",
         detail: "Higher accuracy, ~2× slower. Optional — used on capable devices.",
         kind: .whisperKit, approxBytes: 1_500_000_000, required: false,
         repo: whisperRepo, variant: "turbo", directURL: nil, fileName: nil)
 
+    /// Stock OpenAI large-v3-turbo (no ATC fine-tuning) for real-world A/B comparison against the
+    /// fine-tuned `turbo`. Same architecture/size as `turbo`; its on-disk folder is the long
+    /// WhisperKit variant id, so it's resolved through `variant` (≠ its short `id`) everywhere.
+    static let cleanturbo = ModelEntry(
+        id: "cleanturbo",
+        displayName: "Large V2 · stock turbo",
+        shortLabel: "Large V2",
+        detail: "Stock OpenAI large-v3-turbo — no ATC fine-tuning. Optional; for real-world accuracy comparison.",
+        kind: .whisperKit, approxBytes: 1_640_000_000, required: false,   // full fp16 ≈ 1.64 GB
+        repo: cleanRepo, variant: cleanVariant, directURL: nil, fileName: nil)
+
     static let llm = ModelEntry(
         id: "llm",
         displayName: "AI context fixer",
+        shortLabel: "AI fixer",
         detail: "Powers the on-device transcript correction layer. Installed automatically with the speech model.",
         kind: .ggufFile, approxBytes: 400_000_000, required: false,
         repo: nil, variant: nil,
@@ -69,9 +97,17 @@ enum ModelCatalog {
             ?? "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf"),
         fileName: "qwen2.5-0.5b-instruct-q4_k_m.gguf")
 
-    static var all: [ModelEntry] { [small, turbo, llm] }
+    static var all: [ModelEntry] { [small, turbo, cleanturbo, llm] }
+    /// The selectable transcription (Whisper) models, in UI/picker order (smallest → largest).
+    static var whisperEntries: [ModelEntry] { [small, turbo, cleanturbo] }
     /// The model whose absence blocks transcription (drives the first-launch gate).
     static var required: ModelEntry { small }
+
+    /// Friendly short label for a model id (e.g. "small" → "Small", "cleanturbo" → "Large V2"), for
+    /// status badges / sidebar where only the persisted id is on hand. Falls back to the raw id.
+    static func shortLabel(forID id: String) -> String {
+        all.first { $0.id == id }?.shortLabel ?? id
+    }
 }
 
 /// Resolves on-device storage for downloaded models. Models land in **Application Support**
@@ -117,12 +153,14 @@ enum ModelStore {
 
     // MARK: resolution helpers used by AppModel / LocalLLMCorrector
 
-    /// Path of a downloaded Whisper model, preferring the larger `turbo` when both are present,
-    /// or nil if none has been downloaded. Used to prefer a downloaded model over a bundled one.
+    /// Path of a downloaded Whisper model, or nil if none has been downloaded. Used to prefer a
+    /// downloaded model over a bundled one. Preference order: the fine-tuned models (the app's
+    /// reason for being) first — larger `turbo`, then `small` — then the optional stock "Large V2".
+    /// Iterates catalog entries (not bare variant strings) so each entry's own `variant` folder is
+    /// checked; the stock model's on-disk folder name differs from its short id.
     static func downloadedWhisperDir() -> String? {
-        for variant in ["turbo", "small"] {
-            let marker = whisperDir(variant).appendingPathComponent("AudioEncoder.mlmodelc")
-            if FileManager.default.fileExists(atPath: marker.path) { return whisperDir(variant).path }
+        for e in [ModelCatalog.turbo, ModelCatalog.small, ModelCatalog.cleanturbo] where isReady(e) {
+            return localURL(for: e).path
         }
         return nil
     }

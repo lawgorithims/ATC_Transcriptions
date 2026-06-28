@@ -16,6 +16,12 @@ struct TranscriptCard: View {
         return model.transcriptNewestFirst ? Array(base.reversed()) : base
     }
 
+    /// The id of the currently-newest RENDERED line (top in newest-first mode, else bottom) — the
+    /// auto-follow trigger, so it ignores the 500-record cap and off-filter arrivals.
+    private var newestRenderedID: TranscriptRecord.ID? {
+        model.transcriptNewestFirst ? orderedRecords.first?.id : orderedRecords.last?.id
+    }
+
     var body: some View {
         let p = model.palette
         VStack(alignment: .leading, spacing: 0) {
@@ -75,6 +81,8 @@ struct TranscriptCard: View {
 
             if model.records.isEmpty {
                 emptyState
+            } else if orderedRecords.isEmpty {
+                filteredEmptyState                         // an active filter with zero matches
             } else {
                 ScrollViewReader { proxy in
                     ScrollView {
@@ -84,11 +92,12 @@ struct TranscriptCard: View {
                             newestMarker(isTop: false)
                         }
                     }
-                    // Follow new transmissions only while pinned to the newest end, so scrolling
-                    // back to read history isn't yanked away every few seconds (a live feed appends
-                    // constantly). A sort-order flip always snaps to (and re-pins) the newest line.
-                    .onChange(of: model.records.count) { _ in if atNewest { scrollToNewest(proxy) } }
+                    // Follow new transmissions only while pinned to the newest end. Drive off the
+                    // RENDERED newest line's id (not records.count, which a 500-cap pins and which an
+                    // off-filter arrival jolts), so it fires exactly when the visible newest changes.
+                    .onChange(of: newestRenderedID) { _ in if atNewest { scrollToNewest(proxy) } }
                     .onChange(of: model.transcriptNewestFirst) { _ in atNewest = true; scrollToNewest(proxy) }
+                    .onChange(of: model.callsignFilter) { _ in atNewest = true; scrollToNewest(proxy) }
                     .overlay(alignment: model.transcriptNewestFirst ? .topTrailing : .bottomTrailing) {
                         if !atNewest { jumpButton(proxy) }
                     }
@@ -145,6 +154,19 @@ struct TranscriptCard: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity).padding(40)
     }
+
+    /// Shown when a callsign filter is active but no transmission matches it (e.g. after switching
+    /// feeds) — so the user sees why the list is empty instead of a blank box.
+    private var filteredEmptyState: some View {
+        let p = model.palette
+        return VStack(spacing: 10) {
+            Image(systemName: "airplane.circle").font(.system(size: 30)).foregroundStyle(p.textDim.opacity(0.7))
+            Text("No messages for \(model.callsignFilter ?? "this aircraft") yet.").foregroundStyle(p.textDim)
+            Button("Clear filter") { model.callsignFilter = nil }
+                .font(.caption.weight(.semibold)).foregroundStyle(p.accent).buttonStyle(.plain)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity).padding(40)
+    }
 }
 
 struct TranscriptRow: View {
@@ -168,12 +190,14 @@ struct TranscriptRow: View {
                     }
                     if let cs = record.callsign {
                         // Tap to filter the transcript to this aircraft's conversation. Green +
-                        // filled-airplane = confirmed in-range on the live ADS-B feed.
-                        let color = record.callsignInRange ? p.good : p.accent
+                        // filled-airplane = currently in range on the live ADS-B feed — derived at
+                        // render time so the badge tracks the feed instead of freezing at decode time.
+                        let inRange = record.callsignKey.map { model.inRangeCallsignKeys.contains($0.uppercased()) } ?? false
+                        let color = inRange ? p.good : p.accent
                         let on = model.callsignFilter == cs
                         Button { model.toggleCallsignFilter(cs) } label: {
                             HStack(spacing: 2) {
-                                Image(systemName: record.callsignInRange ? "airplane.circle.fill" : "airplane")
+                                Image(systemName: inRange ? "airplane.circle.fill" : "airplane")
                                     .font(.system(size: 8))
                                 Text(cs).font(.caption2.weight(.bold))
                             }

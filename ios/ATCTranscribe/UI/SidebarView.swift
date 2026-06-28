@@ -224,7 +224,7 @@ struct ProofOfLifeCard: View {
                     if let rt = pol.realtimeSpeed {
                         KV("speed", String(format: "%.1f× real-time", rt))
                     }
-                    KV("model", pol.activeModel ?? "—")
+                    KV("model", pol.activeModel.map(ModelCatalog.shortLabel(forID:)) ?? "—")
                 }
             } else {
                 Text("Not checked yet.").font(.callout).foregroundStyle(p.textDim)
@@ -263,7 +263,7 @@ struct HostCard: View {
         Card(title: "Host") {
             VStack(spacing: 8) {
                 KV("Device", model.deviceLabel)
-                KV("Model", model.activeModel)
+                KV("Model", model.activeModelLabel)
                 KV("Platform", "iOS / iPadOS")
             }
         }

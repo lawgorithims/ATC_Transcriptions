@@ -17,20 +17,21 @@ struct SettingsSheet: View {
                             ForEach(ModelCatalog.all) { entry in
                                 ModelDownloadRow(entry: entry)
                             }
-                            Text("Models download once over Wi-Fi and are stored on this device. The required speech model is needed to transcribe; the others are optional (higher-accuracy model, on-device AI fixer).")
+                            Text("Models download once over Wi-Fi and are stored on this device. The required speech model is needed to transcribe; the others are optional (higher-accuracy model, a stock model for accuracy comparison, on-device AI fixer).")
                                 .font(.caption2).foregroundStyle(p.textDim)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
                     }
                     Card(title: "Transcription model") {
                         VStack(spacing: 10) {
-                            KV("Active model", model.activeModel)
+                            KV("Active model", model.activeModelLabel)
                             if let s = model.measuredSpeed {
                                 KV("Measured speed", String(format: "%.1f× real-time", s))
                             }
-                            HStack(spacing: 8) {
-                                modelButton("turbo", "Large")
-                                modelButton("small", "Small")
+                            VStack(spacing: 8) {
+                                ForEach(ModelCatalog.whisperEntries) { e in
+                                    modelButton(e.id, e.shortLabel)
+                                }
                             }
                         }
                     }
