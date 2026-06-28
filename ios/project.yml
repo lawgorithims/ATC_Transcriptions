@@ -184,6 +184,9 @@ schemes:
       environmentVariables:
         ATC_MODEL_DIR: ${ATC_MODEL_DIR}
         ATC_AUDIO_DIR: ${ATC_AUDIO_DIR}
+        # "1" only when regenerating README screenshots (Tools/screenshots.sh); empty otherwise, so
+        # ScreenshotTests XCTSkips in the normal suite and never flakes a ship.
+        SCREENSHOTS: ${SCREENSHOTS}
 
   # Native macOS probe: `xcodebuild build -scheme ATCKitProbe -destination platform=macOS`,
   # then run the built binary directly (env-driven). See Tools/probe.sh.
