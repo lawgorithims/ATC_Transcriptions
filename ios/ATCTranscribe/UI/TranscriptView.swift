@@ -9,9 +9,11 @@ struct TranscriptCard: View {
     /// they scroll into history (auto-scroll pauses, the jump-to-newest button appears).
     @State private var atNewest = true
 
-    /// Records in display order: reversed (newest first) when the user prefers it, else as stored.
+    /// Records in display order: filtered to one aircraft's conversation when a callsign filter is
+    /// active, then reversed (newest first) when the user prefers it.
     private var orderedRecords: [TranscriptRecord] {
-        model.transcriptNewestFirst ? Array(model.records.reversed()) : model.records
+        let base = model.callsignFilter.map { f in model.records.filter { $0.callsign == f } } ?? model.records
+        return model.transcriptNewestFirst ? Array(base.reversed()) : base
     }
 
     var body: some View {
@@ -52,6 +54,24 @@ struct TranscriptCard: View {
             }
             .padding(14)
             Rectangle().fill(p.border).frame(height: 1)
+
+            if let cs = model.callsignFilter {
+                HStack(spacing: 8) {
+                    Image(systemName: "line.3.horizontal.decrease.circle.fill").font(.caption)
+                    Text("Showing ").font(.caption).foregroundStyle(p.textDim)
+                        + Text(cs).font(.caption.weight(.semibold)).foregroundStyle(p.text)
+                        + Text("  ·  \(orderedRecords.count) msg\(orderedRecords.count == 1 ? "" : "s")")
+                            .font(.caption).foregroundStyle(p.textDim)
+                    Spacer(minLength: 4)
+                    Button("Clear") { model.callsignFilter = nil }
+                        .font(.caption.weight(.semibold)).foregroundStyle(p.accent).buttonStyle(.plain)
+                        .accessibilityIdentifier("callsign-filter-clear")
+                }
+                .foregroundStyle(p.accent)
+                .padding(.horizontal, 14).padding(.vertical, 8)
+                .background(p.accent.opacity(0.10))
+                Rectangle().fill(p.border).frame(height: 1)
+            }
 
             if model.records.isEmpty {
                 emptyState
@@ -146,15 +166,24 @@ struct TranscriptRow: View {
                             .overlay(Capsule().stroke(speakerColor(spk).opacity(0.5), lineWidth: 1))
                             .accessibilityIdentifier("speaker-chip")
                     }
-                    if let cs = record.adsbCallsign {
-                        HStack(spacing: 2) {
-                            Image(systemName: "airplane").font(.system(size: 8))
-                            Text(cs).font(.caption2.weight(.bold))
+                    if let cs = record.callsign {
+                        // Tap to filter the transcript to this aircraft's conversation. Green +
+                        // filled-airplane = confirmed in-range on the live ADS-B feed.
+                        let color = record.callsignInRange ? p.good : p.accent
+                        let on = model.callsignFilter == cs
+                        Button { model.toggleCallsignFilter(cs) } label: {
+                            HStack(spacing: 2) {
+                                Image(systemName: record.callsignInRange ? "airplane.circle.fill" : "airplane")
+                                    .font(.system(size: 8))
+                                Text(cs).font(.caption2.weight(.bold))
+                            }
+                            .padding(.horizontal, 6).padding(.vertical, 1)
+                            .background(on ? color : color.opacity(0.18))
+                            .foregroundStyle(on ? p.bg : color)
+                            .clipShape(Capsule())
                         }
-                        .padding(.horizontal, 6).padding(.vertical, 1)
-                        .background(p.accent.opacity(0.18)).foregroundStyle(p.accent)
-                        .clipShape(Capsule())
-                        .accessibilityIdentifier("adsb-chip")
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("callsign-chip")
                     }
                     Text(record.timestamp).font(.caption2.monospaced()).foregroundStyle(p.accent)
                     Text(String(format: "stream %.1fs", record.streamStartS))

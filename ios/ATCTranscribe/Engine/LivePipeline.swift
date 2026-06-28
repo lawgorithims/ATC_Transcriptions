@@ -37,9 +37,12 @@ struct TranscriptRecord: Sendable, Identifiable {
     var gateReason: String = ""
     /// Diarization speaker id (0-based), or nil when diarization is off. Stable across the session.
     var speaker: Int? = nil
-    /// The in-range ADS-B aircraft this transmission appears to be about — a callsign / N-number
-    /// matched against the live feed — or nil. Set only from a FRESH traffic snapshot.
-    var adsbCallsign: String? = nil
+    /// The canonical callsign this transmission is about (airline "American 1234" or GA "N345AB"),
+    /// extracted from the transcript — the key that groups one aircraft's conversation. nil if none.
+    var callsign: String? = nil
+    /// True when `callsign` matches a fresh in-range ADS-B contact (live confirmation). Always false
+    /// when ADS-B streaming is off / there's no fresh snapshot.
+    var callsignInRange: Bool = false
 
     /// What the UI shows: the LLM-refined text if present, else the inline-corrected text, else
     /// the raw transcript.
@@ -203,10 +206,13 @@ actor LivePipeline {
             corrections: correction.changed ? correction.edits : [],
             timestamp: Self.timeFormatter.string(from: Date()))
         record.speaker = speaker
-        // Tag the transmission with the in-range aircraft it appears to address (live ADS-B), when a
-        // callsign / N-number token matches a fresh snapshot. Honest: fires when the spoken form
-        // resolves to a real label; full phonetic callsign linking is a later enhancement.
-        record.adsbCallsign = context.matchTraffic(in: record.display)
+        // Extract the canonical callsign this transmission addresses (the key that groups the
+        // aircraft's conversation), and confirm it against the live ADS-B feed when a fresh snapshot
+        // is present.
+        if let cs = CallsignExtractor.extract(record.display, knowledge: context.knowledge) {
+            record.callsign = cs.display
+            record.callsignInRange = context.isTrafficCallsign(cs.icaoKey)
+        }
 
         // Slow tier: hand the best-so-far text to the background LLM, OFF the hot path. The RAG
         // context is retrieved HERE, on the actor, so the refiner never touches mutable state. The

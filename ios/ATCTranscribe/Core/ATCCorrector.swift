@@ -136,7 +136,7 @@ private func joinDigitChunks(_ chunks: [(digits: String, grouped: Bool)]) -> [St
 
 /// Collapse runs of spoken number words into digit strings. Vocab-independent;
 /// "hundred"/"thousand" simply terminate a run. Port of `_normalize_numbers`.
-private func normalizeNumbers(_ text: String) -> (text: String, edits: [CorrectionEdit]) {
+func normalizeNumbers(_ text: String) -> (text: String, edits: [CorrectionEdit]) {
     let tokens = text.split(whereSeparator: { $0.isWhitespace }).map(String.init)
     var out: [String] = []
     var edits: [CorrectionEdit] = []

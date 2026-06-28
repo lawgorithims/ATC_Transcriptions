@@ -132,6 +132,15 @@ final class AppModel: ObservableObject {
         didSet { UserDefaults.standard.set(transcriptNewestFirst, forKey: "atc.transcriptNewestFirst") }
     }
 
+    /// When set, the transcript shows ONLY transmissions for this callsign — tap a callsign chip to
+    /// filter to that aircraft's conversation; tap it again (or Clear) to remove the filter.
+    @Published var callsignFilter: String?
+
+    /// Toggle the conversation filter for a callsign (set it, or clear it if already active).
+    func toggleCallsignFilter(_ cs: String) {
+        callsignFilter = (callsignFilter == cs) ? nil : cs
+    }
+
     // Sidebar widget customization: which cards are shown, in what order. Edited in-place via a
     // long-press (add / remove / drag-reorder) so the layout can be trimmed for iPad Split View /
     // Slide Over. Persisted so the choice survives relaunch.
@@ -647,6 +656,7 @@ final class AppModel: ObservableObject {
     }
 
     func clear() {
+        callsignFilter = nil   // a stale conversation filter over an empty transcript is confusing
         // In live mode `records`/`stats` are driven by `session.$records`/`$stats` via
         // `assign(to:)`, so clearing the local copies alone is reverted on the next
         // transmission. Clear the session's source-of-truth instead (the binding then
@@ -850,12 +860,14 @@ final class AppModel: ObservableObject {
         ]
         records = samples.map { text, ts, s0, s1, trMs, rtf, edits in
             let display = edits.first.map { text.replacingOccurrences(of: $0.from, with: $0.to) } ?? ""
-            return TranscriptRecord(
+            var r = TranscriptRecord(
                 text: text, streamStartS: s0, streamEndS: s1,
                 audioDurationMs: (s1 - s0) * 1000, captureToTextMs: trMs + 140,
                 transcribeMs: trMs, realTimeFactor: rtf,
                 prompt: "Air traffic control radio transcript from KDFW Lone Star Approach. Runways: 17C, 35C.",
                 corrected: edits.isEmpty ? "" : display, corrections: edits, timestamp: ts)
+            r.callsign = CallsignExtractor.extract(r.display, knowledge: .shared)?.display   // demo: tag for the filter
+            return r
         }
         for r in records { stats.add(r) }
         status = .live

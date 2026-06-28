@@ -160,13 +160,12 @@ final class ATCContext {
         trafficBlock = ""; trafficVocab = []; trafficExpiry = .distantPast
     }
 
-    /// If a token of `text` matches a FRESH in-range ADS-B label (callsign or N-number), return it —
-    /// the aircraft this transmission appears to be about. Respects the same `trafficExpiry` gate as
-    /// the injected block, so a stale snapshot can never tag a transmission.
-    func matchTraffic(in text: String) -> String? {
-        guard Date() < trafficExpiry, !trafficVocab.isEmpty else { return nil }
-        let tokens = Set(text.split(whereSeparator: { !($0.isLetter || $0.isNumber) }).map { $0.uppercased() })
-        guard !tokens.isEmpty else { return nil }
-        return trafficVocab.first { tokens.contains($0.uppercased()) }
+    /// True when `key` (an extracted callsign's ICAO / registration form, e.g. "AAL1234" / "N345AB")
+    /// matches a FRESH in-range ADS-B contact. Respects the same `trafficExpiry` gate as the injected
+    /// block, so a stale snapshot can never mark a transmission as in-range.
+    func isTrafficCallsign(_ key: String) -> Bool {
+        guard Date() < trafficExpiry, !trafficVocab.isEmpty else { return false }
+        let k = key.uppercased()
+        return trafficVocab.contains { $0.uppercased() == k }
     }
 }
