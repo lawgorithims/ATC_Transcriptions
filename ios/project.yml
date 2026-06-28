@@ -56,6 +56,7 @@ targets:
           - "Resources/DemoClips"
           - "Resources/knowledge"
           - "Resources/airport_configs"
+          - "Resources/airports"
       - path: ATCTranscribe/Resources/Models      # `small` Whisper model + `llm/<model>.gguf`,
         type: folder                              #   placed by Tools/testflight.sh + fetch_llm_model.sh
       - path: ATCTranscribe/Resources/DemoClips    # 5 known-good clips → offline Replay demo
@@ -63,6 +64,8 @@ targets:
       - path: ATCTranscribe/Resources/knowledge    # RAG corpus: airlines / overrides / phraseology
         type: folder
       - path: ATCTranscribe/Resources/airport_configs   # facility configs (runways, fixes, streams)
+        type: folder
+      - path: ATCTranscribe/Resources/airports          # ICAO -> lat/lon for ADS-B query centering
         type: folder
     settings:
       base:

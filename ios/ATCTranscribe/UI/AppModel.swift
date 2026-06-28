@@ -39,7 +39,18 @@ final class AppModel: ObservableObject {
         didSet { UserDefaults.standard.set(streamURL, forKey: "atc.streamURL") }
     }
     @Published var airport = UserDefaults.standard.string(forKey: "atc.airport") ?? "" {
-        didSet { UserDefaults.standard.set(airport, forKey: "atc.airport") }
+        didSet {
+            UserDefaults.standard.set(airport, forKey: "atc.airport")
+            // Recenter ADS-B only when the resolved COORDINATE changes — not on every keystroke of a
+            // partial ident (which all resolve to nil), avoiding poll-task churn while typing. Clears
+            // the old facility's traffic synchronously so geographically-wrong aircraft never linger.
+            // NOTE: this recenters ADS-B only; the facility RAG/Whisper-prompt config is built once in
+            // setupLive, so a mid-session airport change needs a Stop/Start to fully retarget the
+            // corrector (pre-existing behavior, unchanged by ADS-B).
+            if AirportCoordinates.coordinate(icao: airport) != AirportCoordinates.coordinate(icao: oldValue) {
+                clearTraffic(); syncADSB()
+            }
+        }
     }
     @Published var frequency = UserDefaults.standard.string(forKey: "atc.frequency") ?? "auto" {
         didSet { UserDefaults.standard.set(frequency, forKey: "atc.frequency") }
@@ -170,6 +181,29 @@ final class AppModel: ObservableObject {
     }
     private let audioMonitor = AudioMonitor()
 
+    // Online ADS-B traffic: fetch in-range aircraft (callsigns + N-numbers) from a public feed so the
+    // corrector can lock a misheard callsign onto a plane actually on frequency. OFF by default
+    // (network + battery opt-in); persisted. Polls only while ON, a live session is running, and the
+    // app is foregrounded. `aircraft` drives the UI; the corrector block is injected separately with
+    // a read-site expiry so stale data can never be used (see `injectTraffic`).
+    @Published var adsbStreamingEnabled = (UserDefaults.standard.object(forKey: "atc.adsbStreaming") as? Bool) ?? false {
+        didSet {
+            UserDefaults.standard.set(adsbStreamingEnabled, forKey: "atc.adsbStreaming")
+            if !adsbStreamingEnabled { clearTraffic() }
+            syncADSB()
+        }
+    }
+    @Published private(set) var aircraft: [Aircraft] = []
+    @Published private(set) var aircraftUpdatedAt: Date?
+    @Published private(set) var adsbStatus: ADSBStatus = .idle
+    /// Absolute trust window (seconds) stamped on the injected traffic block; the corrector consumes
+    /// it only while `Date() < snapshotAt + this`. Keep ≈2.4× the service poll interval.
+    private let adsbTrustWindow: TimeInterval = 12
+    private var trafficEpoch = 0
+    private var scenePhaseActive = true
+    /// Constructed in `init` (IUO so the publish closures can capture a fully-initialized `self`).
+    private var adsbService: ADSBService!
+
     // Standby: a one-tap low-power state that stops capture (and releases the audio session) and
     // dims to a dark screen, so leaving the app monitoring a quiet feed doesn't drain the battery.
     @Published var standby = false
@@ -197,6 +231,18 @@ final class AppModel: ObservableObject {
     private var audioDirPath: String?               // demo clips dir, kept for model re-load on switch
 
     init() {
+        // Build the ADS-B service first. Its callbacks hop to the main actor: `onUpdate` applies the
+        // pruned contacts + re-injects the corrector block with a fresh expiry; `onStatus` surfaces
+        // feed health. `[weak self]` is safe — every stored property has a default, so `self` is fully
+        // initialized here.
+        adsbService = ADSBService(
+            onUpdate: { [weak self] list, snapshotAt in
+                Task { @MainActor in self?.applyTraffic(list, snapshotAt: snapshotAt) }
+            },
+            onStatus: { [weak self] status in
+                Task { @MainActor in self?.adsbStatus = status }
+            })
+
         let args = CommandLine.arguments
         func value(_ flag: String) -> String? {
             guard let i = args.firstIndex(of: flag), i + 1 < args.count else { return nil }
@@ -307,6 +353,16 @@ final class AppModel: ObservableObject {
         // context, so the first transmission's LLM correction already sees the pilot's own callsign,
         // airports, and route. Live edits afterward go through `pushFlightPlanContext`.
         if let fp = flightPlan { context.setFlightPlan(block: fp.contextBlock, vocab: fp.vocabTerms) }
+        // Seed the traffic epoch into the fresh context so clear-ordering survives the rebuild, then
+        // re-seed the last FRESH ADS-B snapshot so a model swap doesn't blank traffic context until
+        // the next poll (~5s). The read-site expiry self-expires it if the poller doesn't return.
+        context.clearTraffic(epoch: trafficEpoch)
+        if adsbStreamingEnabled, !aircraft.isEmpty, let at = aircraftUpdatedAt,
+           Date() < at.addingTimeInterval(adsbTrustWindow) {
+            let (block, vocab) = Self.trafficContext(aircraft)
+            context.setTraffic(block: block, vocab: vocab,
+                               expiry: at.addingTimeInterval(adsbTrustWindow), epoch: trafficEpoch)
+        }
         self.liveContext = context
 
         // Build/reuse the optional slow-tier LLM off the main actor. The GGUF loads at most once per
@@ -371,6 +427,86 @@ final class AppModel: ObservableObject {
     func pushFlightPlanContext() {
         session?.setFlightPlanContext(block: flightPlan?.contextBlock ?? "",
                                       vocab: flightPlan?.vocabTerms ?? [])
+    }
+
+    // MARK: ADS-B live traffic
+
+    /// Whether ADS-B should be actively polling/injecting right now.
+    private var adsbActive: Bool { adsbStreamingEnabled && isRunning && liveMode && scenePhaseActive }
+
+    /// Reconcile the ADS-B poller with current state (single edge-triggered call). Polls only while
+    /// streaming is ON, a live session is running, and the app is foregrounded.
+    func syncADSB() {
+        let center = facilityCoordinate()
+        let active = adsbActive
+        let service = adsbService
+        Task { await service?.sync(center: center, enabled: active) }
+    }
+
+    /// The center for the 30 NM query: the typed airport's coordinate (bundled table; default KDFW
+    /// when blank), or nil when unknown (→ no polling). Device GPS will sit ahead of this later.
+    private func facilityCoordinate() -> Coord? {
+        AirportCoordinates.coordinate(icao: airport.isEmpty ? "KDFW" : airport)
+    }
+
+    /// Service published a snapshot: update the UI state and re-inject the corrector block. Guarded
+    /// on `adsbActive` so a late callback that lands after a toggle-off / standby / background CLEARS
+    /// the carousel + corrector instead of repopulating them (the callback hops the main actor async,
+    /// so it can arrive after the synchronous clearTraffic()).
+    private func applyTraffic(_ list: [Aircraft], snapshotAt: Date) {
+        let active = adsbActive
+        aircraft = active ? list : []
+        aircraftUpdatedAt = (active && snapshotAt != .distantPast) ? snapshotAt : nil
+        injectTraffic(from: active ? list : [], snapshotAt: active ? snapshotAt : .distantPast)
+    }
+
+    /// Inject (or clear) the live-traffic block into the running correction context. Injects ONLY
+    /// when streaming is actually desired right now — so a late callback after toggle-off / standby /
+    /// background clears instead of re-injecting — and the block carries an absolute `expiry` the
+    /// corrector re-checks at read time, so stale traffic is never used.
+    private func injectTraffic(from list: [Aircraft], snapshotAt: Date) {
+        guard let session else { return }
+        guard adsbActive, !list.isEmpty, snapshotAt != .distantPast else {
+            session.setTrafficContext(block: "", vocab: [], expiry: .distantPast, epoch: trafficEpoch)
+            return
+        }
+        let (block, vocab) = Self.trafficContext(list)
+        session.setTrafficContext(block: block, vocab: vocab,
+                                  expiry: snapshotAt.addingTimeInterval(adsbTrustWindow), epoch: trafficEpoch)
+    }
+
+    /// Build the "Traffic in range" context block + the callsign/registration vocab the corrector
+    /// may snap a misheard token onto. Capped so a busy sector can't bloat the prompt.
+    private static func trafficContext(_ list: [Aircraft]) -> (block: String, vocab: [String]) {
+        var seen = Set<String>()
+        var labels: [String] = []
+        for ac in list {
+            for term in [ac.callsign, ac.registration] {
+                guard let t = term, !t.isEmpty, seen.insert(t).inserted else { continue }
+                labels.append(t)
+            }
+            if labels.count >= 40 { break }
+        }
+        guard !labels.isEmpty else { return ("", []) }
+        return ("Traffic in range (live ADS-B): " + labels.joined(separator: ", ") + ".", labels)
+    }
+
+    /// Drop the injected traffic immediately and bump the epoch so any in-flight re-inject loses
+    /// (toggle-off / standby / airport-change / background).
+    private func clearTraffic() {
+        trafficEpoch += 1
+        aircraft = []
+        aircraftUpdatedAt = nil
+        session?.clearTrafficContext(epoch: trafficEpoch)
+    }
+
+    /// Foreground/background transition from the root view: pause polling + drop traffic in the
+    /// background; resume on return to the foreground.
+    func setScenePhaseActive(_ active: Bool) {
+        guard active != scenePhaseActive else { return }
+        scenePhaseActive = active
+        if !active { clearTraffic() }
+        syncADSB()
     }
 
     /// Build the slow-tier LLM corrector, REUSING a cached llama.cpp engine for the `.local` backend
@@ -482,6 +618,7 @@ final class AppModel: ObservableObject {
         session.start(source: src, label: source.rawValue, clearHistory: !resuming)
         sourceLabel = source.rawValue
         detail = "Transcribing."
+        syncADSB()   // a live session started → begin ADS-B polling if streaming is enabled
     }
 
     func stop() {
@@ -489,6 +626,7 @@ final class AppModel: ObservableObject {
         // path never activated one, so nothing to release here.
         if let session { session.stop() } else { status = .stopped }
         detail = "Stopped."
+        syncADSB()   // no live session → stop ADS-B polling + clear traffic
     }
 
     /// Enter standby: stop capture and release the audio session so a quiet, unattended feed
