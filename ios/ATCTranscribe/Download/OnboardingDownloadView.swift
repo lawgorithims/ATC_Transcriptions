@@ -9,8 +9,14 @@ struct OnboardingDownloadView: View {
     @EnvironmentObject var downloads: ModelDownloadManager
 
     private var entry: ModelEntry { ModelCatalog.required }
-    private var state: DownloadState { downloads.state(entry.id) }
-    private var isReady: Bool { if case .ready = state { return true } else { return false } }
+    /// Any speech model present is enough to enter the console — not just the required Small — so a
+    /// user who grabbed only the Large / Large V2 model can Continue instead of being forced to also
+    /// download Small (or Skip). Checks both the live download state and what's already on disk.
+    private func isDownloaded(_ e: ModelEntry) -> Bool {
+        if case .ready = downloads.state(e.id) { return true }
+        return ModelStore.isReady(e)
+    }
+    private var isReady: Bool { ModelCatalog.whisperEntries.contains(where: isDownloaded) }
 
     var body: some View {
         let p = model.palette
