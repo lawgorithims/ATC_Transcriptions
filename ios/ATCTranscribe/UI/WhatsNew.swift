@@ -32,6 +32,18 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 15, version: "1.0", headline: "Clearer naming & a transcribing indicator",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "textformat",
+                    title: "Consistent model names",
+                    detail: "Each speech model now reads the same everywhere — the download list, the model picker, the widgets, and the loading screen all use the same name (e.g. “Large V2”), with the longer description moved to the subtitle."),
+                WhatsNewHighlight(
+                    icon: "waveform",
+                    title: "“Transcribing…” indicator",
+                    detail: "While the app is decoding a transmission you’ll see a “Transcribing… Ns” indicator with elapsed time — so a slow model reads as working (just slow), not stalled. If it climbs to many seconds per transmission, the model is the bottleneck on your device."),
+            ]),
+        ReleaseNote(
             build: 14, version: "1.0", headline: "Battery, speed & a faster Large V2",
             highlights: [
                 WhatsNewHighlight(

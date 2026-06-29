@@ -52,8 +52,8 @@ final class ConsoleUITests: XCTestCase {
         XCTAssertTrue(app.buttons["gate-primary"].isHittable, "download button not hittable")
         XCTAssertTrue(app.buttons["gate-skip"].exists, "skip button missing")
         // The optional higher-accuracy (Large) and stock (Large V2) models are offered on the gate.
-        XCTAssertTrue(app.staticTexts["Large · higher accuracy"].exists, "Large model not offered on gate")
-        XCTAssertTrue(app.staticTexts["Large V2 · stock turbo"].exists, "Large V2 (stock) model not offered on gate")
+        XCTAssertTrue(app.staticTexts["Large"].exists, "Large model not offered on gate")
+        XCTAssertTrue(app.staticTexts["Large V2"].exists, "Large V2 (stock) model not offered on gate")
         snap(app, "01-gate")
 
         app.buttons["gate-skip"].tap()

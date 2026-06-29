@@ -63,6 +63,10 @@ final class AppModel: ObservableObject {
     @Published var records: [TranscriptRecord] = []
     @Published var stats = LatencyStats()
     @Published var inputLevel: Float = 0   // live audio level (0…1) for the input meter
+    // True while a transmission is being transcribed (drives the "Transcribing…" indicator so a slow
+    // model reads as working, not stalled); `transcribeStartedAt` drives its elapsed timer.
+    @Published private(set) var transcribing = false
+    @Published private(set) var transcribeStartedAt: Date?
 
     // Engine / device. `activeModel` (small/large) is persisted so the app reopens on the model you
     // left on, instead of always preferring the larger one — see the restore logic in `init`.
@@ -437,6 +441,8 @@ final class AppModel: ObservableObject {
         session.$status.assign(to: &$status)
         session.$stats.assign(to: &$stats)
         session.$inputLevel.assign(to: &$inputLevel)
+        session.$transcribing.assign(to: &$transcribing)
+        session.$transcribeStartedAt.assign(to: &$transcribeStartedAt)
         self.session = session
         self.engine = engine
         self.modelDirs = models
@@ -905,7 +911,7 @@ final class AppModel: ObservableObject {
         proofOfLife = nil                // drop the demo "performance check" so it doesn't show a stale model
         records = []; stats = LatencyStats()
         status = .idle                   // clear any demo `.live` state so loading isn't seen as "running"
-        detail = "Loading \(ModelCatalog.shortLabel(forID: active)) model…"
+        detail = "Loading \(ModelCatalog.shortLabel(forID: active))…"
         modelSwapGeneration += 1
         let gen = modelSwapGeneration
         watchdogTask?.cancel(); loadTask?.cancel()
@@ -954,7 +960,7 @@ final class AppModel: ObservableObject {
         let wasRunning = isRunning
         if wasRunning { stop() }
         loadingModel = id                            // picker reflects the choice immediately
-        detail = "Loading \(ModelCatalog.shortLabel(forID: id)) model…"   // friendly name, not the raw id
+        detail = "Loading \(ModelCatalog.shortLabel(forID: id))…"   // friendly name, not the raw id
         modelSwapGeneration += 1
         let gen = modelSwapGeneration
         let models = modelDirs

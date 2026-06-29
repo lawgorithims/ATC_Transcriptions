@@ -15,9 +15,11 @@ enum ModelKind: Sendable {
 /// the app cannot transcribe without (gates first-launch onboarding).
 struct ModelEntry: Identifiable, Sendable {
     let id: String
+    /// The model's name as shown in the download list (with `detail` as the subtitle). Kept the SAME
+    /// as `shortLabel` for the speech models so a model reads identically everywhere (download list,
+    /// picker, badges, loading states); the descriptor lives in `detail`.
     let displayName: String
-    /// Compact name for the active-model picker / status badges (e.g. "Small", "Large", "Large V2"),
-    /// distinct from the longer `displayName` shown in the download list ("Small · fast").
+    /// Compact name for the active-model picker / status badges / loading states (e.g. "Large V2").
     let shortLabel: String
     let detail: String
     let kind: ModelKind
@@ -64,17 +66,17 @@ enum ModelCatalog {
 
     static let small = ModelEntry(
         id: "small",
-        displayName: "Small · fast",
+        displayName: "Small",
         shortLabel: "Small",
-        detail: "Fine-tuned ATC speech model — required to transcribe.",
+        detail: "Fast, fine-tuned ATC speech model — required to transcribe.",
         kind: .whisperKit, approxBytes: 465_000_000, required: true,
         repo: whisperRepo, variant: "small", directURL: nil, fileName: nil)
 
     static let turbo = ModelEntry(
         id: "turbo",
-        displayName: "Large · higher accuracy",
+        displayName: "Large",
         shortLabel: "Large",
-        detail: "Higher accuracy, ~2× slower. Optional — used on capable devices.",
+        detail: "Fine-tuned, higher accuracy, ~2× slower. Optional — used on capable devices.",
         kind: .whisperKit, approxBytes: 1_500_000_000, required: false,
         repo: whisperRepo, variant: "turbo", directURL: nil, fileName: nil)
 
@@ -83,9 +85,9 @@ enum ModelCatalog {
     /// WhisperKit variant id, so it's resolved through `variant` (≠ its short `id`) everywhere.
     static let cleanturbo = ModelEntry(
         id: "cleanturbo",
-        displayName: "Large V2 · stock turbo",
+        displayName: "Large V2",
         shortLabel: "Large V2",
-        detail: "Stock OpenAI large-v3-turbo, compressed for on-device speed — no ATC fine-tuning. Optional; for real-world accuracy comparison.",
+        detail: "Stock OpenAI large-v3-turbo (compressed for on-device speed) — no ATC fine-tuning. Optional; for real-world accuracy comparison.",
         kind: .whisperKit, approxBytes: 632_000_000, required: false,   // compressed on-device build ≈ 632 MB
         repo: cleanRepo, variant: cleanVariant, directURL: nil, fileName: nil)
 

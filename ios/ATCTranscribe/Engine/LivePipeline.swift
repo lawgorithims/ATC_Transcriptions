@@ -241,7 +241,8 @@ actor LivePipeline {
     func run(source: AudioSource,
              onRecord: @escaping @Sendable (TranscriptRecord) -> Void,
              onRefined: @escaping @Sendable (UUID, RefinementOutcome) -> Void = { _, _ in },
-             onLevel: (@Sendable (Float) -> Void)? = nil) async {
+             onLevel: (@Sendable (Float) -> Void)? = nil,
+             onActivity: (@Sendable (Bool) -> Void)? = nil) async {
         self.onRefined = onRefined
         await refiner?.setOutcomeHandler(onRefined)
         running = true
@@ -256,6 +257,9 @@ actor LivePipeline {
                 if stepped != lastLevel { lastLevel = stepped; onLevel(stepped) }
             }
             for segment in segmenter.feed(chunk) {
+                // Signal "transcribing" around the (slow) transcribe so the UI can show it's working on
+                // a transmission — useful to tell a slow model apart from a stalled pipeline.
+                onActivity?(true)
                 if diarizationEnabled {
                     // Split the segment into per-speaker pieces (back-to-back ATC↔aircraft
                     // transmissions the VAD merged) and transcribe each onto its own line.
@@ -269,9 +273,11 @@ actor LivePipeline {
                 } else if let record = await process(segment) {
                     onRecord(record)
                 }
+                onActivity?(false)
             }
         }
         running = false
+        onActivity?(false)
         if lastLevel != 0 { onLevel?(0) }
     }
 
