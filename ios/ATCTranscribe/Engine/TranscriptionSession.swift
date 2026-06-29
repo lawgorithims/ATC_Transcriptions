@@ -20,6 +20,11 @@ final class TranscriptionSession: ObservableObject {
     @Published private(set) var errorMessage: String?
     /// Live input audio level (0…1) for the UI meter. 0 when idle.
     @Published private(set) var inputLevel: Float = 0
+    /// True while a transmission is being transcribed (the slow step). Lets the UI show "Transcribing…"
+    /// so a slow model reads as working, not stalled.
+    @Published private(set) var transcribing = false
+    /// When the current transcribe began — drives the elapsed timer on the "Transcribing…" indicator.
+    @Published private(set) var transcribeStartedAt: Date?
 
     private let pipeline: LivePipeline
     private var source: AudioSource?
@@ -50,6 +55,8 @@ final class TranscriptionSession: ObservableObject {
                 Task { @MainActor in self?.applyRefinement(id: id, outcome: outcome) }
             } onLevel: { [weak self] level in
                 Task { @MainActor in self?.updateInputLevel(level) }
+            } onActivity: { [weak self] on in
+                Task { @MainActor in self?.setTranscribing(on) }
             }
             await MainActor.run {
                 // The source ended on its own (clips drained / feed disconnected). Release the
@@ -74,7 +81,16 @@ final class TranscriptionSession: ObservableObject {
         status = .stopped
         detail = "Stopped."
         inputLevel = 0
+        transcribing = false; transcribeStartedAt = nil
         AudioSessionManager.deactivate()   // release the session on an explicit stop too
+    }
+
+    /// Reflect the pipeline's transcribe activity (signalled per transmission). Ignored once stopped so
+    /// a late callback can't leave a stuck "Transcribing…".
+    private func setTranscribing(_ on: Bool) {
+        guard isRunning else { transcribing = false; transcribeStartedAt = nil; return }
+        transcribing = on
+        transcribeStartedAt = on ? Date() : nil
     }
 
     /// Seed the transcript/stats from a prior session (used when switching model rebuilds the

@@ -505,9 +505,10 @@ struct ControlsBar: View {
                 }
             }
 
-            HStack {
-                Text(model.detail).font(.caption).foregroundStyle(p.textDim)
-                Spacer()
+            HStack(spacing: 8) {
+                Text(model.detail).font(.caption).foregroundStyle(p.textDim).lineLimit(1)
+                Spacer(minLength: 4)
+                if model.transcribing { TranscribingIndicator() }
             }
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
@@ -601,6 +602,29 @@ struct InputLevelMeter: View {
         .background(p.surfaceAlt).clipShape(Capsule())
         .overlay(Capsule().stroke(p.border, lineWidth: 1))
         .accessibilityLabel("Input level")
+    }
+}
+
+// MARK: - Transcribing indicator
+
+/// A small "Transcribing… Ns" pill shown while a transmission is being decoded. The elapsed time makes
+/// a slow model legible: if it climbs to many seconds per transmission, the model is the bottleneck
+/// (not a stalled pipeline). Disappears between transmissions.
+struct TranscribingIndicator: View {
+    @EnvironmentObject var model: AppModel
+    @State private var now = Date()
+    private let tick = Timer.publish(every: 0.5, on: .main, in: .common).autoconnect()
+
+    var body: some View {
+        let p = model.palette
+        let secs = model.transcribeStartedAt.map { max(0, now.timeIntervalSince($0)) }
+        return HStack(spacing: 5) {
+            ProgressView().controlSize(.mini).tint(p.accent)
+            Text(secs.map { $0 >= 1 ? String(format: "Transcribing… %.0fs", $0) : "Transcribing…" } ?? "Transcribing…")
+                .font(.caption2.monospaced()).foregroundStyle(p.textDim)
+        }
+        .onReceive(tick) { now = $0 }
+        .accessibilityIdentifier("transcribing-indicator")
     }
 }
 
