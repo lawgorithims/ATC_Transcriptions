@@ -32,6 +32,22 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 14, version: "1.0", headline: "Battery, speed & a faster Large V2",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "iphone.slash",
+                    title: "Pauses when you leave the app",
+                    detail: "CommSight now stops capturing and releases audio when you go to the home screen or switch apps — so it no longer keeps playing the live feed or draining the battery in the background. It resumes when you come back."),
+                WhatsNewHighlight(
+                    icon: "bolt.fill",
+                    title: "Large V2 loads fast now",
+                    detail: "Large V2 now uses a compressed on-device build of the same stock model (~632 MB instead of ~1.6 GB). It loads in seconds instead of minutes and runs much cooler — re-download it in Settings → Models to get the faster version."),
+                WhatsNewHighlight(
+                    icon: "gauge.with.needle",
+                    title: "Model-loading diagnostics",
+                    detail: "While a speech model loads you now see which model is loading, an elapsed timer, and your device temperature — so a slow first load reads as progressing, not frozen."),
+            ]),
+        ReleaseNote(
             build: 13, version: "1.0", headline: "Model-loading fixes",
             highlights: [
                 WhatsNewHighlight(
