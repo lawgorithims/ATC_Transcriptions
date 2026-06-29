@@ -316,11 +316,6 @@ final class AppModel: ObservableObject {
         // Restore the model the user last had active (persisted) when it's still available; else
         // prefer the larger (higher-accuracy) model when present, falling back to small/bundled.
         if let active = Self.preferredActiveModel(from: models) {
-            liveMode = true
-            records = []
-            stats = LatencyStats()
-            status = .idle
-            detail = "Loading model…"
             modelSource = explicitModel != nil ? "launch"
                 : (ModelStore.downloadedWhisperDir() != nil ? "downloaded" : "bundled")
             // First launch only (no source ever saved): default to the self-contained Replay demo
@@ -329,11 +324,7 @@ final class AppModel: ObservableObject {
             if value("--source") == nil, UserDefaults.standard.string(forKey: "atc.source") == nil,
                audioDir != nil { source = .replay }
             let autostart = args.contains("--autostart")
-            // Tag the initial load with the current generation (0) so a model switch during this slow
-            // first load supersedes it instead of the initial load clobbering the user's pick.
-            let gen = modelSwapGeneration
-            Task { await setupLive(models: models, active: active, audioDir: audioDir, cpuOnly: cpuOnly,
-                                   autostart: autostart, generation: gen) }
+            beginModelLoad(models: models, active: active, audioDir: audioDir, autostart: autostart)
         } else {
             seedSampleData()   // no model yet — populated demo layout behind the download gate
             // Gate the first launch on downloading the required model, unless launched with an
@@ -346,9 +337,10 @@ final class AppModel: ObservableObject {
 
     var palette: Palette { theme.palette }
     var isRunning: Bool { status == .live || status == .connecting || status == .starting }
-    /// Friendly name of the active model for the status badge / sidebar (maps the raw id, e.g.
-    /// "cleanturbo" → "Large V2", so the internal id never leaks into the UI).
-    var activeModelLabel: String { ModelCatalog.shortLabel(forID: activeModel) }
+    /// Friendly name for the status badge / sidebar (maps the raw id, e.g. "cleanturbo" → "Large V2").
+    /// While a model is loading it shows the model being LOADED, so a slow first load doesn't keep the
+    /// widgets showing the previous/default model ("Small") the whole time.
+    var activeModelLabel: String { ModelCatalog.shortLabel(forID: loadingModel ?? activeModel) }
 
     // MARK: live wiring
 
@@ -867,6 +859,58 @@ final class AppModel: ObservableObject {
     /// Is a given whisper variant present on disk? Drives the Settings picker's enablement.
     func modelDownloaded(_ id: String) -> Bool { modelDirs[id] != nil }
 
+    /// Load `active` as the live model from a no-working-model state (first launch / right after a
+    /// download). Unlike `switchModel` there is nothing to fall back to, so a slow or failed load is
+    /// SURFACED — and the download gate re-offered — instead of hanging on "Loading model…" forever.
+    /// Shows the model actually being loaded (so the widgets don't keep showing the default "Small").
+    private func beginModelLoad(models: [String: String], active: String, audioDir: String?, autostart: Bool) {
+        self.modelDirs = models
+        liveMode = true
+        loadingModel = active            // `activeModelLabel` now reflects the model being loaded
+        modelLoadError = nil
+        proofOfLife = nil                // drop the demo "performance check" so it doesn't show a stale model
+        records = []; stats = LatencyStats()
+        status = .idle                   // clear any demo `.live` state so loading isn't seen as "running"
+        detail = "Loading \(ModelCatalog.shortLabel(forID: active)) model…"
+        modelSwapGeneration += 1
+        let gen = modelSwapGeneration
+        watchdogTask?.cancel(); loadTask?.cancel()
+        // Watchdog: a big model (Large V2 especially) can take a long time — or stall — to load the
+        // first time CoreML compiles it for this device. If there's still no usable model after a long
+        // grace period, stop hanging on the spinner and surface a recovery instead.
+        watchdogTask = Task {
+            try? await Task.sleep(nanoseconds: 60_000_000_000)   // 60s — a first big-model compile can be slow
+            guard !Task.isCancelled, modelSwapGeneration == gen, loadingModel == active, session == nil else { return }
+            loadingModel = nil
+            surfaceInitialLoadProblem(active: active,
+                reason: "\(ModelCatalog.shortLabel(forID: active)) is taking too long to load — it may be too large for this device.")
+        }
+        loadTask = Task {
+            let ok = await setupLive(models: models, active: active, audioDir: audioDir,
+                                     cpuOnly: storedCPUOnly, autostart: autostart, generation: gen)
+            guard modelSwapGeneration == gen else { return }
+            if loadingModel == active { loadingModel = nil }
+            if !ok, session == nil {
+                surfaceInitialLoadProblem(active: active,
+                    reason: modelLoadError.map { "Couldn’t load \(ModelCatalog.shortLabel(forID: active)): \($0)" }
+                        ?? "Couldn’t load \(ModelCatalog.shortLabel(forID: active)).")
+            }
+        }
+    }
+
+    /// The user's chosen model wouldn't load and there is no usable model. Explain it, and if no
+    /// reliable (fine-tuned) model is on disk, bring the download gate back so the Small model is one
+    /// tap away — so a device that can't run the big model isn't left permanently stuck.
+    private func surfaceInitialLoadProblem(active: String, reason: String) {
+        modelLoadError = reason
+        if modelDownloaded("small") || modelDownloaded("turbo") {
+            detail = "\(reason) Pick another model in Settings › Models."
+        } else {
+            detail = "\(reason) Download the Small model to continue."
+            needsOnboarding = true
+        }
+    }
+
     /// Switch the active transcription model (Settings picker). Rebuilds the engine + live session
     /// against the chosen variant's folder. No-op if it isn't downloaded or is already active.
     /// Preserves run state: if a source was live it restarts after the new model loads.
@@ -947,22 +991,19 @@ final class AppModel: ObservableObject {
         modelSource = "downloaded"
         let models = Self.availableModelDirs()
         self.modelDirs = models
-        guard !liveMode else {
-            // Already live: if the user just added the higher-accuracy model, switch to it — but
-            // never tear down an ACTIVE run (the Settings picker enables it once modelDirs updates).
+        // Already live WITH A WORKING session: don't disturb it — only auto-upgrade to the higher-
+        // accuracy model if that's what just arrived. (A swap never tears down an active run.)
+        if liveMode, session != nil {
             if entry.id == "turbo", activeModel != "turbo", !isRunning { switchModel("turbo") }
             return
         }
-        // Honor a previously-saved model choice when it's now available, else prefer the larger one
-        // (or any available variant — covers a box where only the stock "Large V2" was downloaded).
-        guard let active = Self.preferredActiveModel(from: models) else { return }
-        liveMode = true
-        detail = "Loading model…"
+        // No working model yet — first download, OR a prior load that never finished (e.g. a Large V2
+        // that stalled). Load the model that JUST downloaded: it's the one the user asked for and the
+        // one we can definitely use now, so the recovery "download a model that works" actually loads.
+        guard models[entry.id] != nil else { return }
         if value(forFlag: "--source") == nil, UserDefaults.standard.string(forKey: "atc.source") == nil,
            Self.bundledDemoClipsDir() != nil { source = .replay }
-        let gen = modelSwapGeneration   // supersede this post-download load if the user switches mid-load
-        Task { await setupLive(models: models, active: active, audioDir: Self.bundledDemoClipsDir(),
-                               cpuOnly: storedCPUOnly, autostart: false, generation: gen) }
+        beginModelLoad(models: models, active: entry.id, audioDir: Self.bundledDemoClipsDir(), autostart: false)
     }
 
     /// Read a `--flag value` pair from the launch arguments (used post-init by `modelDidDownload`).

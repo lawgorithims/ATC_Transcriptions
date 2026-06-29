@@ -32,6 +32,18 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 13, version: "1.0", headline: "Model-loading fixes",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "arrow.down.circle",
+                    title: "Fixed: stuck on “Loading model…”",
+                    detail: "If a speech model (especially Large V2) is slow to load — or your device can’t load it — the app no longer hangs forever. It shows which model is loading, and if one won’t load it offers the smaller, reliable model instead of leaving you stuck. The widgets also stop showing the wrong model name while loading."),
+                WhatsNewHighlight(
+                    icon: "square.and.arrow.down",
+                    title: "Download just the model you want",
+                    detail: "On first launch you can now download only Large or Large V2 and continue — you’re no longer forced to also download the Small model first."),
+            ]),
+        ReleaseNote(
             build: 12, version: "1.0", headline: "Reliability & what’s new",
             highlights: [
                 WhatsNewHighlight(
