@@ -32,6 +32,14 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 16, version: "1.0", headline: "Large V2 is actually fast now",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "bolt.fill",
+                    title: "Large V2 fixed — loads and transcribes at full speed",
+                    detail: "Large V2 now uses a stock model we converted through the same on-device-optimized pipeline as the fine-tuned models — so it loads in seconds and transcribes in real time, instead of stalling and overheating. Re-download Large V2 in Settings → Models to get the fixed version."),
+            ]),
+        ReleaseNote(
             build: 15, version: "1.0", headline: "Clearer naming & a transcribing indicator",
             highlights: [
                 WhatsNewHighlight(

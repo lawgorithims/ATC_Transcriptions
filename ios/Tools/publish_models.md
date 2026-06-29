@@ -41,15 +41,27 @@ Verify the repo shows `small/AudioEncoder.mlmodelc` etc. at the top of each vari
 If the repo is **private**, the app needs a read token — pass one via WhisperKit's `token:`
 argument in `LiveModelDownloader.downloadWhisper` (kept out of the default public path here).
 
-## 1b. Stock "Large V2" model — nothing to publish
+## 1b. Stock "Large V2" model — convert + host like the fine-tuned ones
 
-The optional **Large V2** model (`ModelCatalog.cleanturbo`) is the *stock* OpenAI large-v3-turbo,
-**not** fine-tuned, offered for real-world accuracy comparison against the fine-tuned `turbo`. It
-downloads straight from WhisperKit's own public CoreML catalog (`argmaxinc/whisperkit-coreml`,
-variant `openai_whisper-large-v3-v20240930_turbo`), so there is **nothing to convert or upload** — it
-works the moment the app ships. To self-host instead (or pin a different turbo build), upload a
-WhisperKit folder and set `ATC_CLEAN_REPO` / `ATC_CLEAN_VARIANT` (env, dev/Simulator) or change
-`cleanRepo` / `cleanVariant` in `ModelCatalog.swift`.
+The optional **Large V2** model (`ModelCatalog.cleanturbo`) is the *stock* OpenAI large-v3-turbo (no
+ATC fine-tuning), for real-world accuracy comparison against the fine-tuned `turbo`. **Do NOT use
+Argmax's prebuilt `argmaxinc/whisperkit-coreml` variant** — on an M2 iPad Air it took minutes to load
+and ran the ANE hot / transcribed too slowly to be usable, while the fine-tuned `turbo` (same arch)
+runs fine. The fix is to convert the *stock* model through **our own** pipeline so it's
+on-device-optimized identically to the fine-tuned models, then host it alongside them:
+
+```bash
+# convert stock large-v3-turbo (NO --generate-decoder-context-prefill-data: its consistency test
+# fails ~19.7 < 20 PSNR on this model, and our fine-tuned models ship without prefill anyway).
+source ~/whisperkittools/.env/bin/activate
+whisperkit-generate-model --model-version openai/whisper-large-v3-turbo --output-dir ~/atc-coreml/stockturbo
+SRC=$(dirname "$(find ~/atc-coreml/stockturbo -name AudioEncoder.mlmodelc | head -1)")
+huggingface-cli upload SingularityUS/atc-whisperkit "$SRC" stockturbo --repo-type model   # ≈1.5 GB
+```
+
+`ModelCatalog.cleanVariant` is `stockturbo` and `cleanRepo` defaults to `whisperRepo`
+(`SingularityUS/atc-whisperkit`), so the app downloads `<repo>/stockturbo/`. Override with
+`ATC_CLEAN_REPO` / `ATC_CLEAN_VARIANT` (env, dev/Simulator) to pin a different build.
 
 ## 2. GGUF LLM — nothing to do
 
