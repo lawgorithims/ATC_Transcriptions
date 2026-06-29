@@ -55,13 +55,15 @@ enum ModelCatalog {
     /// large-v3-turbo is already converted to CoreML — so this model needs **no** conversion/upload
     /// (unlike the fine-tuned ones). Override either with an env var for a self-hosted copy.
     static var cleanRepo: String {
-        ProcessInfo.processInfo.environment["ATC_CLEAN_REPO"] ?? "argmaxinc/whisperkit-coreml"
+        // Same repo as the fine-tuned models — the stock build is hosted alongside them.
+        ProcessInfo.processInfo.environment["ATC_CLEAN_REPO"] ?? whisperRepo
     }
     static var cleanVariant: String {
-        // The COMPRESSED on-device variant (~632 MB) of the same stock large-v3-turbo. The full fp16
-        // variant ("openai_whisper-large-v3-v20240930_turbo", ~1.64 GB) takes minutes to load and runs
-        // the ANE hot on iPad — WhisperKit ships this compressed build precisely for on-device use.
-        ProcessInfo.processInfo.environment["ATC_CLEAN_VARIANT"] ?? "openai_whisper-large-v3-v20240930_turbo_632MB"
+        // Stock OpenAI large-v3-turbo converted through OUR OWN pipeline (Tools/convert_to_coreml.sh),
+        // on-device-optimized exactly like the fine-tuned models — so it loads + transcribes at
+        // fine-tuned speed instead of the slow generic Argmax build (which took minutes to load and ran
+        // the ANE hot on an M2 iPad Air). Hosted as the `stockturbo` variant; see publish_models.md §1b.
+        ProcessInfo.processInfo.environment["ATC_CLEAN_VARIANT"] ?? "stockturbo"
     }
 
     static let small = ModelEntry(
@@ -87,8 +89,8 @@ enum ModelCatalog {
         id: "cleanturbo",
         displayName: "Large V2",
         shortLabel: "Large V2",
-        detail: "Stock OpenAI large-v3-turbo (compressed for on-device speed) — no ATC fine-tuning. Optional; for real-world accuracy comparison.",
-        kind: .whisperKit, approxBytes: 632_000_000, required: false,   // compressed on-device build ≈ 632 MB
+        detail: "Stock OpenAI large-v3-turbo (no ATC fine-tuning), converted for on-device speed like the fine-tuned models. Optional; for real-world accuracy comparison.",
+        kind: .whisperKit, approxBytes: 1_500_000_000, required: false,   // on-device fp16 ≈ 1.5 GB
         repo: cleanRepo, variant: cleanVariant, directURL: nil, fileName: nil)
 
     static let llm = ModelEntry(
