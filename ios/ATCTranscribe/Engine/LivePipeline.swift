@@ -284,7 +284,10 @@ actor LivePipeline {
         return max(0, min(1, (db + 50) / 50))          // -50 dB → 0, 0 dB → 1
     }
 
-    func stop() { running = false }
+    func stop() async {
+        running = false
+        await refiner?.cancel()   // drop queued background LLM work so it doesn't keep cooking on Stop/standby
+    }
 
     /// Swap the fast inline correction stage at runtime (the Settings toggle). Takes effect on
     /// the next transmission; the in-flight one finishes with the previous corrector.

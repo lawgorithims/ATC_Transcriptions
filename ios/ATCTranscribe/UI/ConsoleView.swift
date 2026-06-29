@@ -30,6 +30,9 @@ struct ConsoleView: View {
         .sheet(isPresented: $model.showFlightBag) {
             FlightBagSheet().environmentObject(model)
         }
+        .sheet(isPresented: $model.showWhatsNew) {
+            WhatsNewSheet().environmentObject(model)
+        }
         .fullScreenCover(isPresented: $model.needsOnboarding) {
             OnboardingDownloadView().environmentObject(model).environmentObject(downloads)
         }

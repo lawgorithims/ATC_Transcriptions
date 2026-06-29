@@ -18,6 +18,9 @@ actor LLMRefiner {
     private let maxQueue: Int
     private var queue: [RefinementRequest] = []
     private var working = false
+    /// Set by `cancel()` (Stop / standby) to drop the backlog and stop the worker; cleared on the next
+    /// run via `setOutcomeHandler` so the refiner runs again on resume.
+    private var cancelled = false
     private var onOutcome: (@Sendable (UUID, RefinementOutcome) -> Void)?
 
     init(corrector: LLMCorrector, maxQueue: Int = 8) {
@@ -29,6 +32,16 @@ actor LLMRefiner {
     /// MainActor in the session to update the record.
     func setOutcomeHandler(_ handler: @escaping @Sendable (UUID, RefinementOutcome) -> Void) {
         onOutcome = handler
+        cancelled = false                 // a new run re-enables the refiner after a prior cancel()
+    }
+
+    /// Drop all pending refinements and stop the worker as soon as the in-flight generation (if any)
+    /// returns. Called on Stop / standby so the background LLM never keeps "cooking" a queued backlog
+    /// in the background. The next run re-enables it (see `setOutcomeHandler`).
+    func cancel() {
+        cancelled = true
+        for req in queue { onOutcome?(req.id, .skipped) }
+        queue.removeAll()
     }
 
     /// Queue a transmission for refinement. Drops the oldest pending items beyond the cap
@@ -49,7 +62,7 @@ actor LLMRefiner {
     /// append more work (actor reentrancy) without spawning a second worker (`working` is set).
     private func drain() async {
         while true {
-            guard !queue.isEmpty else { working = false; return }
+            guard !cancelled, !queue.isEmpty else { working = false; return }
             let req = queue.removeFirst()
             let t0 = Date()
             let correction = await corrector.correct(text: req.text, history: req.history, retrieved: req.retrieved)
