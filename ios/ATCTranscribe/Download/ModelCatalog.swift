@@ -56,7 +56,10 @@ enum ModelCatalog {
         ProcessInfo.processInfo.environment["ATC_CLEAN_REPO"] ?? "argmaxinc/whisperkit-coreml"
     }
     static var cleanVariant: String {
-        ProcessInfo.processInfo.environment["ATC_CLEAN_VARIANT"] ?? "openai_whisper-large-v3-v20240930_turbo"
+        // The COMPRESSED on-device variant (~632 MB) of the same stock large-v3-turbo. The full fp16
+        // variant ("openai_whisper-large-v3-v20240930_turbo", ~1.64 GB) takes minutes to load and runs
+        // the ANE hot on iPad — WhisperKit ships this compressed build precisely for on-device use.
+        ProcessInfo.processInfo.environment["ATC_CLEAN_VARIANT"] ?? "openai_whisper-large-v3-v20240930_turbo_632MB"
     }
 
     static let small = ModelEntry(
@@ -82,8 +85,8 @@ enum ModelCatalog {
         id: "cleanturbo",
         displayName: "Large V2 · stock turbo",
         shortLabel: "Large V2",
-        detail: "Stock OpenAI large-v3-turbo — no ATC fine-tuning. Optional; for real-world accuracy comparison.",
-        kind: .whisperKit, approxBytes: 1_640_000_000, required: false,   // full fp16 ≈ 1.64 GB
+        detail: "Stock OpenAI large-v3-turbo, compressed for on-device speed — no ATC fine-tuning. Optional; for real-world accuracy comparison.",
+        kind: .whisperKit, approxBytes: 632_000_000, required: false,   // compressed on-device build ≈ 632 MB
         repo: cleanRepo, variant: cleanVariant, directURL: nil, fileName: nil)
 
     static let llm = ModelEntry(

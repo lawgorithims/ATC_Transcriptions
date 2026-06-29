@@ -80,7 +80,8 @@ struct TranscriptCard: View {
             }
 
             if model.records.isEmpty {
-                emptyState
+                if model.loadingModel != nil { ModelLoadingView() }   // initial model load in progress
+                else { emptyState }
             } else if orderedRecords.isEmpty {
                 filteredEmptyState                         // an active filter with zero matches
             } else {
@@ -309,5 +310,57 @@ struct TranscriptRow: View {
         let colors: [Color] = [.hex(0x3B9EFF), .hex(0x2EE6A6), .hex(0xF5C451),
                                .hex(0xC58CFF), .hex(0xFF8FB1), .hex(0x5AD1E6)]
         return colors[((i % colors.count) + colors.count) % colors.count]
+    }
+}
+
+/// Shown in the transcript area while the speech model loads (initial load). A big model can take a
+/// while the first time CoreML compiles it for this device, so this gives live feedback — the model
+/// being loaded, an elapsed timer (so it reads as progressing, not frozen), and the device thermal
+/// state — instead of a frozen "Loading model…" with no diagnostics.
+struct ModelLoadingView: View {
+    @EnvironmentObject var model: AppModel
+    @State private var now = Date()
+    @State private var thermal: ProcessInfo.ThermalState = .nominal
+    private let tick = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
+
+    var body: some View {
+        let p = model.palette
+        let elapsed = model.modelLoadStartedAt.map { max(0, Int(now.timeIntervalSince($0))) }
+        return VStack(spacing: 12) {
+            ProgressView().controlSize(.large).tint(p.accent)
+            Text("Loading \(model.activeModelLabel)…").font(.headline).foregroundStyle(p.text)
+            if let elapsed {
+                Text(elapsed >= 60 ? String(format: "%d:%02d elapsed", elapsed / 60, elapsed % 60) : "\(elapsed)s elapsed")
+                    .font(.caption.monospaced()).foregroundStyle(p.textDim)
+            }
+            Text("Large models can take a few minutes to load the first time as your device compiles them. Keep CommSight open — it speeds up after the first load.")
+                .font(.caption).foregroundStyle(p.textDim)
+                .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 12)
+            HStack(spacing: 6) {
+                Image(systemName: "thermometer.medium").font(.caption2)
+                Text("Device temperature: \(thermal.label)").font(.caption.monospaced())
+            }
+            .foregroundStyle(thermalColor(p))
+            if thermal == .serious || thermal == .critical {
+                Text("Your device is warming up while it loads — this eases once the model is ready. A smaller model (Small) loads far faster and runs cooler.")
+                    .font(.caption2).foregroundStyle(p.warn)
+                    .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 12)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity).padding(40)
+        .accessibilityIdentifier("model-loading")
+        .onAppear { thermal = DeviceLoad.thermalState() }
+        .onReceive(tick) { now = $0; thermal = DeviceLoad.thermalState() }
+    }
+
+    private func thermalColor(_ p: Palette) -> Color {
+        switch thermal {
+        case .nominal: return p.textDim
+        case .fair: return p.text
+        case .serious, .critical: return p.warn
+        @unknown default: return p.textDim
+        }
     }
 }

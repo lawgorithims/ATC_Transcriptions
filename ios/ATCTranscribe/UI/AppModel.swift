@@ -72,6 +72,9 @@ final class AppModel: ObservableObject {
     /// The whisper id being loaded during a swap (nil when idle). Drives the Settings picker's
     /// optimistic highlight + spinner and blocks a re-entrant switch; cleared on every swap exit.
     @Published var loadingModel: String?
+    /// When the current (initial) model load began — drives the on-screen "loading…" elapsed timer so a
+    /// long first load reads as progressing, not frozen. Set in `beginModelLoad`.
+    @Published private(set) var modelLoadStartedAt: Date?
     /// Set when the speech model fails to load, so the UI can say *why* instead of a bare
     /// "model unavailable".
     @Published var modelLoadError: String?
@@ -224,6 +227,10 @@ final class AppModel: ObservableObject {
     private let adsbTrustWindow: TimeInterval = 12
     private var trafficEpoch = 0
     private var scenePhaseActive = true
+    /// Backgrounding (home screen / app switcher) pauses capture so the app doesn't keep streaming +
+    /// playing the live feed in the background. These remember what to resume when the app returns.
+    private var backgroundPaused = false
+    private var backgroundResumeSource: SourceKind?
     /// Constructed in `init` (IUO so the publish closures can capture a fully-initialized `self`).
     private var adsbService: ADSBService!
 
@@ -559,13 +566,39 @@ final class AppModel: ObservableObject {
         session?.clearTrafficContext(epoch: trafficEpoch)
     }
 
-    /// Foreground/background transition from the root view: pause polling + drop traffic in the
-    /// background; resume on return to the foreground.
-    func setScenePhaseActive(_ active: Bool) {
-        guard active != scenePhaseActive else { return }
-        scenePhaseActive = active
-        if !active { clearTraffic() }
-        syncADSB()
+    /// Respond to app foreground/background transitions. **Backgrounding** (home screen / app switcher)
+    /// STOPS capture and releases the audio session, so the app doesn't keep streaming + playing the
+    /// live ATC feed (and draining the battery) while it isn't on screen; **foregrounding** resumes
+    /// whatever was running. `.inactive` — a transient overlay like Control Center or an incoming call
+    /// banner — is ignored so a quick glance doesn't tear the feed down. ADS-B is paused/cleared in the
+    /// background either way.
+    func handleScenePhase(_ phase: ScenePhase) {
+        switch phase {
+        case .active:
+            guard !scenePhaseActive else { return }
+            scenePhaseActive = true
+            syncADSB()
+            if backgroundPaused {
+                backgroundPaused = false
+                let resume = backgroundResumeSource
+                backgroundResumeSource = nil
+                if let resume { source = resume; start(resuming: true) }
+            }
+        case .background:
+            guard scenePhaseActive else { return }
+            scenePhaseActive = false
+            clearTraffic()
+            // Stop capture so the feed isn't streamed/played in the background, and release the audio
+            // session so the `audio` background mode can't keep the app awake (the battery drain + the
+            // "I still hear ATC on the home screen" report).
+            if isRunning { backgroundResumeSource = source; backgroundPaused = true; stop() }
+            AudioSessionManager.deactivate()
+            syncADSB()
+        case .inactive:
+            break                       // transient — don't tear down the feed
+        @unknown default:
+            break
+        }
     }
 
     /// Build the slow-tier LLM corrector, REUSING a cached llama.cpp engine for the `.local` backend
@@ -867,6 +900,7 @@ final class AppModel: ObservableObject {
         self.modelDirs = models
         liveMode = true
         loadingModel = active            // `activeModelLabel` now reflects the model being loaded
+        modelLoadStartedAt = Date()      // drives the on-screen elapsed timer
         modelLoadError = nil
         proofOfLife = nil                // drop the demo "performance check" so it doesn't show a stale model
         records = []; stats = LatencyStats()

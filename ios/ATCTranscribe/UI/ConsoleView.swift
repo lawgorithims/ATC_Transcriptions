@@ -51,8 +51,9 @@ struct ConsoleView: View {
             }
         }
         .onChange(of: scenePhase) { _, newPhase in
-            // Pause ADS-B polling + drop injected traffic in the background; resume on return.
-            model.setScenePhaseActive(newPhase == .active)
+            // Backgrounding stops capture + releases audio (no background streaming/drain); ADS-B is
+            // paused/cleared; foregrounding resumes what was running.
+            model.handleScenePhase(newPhase)
         }
     }
 
