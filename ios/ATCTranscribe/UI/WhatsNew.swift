@@ -32,6 +32,14 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 17, version: "1.0", headline: "Fix: Start button after a model won’t load",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "play.slash",
+                    title: "No more stuck Start button",
+                    detail: "If a model (e.g. Large V2) won’t load on your device, CommSight now automatically falls back to the Small model so you can actually Start a feed — instead of looking like it loaded Small while leaving Start dead. It also remembers Small for next time so it won’t keep retrying the model that won’t load."),
+            ]),
+        ReleaseNote(
             build: 16, version: "1.0", headline: "Large V2 is actually fast now",
             highlights: [
                 WhatsNewHighlight(
