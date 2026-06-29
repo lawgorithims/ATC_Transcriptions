@@ -118,6 +118,31 @@ struct SettingsSheet: View {
                                 .opacity(model.correctionEnabled ? 1 : 0.5)
                         }
                     }
+                    Card(title: "About") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            KV("Version", "\(WhatsNew.currentVersion()) (build \(WhatsNew.currentBuild()))")
+                            NavigationLink {
+                                ScrollView {
+                                    WhatsNewContent(entries: WhatsNew.releaseNotes)
+                                        .environmentObject(model)
+                                        .padding(16)
+                                }
+                                .background(p.bg)
+                                .navigationTitle("What’s new")
+                                .navigationBarTitleDisplayMode(.inline)
+                            } label: {
+                                HStack {
+                                    Label("What’s new in CommSight", systemImage: "sparkles")
+                                        .font(.caption).foregroundStyle(p.text)
+                                    Spacer()
+                                    Image(systemName: "chevron.right").font(.caption2).foregroundStyle(p.textDim)
+                                }
+                            }
+                            .accessibilityIdentifier("settings-whats-new")
+                            Text("See what changed in recent builds. The “What’s new” popup also appears once, automatically, after each update.")
+                                .font(.caption2).foregroundStyle(p.textDim)
+                        }
+                    }
                 }
                 .padding(16)
             }

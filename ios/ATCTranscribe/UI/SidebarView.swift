@@ -301,6 +301,7 @@ struct DiagnosticsCard: View {
     }
 
     private func refresh() {
+        guard !model.standby else { return }   // don't poll device load while paused in standby
         cpu = DeviceLoad.cpuPercent()
         mem = DeviceLoad.memoryMB()
         thermal = DeviceLoad.thermalState()

@@ -125,6 +125,16 @@ final class AppModel: ObservableObject {
     }
     @Published var showFlightBag = false
 
+    // "What's new" popup: shown once after the app updates to a newer build (gated on CFBundleVersion
+    // vs the persisted `atc.lastSeenBuild`). `whatsNewEntries` holds the release notes the sheet
+    // renders; Settings → About re-shows the full log without touching this gate.
+    @Published var showWhatsNew = false
+    @Published var whatsNewEntries: [ReleaseNote] = []
+    private static let lastSeenBuildKey = "atc.lastSeenBuild"
+    /// True when the sheet was opened via the `--whats-new` preview override — so dismissing it must
+    /// NOT advance the persisted baseline (a preview shouldn't consume a genuine pending catch-up).
+    private var whatsNewForcedPreview = false
+
     // Transcript ordering: false = newest at the bottom (default, auto-scrolls down); true = newest
     // at the top, so new transmissions appear without scrolling. Persisted; toggled from the
     // transcript card's sort control.
@@ -231,6 +241,14 @@ final class AppModel: ObservableObject {
 
     private var engine: TranscriberEngine?
     private var session: TranscriptionSession?
+    // Bumped on every model switch. A slow/stuck load checks it at its commit point and discards its
+    // result if a newer switch superseded it, so an abandoned load can't clobber the live selection.
+    private var modelSwapGeneration = 0
+    // The in-flight load + its watchdog, cancelled when a newer switch starts. Cancellation can't
+    // interrupt a non-cancellable CoreML compile mid-flight, but it stops the superseded load from
+    // doing any more work once that step returns — so heavy compiles don't pile up across rapid taps.
+    private var loadTask: Task<Void, Never>?
+    private var watchdogTask: Task<Void, Never>?
     // The slow-tier llama.cpp engine, cached so a whisper-model swap doesn't reload the ~400 MB GGUF
     // (the fixer is independent of which speech model is active). Dropped when the backend leaves .local.
     private var cachedLLMEngine: LLMEngine?
@@ -311,7 +329,11 @@ final class AppModel: ObservableObject {
             if value("--source") == nil, UserDefaults.standard.string(forKey: "atc.source") == nil,
                audioDir != nil { source = .replay }
             let autostart = args.contains("--autostart")
-            Task { await setupLive(models: models, active: active, audioDir: audioDir, cpuOnly: cpuOnly, autostart: autostart) }
+            // Tag the initial load with the current generation (0) so a model switch during this slow
+            // first load supersedes it instead of the initial load clobbering the user's pick.
+            let gen = modelSwapGeneration
+            Task { await setupLive(models: models, active: active, audioDir: audioDir, cpuOnly: cpuOnly,
+                                   autostart: autostart, generation: gen) }
         } else {
             seedSampleData()   // no model yet — populated demo layout behind the download gate
             // Gate the first launch on downloading the required model, unless launched with an
@@ -319,6 +341,7 @@ final class AppModel: ObservableObject {
             needsOnboarding = explicitModel == nil && !Self.onboardingDismissed
         }
         didFinishInit = true   // from here, a showDebug toggle may add the debug widgets
+        evaluateWhatsNew()     // decide whether to greet this launch with the "What's new" popup
     }
 
     var palette: Palette { theme.palette }
@@ -329,38 +352,46 @@ final class AppModel: ObservableObject {
 
     // MARK: live wiring
 
+    /// Build a session for `active` and (on success) make it the live one. Returns false if the model
+    /// can't be loaded or the swap was superseded — in which case **nothing is torn down**, so the
+    /// previously-loaded model keeps working. A big model (e.g. Large V2) can take a long time, or
+    /// stall, to load the first time CoreML compiles it; the old session stays usable throughout and
+    /// is only released once the new one is fully built (see `switchModel`'s watchdog + generation).
+    @discardableResult
     private func setupLive(models: [String: String], active: String, audioDir: String?, cpuOnly: Bool,
-                           autostart: Bool, preserveHistory: Bool = false) async {
-        guard let modelDir = models[active] else { detail = "Model unavailable."; return }
-        // When swapping models we keep the visible transcript: snapshot it now (it still mirrors the
-        // old session) and seed it into the new session below so the swap isn't destructive.
+                           autostart: Bool, preserveHistory: Bool = false, generation: Int? = nil) async -> Bool {
+        guard let modelDir = models[active] else { detail = "Model unavailable."; return false }
+        // Snapshot the visible transcript so the new session can adopt it (a swap isn't destructive to
+        // history). The OLD session keeps running/loaded until the new model is confirmed loaded.
         let savedRecords = records
         let savedStats = stats
-        // On a swap, release the OLD session/engine (holding the old whisper model, up to ~1.5 GB)
-        // BEFORE loading the new one, so only one model is resident at the load peak. switchModel
-        // already called stop(); `$records` keeps its last value once the binding is severed, and
-        // the snapshot above is re-seeded via session.adopt below, so the console doesn't blank.
-        if preserveHistory { self.session = nil; self.engine = nil }
         let engine = TranscriberEngine(models: models, defaultModel: active,
                                        fallbackModel: models["small"] != nil ? "small" : active,
                                        adaptive: false, cpuOnly: cpuOnly)
         let transcriber = ATCTranscriber(modelFolder: modelDir, cpuOnly: cpuOnly)
         do {
             try await transcriber.load()
+            // Superseded by a newer switch while this compile ran? Bail before building anything else,
+            // so an abandoned load stops consuming resources as soon as its CoreML step returns.
+            if let generation, generation != modelSwapGeneration { return false }
             modelLoadError = nil
         } catch {
-            modelLoadError = error.localizedDescription
-            detail = "Model failed to load: \(error.localizedDescription)"
-            return
+            // Only the current (or generation-less init/download) load may write status — a superseded
+            // load that fails late must not flash a stale "failed" over the newer selection.
+            if generation == nil || generation == modelSwapGeneration {
+                modelLoadError = error.localizedDescription
+                detail = "Model failed to load: \(error.localizedDescription)"
+            }
+            return false                          // old session/engine untouched → still usable
         }
 
-        // Load a facility config so the corrector vocabulary + RAG retrieval actually have data
-        // (the shipping default is KDFW; an airport typed in the UI overrides it). Previously
-        // ATCContext() was empty, so vocab()/retrieval were no-ops.
+        // Build the new context + corrector into LOCALS first (no `self.*` mutation yet) so a swap that
+        // is superseded mid-load — or whose model loaded but is no longer wanted — can be discarded
+        // without disturbing the live session. Load a facility config so the corrector vocabulary +
+        // RAG retrieval have data (shipping default KDFW; a typed airport overrides it).
         let configName = airport.isEmpty ? "kdfw" : airport.lowercased()
         let cfg = try? AirportConfig.load(named: configName)
         let feedKey = cfg?.streams?.keys.sorted().first
-        self.feedKey = feedKey
         let context = ATCContext(config: cfg, feedKey: feedKey)
         // Seed the filed flight plan (Electronic Flight Bag) before the pipeline starts using the
         // context, so the first transmission's LLM correction already sees the pilot's own callsign,
@@ -376,10 +407,10 @@ final class AppModel: ObservableObject {
             context.setTraffic(block: block, vocab: vocab,
                                expiry: at.addingTimeInterval(adsbTrustWindow), epoch: trafficEpoch)
         }
-        self.liveContext = context
 
         // Build/reuse the optional slow-tier LLM off the main actor. The GGUF loads at most once per
-        // app run (cached), so a whisper-model swap no longer reloads ~400 MB off disk.
+        // app run (cached), so a whisper-model swap no longer reloads ~400 MB off disk. (`currentCorrector`
+        // reads `self.liveContext` lazily at transcribe time, so building it before the commit is fine.)
         let llm = await makeLLMCorrector(knowledge: context.knowledge, feedKey: feedKey)
 
         let pipeline = LivePipeline(transcriber: transcriber, context: context,
@@ -391,6 +422,18 @@ final class AppModel: ObservableObject {
                                                          squelchLevel: Float(manualSquelch)))
         let session = TranscriptionSession(pipeline: pipeline)
         if preserveHistory { session.adopt(records: savedRecords, stats: savedStats) }  // survive a model swap
+
+        // Commit point. If a newer switch superseded this one while the model (or the LLM) was loading,
+        // discard this result — nothing above touched `self.*`, so the live session is unaffected.
+        if let generation, generation != modelSwapGeneration { return false }
+
+        // Now that the new session is fully built, release the OLD one (severing its UI bindings +
+        // freeing the old whisper model) and wire the new one in. Doing this only AFTER the load means
+        // there is never a window with no usable model.
+        let oldSession = self.session
+        self.session = nil
+        self.feedKey = feedKey
+        self.liveContext = context
         session.$records.assign(to: &$records)   // mirror live session state into the UI
         session.$status.assign(to: &$status)
         session.$stats.assign(to: &$stats)
@@ -399,10 +442,16 @@ final class AppModel: ObservableObject {
         self.engine = engine
         self.modelDirs = models
         self.activeModel = active
+        // Stop the old session's source explicitly. `TranscriptionSession` has no deinit and its
+        // run-loop Task strongly holds the pipeline + source, so dropping the reference alone would
+        // NOT stop a source the user restarted during the watchdog-freed window (leaking a live feed /
+        // network stream / hot mic). stop() no-ops when it was already stopped (the normal swap path).
+        oldSession?.stop()
 
         if let audioDir { clips = (try? Self.loadClips(audioDir)) ?? [] }
         detail = clips.isEmpty ? "Model ready (no demo clips)." : "Ready — press Start."
         if autostart { start(resuming: preserveHistory) }
+        return true
     }
 
     // MARK: correction
@@ -653,6 +702,11 @@ final class AppModel: ObservableObject {
     /// where it left off.
     func enterStandby() {
         if isRunning { resumeSource = source; stop() } else { resumeSource = nil }
+        // Belt-and-suspenders: unconditionally release the audio session so the `audio` background mode
+        // can't keep the app (and the audio hardware) awake in standby. stop() already does this on the
+        // running path; this also covers the not-running path and any edge where the session lingered,
+        // so once the screen locks the device can actually suspend instead of draining at full tilt.
+        AudioSessionManager.deactivate()
         detail = "Standby — capture paused."
         standby = true
     }
@@ -663,6 +717,56 @@ final class AppModel: ObservableObject {
         standby = false
         if let s = resumeSource { source = s; start(resuming: true) }
         resumeSource = nil
+    }
+
+    // MARK: "What's new" popup
+
+    /// Decide whether to show the "What's new" popup for this launch. Called once at the end of `init`,
+    /// after the onboarding decision is final. Shows the catch-up of any builds the tester hasn't seen
+    /// since `atc.lastSeenBuild`; records the running build silently when there's nothing to show.
+    private func evaluateWhatsNew() {
+        // Test/preview seam: force the full changelog regardless of the gate (dev builds report
+        // CFBundleVersion "1", so the auto-path is otherwise dormant in the Simulator). It's a preview,
+        // so it must NOT advance the persisted baseline (see `whatsNewDismissed`). Respect the onboarding
+        // cover — a sheet can't present under a fullScreenCover — and defer to `finishOnboarding`.
+        if CommandLine.arguments.contains("--whats-new") {
+            whatsNewEntries = WhatsNew.releaseNotes
+            whatsNewForcedPreview = true
+            if !needsOnboarding { showWhatsNew = true }
+            return
+        }
+        let current = WhatsNew.currentBuild()
+        let lastSeen = UserDefaults.standard.integer(forKey: Self.lastSeenBuildKey)
+        let entries = WhatsNew.autoShowEntries(lastSeen: lastSeen, current: current, onboarding: needsOnboarding)
+        guard !entries.isEmpty else {
+            // Nothing to show (already seen, a downgrade, or a relaunch): advance the baseline so the
+            // next genuine update shows. While the onboarding gate is up, leave it to `finishOnboarding`
+            // so a fresh install's baseline is set only once it's actually past onboarding. NOTE: an
+            // absent key reads as 0 here, so an existing install updating from a pre-feature build (no
+            // baseline yet) correctly gets the catch-up — that's the intended debut on the lean ship
+            // path, where every truly-fresh install instead goes through onboarding first.
+            if !needsOnboarding { markWhatsNewSeen() }
+            return
+        }
+        whatsNewEntries = entries
+        showWhatsNew = true
+    }
+
+    /// Record the running build as seen so the popup doesn't reappear until the next update. Never
+    /// lowers the stored value (so a downgrade build can't replay an old changelog). Called after
+    /// onboarding and (via `whatsNewDismissed`) when the sheet closes.
+    func markWhatsNewSeen() {
+        let stored = UserDefaults.standard.integer(forKey: Self.lastSeenBuildKey)
+        UserDefaults.standard.set(WhatsNew.advancedBaseline(stored: stored, current: WhatsNew.currentBuild()),
+                                  forKey: Self.lastSeenBuildKey)
+    }
+
+    /// The What's-new sheet was dismissed (button or swipe). Advance the baseline so it won't reappear
+    /// until the next update — UNLESS it was a `--whats-new` preview, which must leave a genuine pending
+    /// catch-up intact.
+    func whatsNewDismissed() {
+        if !whatsNewForcedPreview { markWhatsNewSeen() }
+        whatsNewForcedPreview = false
     }
 
     func clear() {
@@ -773,11 +877,39 @@ final class AppModel: ObservableObject {
         if wasRunning { stop() }
         loadingModel = id                            // picker reflects the choice immediately
         detail = "Loading \(ModelCatalog.shortLabel(forID: id)) model…"   // friendly name, not the raw id
+        modelSwapGeneration += 1
+        let gen = modelSwapGeneration
         let models = modelDirs
-        Task {
-            defer { loadingModel = nil }             // clears on success AND every early-return/failure
-            await setupLive(models: models, active: id, audioDir: audioDirPath,
-                            cpuOnly: storedCPUOnly, autostart: wasRunning, preserveHistory: true)
+        // Cancel the prior swap's tasks so a superseded (non-cancellable) compile stops doing work the
+        // moment its in-flight CoreML step returns, instead of two heavy compiles contending at once.
+        watchdogTask?.cancel()
+        loadTask?.cancel()
+
+        // Watchdog: a big model (e.g. Large V2) can take a long time — or stall — to load, especially
+        // the first time CoreML compiles it for this device. The swap is non-destructive (the current
+        // model stays loaded and usable the whole time), so if the new one hasn't landed after a grace
+        // period, UNLOCK the picker rather than trapping the user on a spinner with no escape: they can
+        // keep using the current model or pick another. The load keeps going; its result is applied
+        // only if it's still the latest swap when it finishes (generation check in `setupLive`).
+        watchdogTask = Task {
+            try? await Task.sleep(nanoseconds: 30_000_000_000)   // 30s grace
+            guard !Task.isCancelled, modelSwapGeneration == gen, loadingModel == id else { return }
+            loadingModel = nil
+            detail = "\(ModelCatalog.shortLabel(forID: id)) is still loading — still using \(activeModelLabel). It’ll switch when ready, or pick another model."
+        }
+
+        loadTask = Task {
+            let ok = await setupLive(models: models, active: id, audioDir: audioDirPath,
+                                     cpuOnly: storedCPUOnly, autostart: wasRunning,
+                                     preserveHistory: true, generation: gen)
+            guard modelSwapGeneration == gen else { return }   // a newer switch owns the UI now
+            if loadingModel == id { loadingModel = nil }
+            if !ok {
+                // The model failed to load (or this swap was abandoned). The previous model is intact —
+                // tell the user and resume it if it had been running and isn't already.
+                detail = "Couldn’t load \(ModelCatalog.shortLabel(forID: id)). Still using \(activeModelLabel)."
+                if wasRunning, !isRunning, session != nil { start(resuming: true) }
+            }
         }
     }
 
@@ -799,6 +931,12 @@ final class AppModel: ObservableObject {
     func finishOnboarding() {
         needsOnboarding = false
         if Self.resolvedModelDir() == nil { Self.onboardingDismissed = true }
+        // The gate is gone, so a What's-new sheet can present now. A pending `--whats-new` preview that
+        // was deferred under the cover shows here; otherwise this is a fresh install — start its "seen"
+        // baseline at the current build so the catch-up popup debuts on the NEXT update, not on top of
+        // first-run setup.
+        if whatsNewForcedPreview { showWhatsNew = true }
+        else { markWhatsNewSeen() }
     }
 
     /// A model finished downloading. If the app launched without one (demo mode), bring up the
@@ -822,8 +960,9 @@ final class AppModel: ObservableObject {
         detail = "Loading model…"
         if value(forFlag: "--source") == nil, UserDefaults.standard.string(forKey: "atc.source") == nil,
            Self.bundledDemoClipsDir() != nil { source = .replay }
+        let gen = modelSwapGeneration   // supersede this post-download load if the user switches mid-load
         Task { await setupLive(models: models, active: active, audioDir: Self.bundledDemoClipsDir(),
-                               cpuOnly: storedCPUOnly, autostart: false) }
+                               cpuOnly: storedCPUOnly, autostart: false, generation: gen) }
     }
 
     /// Read a `--flag value` pair from the launch arguments (used post-init by `modelDidDownload`).
