@@ -943,11 +943,20 @@ final class AppModel: ObservableObject {
     /// tap away — so a device that can't run the big model isn't left permanently stuck.
     private func surfaceInitialLoadProblem(active: String, reason: String) {
         modelLoadError = reason
-        if modelDownloaded("small") || modelDownloaded("turbo") {
-            detail = "\(reason) Pick another model in Settings › Models."
-        } else {
+        // Don't leave the app stranded with NO session — Start would silently fail and the widgets
+        // would still read "Small" (the default `activeModel`) even though nothing is loaded. If the
+        // Small model is downloaded, load it automatically so the app ends up usable; loading it also
+        // commits it as the active model, so the next launch goes straight to Small instead of
+        // retrying the model that won't load. Fall back FROM another model only (no Small→Small loop).
+        if active != "small", modelDownloaded("small") {
+            detail = "\(reason) Loading the Small model instead."
+            beginModelLoad(models: modelDirs, active: "small", audioDir: audioDirPath, autostart: false)
+        } else if !modelDownloaded("small") {
             detail = "\(reason) Download the Small model to continue."
             needsOnboarding = true
+        } else {
+            // The Small model itself failed — nothing reliable to fall back to.
+            detail = "\(reason) Try re-downloading it in Settings › Models."
         }
     }
 
@@ -955,7 +964,9 @@ final class AppModel: ObservableObject {
     /// against the chosen variant's folder. No-op if it isn't downloaded or is already active.
     /// Preserves run state: if a source was live it restarts after the new model loads.
     func switchModel(_ id: String) {
-        guard liveMode, id != activeModel, modelDirs[id] != nil else { return }
+        // Normally skip a no-op reselect of the already-active model — but if there's NO working
+        // session (a prior load failed and left us stranded), allow reselecting it to recover.
+        guard liveMode, modelDirs[id] != nil, (session == nil || id != activeModel) else { return }
         guard loadingModel == nil else { return }   // a swap is already loading — ignore the tap
         let wasRunning = isRunning
         if wasRunning { stop() }
