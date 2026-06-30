@@ -224,7 +224,7 @@ struct TranscriptRow: View {
                 // Corrected words are tinted amber inline so they stand out at a glance. Highlight
                 // only the tier actually shown: the LLM's edits when the LLM-refined text is on
                 // screen, otherwise the inline corrector's.
-                Text(highlighted(record.display,
+                Text(highlighted(record.normalizedDisplay,
                                  edits: record.llmCorrected.isEmpty ? record.corrections : record.llmEdits,
                                  color: p.warn))
                     .font(.callout).foregroundStyle(p.text)
