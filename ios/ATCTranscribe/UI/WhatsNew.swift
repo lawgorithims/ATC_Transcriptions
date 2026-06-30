@@ -32,6 +32,18 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 18, version: "1.0", headline: "Connect a Stratux receiver",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "dot.radiowaves.up.forward",
+                    title: "Cockpit audio over Wi-Fi",
+                    detail: "Pick “Stratux receiver” as your input source to transcribe live cockpit audio streamed from a Stratux box over its own Wi-Fi — no cable to the iPad, and no internet needed in flight. Set the receiver’s address in Settings › Stratux receiver."),
+                WhatsNewHighlight(
+                    icon: "airplane.circle",
+                    title: "On-board traffic & GPS",
+                    detail: "Connected to a Stratux, nearby ADS-B traffic and your GPS fix come straight from the receiver instead of the internet — feeding the same callsign corrector and traffic view, in flight."),
+            ]),
+        ReleaseNote(
             build: 17, version: "1.0", headline: "Fix: Start button after a model won’t load",
             highlights: [
                 WhatsNewHighlight(

@@ -278,6 +278,37 @@ struct Badge: View {
     }
 }
 
+/// Compact live status for the Stratux link: connecting / linked (with GPS fix + sat count + traffic
+/// count) / error. Only meaningful while the Stratux source is running; idle otherwise.
+struct StratuxStatusChip: View {
+    @EnvironmentObject var model: AppModel
+    var body: some View {
+        let p = model.palette
+        let (text, color): (String, Color) = {
+            switch model.stratuxStatus {
+            case .idle:        return ("Stratux idle", p.textDim)
+            case .connecting:  return ("Linking…", p.warn)
+            case .connected:
+                let tfc = "\(model.aircraft.count) tfc"
+                if let g = model.stratuxGPS, g.hasFix {
+                    return ("\(g.fixLabel) · \(g.satellites) sat · \(tfc)", p.good)
+                }
+                return ("Linked · acquiring GPS · \(tfc)", p.good)
+            case .error(let m): return ("Stratux: \(m)", p.bad)
+            }
+        }()
+        return HStack(spacing: 5) {
+            Image(systemName: "dot.radiowaves.up.forward").font(.caption2)
+            Text(text).font(.caption2).lineLimit(1).minimumScaleFactor(0.8)
+        }
+        .foregroundStyle(color)
+        .padding(.horizontal, 10).padding(.vertical, 8)
+        .background(p.surfaceAlt).clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(p.border, lineWidth: 1))
+        .accessibilityIdentifier("stratux-status")
+    }
+}
+
 // MARK: - Carousel page 2: flight plan summary
 
 /// The filed flight plan shown as the full, colour-coded route (departure → fixes/airways →
@@ -449,9 +480,9 @@ struct ControlsBar: View {
 
                 Spacer(minLength: 0)
 
-                // Listen to the live feed through the speakers (verify it's arriving). Feed only —
-                // mic/USB would feed back.
-                if model.source == .liveFeed {
+                // Listen to the live feed / Stratux cockpit audio through the speakers (verify it's
+                // arriving). Feed/Stratux only — mic/USB would feed back.
+                if model.source == .liveFeed || model.source == .stratux {
                     Button { model.monitorEnabled.toggle() } label: {
                         Image(systemName: model.monitorEnabled ? "speaker.wave.2.fill" : "speaker.slash.fill")
                             .font(.system(size: 15))
@@ -502,6 +533,16 @@ struct ControlsBar: View {
                     .padding(.horizontal, 10).padding(.vertical, 8)
                     .background(p.surfaceAlt).clipShape(RoundedRectangle(cornerRadius: 8))
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(p.border, lineWidth: 1))
+                }
+            }
+
+            // Stratux: cockpit audio + on-board traffic/GPS over the receiver's Wi-Fi. The airport sets
+            // the corrector's facility phraseology; the chip shows the live link/GPS/traffic state. The
+            // receiver address lives in Settings › Stratux receiver.
+            if model.source == .stratux {
+                HStack(spacing: 10) {
+                    field(icon: "airplane", placeholder: "Airport context (e.g. KBOS)", text: $model.airport)
+                    StratuxStatusChip()
                 }
             }
 
