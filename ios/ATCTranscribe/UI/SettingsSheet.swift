@@ -68,6 +68,38 @@ struct SettingsSheet: View {
                                 .font(.caption2).foregroundStyle(p.textDim.opacity(0.8))
                         }
                     }
+                    Card(title: "Stratux receiver") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Connect to a Stratux ADS-B/GPS receiver over its Wi-Fi for cockpit audio plus on-board traffic and GPS — no internet needed in flight. Pick “Stratux receiver” as the input source, then Start.")
+                                .font(.caption2).foregroundStyle(p.textDim)
+                            HStack(spacing: 10) {
+                                Text("Address").font(.caption).foregroundStyle(p.textDim)
+                                    .frame(width: 84, alignment: .leading)
+                                TextField("192.168.10.1", text: $model.stratuxHost)
+                                    .textFieldStyle(.plain).autocorrectionDisabled()
+                                    .textInputAutocapitalization(.never).keyboardType(.numbersAndPunctuation)
+                                    .font(.caption)
+                                    .padding(.horizontal, 10).padding(.vertical, 8)
+                                    .background(p.surfaceAlt).clipShape(RoundedRectangle(cornerRadius: 8))
+                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(p.border, lineWidth: 1))
+                                    .accessibilityIdentifier("stratux-host")
+                            }
+                            HStack(spacing: 10) {
+                                Text("Audio port").font(.caption).foregroundStyle(p.textDim)
+                                    .frame(width: 84, alignment: .leading)
+                                TextField("8090", value: $model.stratuxAudioPort, format: .number.grouping(.never))
+                                    .textFieldStyle(.plain).keyboardType(.numberPad).font(.caption)
+                                    .padding(.horizontal, 10).padding(.vertical, 8)
+                                    .background(p.surfaceAlt).clipShape(RoundedRectangle(cornerRadius: 8))
+                                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(p.border, lineWidth: 1))
+                                    .frame(maxWidth: 120)
+                                Spacer(minLength: 0)
+                            }
+                            Text("Traffic + GPS use the receiver's web API on \(model.stratuxHost); cockpit audio streams from the sidecar on port \(String(model.stratuxAudioPort)) at /audio.raw. Set the sidecar up with the guide in Tools/stratux. iOS will ask once for permission to find devices on your local network.")
+                                .font(.caption2).foregroundStyle(p.textDim)
+                            Text(StratuxService.attribution).font(.caption2).foregroundStyle(p.textDim.opacity(0.8))
+                        }
+                    }
                     Card(title: "Adaptive selection") {
                         VStack(alignment: .leading, spacing: 10) {
                             HStack {

@@ -86,6 +86,13 @@ targets:
         UILaunchScreen: {}
         ITSAppUsesNonExemptEncryption: false
         NSMicrophoneUsageDescription: "CommSight uses the microphone to capture and transcribe live ATC audio."
+        # Connecting to a Stratux receiver on the local Wi-Fi (audio sidecar + traffic/GPS web API) needs
+        # the local-network permission (iOS 14+) and a cleartext-local ATS exception (the link is http/ws
+        # to 192.168.x.x). NSAllowsLocalNetworking is scoped to LOCAL hosts, so non-local loads are
+        # unaffected.
+        NSLocalNetworkUsageDescription: "CommSight connects to a Stratux receiver on your local Wi-Fi to receive live cockpit audio, aircraft traffic, and GPS."
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
         UIBackgroundModes:
           - audio
         UISupportedInterfaceOrientations:
