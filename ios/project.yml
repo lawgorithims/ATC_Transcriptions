@@ -194,6 +194,10 @@ schemes:
         # "1" only when regenerating README screenshots (Tools/screenshots.sh); empty otherwise, so
         # ScreenshotTests XCTSkips in the normal suite and never flakes a ship.
         SCREENSHOTS: ${SCREENSHOTS}
+        # "1" only when running the Stratux sustained-stream validation (Tools/stratux_validate.sh)
+        # against the fake server; empty otherwise so StratuxLiveStreamTests XCTSkips in the normal suite.
+        STRATUX_VALIDATE: ${STRATUX_VALIDATE}
+        STRATUX_PORT: ${STRATUX_PORT}
 
   # Native macOS probe: `xcodebuild build -scheme ATCKitProbe -destination platform=macOS`,
   # then run the built binary directly (env-driven). See Tools/probe.sh.
