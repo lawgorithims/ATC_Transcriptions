@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+#
+# Show ALSA capture devices and the device CommSight's "auto" mode would pick.
+#
+set -euo pipefail
+
+if ! command -v arecord >/dev/null 2>&1; then
+  echo "arecord not found. Install it with:  sudo apt-get install -y alsa-utils" >&2
+  exit 1
+fi
+
+echo "Capture devices (arecord -l):"
+arecord -l 2>/dev/null | sed 's/^/  /' || true
+echo
+
+auto="$(arecord -l 2>/dev/null \
+  | sed -n 's/^card \([0-9]\+\): \([^ ]*\) \[\([^]]*\)\], device \([0-9]\+\):.*/\1 \4 \3 \2/p' \
+  | grep -i usb | head -1 || true)"
+
+if [ -n "$auto" ]; then
+  # shellcheck disable=SC2086
+  set -- $auto
+  echo "auto would pick (USB):  plughw:$1,$2"
+else
+  first="$(arecord -l 2>/dev/null | sed -n 's/^card \([0-9]\+\):.*device \([0-9]\+\):.*/plughw:\1,\2/p' | head -1 || true)"
+  if [ -n "$first" ]; then
+    echo "No USB capture device matched. auto would fall back to: $first"
+  else
+    echo "No capture devices found. Plug in the USB adapter, or set AUDIO_DEVICE manually (e.g. plughw:1,0)."
+  fi
+fi

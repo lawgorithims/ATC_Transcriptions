@@ -1,0 +1,21 @@
+[Unit]
+Description=CommSight cockpit-audio gateway (Stratux sidecar)
+Documentation=https://github.com/lawgorithims/ATC_Transcriptions/tree/main/stratux-pi
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Config lives in /etc/default/cockpit-audio (AUDIO_DEVICE, AUDIO_PORT, ...). The leading "-" makes
+# it optional so the service still starts on defaults if the file is missing.
+EnvironmentFile=-/etc/default/cockpit-audio
+WorkingDirectory=@PREFIX@
+ExecStart=/usr/bin/python3 -m commsight_cockpit_audio
+Restart=always
+RestartSec=2
+# Needs access to the ALSA capture device; root is simplest on a dedicated Stratux Pi. To run
+# unprivileged instead, set User=<name> and add that user to the "audio" group.
+User=root
+
+[Install]
+WantedBy=multi-user.target

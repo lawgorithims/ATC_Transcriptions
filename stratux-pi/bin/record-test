@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+#
+# Capture a few seconds from the (auto-detected or given) device, with a live level meter, so you
+# can set a clean, un-clipped gain before streaming. Usage:  ./record-test [plughw:1,0] [seconds]
+#
+set -euo pipefail
+
+DEV="${1:-auto}"
+SECS="${2:-5}"
+OUT="/tmp/cockpit_test.wav"
+
+if [ "$DEV" = "auto" ]; then
+  DEV="$(arecord -l 2>/dev/null \
+    | sed -n 's/^card \([0-9]\+\): .* device \([0-9]\+\):.*/\1 \2/p' \
+    | head -1 | awk '{print "plughw:"$1","$2}')"
+  # Prefer a USB device if there is one.
+  usb="$(arecord -l 2>/dev/null \
+    | sed -n 's/^card \([0-9]\+\): \([^ ]*\) \[\([^]]*\)\], device \([0-9]\+\):.*/\1 \4 \3 \2/p' \
+    | grep -i usb | head -1 | awk '{print "plughw:"$1","$2}' || true)"
+  [ -n "$usb" ] && DEV="$usb"
+  [ -z "$DEV" ] && DEV="plughw:1,0"
+fi
+
+echo "Recording ${SECS}s from $DEV  ->  $OUT"
+echo "(watch the level bar; if it pins to the right it's clipping — lower the inline volume or alsamixer gain)"
+arecord -D "$DEV" -f S16_LE -r 16000 -c 1 -d "$SECS" -V mono "$OUT"
+echo
+echo "Saved $OUT. Listen with:  aplay $OUT   (or copy it off and play on your laptop)"
