@@ -52,6 +52,12 @@ struct TranscriptRecord: Sendable, Identifiable {
         return corrected.isEmpty ? text : corrected
     }
 
+    /// `display` canonicalized for on-screen rendering — runway designators and numbers in
+    /// spoken/radio form ("4R" → "4 right", "125.9" → "1 2 5 point 9"). Used ONLY by the
+    /// transcript UI; `display` (raw) still feeds CallsignExtractor and the rest of the pipeline,
+    /// so structured extraction is unaffected. Validated to cut WER ~9 pts on the US gold set.
+    var normalizedDisplay: String { ATCNormalize.normalize(display) }
+
     /// All edits to surface, fast inline tier first then the LLM's.
     var allEdits: [CorrectionEdit] { corrections + llmEdits }
 
