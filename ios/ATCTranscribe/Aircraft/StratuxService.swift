@@ -59,7 +59,13 @@ actor StratuxService {
     func sync(host newHost: String?, enabled: Bool) {
         let h = newHost?.trimmingCharacters(in: .whitespaces).nilWhenEmpty
         if h != host {
+            // The host changed → tear the live tasks down so the spawn block below restarts them
+            // against the NEW host. They capture the host at spawn time and never re-read it, so a
+            // mid-session address edit (or switching receivers) would otherwise keep streaming from
+            // the OLD box with a misleadingly "connected" status.
             host = h
+            trafficTask?.cancel(); trafficTask = nil
+            refreshTask?.cancel(); refreshTask = nil
             contacts = [:]
             onTraffic([], .distantPast)
             onGPS(nil)
@@ -87,14 +93,22 @@ actor StratuxService {
     private func runTraffic(host: String) async {
         var backoff = 1.0
         while !Task.isCancelled {
-            guard let url = URL(string: "ws://\(host)/traffic") else { onStatus(.error("bad address")); return }
+            guard let url = URL(string: "ws://\(host)/traffic") else {
+                // Malformed host → surface it and retry rather than leaving a dead, non-nil task that
+                // blocks any respawn. A host change cancels this task (see sync); the backoff caps churn.
+                onStatus(.error("bad address"))
+                try? await Task.sleep(nanoseconds: UInt64(backoff * 1_000_000_000))
+                backoff = min(backoff * 2, 15)
+                continue
+            }
             onStatus(.connecting)
             let ws = session.webSocketTask(with: url)
             ws.resume()
+            var announced = false
             do {
                 while !Task.isCancelled {
                     let message = try await ws.receive()
-                    onStatus(.connected)                 // first successful receive = connected
+                    if !announced { onStatus(.connected); announced = true }   // announce on the connect transition only
                     backoff = 1.0
                     ingest(message)
                 }

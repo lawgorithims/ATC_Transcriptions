@@ -19,13 +19,23 @@ final class StratuxAudioSource: NSObject, AudioSource, URLSessionDataDelegate {
     private var samples: [Float] = []
     private var stopped = false
     private var reconnect: Task<Void, Never>?
+    private let endpoint: String
+    private let onTrouble: (@Sendable (String) -> Void)?
+    private var connectAttempts = 0
+    private var gotAnyBytes = false
+    private var troubleSurfaced = false
 
-    /// `nil` if the host/port don't form a valid URL. Default chunk = 0.5 s at 16 kHz.
-    init?(host: String, audioPort: Int, path: String = "/audio.raw", chunkSamples: Int = 8000) {
+    /// `nil` if the host/port don't form a valid URL. `onTrouble` fires once if several connects in a
+    /// row deliver zero bytes (e.g. a wrong audio port) so a silent stream is visible rather than
+    /// retrying forever in silence. Default chunk = 0.5 s at 16 kHz.
+    init?(host: String, audioPort: Int, path: String = "/audio.raw", chunkSamples: Int = 8000,
+          onTrouble: (@Sendable (String) -> Void)? = nil) {
         let h = host.trimmingCharacters(in: .whitespaces)
         guard !h.isEmpty, let url = URL(string: "http://\(h):\(audioPort)\(path)") else { return nil }
         self.url = url
         self.chunkSamples = chunkSamples
+        self.endpoint = "\(h):\(audioPort)"
+        self.onTrouble = onTrouble
         super.init()
     }
 
@@ -52,7 +62,10 @@ final class StratuxAudioSource: NSObject, AudioSource, URLSessionDataDelegate {
         let task = session.dataTask(with: url)
         self.session = session
         self.dataTask = task
+        // Per-connection accumulation state — reset BOTH so a dropped connection's leftover odd byte
+        // (carry) and partial chunk (samples) aren't spliced onto the next connection.
         carry = nil
+        samples.removeAll(keepingCapacity: true)
         task.resume()
     }
 
@@ -61,6 +74,7 @@ final class StratuxAudioSource: NSObject, AudioSource, URLSessionDataDelegate {
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
         lock.lock(); defer { lock.unlock() }
         guard let continuation, !stopped else { return }
+        gotAnyBytes = true                          // audio is flowing → never surface the silent-stream trouble
         let (new, newCarry) = Self.decodePCM16(data, carry: carry)
         carry = newCarry
         for s in new {
@@ -95,15 +109,20 @@ final class StratuxAudioSource: NSObject, AudioSource, URLSessionDataDelegate {
     }
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        // The `reconnect` assignment stays under the lock so it can't race stop(): a stop() that has
+        // already set `stopped` prevents a fresh reconnect Task from ever being created.
         lock.lock()
-        let shouldReconnect = !stopped
         self.session?.finishTasksAndInvalidate(); self.session = nil; self.dataTask = nil
-        lock.unlock()
-        guard shouldReconnect else { return }
+        if stopped { lock.unlock(); return }
+        connectAttempts += 1
+        let surface = !gotAnyBytes && !troubleSurfaced && connectAttempts >= 3
+        if surface { troubleSurfaced = true }
         reconnect = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 1_500_000_000)   // brief backoff, then retry
             self?.connect()
         }
+        lock.unlock()
+        if surface { onTrouble?("No cockpit audio at \(endpoint) — check the Stratux audio sidecar / port.") }
     }
 
     func stop() {
