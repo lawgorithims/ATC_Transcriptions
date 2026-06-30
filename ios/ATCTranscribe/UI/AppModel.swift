@@ -54,7 +54,11 @@ final class AppModel: ObservableObject {
             // NOTE: this recenters ADS-B only; the facility RAG/Whisper-prompt config is built once in
             // setupLive, so a mid-session airport change needs a Stop/Start to fully retarget the
             // corrector (pre-existing behavior, unchanged by ADS-B).
-            if AirportCoordinates.coordinate(icao: airport) != AirportCoordinates.coordinate(icao: oldValue) {
+            // Under the Stratux source the airport coordinate doesn't drive traffic (the receiver
+            // reports its own in-range aircraft via on-board GPS), so skip the clear/re-sync — it would
+            // only blink the live Stratux traffic off for a refresh tick.
+            if !usingStratux,
+               AirportCoordinates.coordinate(icao: airport) != AirportCoordinates.coordinate(icao: oldValue) {
                 clearTraffic(); syncADSB()
             }
         }
@@ -441,7 +445,7 @@ final class AppModel: ObservableObject {
         // re-seed the last FRESH ADS-B snapshot so a model swap doesn't blank traffic context until
         // the next poll (~5s). The read-site expiry self-expires it if the poller doesn't return.
         context.clearTraffic(epoch: trafficEpoch)
-        if adsbStreamingEnabled, !aircraft.isEmpty, let at = aircraftUpdatedAt,
+        if trafficActive, !aircraft.isEmpty, let at = aircraftUpdatedAt,
            Date() < at.addingTimeInterval(adsbTrustWindow) {
             let (block, vocab) = Self.trafficContext(aircraft)
             context.setTraffic(block: block, vocab: vocab,
@@ -618,7 +622,8 @@ final class AppModel: ObservableObject {
             if labels.count >= 40 { break }
         }
         guard !labels.isEmpty else { return ("", []) }
-        return ("Traffic in range (live ADS-B): " + labels.joined(separator: ", ") + ".", labels)
+        // Provider-neutral wording — the same block serves airplanes.live and the Stratux receiver.
+        return ("Traffic in range: " + labels.joined(separator: ", ") + ".", labels)
     }
 
     /// Drop the injected traffic immediately and bump the epoch so any in-flight re-inject loses
@@ -771,7 +776,8 @@ final class AppModel: ObservableObject {
             // Cockpit audio from the Stratux sidecar (raw 16 kHz PCM at <host>:<port>/audio.raw). On-
             // board ADS-B/GPS for this source starts via syncTraffic() below. Monitored like the feed
             // so it can be heard/verified on the ground (mute it in the cockpit via the speaker toggle).
-            guard let stx = StratuxAudioSource(host: stratuxHost, audioPort: stratuxAudioPort) else {
+            guard let stx = StratuxAudioSource(host: stratuxHost, audioPort: stratuxAudioPort,
+                                               onTrouble: { [weak self] msg in Task { @MainActor in self?.detail = msg } }) else {
                 detail = "Set a valid Stratux address in Settings › Stratux receiver."; return
             }
             audioMonitor.setMuted(!monitorEnabled)
