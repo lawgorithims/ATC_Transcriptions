@@ -72,7 +72,10 @@ enum ModelCatalog {
         shortLabel: "Small",
         detail: "Fast, fine-tuned ATC speech model — required to transcribe.",
         kind: .whisperKit, approxBytes: 465_000_000, required: true,
-        repo: whisperRepo, variant: "small", directURL: nil, fileName: nil)
+        // variant `small-v2`: US-fine-tuned whisper-small (re-trained 2026-06). Bumping the
+        // variant folder forces existing installs (which cache-lock by folder presence, no version
+        // field) to re-download the new model on update. Old `small/` is kept on HF for rollback.
+        repo: whisperRepo, variant: "small-v2", directURL: nil, fileName: nil)
 
     static let turbo = ModelEntry(
         id: "turbo",
