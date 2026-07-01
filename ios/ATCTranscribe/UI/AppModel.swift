@@ -732,6 +732,14 @@ final class AppModel: ObservableObject {
         Task { session?.setLLM(await makeLLMCorrector(knowledge: knowledge, feedKey: feedKey)) }
     }
 
+    /// The AI fixer GGUF finished downloading (it isn't bundled in the speech-only build). Drop any
+    /// empty cached engine and rebuild the corrector so a running session starts using the fixer now,
+    /// rather than only after the next model swap or relaunch.
+    func refreshLLMAfterDownload() {
+        cachedLLMEngine = nil; cachedLLMBackend = .off   // force makeLocalLLMEngine to pick up the new GGUF
+        rebuildLLM()
+    }
+
     // MARK: controls
 
     /// Start (or resume) capture. `resuming: true` keeps the existing transcript/stats instead of
@@ -1230,7 +1238,7 @@ final class AppModel: ObservableObject {
     /// checks) and return its parent — no need to hardcode the model id. The model dir is
     /// added to the app target as a `type: folder` reference in project.yml, so it lands at
     /// `<bundle>/Models/…`. Returns nil for a model-less (demo-only) build.
-    static func bundledModelDir() -> String? {
+    nonisolated static func bundledModelDir() -> String? {   // pure (Bundle+FileManager); callable off the main actor
         guard let root = Bundle.main.resourceURL?.appendingPathComponent("Models") else { return nil }
         let fm = FileManager.default
         guard fm.fileExists(atPath: root.path),

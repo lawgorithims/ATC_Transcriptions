@@ -53,6 +53,21 @@ final class ModelDownloadManagerTests: XCTestCase {
         }
     }
 
+    func testDeleteResetsToNotDownloaded() async {
+        let mgr = ModelDownloadManager(downloader: FakeDownloader(fail: false))
+        await mgr.download(ModelCatalog.small)?.value
+        XCTAssertEqual(mgr.state("small"), .ready)
+        mgr.delete(ModelCatalog.small)
+        XCTAssertEqual(mgr.state("small"), .notDownloaded)   // wiped + resettable
+    }
+
+    func testRedownloadReachesReadyAgain() async {
+        let mgr = ModelDownloadManager(downloader: FakeDownloader(fail: false))
+        await mgr.download(ModelCatalog.small)?.value
+        await mgr.redownload(ModelCatalog.small)?.value        // delete + fetch again
+        XCTAssertEqual(mgr.state("small"), .ready)
+    }
+
     func testInFlightDownloadIsDeduped() async {
         let mgr = ModelDownloadManager(downloader: FakeDownloader(fail: false))
         var readyCount = 0
