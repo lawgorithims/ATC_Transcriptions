@@ -32,6 +32,22 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 21, version: "1.0", headline: "US-tuned Small model + rock-solid Stratux switching",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "target",
+                    title: "Small model retuned for US ATC",
+                    detail: "The Small model is now fine-tuned on US air-traffic audio — US callsigns, phraseology, and numbers. It downloads automatically the first time you open this build. If you mainly fly US airspace, this is the model to use; on US audio it’s markedly more accurate than before."),
+                WhatsNewHighlight(
+                    icon: "arrow.triangle.2.circlepath",
+                    title: "Switch models without dropping your Stratux link",
+                    detail: "Changing speech models while connected to a Stratux no longer interrupts your cockpit audio, live traffic, or GPS — the current model keeps running until the new one is ready, then swaps seamlessly. Even if a big model won’t load, your live feed stays up."),
+                WhatsNewHighlight(
+                    icon: "battery.100.bolt",
+                    title: "No background AI after a model switch",
+                    detail: "If a model finishes loading while CommSight is in the background, it no longer quietly starts transcribing (and draining the battery) off-screen — it waits until you bring the app back."),
+            ]),
+        ReleaseNote(
             build: 18, version: "1.0", headline: "Connect a Stratux receiver",
             highlights: [
                 WhatsNewHighlight(

@@ -126,6 +126,9 @@ final class ATCContext {
             // let the LLM rewrite a readable spoken callsign ("american 1234") into the code form on
             // a safety feed. `matchTraffic` keeps its own copy of these labels for the chip.
             ctx.block = ctx.block.isEmpty ? trafficBlock : trafficBlock + "\n" + ctx.block
+            // Belt-and-suspenders: also hand the raw labels to the validator as a DENYLIST of applied
+            // edit targets, so even the near-miss ratio path can't turn a spoken callsign into a code.
+            ctx.trafficLabels = trafficVocab
         }
         if !flightPlanBlock.isEmpty {
             ctx.block = ctx.block.isEmpty ? flightPlanBlock : flightPlanBlock + "\n" + ctx.block

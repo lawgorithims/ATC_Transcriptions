@@ -181,4 +181,22 @@ enum ModelStore {
             at: llmDir, includingPropertiesForKeys: nil) else { return nil }
         return items.first { $0.pathExtension.lowercased() == "gguf" }?.path
     }
+
+    /// Remove orphaned Whisper variant folders left behind by a variant bump — e.g. the old `small/`
+    /// after the required Small became `small-v2` (build 21) — reclaiming their disk (~465 MB each).
+    /// ONLY folders whose name is not a CURRENT catalog variant are removed, so a live/resolvable model
+    /// is never touched (resolution only ever looks at current-variant folders). Best-effort: any
+    /// failure is ignored so cleanup can never disrupt launch. Safe to call on every launch (idempotent).
+    static func pruneStaleWhisperVariants() {
+        let fm = FileManager.default
+        let whisperRoot = root.appendingPathComponent("whisper", isDirectory: true)
+        guard let children = try? fm.contentsOfDirectory(
+            at: whisperRoot, includingPropertiesForKeys: [.isDirectoryKey]) else { return }
+        let keep = Set(ModelCatalog.whisperEntries.map { $0.variant ?? $0.id })
+        for child in children where !keep.contains(child.lastPathComponent) {
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: child.path, isDirectory: &isDir), isDir.boolValue else { continue }
+            try? fm.removeItem(at: child)
+        }
+    }
 }
