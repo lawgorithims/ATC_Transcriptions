@@ -36,9 +36,6 @@ struct VADConfig {
     /// A confirmed change must survive a second fingerprint this much later (hysteresis vs. a single
     /// noisy verdict).
     var reConfirmMs = 60
-    /// The onset must be closer to its OWN nearest speaker than to the prior turn's by this margin
-    /// (guards a level-only jump from false-splitting one speaker).
-    var marginDelta: Float = 0.06
 }
 
 /// Accumulates mono 16 kHz float32 PCM and emits contiguous speech segments via a
@@ -69,7 +66,6 @@ final class VADSegmenter {
     private let pttBreakFrames: Int
     private let onsetConfirmFrames: Int
     private let reConfirmFrames: Int
-    private let marginDelta: Float
     private var minTurnSpeechFrames: Int { minSpeechFrames }
 
     /// Streaming speaker-change segmentation on/off. A `var` so the Settings diarization toggle can
@@ -122,21 +118,37 @@ final class VADSegmenter {
         pttBreakFrames = max(1, config.pttBreakMs / Self.frameMs)
         onsetConfirmFrames = max(1, (config.onsetConfirmMs + Self.frameMs - 1) / Self.frameMs)
         reConfirmFrames = max(1, (config.reConfirmMs + Self.frameMs - 1) / Self.frameMs)
-        marginDelta = config.marginDelta
         self.speakerAware = speakerAware
         self.speaker = speaker
         self.now = now
     }
 
-    /// Flip streaming speaker-change segmentation at runtime (Settings diarization toggle). Aligns the
-    /// phase with the current speech state so an in-flight turn continues cleanly on the new path.
+    /// Flip streaming speaker-change segmentation at runtime (Settings diarization toggle) — reachable
+    /// mid-transmission. Reconcile BOTH directions so the shared accumulators stay coherent and no
+    /// audio is dropped across the switch.
     func setSpeakerAware(_ on: Bool) {
-        speakerAware = on
         if on {
+            // ON: align the phase with the current speech state so an in-flight turn continues cleanly,
+            // and clear any streaming-only residue.
             phase = speechActive ? .speaking : .idle
             gapSilenceCount = 0; changeVerdictStreak = 0
             turnFp = nil; turnSnapshotFrames = []; onsetFrames = []; onsetSpeechCount = 0
+        } else if speakerAware {
+            // OFF mid-turn: fold any parked next-speaker onset back into the open segment so the plain
+            // VAD finishes the whole thing as ONE merged transmission — nothing is lost and nothing
+            // wrong-splits (the user just asked to STOP separating speakers). segmentFrames already
+            // holds the prior turn + PTT gap; appending the onset makes one continuous segment that the
+            // 400 ms / 8 s fallback finalizes. Reset the streaming buffers + silence so the plain path
+            // resumes from a coherent state.
+            if !onsetFrames.isEmpty {
+                segmentFrames.append(contentsOf: onsetFrames)
+                speechFrames += onsetSpeechCount
+            }
+            silenceCount = 0; gapSilenceCount = 0; changeVerdictStreak = 0
+            turnFp = nil; turnSnapshotFrames = []; onsetFrames = []; onsetSpeechCount = 0
+            phase = .idle
         }
+        speakerAware = on
     }
 
     /// Change the squelch at runtime (Settings). Auto re-learns the noise floor; manual uses a
@@ -320,14 +332,20 @@ final class VADSegmenter {
                 onsetSpeechCount = 1
                 onsetStartS = frameStartS
                 // The new turn's lead-in = the tail of the PTT gap right before it (NOT the stale
-                // pre-roll from before the previous turn), so its onset isn't clipped.
-                onsetPreRoll = Array(segmentFrames.suffix(preRollFrames))
+                // pre-roll from before the previous turn), so its onset isn't clipped. Clamp to the
+                // gap length so the suffix can never reach past the gap into the prior turn's last
+                // SPEECH frame (which would overlap/duplicate turn N into turn N+1).
+                onsetPreRoll = Array(segmentFrames.suffix(min(preRollFrames, gapSilenceCount)))
+                // The PTT-gap silence is intentional and must NOT count against the onset's own
+                // end-of-turn budget — reset so the "onset died" fallback measures silence WITHIN the
+                // onset, not the gap that preceded it.
+                silenceCount = 0
                 changeVerdictStreak = 0
             }
 
         case .confirmingOnset:
             if sp {
-                onsetFrames.append(frame); onsetSpeechCount += 1
+                onsetFrames.append(frame); onsetSpeechCount += 1; silenceCount = 0
                 // Never let a merged (turn + onset) run exceed the 8s cap.
                 if sampleCount(turnSnapshotFrames) + sampleCount(onsetFrames) >= maxSegmentSamples {
                     emitStreaming(turnSnapshotFrames, startS: turnStartSnapshot, endS: turnEndSnapshot,
@@ -339,18 +357,21 @@ final class VADSegmenter {
                 if firstEval || secondEval {
                     let onsetFp = speaker.fingerprint(onsetFrames.flatMap { $0 })
                     let turnFingerprint = turnFp ?? onsetFp
-                    let dSame = speaker.dist(turnFingerprint, onsetFp)       // onset vs the prior turn
+                    let dSame = speaker.dist(turnFingerprint, onsetFp)       // onset vs the prior turn (full)
+                    let dTimbre = speaker.timbreDist(turnFingerprint, onsetFp)   // …level-independent part
                     let (sNew, dNew) = speaker.nearestSpeaker(onsetFp)       // onset's nearest KNOWN speaker
                     let (sCur, _) = speaker.nearestSpeaker(turnFingerprint)  // prior turn's nearest KNOWN speaker
-                    // Same KNOWN speaker (both map to the same existing cluster within radius) → NOT a change
-                    // (guards a mid-sentence level jump). Otherwise it's a change when the two turns are
-                    // acoustically far apart, AND either the onset is a genuinely new voice (no near cluster —
-                    // covers the FIRST boundary of a session, when no centroids exist yet) or it is meaningfully
-                    // closer to its own cluster than to the prior turn (the level-jump margin).
+                    // A genuine turn change moves TIMBRE (pitch/brightness), not loudness alone: the same
+                    // controller keying up louder differs from itself ONLY in the `level` dim, and a ~15 dB
+                    // swing there is already worth a full newSpeakerDist — so the overall distance can't be
+                    // trusted by itself. A change therefore requires the two turns to be far apart overall
+                    // AND for that separation to be carried by timbre (a loudness-only jump has dTimbre≈0 →
+                    // MERGE, the false-split guard). `sameKnownSpeaker` additionally short-circuits an onset
+                    // that lands back on the prior turn's own cluster. Every ambiguous verdict biases MERGE.
                     let sameKnownSpeaker = sNew >= 0 && sNew == sCur && dNew < speaker.newSpeakerDist
                     let isChange = !sameKnownSpeaker
                         && dSame >= speaker.newSpeakerDist
-                        && (sNew < 0 || dNew >= speaker.newSpeakerDist || dSame - dNew >= marginDelta)
+                        && dTimbre >= speaker.turnChangeTimbreMin
                     if isChange {
                         changeVerdictStreak += 1
                         if changeVerdictStreak >= 2 {   // survived two evals ~reConfirm apart
@@ -381,15 +402,18 @@ final class VADSegmenter {
         }
     }
 
-    /// Emit a streaming turn: apply the min-speech drop rule, fingerprint (or reuse), assign a stable
-    /// speaker id, and append the tagged segment. Every ON-mode emit carries a non-nil speaker.
+    /// Emit a streaming turn: apply the min-speech drop rule, fingerprint (or reuse), tag a best-guess
+    /// speaker id, and append the segment. The tag is a NON-mutating peek (`nearestSpeaker`), NOT
+    /// `assign` — the post-hoc Diarizer in `LivePipeline.emit` is the single centroid mutator + labeling
+    /// authority (it re-splits and re-labels this audio), so assigning here too would double-update the
+    /// shared EMA. The tag is a hint (non-nil on the ON path); the id the user sees is the diarizer's.
     private func emitStreaming(_ frames: [[Float]], startS: Double, endS: Double, fp: [Float]?,
                                speechCount: Int, into completed: inout [SpeechSegment]) {
         guard speechCount >= minTurnSpeechFrames, !frames.isEmpty else { return }
         let audio = frames.flatMap { $0 }
         guard !audio.isEmpty else { return }
         let f = fp ?? speaker.fingerprint(audio)
-        let spk = speaker.assign(f)
+        let spk = max(0, speaker.nearestSpeaker(f).id)   // peek only — first turn (no centroids) → 0
         completed.append(SpeechSegment(audio: audio, streamStartS: startS, streamEndS: endS,
                                        finalizedWallTime: now(), speaker: spk))
     }

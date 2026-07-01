@@ -11,6 +11,12 @@ import Foundation
 final class SpeakerModel {
     private let sr = 16_000
     let newSpeakerDist: Float = 0.30    // beyond nearest centroid by this → a new speaker (also the turn-change bar)
+    /// A streaming turn change must move TIMBRE (brightness + pitch) by at least this much. A single
+    /// speaker merely keying up louder moves ONLY the `level` dim — and a 15 dB swing there alone is
+    /// worth a full `newSpeakerDist` — so the overall distance can't be trusted to signal a new voice.
+    /// Gating the early split on timbre is what stops a loudness change from false-splitting one
+    /// transmission. (Only the streaming VAD uses this; the post-hoc diarizer clusters on full `dist`.)
+    let turnChangeTimbreMin: Float = 0.12
     private let maxSpeakers = 6
 
     /// Running speaker centroids (running mean of assigned fingerprints).
@@ -57,6 +63,16 @@ final class SpeakerModel {
         var s: Float = 0
         for k in 0..<min(x.count, y.count) { let d = x[k] - y[k]; s += d * d }
         return s.squareRoot()
+    }
+
+    /// Level-INDEPENDENT distance over the [brightness, pitch] dims only (skips `level`). This is the
+    /// part of the fingerprint a loudness change can't fake, so the streaming VAD uses it to tell a
+    /// genuine speaker change from the same voice keying up louder. Falls back to full `dist` if a
+    /// fingerprint is malformed.
+    func timbreDist(_ x: [Float], _ y: [Float]) -> Float {
+        guard x.count >= 3, y.count >= 3 else { return dist(x, y) }
+        let db = x[1] - y[1], dp = x[2] - y[2]
+        return (db * db + dp * dp).squareRoot()
     }
 
     /// Nearest centroid to `fp` WITHOUT mutating — used to decide a turn change before committing.
