@@ -32,6 +32,14 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 23, version: "1.0", headline: "Everything's built in — no downloads",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "shippingbox.fill",
+                    title: "Speech model + AI fixer preloaded",
+                    detail: "The US-tuned Small speech model and the on-device AI context fixer now ship inside the app. A fresh install works immediately — no waiting on a download, and nothing to re-fetch if you reinstall. (The app download is larger as a result.)"),
+            ]),
+        ReleaseNote(
             build: 22, version: "1.0", headline: "Change your mind while a model loads",
             highlights: [
                 WhatsNewHighlight(
