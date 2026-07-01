@@ -38,8 +38,13 @@ final class AppModel: ObservableObject {
         (UserDefaults.standard.string(forKey: "atc.source").flatMap(SourceKind.init(rawValue:)) ?? .liveFeed) {
         didSet {
             UserDefaults.standard.set(source.rawValue, forKey: "atc.source")
-            // Switching to/from the Stratux receiver changes which traffic provider is active.
-            if didFinishInit, source != oldValue { syncTraffic() }
+            if didFinishInit, source != oldValue {
+                // Switching to/from the Stratux receiver changes which traffic provider is active.
+                syncTraffic()
+                // Surface the Stratux link card in the sidebar when the receiver becomes the source, so
+                // the connection state is visible without digging into the Add-widget menu.
+                if source == .stratux, !widgets.contains(.stratux) { widgets.append(.stratux) }
+            }
         }
     }
     @Published var streamURL = UserDefaults.standard.string(forKey: "atc.streamURL") ?? "" {
