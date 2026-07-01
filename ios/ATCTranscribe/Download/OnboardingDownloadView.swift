@@ -119,6 +119,15 @@ struct ModelDownloadRow: View {
 
     private var state: DownloadState { downloads.state(entry.id) }
 
+    /// True when this model ships inside the app (bundled) — it shows "Built in" and has no download,
+    /// re-download, or delete controls (you can't remove a model baked into the signed app bundle).
+    private var isBundled: Bool {
+        switch entry.kind {
+        case .whisperKit: return entry.id == ModelCatalog.required.id && AppModel.bundledModelDir() != nil
+        case .ggufFile:   return bundledLLMModelPath() != nil
+        }
+    }
+
     var body: some View {
         let p = model.palette
         VStack(alignment: .leading, spacing: 8) {
@@ -152,26 +161,44 @@ struct ModelDownloadRow: View {
     }
 
     @ViewBuilder private func trailing(_ p: Palette) -> some View {
-        switch state {
-        case .ready:
+        if isBundled {
             HStack(spacing: 5) {
-                Image(systemName: "checkmark.circle.fill")
-                Text("Ready").font(.caption.weight(.semibold))
+                Image(systemName: "checkmark.seal.fill")
+                Text("Built in").font(.caption.weight(.semibold))
             }
             .foregroundStyle(p.good)
-        case .downloading:
-            Button("Cancel") { downloads.cancel(entry) }
-                .font(.caption.weight(.semibold)).foregroundStyle(p.bad)
+        } else {
+            switch state {
+            case .ready:
+                HStack(spacing: 10) {
+                    HStack(spacing: 5) {
+                        Image(systemName: "checkmark.circle.fill")
+                        Text("Ready").font(.caption.weight(.semibold))
+                    }
+                    .foregroundStyle(p.good)
+                    // Recover a corrupt/partial download without leaving Settings.
+                    Menu {
+                        Button { downloads.redownload(entry) } label: { Label("Re-download", systemImage: "arrow.clockwise") }
+                        Button(role: .destructive) { downloads.delete(entry) } label: { Label("Delete", systemImage: "trash") }
+                    } label: {
+                        Image(systemName: "ellipsis.circle").font(.callout).foregroundStyle(p.textDim)
+                    }
+                    .accessibilityIdentifier("model-manage-\(entry.id)")
+                }
+            case .downloading:
+                Button("Cancel") { downloads.cancel(entry) }
+                    .font(.caption.weight(.semibold)).foregroundStyle(p.bad)
+                    .buttonStyle(.plain)
+            case .notDownloaded, .failed:
+                Button { downloads.download(entry) } label: {
+                    Text("Download")
+                        .font(.caption.weight(.semibold))
+                        .padding(.horizontal, 12).padding(.vertical, 7)
+                        .background(p.accent).foregroundStyle(p.bg)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
                 .buttonStyle(.plain)
-        case .notDownloaded, .failed:
-            Button { downloads.download(entry) } label: {
-                Text("Download")
-                    .font(.caption.weight(.semibold))
-                    .padding(.horizontal, 12).padding(.vertical, 7)
-                    .background(p.accent).foregroundStyle(p.bg)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
             }
-            .buttonStyle(.plain)
         }
     }
 }

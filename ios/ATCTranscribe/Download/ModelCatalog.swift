@@ -151,11 +151,19 @@ enum ModelStore {
         }
     }
 
+    /// The three CoreML sub-models a WhisperKit folder must contain to load.
+    static let whisperModelParts = ["MelSpectrogram", "AudioEncoder", "TextDecoder"]
+
     static func isReady(_ e: ModelEntry) -> Bool {
         switch e.kind {
         case .whisperKit:
-            let marker = whisperDir(e.variant ?? e.id).appendingPathComponent("AudioEncoder.mlmodelc")
-            return FileManager.default.fileExists(atPath: marker.path)
+            // Require ALL THREE sub-models, not just AudioEncoder — a partial/interrupted download can
+            // leave only some, which would pass a single-file check yet fail the load ("model file not
+            // found at …"). Checking all three makes a partial download read as not-ready → re-download.
+            let dir = whisperDir(e.variant ?? e.id)
+            return whisperModelParts.allSatisfy {
+                FileManager.default.fileExists(atPath: dir.appendingPathComponent("\($0).mlmodelc").path)
+            }
         case .ggufFile:
             return FileManager.default.fileExists(atPath: localURL(for: e).path)
         }

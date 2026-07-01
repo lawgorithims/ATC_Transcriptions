@@ -32,6 +32,18 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 24, version: "1.0", headline: "Manage your models + a leaner app",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "arrow.clockwise",
+                    title: "Re-download or delete a model",
+                    detail: "In Settings → Models, tap the ••• on any downloaded model to re-download it (fixes a bad or interrupted download) or delete it to free up space. The speech model is built in, so it always just works."),
+                WhatsNewHighlight(
+                    icon: "shippingbox",
+                    title: "Smaller download",
+                    detail: "The speech model is bundled so transcription works offline the moment you install. The optional AI context fixer now downloads on first launch instead of shipping inside the app — roughly half the size."),
+            ]),
+        ReleaseNote(
             build: 23, version: "1.0", headline: "Everything's built in — no downloads",
             highlights: [
                 WhatsNewHighlight(
