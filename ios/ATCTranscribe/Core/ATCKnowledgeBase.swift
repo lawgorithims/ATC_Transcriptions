@@ -43,6 +43,15 @@ struct ATCKnowledgeBase: Sendable {
         Array(Set(spokenNamesByAirport.values.flatMap { $0 } + spokenBaseByAirport.values)).sorted()
     }
 
+    /// The ICAO phonetic alphabet inverted to word → letter, lowercased ("alpha" -> "a"). Used by the
+    /// correction validator to check that a spoken callsign actually spells a filed/known identifier
+    /// before snapping onto it, so a different aircraft's similar callsign can't be misattributed.
+    var phoneticWordToLetter: [String: String] {
+        var m: [String: String] = [:]
+        for (letter, word) in phonetic { m[word.lowercased()] = letter.lowercased() }
+        return m
+    }
+
     /// Phrases for a frequency type, falling back to the generic "unknown" set.
     func phrases(forType type: String) -> [String] {
         phrasesByType[type] ?? phrasesByType["unknown"] ?? []

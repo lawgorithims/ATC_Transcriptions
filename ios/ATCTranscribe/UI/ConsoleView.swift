@@ -49,6 +49,16 @@ struct ConsoleView: View {
                     downloads.download(ModelCatalog.llm)
                 }
             }
+            // Build 21 upgraded the required Small model to the US-fine-tuned "small-v2" variant, which
+            // lives in a NEW on-disk folder — so an install upgrading from a prior build has a stale old
+            // Small that isn't "ready", and small-v2 would otherwise never be fetched (the app keeps
+            // running whatever larger model was already downloaded). For a user who already has a
+            // downloaded model, pull the upgraded Small in the background so the device actually receives
+            // it; `modelDidDownload` activates it only if nothing usable is loaded (a running Large is
+            // left alone). Idempotent — `download()` no-ops if it's present or already in flight.
+            if model.modelSource == "downloaded", !ModelStore.isReady(ModelCatalog.required) {
+                downloads.download(ModelCatalog.required)
+            }
         }
         .onChange(of: scenePhase) { _, newPhase in
             // Backgrounding stops capture + releases audio (no background streaming/drain); ADS-B is
@@ -510,6 +520,10 @@ struct ControlsBar: View {
                         ForEach(SourceKind.allCases) { Text($0.rawValue).tag($0) }
                     }
                     .labelsHidden().pickerStyle(.menu).tint(p.text)
+                    // Locked while running: the audio source is bound into the live pipeline at Start,
+                    // so switching it mid-run would leave the run pulling from the old provider (a
+                    // Stratux↔feed split-brain). Stop to change inputs — mirrors the model picker's gate.
+                    .disabled(model.isRunning)
                 }
                 .padding(.horizontal, 10).padding(.vertical, 6)
                 .background(p.surfaceAlt).clipShape(RoundedRectangle(cornerRadius: 8))

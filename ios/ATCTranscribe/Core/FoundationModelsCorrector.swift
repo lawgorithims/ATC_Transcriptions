@@ -70,7 +70,11 @@ struct FoundationModelsCorrector: LLMCorrector {
             }
             let allowed = CorrectionValidator.allowedTerms(retrieved: retrieved, knowledge: knowledge,
                                                            freqType: frequencyType(forFeedKey: feedKey))
-            return CorrectionValidator(allowed: allowed).validate(raw: text, edits: edits, backend: backend)
+            let validator = CorrectionValidator(
+                allowed: allowed,
+                deniedTargets: CorrectionValidator.deniedTargets(from: retrieved.trafficLabels),
+                phonetic: knowledge.phoneticWordToLetter)
+            return validator.validate(raw: text, edits: edits, backend: backend)
         } catch {
             // Model unavailable / slow / guardrail / unparseable — never break the feed.
             return .unchanged(text, backend: backend)

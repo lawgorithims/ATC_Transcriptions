@@ -10,6 +10,10 @@ struct RetrievedContext: Sendable {
     /// True when the transcript looks like it is not English ATC (non-Latin / heavy non-ASCII),
     /// a cue the refiner uses to prioritise it (the user's "wrong language" error class).
     var languageSuspect: Bool
+    /// Raw in-range ADS-B traffic labels (callsigns/registrations, e.g. "AAL1234"). They feed the LLM
+    /// PROMPT for context but are DENIED as applied edit targets by `CorrectionValidator` — so a
+    /// readable spoken callsign is never rewritten into an ADS-B code form. Empty when no live traffic.
+    var trafficLabels: [String] = []
 }
 
 /// The "RAG" step: given a raw transcript plus the active facility, lexically retrieve the
