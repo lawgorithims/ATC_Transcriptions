@@ -190,6 +190,16 @@ actor TranscriberEngine {
         autoDowngraded = false
     }
 
+    /// Adopt an already-loaded transcriber as the resident model. Used when the live session has just
+    /// compiled the model itself: the engine shares that instance so the proof-of-life / performance
+    /// check reuses it (`transcriber()` returns it) instead of compiling a SECOND resident copy —
+    /// honoring the "exactly one resident" contract and avoiding two big models in memory at once.
+    func adopt(_ transcriber: ATCTranscriber, name: String) {
+        active = transcriber
+        activeName = name
+        selected = true
+    }
+
     func setMinRealtimeSpeed(_ value: Double) { minRealtimeSpeed = Swift.max(0, value) }
 
     /// Run `maxSnippets` bundled clips through the active model and report PASS/FAIL +

@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Model & settings sheet — port of the browser console's settings modal: pick the
-/// transcription model and the adaptive real-time-speed threshold.
+/// transcription model, tune correction, and manage downloads.
 struct SettingsSheet: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var downloads: ModelDownloadManager
@@ -100,19 +100,6 @@ struct SettingsSheet: View {
                             Text(StratuxService.attribution).font(.caption2).foregroundStyle(p.textDim.opacity(0.8))
                         }
                     }
-                    Card(title: "Adaptive selection") {
-                        VStack(alignment: .leading, spacing: 10) {
-                            HStack {
-                                Text("Minimum real-time speed").font(.caption).foregroundStyle(p.textDim)
-                                Spacer()
-                                Text(String(format: "%.1f×", model.minRealtimeSpeed))
-                                    .font(.caption.monospaced()).foregroundStyle(p.text)
-                            }
-                            Slider(value: $model.minRealtimeSpeed, in: 0.5...10, step: 0.1)
-                            Text("On startup the larger model is benchmarked on this device. If it runs slower than this, the smaller model loads automatically.")
-                                .font(.caption2).foregroundStyle(p.textDim)
-                        }
-                    }
                     Card(title: "Transcript correction") {
                         VStack(alignment: .leading, spacing: 12) {
                             Toggle(isOn: $model.correctionEnabled) {
@@ -207,7 +194,10 @@ struct SettingsSheet: View {
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(p.border, lineWidth: 1))
         }
         .buttonStyle(.plain)
-        .disabled(!available || model.loadingModel != nil)   // block a second tap mid-swap
+        // Only the model that's actually compiling is inert; every OTHER button stays tappable so the
+        // user can change their mind mid-load — pick a different model (supersedes the load) or re-tap
+        // the still-running model (cancels the load). See AppModel.switchModel.
+        .disabled(!available || isLoading)
         .opacity(available ? 1 : 0.5)
     }
 
