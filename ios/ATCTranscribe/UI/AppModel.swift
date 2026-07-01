@@ -979,7 +979,11 @@ final class AppModel: ObservableObject {
         for e in ModelCatalog.whisperEntries where ModelStore.isReady(e) {
             m[e.id] = ModelStore.localURL(for: e).path
         }
-        if m["small"] == nil, let bundled = bundledModelDir() { m["small"] = bundled }
+        // A BUNDLED required (Small) model is AUTHORITATIVE: it's baked into the app and verified at
+        // build time, so prefer it over any downloaded copy — this sidesteps a failed/partial on-device
+        // download of the same model leaving an unloadable folder. In a lean build bundledModelDir() is
+        // nil, so a downloaded model still wins (unchanged behavior).
+        if let bundled = bundledModelDir() { m["small"] = bundled }
         return m
     }
 
