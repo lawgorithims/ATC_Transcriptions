@@ -358,6 +358,11 @@ final class AppModel: ObservableObject {
         #endif
         storedCPUOnly = cpuOnly
 
+        // Reclaim disk from any Whisper model folder orphaned by a variant bump (e.g. the old `small/`
+        // superseded by `small-v2` in build 21) — only non-current variants are removed, never a live
+        // model, so this is safe to run on every launch.
+        ModelStore.pruneStaleWhisperVariants()
+
         // Resolve the model + demo clips. Explicit launch flags (Simulator verification) win;
         // otherwise prefer a model the user has DOWNLOADED into Application Support, then a copy
         // bundled into the app. A TestFlight build ships without the heavy model, so on first
@@ -394,6 +399,10 @@ final class AppModel: ObservableObject {
 
     var palette: Palette { theme.palette }
     var isRunning: Bool { status == .live || status == .connecting || status == .starting }
+    /// A REAL capture session is live (a model is loaded and running) — as opposed to the model-less
+    /// demo, which shows `.live` but has no audio source bound. Used to lock the input-source picker
+    /// only when switching would actually strand the pipeline on the old provider.
+    var isLiveCapturing: Bool { isRunning && liveMode }
     /// Friendly name for the status badge / sidebar (maps the raw id, e.g. "cleanturbo" → "Large V2").
     /// While a model is loading it shows the model being LOADED, so a slow first load doesn't keep the
     /// widgets showing the previous/default model ("Small") the whole time.
@@ -499,9 +508,21 @@ final class AppModel: ObservableObject {
         // network stream / hot mic). stop() no-ops when it was already stopped (the normal swap path).
         oldSession?.stop()
 
+        // A flight-plan edit made WHILE the model was compiling (the await above) was routed to the OLD
+        // session/context; the freshly-built context only has the entry-time snapshot. Re-push the
+        // current plan now that the new session + context are committed, so the edit isn't lost.
+        pushFlightPlanContext()
+
         if let audioDir { clips = (try? Self.loadClips(audioDir)) ?? [] }
         detail = clips.isEmpty ? "Model ready (no demo clips)." : "Ready — press Start."
-        if autostart { start(resuming: preserveHistory) }
+        if autostart {
+            // Only resume capture if we're on screen. If the model finished compiling while the app was
+            // backgrounded, do NOT start Whisper + the (Stratux) audio pipeline in the background — that
+            // would run the AI hot with the screen off (the battery-drain rule). Defer via the same
+            // background-resume path the scene-phase handler uses; it restarts on foreground.
+            if scenePhaseActive { start(resuming: preserveHistory) }
+            else { backgroundResumeSource = source; backgroundPaused = true }
+        }
         return true
     }
 
@@ -1048,7 +1069,13 @@ final class AppModel: ObservableObject {
         guard liveMode, modelDirs[id] != nil, (session == nil || id != activeModel) else { return }
         guard loadingModel == nil else { return }   // a swap is already loading — ignore the tap
         let wasRunning = isRunning
-        if wasRunning { stop() }
+        // Do NOT stop() here. `setupLive` is non-destructive: the CURRENT model and its live run — a
+        // feed, or the Stratux cockpit audio + ADS-B traffic + GPS — keep streaming until the new model
+        // finishes compiling, then it swaps atomically and re-autostarts (`autostart: wasRunning`).
+        // Tearing the run down up front would drop audio + traffic + GPS for the entire compile, and a
+        // stalled first-compile would leave them dead behind the watchdog's "still using …" message.
+        // Keeping the old run alive the whole time makes that message true and lets the traffic re-seed
+        // in `setupLive` actually fire (it's gated on `trafficActive`, which needs the run still live).
         loadingModel = id                            // picker reflects the choice immediately
         detail = "Loading \(ModelCatalog.shortLabel(forID: id))…"   // friendly name, not the raw id
         modelSwapGeneration += 1

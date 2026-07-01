@@ -1,16 +1,28 @@
 import Foundation
 
-/// Token-level normalized Word Error Rate. Port of `engine._word_error_rate` /
-/// `_normalize`: lowercase, keep alphanumerics, drop articles (a/an/the), then
-/// token Levenshtein distance divided by the reference length.
+/// Token-level normalized Word Error Rate. Lowercase, fold each token to its alphanumerics (so
+/// "x-ray" == "xray"), drop articles (a/an/the), then apply the ATC number/runway canonicalization
+/// (`ATCNormalize`) so equivalent numeric vs spelled forms compare equal — "16R" == "one six right",
+/// "1023" == "one zero two three". Levenshtein distance over the resulting tokens ÷ reference length.
+///
+/// The ATC canonicalization is what makes the in-app performance check report HONEST accuracy: the
+/// US-fine-tuned model emits standard numeric ATC ("16R", "runway 25") where a spelled reference says
+/// "one six right", and a naive WER counts every such format difference as an error (on the US gold
+/// set that pure-format gap alone is ~9 WER points — 32% raw vs 23% normalized).
 enum WER {
     private static let articles: Set<String> = ["a", "an", "the"]
 
     static func normalize(_ text: String) -> [String] {
-        text.lowercased().split(whereSeparator: \.isWhitespace).compactMap { raw -> String? in
-            let tok = String(raw.filter { $0.isLetter || $0.isNumber })
-            return (!tok.isEmpty && !articles.contains(tok)) ? tok : nil
-        }
+        // Fold each whitespace token to its alphanumerics ("x-ray" -> "xray"), then run the ATC
+        // number/runway canonicalizer so numeric and spelled forms of the same call compare equal.
+        let folded = text.lowercased().split(whereSeparator: \.isWhitespace)
+            .map { String($0.filter { $0.isLetter || $0.isNumber }) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        return ATCNormalize.normalize(folded)
+            .split(whereSeparator: \.isWhitespace)
+            .map(String.init)
+            .filter { !articles.contains($0) }
     }
 
     static func rate(reference: String, hypothesis: String) -> Double {
