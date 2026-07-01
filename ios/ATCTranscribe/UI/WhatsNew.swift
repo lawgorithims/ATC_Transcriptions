@@ -32,6 +32,22 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 22, version: "1.0", headline: "Change your mind while a model loads",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "hand.tap",
+                    title: "Switch or cancel a model mid-load",
+                    detail: "While a speech model is loading you can now pick a different model — it takes over — or tap the one you’re already using to cancel and stay put. No more waiting out a slow Large-model compile with every button greyed out."),
+                WhatsNewHighlight(
+                    icon: "arrow.uturn.backward",
+                    title: "Better recovery when a model won’t load",
+                    detail: "If a model’s files are corrupt, CommSight now re-offers the download instead of dead-ending, and it no longer claims you’re “still using” a model when there’s nothing loaded."),
+                WhatsNewHighlight(
+                    icon: "memorychip",
+                    title: "Lighter, cleaner Settings",
+                    detail: "The performance check no longer loads a second copy of the model into memory, and a speed setting that never actually did anything was removed."),
+            ]),
+        ReleaseNote(
             build: 21, version: "1.0", headline: "US-tuned Small model + rock-solid Stratux switching",
             highlights: [
                 WhatsNewHighlight(
