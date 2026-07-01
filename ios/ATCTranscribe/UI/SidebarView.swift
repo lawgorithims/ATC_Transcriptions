@@ -5,7 +5,7 @@ import UniformTypeIdentifiers
 /// (long-press to edit → add / remove / drag-reorder), so the layout can be trimmed for
 /// iPad Split View / Slide Over. Order is the default layout; persisted in `AppModel`.
 enum SidebarWidget: String, CaseIterable, Identifiable {
-    case latency, proofOfLife, host, diagnostics
+    case latency, proofOfLife, host, diagnostics, stratux
     var id: String { rawValue }
 
     var title: String {
@@ -14,6 +14,7 @@ enum SidebarWidget: String, CaseIterable, Identifiable {
         case .proofOfLife: return "Performance check"
         case .host: return "Host"
         case .diagnostics: return "Diagnostics"
+        case .stratux: return "Stratux link"
         }
     }
 
@@ -23,6 +24,7 @@ enum SidebarWidget: String, CaseIterable, Identifiable {
         case .proofOfLife: return "checkmark.seal"
         case .host: return "cpu"
         case .diagnostics: return "thermometer.medium"
+        case .stratux: return "dot.radiowaves.up.forward"
         }
     }
 
@@ -32,6 +34,7 @@ enum SidebarWidget: String, CaseIterable, Identifiable {
         case .proofOfLife: ProofOfLifeCard()
         case .host: HostCard()
         case .diagnostics: DiagnosticsCard()
+        case .stratux: StratuxCard()
         }
     }
 }
@@ -266,6 +269,60 @@ struct HostCard: View {
                 KV("Model", model.activeModelLabel)
                 KV("Platform", "iOS / iPadOS")
             }
+        }
+    }
+}
+
+/// The Stratux receiver connection at a glance: link state (idle/connecting/connected/error with a
+/// colour dot), receiver address, GPS fix, and the in-range traffic count. Live while the Stratux
+/// receiver is the input source; muted otherwise. Auto-added to the sidebar when you pick that source.
+struct StratuxCard: View {
+    @EnvironmentObject var model: AppModel
+    var body: some View {
+        let p = model.palette
+        let active = model.source == .stratux
+        Card(title: "Stratux link") {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("Connection").font(.caption).foregroundStyle(p.textDim)
+                    Spacer()
+                    HStack(spacing: 5) {
+                        Circle().fill(statusColor(p)).frame(width: 8, height: 8)
+                        Text(statusText).font(.caption.monospaced().weight(.semibold)).foregroundStyle(p.text)
+                    }
+                }
+                KV("Receiver", model.stratuxHost)
+                if let g = model.stratuxGPS, g.hasFix {
+                    KV("GPS", "\(g.fixLabel) · \(g.satellites) sat")
+                } else {
+                    KV("GPS", active ? "acquiring…" : "—")
+                }
+                KV("Traffic", active ? "\(model.aircraft.count) in range" : "—")
+                if !active {
+                    Text("Pick “Stratux receiver” as the input source, then Start, to connect.")
+                        .font(.caption2).foregroundStyle(p.textDim)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+        }
+        .accessibilityIdentifier("stratux-card")
+    }
+
+    private var statusText: String {
+        switch model.stratuxStatus {
+        case .idle:       return model.source == .stratux ? "idle" : "not selected"
+        case .connecting: return "connecting"
+        case .connected:  return "connected"
+        case .error:      return "error"
+        }
+    }
+
+    private func statusColor(_ p: Palette) -> Color {
+        switch model.stratuxStatus {
+        case .connected:  return p.good
+        case .connecting: return p.warn
+        case .error:      return p.bad
+        case .idle:       return p.textDim
         }
     }
 }

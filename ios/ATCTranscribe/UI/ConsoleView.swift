@@ -390,47 +390,83 @@ struct FlightPlanPage: View {
     }
 }
 
-// MARK: - Carousel page 3: live flight data (location) — placeholder
+// MARK: - Carousel page 3: live traffic (Stratux receiver, else airplanes.live)
 
-/// Live ADS-B traffic in range (airplanes.live). Renders `model.aircraft` verbatim — the freshness
-/// authority is the `ADSBService` actor, not this view — across three states: off, searching/empty,
-/// and populated (count + nearest callsigns + a live "updated … ago" stamp).
+/// Live ADS-B traffic in range — from the **Stratux receiver** when it's the input source, otherwise
+/// airplanes.live. Renders `model.aircraft` verbatim (the freshness authority is the service actor,
+/// not this view). For the Stratux source it also shows the LINK state, so "the ADS-B connection to my
+/// Stratux is up" is unmistakable: idle → connecting → **connected** (green) → error.
 struct FlightDataPage: View {
     @EnvironmentObject var model: AppModel
     var body: some View {
         let p = model.palette
         Group {
-            if !model.adsbStreamingEnabled {
+            if model.source == .stratux {
+                stratux(p)
+            } else if !model.adsbStreamingEnabled {
                 offState(p, "antenna.radiowaves.left.and.right.slash", "Online ADS-B off — enable in Settings")
             } else if model.aircraft.isEmpty {
                 offState(p, "antenna.radiowaves.left.and.right", emptyText)
             } else {
-                VStack(alignment: .leading, spacing: 5) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "antenna.radiowaves.left.and.right").font(.caption2).foregroundStyle(p.accent)
-                        Text("\(model.aircraft.count) in range").font(.caption.weight(.semibold)).foregroundStyle(p.text)
-                        Spacer(minLength: 4)
-                        if let at = model.aircraftUpdatedAt {
-                            Text(updatedLabel(at)).font(.caption2).foregroundStyle(p.textDim).lineLimit(1)
-                        }
-                    }
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 5) {
-                            ForEach(model.aircraft.prefix(20)) { ac in
-                                Text(ac.label ?? ac.hex)
-                                    .font(.caption2.weight(.semibold).monospaced()).foregroundStyle(p.text)
-                                    .padding(.horizontal, 6).padding(.vertical, 2)
-                                    .background(p.surfaceAlt).clipShape(Capsule())
-                            }
-                        }
-                        .padding(.trailing, 16)
-                    }
-                }
-                .padding(.horizontal, 16)
+                traffic(p, icon: "antenna.radiowaves.left.and.right", iconColor: p.accent, titleColor: p.text,
+                        title: "\(model.aircraft.count) in range", trailing: model.aircraftUpdatedAt.map(updatedLabel))
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .accessibilityIdentifier("carousel-flight-data")
+    }
+
+    /// The Stratux ADS-B link state.
+    @ViewBuilder private func stratux(_ p: Palette) -> some View {
+        switch model.stratuxStatus {
+        case .idle:
+            offState(p, "dot.radiowaves.up.forward", "Stratux ADS-B — press Start to connect")
+        case .connecting:
+            HStack(spacing: 10) {
+                ProgressView().controlSize(.mini).tint(p.warn)
+                Text("Connecting to Stratux…").font(.caption.weight(.semibold)).foregroundStyle(p.warn)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 16)
+            .accessibilityIdentifier("stratux-connecting")
+        case .connected:
+            traffic(p, icon: "dot.radiowaves.up.forward", iconColor: p.good, titleColor: p.good,
+                    title: "Stratux ADS-B connected",
+                    trailing: model.stratuxGPS.flatMap { $0.hasFix ? "\($0.fixLabel) · \($0.satellites) sat" : nil },
+                    emptyNote: "Connected — no traffic in range yet")
+                .accessibilityIdentifier("stratux-connected")
+        case .error(let msg):
+            offState(p, "antenna.radiowaves.left.and.right.slash", "Stratux link: \(msg) — retrying", color: p.bad)
+        }
+    }
+
+    /// Shared header + nearest-aircraft chips for a populated/connected traffic state.
+    @ViewBuilder private func traffic(_ p: Palette, icon: String, iconColor: Color, titleColor: Color,
+                                      title: String, trailing: String?, emptyNote: String? = nil) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 8) {
+                Image(systemName: icon).font(.caption2).foregroundStyle(iconColor)
+                Text(title).font(.caption.weight(.semibold)).foregroundStyle(titleColor)
+                Spacer(minLength: 4)
+                if let trailing { Text(trailing).font(.caption2).foregroundStyle(p.textDim).lineLimit(1) }
+            }
+            if model.aircraft.isEmpty {
+                Text(emptyNote ?? "No traffic in range").font(.caption2).foregroundStyle(p.textDim)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 5) {
+                        ForEach(model.aircraft.prefix(20)) { ac in
+                            Text(ac.label ?? ac.hex)
+                                .font(.caption2.weight(.semibold).monospaced()).foregroundStyle(p.text)
+                                .padding(.horizontal, 6).padding(.vertical, 2)
+                                .background(p.surfaceAlt).clipShape(Capsule())
+                        }
+                    }
+                    .padding(.trailing, 16)
+                }
+            }
+        }
+        .padding(.horizontal, 16)
     }
 
     private var emptyText: String {
@@ -440,16 +476,17 @@ struct FlightDataPage: View {
     }
 
     /// Manual "updated …" stamp — avoids the future-tense flicker ("in 0 seconds") that the relative
-    /// formatter emits on a sub-second-old snapshot. Refreshes each poll (every ~5 s).
+    /// formatter emits on a sub-second-old snapshot.
     private func updatedLabel(_ at: Date) -> String {
         let s = max(0, Date().timeIntervalSince(at))
         return s < 2 ? "updated just now" : "updated \(Int(s))s ago"
     }
 
-    private func offState(_ p: Palette, _ icon: String, _ text: String) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: icon).font(.callout).foregroundStyle(p.textDim)
-            Text(text).font(.caption).foregroundStyle(p.textDim).lineLimit(2)
+    private func offState(_ p: Palette, _ icon: String, _ text: String, color: Color? = nil) -> some View {
+        let c = color ?? p.textDim
+        return HStack(spacing: 10) {
+            Image(systemName: icon).font(.callout).foregroundStyle(c)
+            Text(text).font(.caption).foregroundStyle(c).lineLimit(2)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 16)
