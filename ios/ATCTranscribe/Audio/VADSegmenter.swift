@@ -391,8 +391,11 @@ final class VADSegmenter {
                     }
                 }
             } else {
-                // The onset died before confirming (a blip in the gap).
-                onsetFrames.append(frame); silenceCount += 1; gapSilenceCount += 1; segmentFrames.append(frame)
+                // The onset died before confirming (a blip in the gap). Buffer the silence in onsetFrames
+                // ONLY — NOT segmentFrames too — so the later merge-back / OFF-fold (which append onsetFrames
+                // wholesale) can't double-count and reorder it. segmentFrames' copy was never consumed on
+                // this path anyway: the fallback emits the turn snapshot, then resetToIdle clears it.
+                onsetFrames.append(frame); silenceCount += 1; gapSilenceCount += 1
                 if silenceCount >= silenceFrames {
                     emitStreaming(turnSnapshotFrames, startS: turnStartSnapshot, endS: turnEndSnapshot,
                                   fp: turnFp, speechCount: turnSpeechSnapshot, into: &completed)

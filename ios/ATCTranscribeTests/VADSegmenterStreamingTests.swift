@@ -66,6 +66,23 @@ final class VADSegmenterStreamingTests: XCTestCase {
         XCTAssertNil(out[0].speaker, "plain-path finalize leaves speaker nil")
     }
 
+    func testStreamingDisableMidConfirmWithOnsetGapKeepsExactAudio() {
+        // Like the OFF-toggle test, but the parked onset contains an INTERIOR silence frame — guards the
+        // double-append/reorder of onset-interior silence (which is buffered in onsetFrames only, not
+        // mirrored into segmentFrames). Exact length proves each frame folds in once, in order.
+        let seg = streaming()
+        let a = atc(self)                                                  // 9600: arms turn A
+        let onset = tone(1920, amp: 0.5, freq: 320)                        // 4 speech frames
+            + silence(480)                                                 // 1 interior silence frame
+            + tone(1440, amp: 0.5, freq: 320)                              // 3 speech frames (7 speech < onsetConfirm 10)
+        XCTAssertEqual(seg.feed(a + pttGap + onset).count, 0, "onset too short to confirm — nothing emitted yet")
+        seg.setSpeakerAware(false)
+        let out = seg.flush()
+        XCTAssertEqual(out.count, 1)
+        XCTAssertEqual(out[0].audio.count, a.count + pttGap.count + onset.count,
+                       "an onset with interior silence must fold in exactly once — no duplicated/reordered frame")
+    }
+
     func testStreamingMicroPauseNeverArms() {
         // A <150ms micro-pause never even arms the tentative boundary → identical to plain.
         let micro = silence(1440)   // 3 frames < pttBreakFrames
