@@ -4,9 +4,15 @@ import Foundation
 /// `atc_stream.VADSegmenter` (and the `live_pipeline` block of `config.yaml`).
 struct VADConfig {
     var aggressiveness = 2
-    var silenceDurationMs = 700
+    // Finalize a transmission after this much quiet. Tuned DOWN from 700 ms so back-to-back
+    // transmissions from a fast-talking controller split on their short push-to-talk gaps instead of
+    // merging into one long, late "batch". ATC intra-transmission pauses are shorter than this, so a
+    // single transmission stays intact; separate transmissions (a PTT release ≈ 0.5 s+) split apart.
+    var silenceDurationMs = 400
     var minSpeechMs = 500
-    var maxSegmentS = 12.0
+    // Hard cap on one segment = the worst-case latency for truly continuous speech (no gaps at all).
+    // Tuned DOWN from 12 s so even a gapless burst surfaces within a few seconds instead of ~15.
+    var maxSegmentS = 8.0
     var preRollMs = 200
     /// Speech must exceed `noiseMargin ×` the tracked background-noise floor (on top of the
     /// absolute energy threshold). This keeps a noisy/static live feed — whose "silence" still

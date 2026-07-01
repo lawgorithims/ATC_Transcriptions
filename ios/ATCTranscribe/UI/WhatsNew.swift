@@ -32,8 +32,12 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
-            build: 24, version: "1.0", headline: "Manage your models + a leaner app",
+            build: 24, version: "1.0", headline: "Faster transcription + manage your models",
             highlights: [
+                WhatsNewHighlight(
+                    icon: "bolt.horizontal.fill",
+                    title: "Transmissions come through sooner",
+                    detail: "During fast, back-to-back exchanges the transcript no longer arrives in one big delayed batch — the app splits calls on their push-to-talk gaps and surfaces each within a couple of seconds instead of waiting up to ~12 s."),
                 WhatsNewHighlight(
                     icon: "arrow.clockwise",
                     title: "Re-download or delete a model",
