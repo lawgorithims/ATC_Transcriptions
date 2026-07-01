@@ -41,6 +41,31 @@ final class VADSegmenterStreamingTests: XCTestCase {
         XCTAssertEqual(out.count, 0, "a same-speaker pause must merge, not early-emit")
     }
 
+    func testStreamingLevelJumpMergesNoSplit() {
+        // The SAME voice keying up much louder across a PTT gap (same pitch + brightness, ~+17 dB level)
+        // must MERGE, never early-split: loudness alone is not a speaker change. The overall distance
+        // clears newSpeakerDist purely on the `level` dim, so only the timbre gate prevents a wrong split.
+        let loud = tone(9600, amp: 0.5, freq: 150)
+        let quiet = tone(9600, amp: 0.06, freq: 150)   // same 150 Hz, far quieter
+        XCTAssertEqual(streaming().feed(loud + pttGap + quiet).count, 0,
+                       "a same-voice loudness jump must merge, not split (level ≠ speaker change)")
+    }
+
+    func testStreamingDisableMidConfirmMergesAndKeepsAllAudio() {
+        // Toggling "Separate speakers" OFF while a next-speaker onset is mid-confirmation must fold
+        // turn A + the PTT gap + the buffered onset into ONE merged plain segment — losing none of it.
+        let seg = streaming()
+        let a = atc(self)                              // 9600: arms turn A
+        let onset = tone(4320, amp: 0.5, freq: 320)    // 9 frames: < onsetConfirm(10) → parks in .confirmingOnset
+        XCTAssertEqual(seg.feed(a + pttGap + onset).count, 0, "onset too short to confirm — nothing emitted yet")
+        seg.setSpeakerAware(false)                     // flip OFF mid-.confirmingOnset
+        let out = seg.flush()                          // plain-path finalize of the folded segment
+        XCTAssertEqual(out.count, 1, "the merged transmission must finalize as one segment, not be lost")
+        XCTAssertEqual(out[0].audio.count, a.count + pttGap.count + onset.count,
+                       "turn A + PTT gap + the mid-confirmation onset must all survive the OFF toggle")
+        XCTAssertNil(out[0].speaker, "plain-path finalize leaves speaker nil")
+    }
+
     func testStreamingMicroPauseNeverArms() {
         // A <150ms micro-pause never even arms the tentative boundary → identical to plain.
         let micro = silence(1440)   // 3 frames < pttBreakFrames
