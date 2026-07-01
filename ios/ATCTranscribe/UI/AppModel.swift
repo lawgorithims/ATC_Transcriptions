@@ -99,10 +99,7 @@ final class AppModel: ObservableObject {
     /// "model unavailable".
     @Published var modelLoadError: String?
     @Published var deviceLabel = "Neural Engine"
-    @Published var measuredSpeed: Double? = 12.5
-    @Published var minRealtimeSpeed = (UserDefaults.standard.object(forKey: "atc.minRealtimeSpeed") as? Double) ?? 1.2 {
-        didSet { UserDefaults.standard.set(minRealtimeSpeed, forKey: "atc.minRealtimeSpeed") }
-    }
+    @Published var measuredSpeed: Double? = 12.5   // real once the performance check runs (runProofOfLife)
 
     // Proof of life
     @Published var proofOfLife: ProofOfLifeResult?
@@ -433,6 +430,9 @@ final class AppModel: ObservableObject {
             // so an abandoned load stops consuming resources as soon as its CoreML step returns.
             if let generation, generation != modelSwapGeneration { return false }
             modelLoadError = nil
+            // Share the just-loaded model with the engine so the performance check reuses it instead of
+            // compiling a SECOND resident copy (two big models in memory at once).
+            await engine.adopt(transcriber, name: active)
         } catch {
             // Only the current (or generation-less init/download) load may write status — a superseded
             // load that fails late must not flash a stale "failed" over the newer selection.
@@ -995,6 +995,10 @@ final class AppModel: ObservableObject {
         return models.keys.sorted().first
     }
 
+    /// Accuracy-preference rank (lower = better), mirroring `preferredActiveModel`'s turbo→small order.
+    /// Used to decide which of two candidate models should win when several are resolving at once.
+    static func preferredRank(_ id: String) -> Int { ["turbo", "small"].firstIndex(of: id) ?? Int.max }
+
     /// Is a given whisper variant present on disk? Drives the Settings picker's enablement.
     func modelDownloaded(_ id: String) -> Bool { modelDirs[id] != nil }
 
@@ -1055,19 +1059,52 @@ final class AppModel: ObservableObject {
             detail = "\(reason) Download the Small model to continue."
             needsOnboarding = true
         } else {
-            // The Small model itself failed — nothing reliable to fall back to.
-            detail = "\(reason) Try re-downloading it in Settings › Models."
+            // The Small (required) model itself failed to LOAD despite being on disk — its files are
+            // corrupt/incomplete, so a picker retry would just re-fail. Wipe the folder so it stops
+            // reading as "ready", drop the stale resolution, and re-show the download gate — which now
+            // offers a working Download button for a clean copy instead of a dead-end message.
+            try? FileManager.default.removeItem(at: ModelStore.whisperDir(ModelCatalog.small.variant ?? "small"))
+            modelDirs["small"] = nil
+            detail = "\(reason) The Small model looks corrupt — re-download it to continue."
+            needsOnboarding = true
         }
     }
 
+    /// Abandon an in-flight model swap and stay on the current (resident) model — used when the user
+    /// re-selects the model that's still running while another is loading. The active model never left,
+    /// so there's nothing to reload: supersede the load (bump the generation so its late result is
+    /// discarded at the commit gate), cancel its tasks, and unlock the picker.
+    private func cancelModelLoad(detail newDetail: String) {
+        modelSwapGeneration += 1
+        watchdogTask?.cancel(); watchdogTask = nil
+        loadTask?.cancel(); loadTask = nil
+        loadingModel = nil
+        detail = newDetail
+    }
+
     /// Switch the active transcription model (Settings picker). Rebuilds the engine + live session
-    /// against the chosen variant's folder. No-op if it isn't downloaded or is already active.
+    /// against the chosen variant's folder. No-op if it isn't downloaded or is already active. A pick
+    /// made while another model is loading supersedes that load; re-picking the running model cancels it.
     /// Preserves run state: if a source was live it restarts after the new model loads.
     func switchModel(_ id: String) {
-        // Normally skip a no-op reselect of the already-active model — but if there's NO working
-        // session (a prior load failed and left us stranded), allow reselecting it to recover.
-        guard liveMode, modelDirs[id] != nil, (session == nil || id != activeModel) else { return }
-        guard loadingModel == nil else { return }   // a swap is already loading — ignore the tap
+        guard liveMode, modelDirs[id] != nil else { return }
+        // Let the user change their mind WHILE a model is compiling. The swap is non-destructive, so a
+        // different pick just supersedes the in-flight load (the old model keeps running until whichever
+        // load lands), and re-tapping the running model cancels the swap and stays put. Only re-tapping
+        // the model already loading is a no-op. (This used to be a hard lock — EVERY tap was dropped for
+        // the whole compile, trapping the user on "Loading…" with no escape.)
+        if let loading = loadingModel {
+            if id == loading { return }                              // already loading this one
+            if id == activeModel, session != nil {                  // tap the still-running model → cancel
+                cancelModelLoad(detail: "Staying on \(ModelCatalog.shortLabel(forID: id)).")
+                return
+            }
+            // else: a different model → fall through and supersede the in-flight load.
+        } else {
+            // Nothing loading: skip a plain reselect of the active model — unless there's NO working
+            // session (a prior load stranded us), in which case allow reselect to retry/recover.
+            guard session == nil || id != activeModel else { return }
+        }
         let wasRunning = isRunning
         // Do NOT stop() here. `setupLive` is non-destructive: the CURRENT model and its live run — a
         // feed, or the Stratux cockpit audio + ADS-B traffic + GPS — keep streaming until the new model
@@ -1106,10 +1143,17 @@ final class AppModel: ObservableObject {
             guard modelSwapGeneration == gen else { return }   // a newer switch owns the UI now
             if loadingModel == id { loadingModel = nil }
             if !ok {
-                // The model failed to load (or this swap was abandoned). The previous model is intact —
-                // tell the user and resume it if it had been running and isn't already.
-                detail = "Couldn’t load \(ModelCatalog.shortLabel(forID: id)). Still using \(activeModelLabel)."
-                if wasRunning, !isRunning, session != nil { start(resuming: true) }
+                if session == nil {
+                    // A reselect-to-recover attempt (no fallback model is resident) failed AGAIN — there
+                    // is no previous model to "still use", so route to real recovery instead of a lie.
+                    surfaceInitialLoadProblem(active: id,
+                        reason: modelLoadError.map { "Couldn’t load \(ModelCatalog.shortLabel(forID: id)): \($0)" }
+                            ?? "Couldn’t load \(ModelCatalog.shortLabel(forID: id)).")
+                } else {
+                    // The previous model is intact — tell the user and resume it if it had been running.
+                    detail = "Couldn’t load \(ModelCatalog.shortLabel(forID: id)). Still using \(activeModelLabel)."
+                    if wasRunning, !isRunning { start(resuming: true) }
+                }
             }
         }
     }
@@ -1158,6 +1202,10 @@ final class AppModel: ObservableObject {
         // that stalled). Load the model that JUST downloaded: it's the one the user asked for and the
         // one we can definitely use now, so the recovery "download a model that works" actually loads.
         guard models[entry.id] != nil else { return }
+        // …but if a HIGHER-accuracy model is already loading, don't let this (smaller) one override it —
+        // e.g. Small finishing after Large started loading. The better in-flight load wins; this model is
+        // still recorded in modelDirs above, so it stays pickable in Settings.
+        if let loading = loadingModel, Self.preferredRank(loading) <= Self.preferredRank(entry.id) { return }
         if value(forFlag: "--source") == nil, UserDefaults.standard.string(forKey: "atc.source") == nil,
            Self.bundledDemoClipsDir() != nil { source = .replay }
         beginModelLoad(models: models, active: entry.id, audioDir: Self.bundledDemoClipsDir(), autostart: false)
