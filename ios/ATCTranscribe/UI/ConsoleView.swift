@@ -520,10 +520,11 @@ struct ControlsBar: View {
                         ForEach(SourceKind.allCases) { Text($0.rawValue).tag($0) }
                     }
                     .labelsHidden().pickerStyle(.menu).tint(p.text)
-                    // Locked while running: the audio source is bound into the live pipeline at Start,
-                    // so switching it mid-run would leave the run pulling from the old provider (a
+                    // Locked while a REAL capture is live: the audio source is bound into the pipeline at
+                    // Start, so switching it mid-run would leave the run pulling from the old provider (a
                     // Stratux↔feed split-brain). Stop to change inputs — mirrors the model picker's gate.
-                    .disabled(model.isRunning)
+                    // (Not locked in the model-less demo, which shows `.live` but binds no source.)
+                    .disabled(model.isLiveCapturing)
                 }
                 .padding(.horizontal, 10).padding(.vertical, 6)
                 .background(p.surfaceAlt).clipShape(RoundedRectangle(cornerRadius: 8))

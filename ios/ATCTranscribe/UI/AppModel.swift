@@ -399,6 +399,10 @@ final class AppModel: ObservableObject {
 
     var palette: Palette { theme.palette }
     var isRunning: Bool { status == .live || status == .connecting || status == .starting }
+    /// A REAL capture session is live (a model is loaded and running) — as opposed to the model-less
+    /// demo, which shows `.live` but has no audio source bound. Used to lock the input-source picker
+    /// only when switching would actually strand the pipeline on the old provider.
+    var isLiveCapturing: Bool { isRunning && liveMode }
     /// Friendly name for the status badge / sidebar (maps the raw id, e.g. "cleanturbo" → "Large V2").
     /// While a model is loading it shows the model being LOADED, so a slow first load doesn't keep the
     /// widgets showing the previous/default model ("Small") the whole time.
