@@ -70,7 +70,9 @@ final class ModelCatalogTests: XCTestCase {
         XCTAssertFalse(ModelStore.isReady(ModelCatalog.small))
         XCTAssertNil(ModelStore.downloadedWhisperDir())
 
-        let dir = ModelStore.whisperDir("small")
+        // Use the catalog's actual variant folder (the `small` entry's on-disk variant can be bumped,
+        // e.g. small → small-v2, to force a re-download) so this stays correct across model updates.
+        let dir = ModelStore.whisperDir(ModelCatalog.small.variant ?? ModelCatalog.small.id)
         try FileManager.default.createDirectory(
             at: dir.appendingPathComponent("AudioEncoder.mlmodelc"), withIntermediateDirectories: true)
 
