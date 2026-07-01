@@ -42,22 +42,27 @@ struct ConsoleView: View {
             // present at launch (lean TestFlight build → first-run download → live console).
             downloads.onReady = { entry in
                 model.modelDidDownload(entry)
-                // The AI context fixer rides along with whichever speech model the user downloads,
-                // so correction works regardless of which model they picked. Idempotent — a no-op
-                // if the fixer is already present or downloading.
-                if entry.kind == .whisperKit, !ModelStore.isReady(ModelCatalog.llm) {
+                // The AI context fixer rides along with whichever speech model the user downloads, so
+                // correction works regardless of which model they picked. Idempotent, and skipped when
+                // the fixer is bundled into the app.
+                if entry.kind == .whisperKit, !ModelStore.isReady(ModelCatalog.llm), bundledLLMModelPath() == nil {
                     downloads.download(ModelCatalog.llm)
                 }
+                // The fixer just landed → rebuild the corrector so a running session starts using it
+                // (otherwise it's only picked up on the next model swap / relaunch).
+                if entry.id == ModelCatalog.llm.id { model.refreshLLMAfterDownload() }
             }
-            // Build 21 upgraded the required Small model to the US-fine-tuned "small-v2" variant, which
-            // lives in a NEW on-disk folder — so an install upgrading from a prior build has a stale old
-            // Small that isn't "ready", and small-v2 would otherwise never be fetched (the app keeps
-            // running whatever larger model was already downloaded). For a user who already has a
-            // downloaded model, pull the upgraded Small in the background so the device actually receives
-            // it; `modelDidDownload` activates it only if nothing usable is loaded (a running Large is
-            // left alone). Idempotent — `download()` no-ops if it's present or already in flight.
+            // Build 21+: pull the required Small model in the background when a downloaded install lacks
+            // it (variant bump left the old Small stale). No-op when Small is bundled (modelSource then
+            // reads "bundled") or already present.
             if model.modelSource == "downloaded", !ModelStore.isReady(ModelCatalog.required) {
                 downloads.download(ModelCatalog.required)
+            }
+            // The AI fixer isn't bundled in the speech-model-only build — fetch it on first launch if it
+            // isn't present yet, so correction works. The app transcribes without it (vocabulary-only)
+            // until it lands, then `refreshLLMAfterDownload` switches it on.
+            if !ModelStore.isReady(ModelCatalog.llm), bundledLLMModelPath() == nil {
+                downloads.download(ModelCatalog.llm)
             }
         }
         .onChange(of: scenePhase) { _, newPhase in

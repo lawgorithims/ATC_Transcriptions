@@ -18,6 +18,26 @@ final class ModelCatalogTests: XCTestCase {
         try? FileManager.default.removeItem(at: tmp)
     }
 
+    /// Create a COMPLETE WhisperKit model folder (all three sub-models) so `isReady` passes — mirrors a
+    /// finished download. `isReady` now requires Mel + Audio + Decoder, not just AudioEncoder.
+    private func makeWhisperModel(at dir: URL) throws {
+        for part in ModelStore.whisperModelParts {
+            try FileManager.default.createDirectory(
+                at: dir.appendingPathComponent("\(part).mlmodelc"), withIntermediateDirectories: true)
+        }
+    }
+
+    func testPartialWhisperDownloadIsNotReady() throws {
+        // A partial/interrupted download (only AudioEncoder) must NOT read as ready — else it loads
+        // then fails "model file not found". This is the on-device download-load failure class.
+        let dir = ModelStore.whisperDir(ModelCatalog.small.variant ?? ModelCatalog.small.id)
+        try FileManager.default.createDirectory(
+            at: dir.appendingPathComponent("AudioEncoder.mlmodelc"), withIntermediateDirectories: true)
+        XCTAssertFalse(ModelStore.isReady(ModelCatalog.small), "a partial whisper folder must not be ready")
+        try makeWhisperModel(at: dir)   // add Mel + Decoder → complete
+        XCTAssertTrue(ModelStore.isReady(ModelCatalog.small))
+    }
+
     func testCatalogHasRequiredAndOptionalEntries() {
         XCTAssertTrue(ModelCatalog.required.required)
         XCTAssertEqual(ModelCatalog.required.id, "small")
@@ -44,18 +64,15 @@ final class ModelCatalogTests: XCTestCase {
     }
 
     func testStockModelResolvesByItsVariantFolder() throws {
-        let fm = FileManager.default
         let clean = ModelCatalog.cleanturbo
         // The stock model's on-disk folder is its long WhisperKit variant id, NOT its short "cleanturbo" id.
         XCTAssertNotEqual(clean.variant, clean.id)
-        try fm.createDirectory(at: ModelStore.localURL(for: clean).appendingPathComponent("AudioEncoder.mlmodelc"),
-                               withIntermediateDirectories: true)
+        try makeWhisperModel(at: ModelStore.localURL(for: clean))
         XCTAssertTrue(ModelStore.isReady(clean))
         // Alone, it's the resolved downloaded model…
         XCTAssertEqual(ModelStore.downloadedWhisperDir(), ModelStore.localURL(for: clean).path)
         // …but the fine-tuned turbo is still preferred when both are present.
-        try fm.createDirectory(at: ModelStore.whisperDir("turbo").appendingPathComponent("AudioEncoder.mlmodelc"),
-                               withIntermediateDirectories: true)
+        try makeWhisperModel(at: ModelStore.whisperDir("turbo"))
         XCTAssertEqual(ModelStore.downloadedWhisperDir(), ModelStore.whisperDir("turbo").path)
     }
 
@@ -73,22 +90,19 @@ final class ModelCatalogTests: XCTestCase {
         // Use the catalog's actual variant folder (the `small` entry's on-disk variant can be bumped,
         // e.g. small → small-v2, to force a re-download) so this stays correct across model updates.
         let dir = ModelStore.whisperDir(ModelCatalog.small.variant ?? ModelCatalog.small.id)
-        try FileManager.default.createDirectory(
-            at: dir.appendingPathComponent("AudioEncoder.mlmodelc"), withIntermediateDirectories: true)
+        try makeWhisperModel(at: dir)
 
         XCTAssertTrue(ModelStore.isReady(ModelCatalog.small))
         XCTAssertEqual(ModelStore.downloadedWhisperDir(), dir.path)
     }
 
     func testWhisperPrefersTurboWhenBothPresent() throws {
-        let fm = FileManager.default
         // Create each model at its ACTUAL variant folder (small's is "small-v2" after the bump, not
         // "small") so isReady(small) is genuinely true — otherwise the "small" leg is a no-op and the
         // turbo-over-small ordering isn't really exercised.
         for v in [ModelCatalog.small.variant ?? ModelCatalog.small.id,
                   ModelCatalog.turbo.variant ?? ModelCatalog.turbo.id] {
-            try fm.createDirectory(at: ModelStore.whisperDir(v).appendingPathComponent("AudioEncoder.mlmodelc"),
-                                   withIntermediateDirectories: true)
+            try makeWhisperModel(at: ModelStore.whisperDir(v))
         }
         XCTAssertEqual(ModelStore.downloadedWhisperDir(),
                        ModelStore.whisperDir(ModelCatalog.turbo.variant ?? ModelCatalog.turbo.id).path)
