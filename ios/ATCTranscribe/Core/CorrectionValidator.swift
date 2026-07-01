@@ -20,6 +20,13 @@ struct CorrectionValidator {
     /// Normalized (lowercased, non-alphanumerics stripped, spaces removed) allowed `to` forms:
     /// every vocab term, callsign, facility name, and phraseology phrase the LLM may introduce.
     let allowed: Set<String>
+    /// Normalized (no-space) labels the LLM may CITE as context but must NEVER apply as an output form
+    /// — live ADS-B traffic codes (e.g. "aal1234"). Rejected as a `to` unless independently allowed, so
+    /// a readable spoken callsign is never rewritten into an ADS-B code on a safety feed. (Finding #4.)
+    var deniedTargets: Set<String> = []
+    /// ICAO phonetic word → letter ("alpha" -> "a"). Used to verify that a spoken callsign actually
+    /// spells a filed/known identifier before snapping onto it. (Finding #9.)
+    var phonetic: [String: String] = [:]
     var minEditRatio = 0.55
     var maxEdits = 8
 
@@ -52,12 +59,53 @@ struct CorrectionValidator {
     // MARK: Checks
 
     private func isAllowed(to: String, from: String) -> Bool {
-        if allowed.contains(normNoSpace(to)) { return true }
+        let toKey = normNoSpace(to)
+        // (a) Live ADS-B traffic codes are prompt context only — never an applied output form. Reject
+        // them as an edit target unless they're independently allowed (e.g. also the filed callsign).
+        if deniedTargets.contains(toKey), !allowed.contains(toKey) { return false }
+        // (b) A callsign/airway-shaped target — a LEADING letter followed by a digit somewhere, e.g.
+        // "n345ab" or "q105", but NOT a runway like "28r" (which leads with a digit) — that is only
+        // "allowed" because it's a filed/known identifier must genuinely match what was spoken: the
+        // phonetic spelling of `from` must resolve to it, or the strings must be near neighbours. This
+        // blocks snapping a DIFFERENT aircraft's similar callsign ("november 345 charlie delta") onto
+        // the pilot's filed one ("N345AB") just because their digits coincide. Erring toward NO snap is
+        // safe here — the worst case is that a genuine callsign mishear is left as the raw transcript.
+        if leadsWithLetterThenDigit(toKey), allowed.contains(toKey) {
+            return phoneticSkeleton(from) == toKey
+                || SequenceMatcher(norm(from), norm(to)).ratio() >= minEditRatio
+        }
+        if allowed.contains(toKey) { return true }
         // Each word of a multi-word `to` known? (e.g. "Lone Star Approach")
         let words = to.split(separator: " ").map { normNoSpace(String($0)) }.filter { !$0.isEmpty }
         if !words.isEmpty, words.allSatisfy({ allowed.contains($0) }) { return true }
         // Otherwise only accept a plausible mishear fix (close to what was transcribed).
         return SequenceMatcher(norm(from), norm(to)).ratio() >= minEditRatio
+    }
+
+    /// A callsign/airway-shaped identifier leads with a letter and contains a digit ("n345ab", "q105").
+    /// A runway ("28r", "4l") or a bare frequency ("12865") leads with a digit, so it's excluded — those
+    /// remain freely snappable (spoken "two eight right" → "28R" is a common, legitimate correction).
+    private func leadsWithLetterThenDigit(_ key: String) -> Bool {
+        guard let first = key.first, first.isLetter else { return false }
+        return key.contains(where: \.isNumber)
+    }
+
+    /// Resolve a spoken identifier to its skeleton by mapping ICAO phonetic words to letters and number
+    /// words / digit runs to digits: "november 345 charlie delta" -> "n345cd"; "november three four five
+    /// alpha bravo" -> "n345ab"; "quebec one oh five" -> "q105". Unknown tokens pass through as their raw
+    /// alphanumerics (so an already-coded "n345ab" resolves to itself).
+    private func phoneticSkeleton(_ s: String) -> String {
+        var out = ""
+        for word in s.lowercased().split(whereSeparator: { !$0.isLetter && !$0.isNumber }) {
+            let w = String(word)
+            if let letter = phonetic[w] { out += letter }                                   // alpha -> a
+            else if w == "oh" { out += "0" }                                                 // ATC "oh" -> 0
+            else if let n = ATCNormalize.units[w] ?? ATCNormalize.teens[w] ?? ATCNormalize.tens[w] {
+                out += String(n)                                                             // niner -> 9
+            } else if w.allSatisfy(\.isNumber) { out += w }                                  // 345 -> 345
+            else { out += w.filter { $0.isLetter || $0.isNumber } }                          // fallback: raw
+        }
+        return out
     }
 
     /// Replace the first token-aligned occurrence of `from` (1+ words) with `to`, matching on
@@ -114,5 +162,12 @@ extension CorrectionValidator {
         add(Array(knowledge.phonetic.values))
         set.remove("")
         return set
+    }
+
+    /// Normalize raw in-range traffic labels to the no-space keys used for the `deniedTargets` denylist.
+    static func deniedTargets(from labels: [String]) -> Set<String> {
+        Set(labels
+            .map { String($0.lowercased().filter { ("a"..."z").contains($0) || ("0"..."9").contains($0) }) }
+            .filter { !$0.isEmpty })
     }
 }

@@ -82,11 +82,16 @@ final class ModelCatalogTests: XCTestCase {
 
     func testWhisperPrefersTurboWhenBothPresent() throws {
         let fm = FileManager.default
-        for v in ["small", "turbo"] {
+        // Create each model at its ACTUAL variant folder (small's is "small-v2" after the bump, not
+        // "small") so isReady(small) is genuinely true — otherwise the "small" leg is a no-op and the
+        // turbo-over-small ordering isn't really exercised.
+        for v in [ModelCatalog.small.variant ?? ModelCatalog.small.id,
+                  ModelCatalog.turbo.variant ?? ModelCatalog.turbo.id] {
             try fm.createDirectory(at: ModelStore.whisperDir(v).appendingPathComponent("AudioEncoder.mlmodelc"),
                                    withIntermediateDirectories: true)
         }
-        XCTAssertEqual(ModelStore.downloadedWhisperDir(), ModelStore.whisperDir("turbo").path)
+        XCTAssertEqual(ModelStore.downloadedWhisperDir(),
+                       ModelStore.whisperDir(ModelCatalog.turbo.variant ?? ModelCatalog.turbo.id).path)
     }
 
     func testGGUFReadyAndPath() throws {

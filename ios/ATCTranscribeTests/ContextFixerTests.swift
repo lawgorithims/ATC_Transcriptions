@@ -86,6 +86,55 @@ final class ContextFixerTests: XCTestCase {
         XCTAssertTrue(allowed.contains("4l"))
     }
 
+    // MARK: Callsign integrity (findings #4 traffic-code denylist, #9 filed-callsign misattribution)
+
+    func testTrafficCodeDeniedAsEditTarget() {
+        // A raw in-range ADS-B code (AAL1234) is context for the LLM but must never be the applied
+        // output form — even though "american 1234" → "AAL1234" preserves digits and passes the ratio.
+        let v = CorrectionValidator(allowed: [], deniedTargets: ["aal1234"])
+        let c = v.validate(raw: "american 1234 turn left", edits: [edit("american 1234", "AAL1234")], backend: "test")
+        XCTAssertFalse(c.changed)
+    }
+
+    func testTrafficCodeAllowedWhenItIsAlsoTheFiledCallsign() {
+        // If the code is independently allowed (it's the pilot's own filed callsign), the denylist
+        // doesn't block it — the phonetic/ratio check still governs, and a near-string form snaps.
+        let v = CorrectionValidator(allowed: ["aal1234"], deniedTargets: ["aal1234"])
+        let c = v.validate(raw: "aa1234 heavy", edits: [edit("aa1234", "AAL1234")], backend: "test")
+        XCTAssertTrue(c.changed)   // "aa1234" ~ "aal1234" is a near neighbour → allowed
+    }
+
+    func testFiledCallsignMisattributionBlocked() {
+        // A DIFFERENT aircraft's spoken callsign must not be snapped onto the pilot's filed one just
+        // because the digits coincide. Filed: N345AB; heard: "november 345 charlie delta" (N345CD).
+        let phonetic = ["november": "n", "alpha": "a", "bravo": "b", "charlie": "c", "delta": "d"]
+        let v = CorrectionValidator(allowed: ["n345ab"], phonetic: phonetic)
+        let c = v.validate(raw: "november 345 charlie delta heavy",
+                           edits: [edit("november 345 charlie delta", "N345AB")], backend: "test")
+        XCTAssertFalse(c.changed)
+    }
+
+    func testFiledCallsignGenuineMishearAllowed() {
+        // The pilot's OWN callsign, phonetically spelled, still snaps onto the filed form.
+        let phonetic = ["november": "n", "alpha": "a", "bravo": "b", "charlie": "c", "delta": "d"]
+        let v = CorrectionValidator(allowed: ["n345ab"], phonetic: phonetic)
+        let c = v.validate(raw: "november 345 alpha bravo heavy",
+                           edits: [edit("november 345 alpha bravo", "N345AB")], backend: "test")
+        XCTAssertTrue(c.changed)
+        XCTAssertEqual(c.corrected, "N345AB heavy")
+    }
+
+    func testRunwayDesignatorStillSnaps() {
+        // Runways lead with a DIGIT, so the callsign-integrity gate never touches them: "28 right" →
+        // "28R" must still snap when 28R is a known runway (guards against over-blocking). (The digit
+        // string is preserved, so the numbers-preserved guard is satisfied.)
+        let v = CorrectionValidator(allowed: ["28r"])
+        let c = v.validate(raw: "cleared to land 28 right",
+                           edits: [edit("28 right", "28R")], backend: "test")
+        XCTAssertTrue(c.changed)
+        XCTAssertEqual(c.corrected, "cleared to land 28R")
+    }
+
     // MARK: LocalLLMCorrector (stub engine — no model)
 
     private struct StubEngine: LLMEngine {

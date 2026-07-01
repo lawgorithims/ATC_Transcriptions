@@ -17,4 +17,19 @@ final class WERTests: XCTestCase {
         XCTAssertEqual(WER.rate(reference: "", hypothesis: "something"), 1.0, accuracy: 0)
         XCTAssertEqual(WER.rate(reference: "hotel echo xray", hypothesis: "hotel echo x-ray"), 0.0, accuracy: 0) // hyphen
     }
+
+    /// The ATC number/runway canonicalization: numeric and spelled forms of the same call compare
+    /// equal, so the in-app performance check isn't penalised for the US model's numeric output format.
+    func testATCFormatNormalizationCancelsPureFormatDifferences() {
+        // Runway designator: "16R" == "one six right"; "28R" == "two eight right".
+        XCTAssertEqual(WER.rate(reference: "one six right", hypothesis: "16R"), 0.0, accuracy: 0)
+        XCTAssertEqual(WER.rate(reference: "cleared to land two eight right",
+                                hypothesis: "cleared to land 28R"), 0.0, accuracy: 0)
+        // Spelled digits vs numerals: "runway two five" == "runway 25"; "one zero two three" == "1023".
+        XCTAssertEqual(WER.rate(reference: "runway two five", hypothesis: "runway 25"), 0.0, accuracy: 0)
+        XCTAssertEqual(WER.rate(reference: "one zero two three", hypothesis: "1023"), 0.0, accuracy: 0)
+        // A REAL digit error is still counted (normalization doesn't mask substance): 6 1 8 vs 6 1 9.
+        XCTAssertEqual(WER.rate(reference: "american 618", hypothesis: "american 619"),
+                       0.25, accuracy: 1e-6)   // 1 of 4 tokens (american, 6, 1, 8)
+    }
 }

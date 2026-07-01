@@ -1,28 +1,28 @@
 {
-  "description": "Short labeled ATC snippets used by diagnostics/diagnostic.py as a proof-of-life check for the fine-tuned Whisper transcriber. Chosen to be brief (~2-4 s each) so the whole diagnostic runs in seconds.",
-  "source": "ATCO2 1h public test set (luigisaetta subset), validation split. Provided for research/diagnostic use under the ATCO2 corpus terms.",
+  "description": "Short labeled US ATC snippets used as CommSight's on-device performance check (proof-of-life) and Replay demo. Chosen brief (~3-5 s) so the check runs in seconds, and drawn from the domain the shipped small-v2 model is fine-tuned for.",
+  "source": "CommSight US human-verified gold test set (2026-06 scraping runs). US live-ATC feeds; references human-corrected.",
   "sample_rate": 16000,
   "channels": 1,
   "snippets": [
     {
-      "file": "luigisaetta_00367.wav",
-      "reference": "roger station calling please pass your message"
+      "file": "usgold_ewr_aal618.wav",
+      "reference": "american 618 you can continue down to victor"
     },
     {
-      "file": "luigisaetta_00270.wav",
-      "reference": "Hotel Echo X-ray number one runway two five"
+      "file": "usgold_dfw_aal2124.wav",
+      "reference": "american 2124 descend and maintain 6000"
     },
     {
-      "file": "luigisaetta_00460.wav",
-      "reference": "thank you QNH is one zero two three"
+      "file": "usgold_bna_ual1616.wav",
+      "reference": "tower united 1616 on approach 20l"
     },
     {
-      "file": "luigisaetta_00464.wav",
-      "reference": "one six right cleared to land Rex Sixty One Thirty Four"
+      "file": "usgold_dfw_frontier2471.wav",
+      "reference": "frontier flight 2471 contact tower 12655"
     },
     {
-      "file": "luigisaetta_00550.wav",
-      "reference": "tower Bauhinia Two Zero One Seven established ILS three four left"
+      "file": "usgold_sfo_ils28r.wav",
+      "reference": "san francisco tower mission 699 inbound ils 28r"
     }
   ]
 }
