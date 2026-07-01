@@ -99,6 +99,24 @@ final class ModelDownloadManager: ObservableObject {
         tasks[e.id]?.cancel()
     }
 
+    /// Delete a downloaded model from disk and reset its state to `.notDownloaded` so it can be
+    /// re-downloaded. The model manager's recovery control for a corrupt/partial download. Safe on a
+    /// model that's currently loaded — the resident copy is memory-mapped, so removing the folder
+    /// doesn't disturb the running session; it only affects the next load.
+    func delete(_ e: ModelEntry) {
+        tasks[e.id]?.cancel()
+        tasks[e.id] = nil
+        try? FileManager.default.removeItem(at: ModelStore.localURL(for: e))
+        states[e.id] = .notDownloaded
+    }
+
+    /// Wipe a downloaded model and immediately re-download it — one-tap recovery for a bad download.
+    @discardableResult
+    func redownload(_ e: ModelEntry) -> Task<Void, Never>? {
+        delete(e)
+        return download(e)
+    }
+
     private func finish(_ id: String, _ state: DownloadState, entry: ModelEntry?) {
         tasks[id] = nil
         states[id] = state
