@@ -6,7 +6,19 @@ import XCTest
 /// `ios/Tools/parity_check.py`. A "frame" is 30 ms = 480 samples at 16 kHz.
 final class VADSegmenterTests: XCTestCase {
 
-    private func seg() -> VADSegmenter { VADSegmenter(now: { 0 }) }
+    // Pin an explicit config so these segmentation-LOGIC cases don't move when the app's DEFAULTS are
+    // tuned for latency. The cases below encode silence 700 ms (= 23 frames) and maxSegment 12 s (= 400
+    // frames); keep testing that logic regardless of the shipped defaults.
+    private func seg() -> VADSegmenter {
+        VADSegmenter(config: VADConfig(silenceDurationMs: 700, maxSegmentS: 12.0), now: { 0 })
+    }
+
+    /// Lock the shipped defaults that control live latency (so a change is deliberate). Lowered to
+    /// split fast back-to-back transmissions and bound the worst-case delay — see VADConfig.
+    func testDefaultsAreTunedForLowLatency() {
+        XCTAssertEqual(VADConfig().silenceDurationMs, 400)
+        XCTAssertEqual(VADConfig().maxSegmentS, 8.0, accuracy: 1e-9)
+    }
 
     /// `n` frames of constant amplitude `amp` (RMS == amp for a constant signal,
     /// so amp 0.5 reads as speech, 0.0 as silence, vs the 0.008 energy threshold).
