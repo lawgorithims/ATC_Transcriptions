@@ -12,6 +12,9 @@ struct SpeechSegment {
     var streamEndS: Double
     /// Wall-clock time (seconds since 1970) when the segment was finalized.
     var finalizedWallTime: Double
+    /// Speaker id assigned by the streaming speaker-aware segmenter (nil on the plain VAD path, where
+    /// the post-hoc `Diarizer` assigns speakers instead).
+    var speaker: Int? = nil
 
     var durationS: Double { streamEndS - streamStartS }
 }

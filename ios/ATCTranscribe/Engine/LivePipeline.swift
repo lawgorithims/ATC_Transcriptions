@@ -137,8 +137,13 @@ actor LivePipeline {
     private var gate = ConfidenceGate()
     private var gateEnabled = true
 
+    /// Shared session speaker clustering — ONE instance feeds both the streaming speaker-aware
+    /// segmenter and the post-hoc diarizer, so they number the same voice identically.
+    private let speakerModel: SpeakerModel
     /// Heuristic speaker diarization: splits a VAD segment into per-speaker pieces (separate lines).
-    private let diarizer = Diarizer()
+    /// Also the labeling AUTHORITY — it re-splits even a streaming-tagged segment (a clean single-
+    /// speaker cut returns one piece), so a streaming false-split can never surface as mislabeled lines.
+    private let diarizer: Diarizer
     private var diarizationEnabled = true
 
     private static let timeFormatter: DateFormatter = {
@@ -158,15 +163,20 @@ actor LivePipeline {
         self.context = context
         self.preprocessor = preprocessor
         self.corrector = corrector
-        self.segmenter = VADSegmenter(config: vadConfig)
+        self.diarizationEnabled = diarizationEnabled
+        let sm = SpeakerModel()
+        self.speakerModel = sm
+        self.diarizer = Diarizer(speaker: sm)
+        // Streaming speaker-change segmentation is on exactly when diarization is (they share `sm`).
+        self.segmenter = VADSegmenter(config: vadConfig, speakerAware: diarizationEnabled, speaker: sm)
         self.refiner = llm.map { LLMRefiner(corrector: $0) }
         self.gateEnabled = gateEnabled
         self.gate.sensitivity = gateSensitivity
-        self.diarizationEnabled = diarizationEnabled
     }
 
-    /// Toggle diarization at runtime (Settings). Takes effect on the next segment.
-    func setDiarization(_ on: Bool) { diarizationEnabled = on }
+    /// Toggle diarization at runtime (Settings). Also flips the segmenter's streaming speaker-change
+    /// mode 1:1. Takes effect on the next segment.
+    func setDiarization(_ on: Bool) { diarizationEnabled = on; segmenter.setSpeakerAware(on) }
 
     /// Transcribe one speech segment into a record, or nil when nothing usable was
     /// decoded. `speaker` tags the record with a diarization speaker id. Port of `_transcribe_segment`.
@@ -263,28 +273,40 @@ actor LivePipeline {
                 if stepped != lastLevel { lastLevel = stepped; onLevel(stepped) }
             }
             for segment in segmenter.feed(chunk) {
-                // Signal "transcribing" around the (slow) transcribe so the UI can show it's working on
-                // a transmission — useful to tell a slow model apart from a stalled pipeline.
-                onActivity?(true)
-                if diarizationEnabled {
-                    // Split the segment into per-speaker pieces (back-to-back ATC↔aircraft
-                    // transmissions the VAD merged) and transcribe each onto its own line.
-                    for piece in diarizer.diarize(segment.audio) {
-                        let startS = segment.streamStartS + Double(piece.startSample) / 16000.0
-                        let sub = SpeechSegment(audio: piece.audio, streamStartS: startS,
-                                                streamEndS: startS + Double(piece.audio.count) / 16000.0,
-                                                finalizedWallTime: segment.finalizedWallTime)
-                        if let record = await process(sub, speaker: piece.speaker) { onRecord(record) }
-                    }
-                } else if let record = await process(segment) {
-                    onRecord(record)
-                }
-                onActivity?(false)
+                await emit(segment, onRecord: onRecord, onActivity: onActivity)
             }
+        }
+        // Drain any turn the streaming path parked waiting for a next speaker that never came (and any
+        // open plain segment), so the last transmission of a feed is never dropped on stream-end/stop.
+        for segment in segmenter.flush() {
+            await emit(segment, onRecord: onRecord, onActivity: onActivity)
         }
         running = false
         onActivity?(false)
         if lastLevel != 0 { onLevel?(0) }
+    }
+
+    /// Turn one segmenter output into record(s). With diarization on, the diarizer (the labeling
+    /// AUTHORITY) splits it into per-speaker pieces — re-splitting even a streaming-tagged segment; a
+    /// clean single-speaker cut returns one piece — and each is transcribed onto its own line. With it
+    /// off, the whole segment is transcribed. `onActivity` brackets the (slow) transcribe so the UI can
+    /// show it's working on a transmission, not stalled.
+    private func emit(_ segment: SpeechSegment,
+                      onRecord: @escaping @Sendable (TranscriptRecord) -> Void,
+                      onActivity: (@Sendable (Bool) -> Void)?) async {
+        onActivity?(true)
+        if diarizationEnabled {
+            for piece in diarizer.diarize(segment.audio) {
+                let startS = segment.streamStartS + Double(piece.startSample) / 16000.0
+                let sub = SpeechSegment(audio: piece.audio, streamStartS: startS,
+                                        streamEndS: startS + Double(piece.audio.count) / 16000.0,
+                                        finalizedWallTime: segment.finalizedWallTime)
+                if let record = await process(sub, speaker: piece.speaker) { onRecord(record) }
+            }
+        } else if let record = await process(segment) {
+            onRecord(record)
+        }
+        onActivity?(false)
     }
 
     /// RMS of a chunk mapped to a perceptual 0…1 meter level. Floors near the noise level and

@@ -32,6 +32,14 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 25, version: "1.0", headline: "Each call appears the moment the next one starts",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "person.wave.2.fill",
+                    title: "Turns surface the instant the speaker changes",
+                    detail: "During a quick back-and-forth between the controller and an aircraft, the app now closes and shows a transmission the moment it hears a different voice key up — instead of holding it until the exchange goes quiet. A rapid ATC↔pilot volley reads out call-by-call in near real time. If it's ever unsure who's talking it waits the extra beat rather than split a single speaker, so lines stay clean. Turn it on or off with Separate speakers in Settings."),
+            ]),
+        ReleaseNote(
             build: 24, version: "1.0", headline: "Faster transcription + manage your models",
             highlights: [
                 WhatsNewHighlight(

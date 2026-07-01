@@ -25,16 +25,28 @@ struct VADConfig {
     var squelchAuto = true
     /// Manual squelch threshold, normalized 0…1 (mapped to an RMS gate). Used only when `!squelchAuto`.
     var squelchLevel: Float = 0.2
+
+    // MARK: streaming speaker-change segmentation (only used when `speakerAware`)
+    /// A silence run this short is a candidate push-to-talk break (a turn boundary), NOT an
+    /// end-of-transmission — arms a tentative boundary without emitting.
+    var pttBreakMs = 160
+    /// How much of the NEXT speaker to buffer before fingerprinting them to decide a turn change.
+    /// ≥ ~300 ms so the pitch estimate is trustworthy on clipped VHF audio.
+    var onsetConfirmMs = 280
+    /// A confirmed change must survive a second fingerprint this much later (hysteresis vs. a single
+    /// noisy verdict).
+    var reConfirmMs = 60
 }
 
 /// Accumulates mono 16 kHz float32 PCM and emits contiguous speech segments via a
-/// frame-based voice-activity state machine. Faithful port of
-/// `atc_stream.VADSegmenter`.
+/// frame-based voice-activity state machine. Faithful port of `atc_stream.VADSegmenter`.
 ///
-/// The Python version uses WebRTC VAD when available and falls back to an energy
-/// threshold; this port implements the **energy path** (portable, dependency-free).
-/// Swapping in WebRTC VAD or a Silero CoreML model later means replacing
-/// `isSpeechFrame` — the segmentation logic around it is unchanged.
+/// With `speakerAware` (wired to diarization), it also runs a **streaming speaker-change** phase
+/// machine over the same frame loop: at a short push-to-talk gap it snapshots the current turn, and
+/// as soon as the next speaker is confirmed acoustically different it EMITS the snapshot immediately —
+/// surfacing each turn ~as it ends instead of waiting for the whole exchange. Every ambiguous verdict
+/// biases toward MERGE (fall back to the 400 ms silence path), so an error is late-but-correct, never
+/// a wrong split. `speakerAware == false` runs the plain VAD path byte-for-byte.
 final class VADSegmenter {
     static let sampleRate = 16_000
     static let frameMs = 30
@@ -46,31 +58,55 @@ final class VADSegmenter {
     private let preRollFrames: Int
     private let energyThreshold: Float
     private let noiseMargin: Float
-    /// Running estimate of the background-noise RMS, learned from non-speech frames (slow EMA so a
-    /// brief loud blip doesn't inflate it). The effective speech gate is `max(energyThreshold,
-    /// noiseFloor * noiseMargin)`.
     private var noiseFloor: Float = 0
-    /// Squelch: auto (learn the floor) vs manual (fixed `manualGate`). Mutable at runtime.
     private var squelchAuto: Bool
     private var manualGate: Float
 
-    /// Map a normalized 0…1 squelch knob to an RMS gate (0 = wide open, 1 = needs a loud signal).
+    // Streaming config (frames).
+    private let pttBreakFrames: Int
+    private let onsetConfirmFrames: Int
+    private let reConfirmFrames: Int
+    private var minTurnSpeechFrames: Int { minSpeechFrames }
+
+    /// Streaming speaker-change segmentation on/off. A `var` so the Settings diarization toggle can
+    /// flip it at runtime (see `setSpeakerAware`). When false, `feed()` is the plain VAD verbatim.
+    private var speakerAware: Bool
+    /// Shared session speaker clustering (fingerprint + centroids), also used by the post-hoc Diarizer.
+    private let speaker: SpeakerModel
+
     private static func manualRMS(_ level: Float) -> Float { max(0, min(1, level)) * 0.05 }
 
+    // Accumulation state (shared by both paths).
     private var pending: [Float] = []
     private var segmentFrames: [[Float]] = []
-    private var preRoll: [[Float]] = []         // bounded deque of recent non-speech frames
+    private var preRoll: [[Float]] = []
     private var speechActive = false
     private var silenceCount = 0
     private var speechFrames = 0
     private var segmentStartS = 0.0
     private var streamCursorS = 0.0
 
-    /// Injectable clock (Python uses `time.time()`); overridable so tests are
-    /// deterministic.
+    // Streaming-only state.
+    private enum Phase { case idle, speaking, tentativeGap, confirmingOnset }
+    private var phase: Phase = .idle
+    private var gapSilenceCount = 0
+    private var turnSnapshotFrames: [[Float]] = []
+    private var turnFp: [Float]?
+    private var turnStartSnapshot = 0.0
+    private var turnEndSnapshot = 0.0
+    private var turnSpeechSnapshot = 0
+    private var onsetFrames: [[Float]] = []
+    private var onsetSpeechCount = 0
+    private var onsetStartS = 0.0
+    private var onsetPreRoll: [[Float]] = []
+    private var changeVerdictStreak = 0
+
     private let now: () -> Double
 
-    init(config: VADConfig = VADConfig(), now: @escaping () -> Double = { Date().timeIntervalSince1970 }) {
+    init(config: VADConfig = VADConfig(),
+         speakerAware: Bool = false,
+         speaker: SpeakerModel = SpeakerModel(),
+         now: @escaping () -> Double = { Date().timeIntervalSince1970 }) {
         silenceFrames = max(1, config.silenceDurationMs / Self.frameMs)
         minSpeechFrames = max(1, config.minSpeechMs / Self.frameMs)
         maxSegmentSamples = Int(config.maxSegmentS * Double(Self.sampleRate))
@@ -79,7 +115,40 @@ final class VADSegmenter {
         noiseMargin = max(1.0, config.noiseMargin)
         squelchAuto = config.squelchAuto
         manualGate = Self.manualRMS(config.squelchLevel)
+        pttBreakFrames = max(1, config.pttBreakMs / Self.frameMs)
+        onsetConfirmFrames = max(1, (config.onsetConfirmMs + Self.frameMs - 1) / Self.frameMs)
+        reConfirmFrames = max(1, (config.reConfirmMs + Self.frameMs - 1) / Self.frameMs)
+        self.speakerAware = speakerAware
+        self.speaker = speaker
         self.now = now
+    }
+
+    /// Flip streaming speaker-change segmentation at runtime (Settings diarization toggle) — reachable
+    /// mid-transmission. Reconcile BOTH directions so the shared accumulators stay coherent and no
+    /// audio is dropped across the switch.
+    func setSpeakerAware(_ on: Bool) {
+        if on {
+            // ON: align the phase with the current speech state so an in-flight turn continues cleanly,
+            // and clear any streaming-only residue.
+            phase = speechActive ? .speaking : .idle
+            gapSilenceCount = 0; changeVerdictStreak = 0
+            turnFp = nil; turnSnapshotFrames = []; onsetFrames = []; onsetSpeechCount = 0
+        } else if speakerAware {
+            // OFF mid-turn: fold any parked next-speaker onset back into the open segment so the plain
+            // VAD finishes the whole thing as ONE merged transmission — nothing is lost and nothing
+            // wrong-splits (the user just asked to STOP separating speakers). segmentFrames already
+            // holds the prior turn + PTT gap; appending the onset makes one continuous segment that the
+            // 400 ms / 8 s fallback finalizes. Reset the streaming buffers + silence so the plain path
+            // resumes from a coherent state.
+            if !onsetFrames.isEmpty {
+                segmentFrames.append(contentsOf: onsetFrames)
+                speechFrames += onsetSpeechCount
+            }
+            silenceCount = 0; gapSilenceCount = 0; changeVerdictStreak = 0
+            turnFp = nil; turnSnapshotFrames = []; onsetFrames = []; onsetSpeechCount = 0
+            phase = .idle
+        }
+        speakerAware = on
     }
 
     /// Change the squelch at runtime (Settings). Auto re-learns the noise floor; manual uses a
@@ -87,34 +156,28 @@ final class VADSegmenter {
     func setSquelch(auto: Bool, level: Float) {
         squelchAuto = auto
         manualGate = Self.manualRMS(level)
-        if auto { noiseFloor = 0 }   // re-learn the floor from scratch
+        if auto { noiseFloor = 0 }
     }
 
-    /// The current speech gate: learned noise floor (auto) or the user's fixed threshold (manual),
-    /// never below a small absolute floor so digital silence can't trip it.
     private func currentGate() -> Float {
         squelchAuto ? max(energyThreshold, noiseFloor * noiseMargin)
                     : max(energyThreshold * 0.25, manualGate)
     }
 
-    /// Energy (RMS) voice-activity test with an adaptive noise floor. A frame is speech only if its
-    /// RMS clears BOTH the absolute energy threshold and `noiseMargin ×` the learned background
-    /// level; non-speech frames slowly update that background estimate. On a quiet feed this keeps
-    /// constant static below the bar, so no segment opens and Whisper never runs. Port of the
-    /// energy branch of `_is_speech_frame`, hardened against noisy channels.
+    /// Energy (RMS) voice-activity test with an adaptive noise floor. Port of the energy branch of
+    /// `_is_speech_frame`, hardened against noisy channels.
     private func isSpeechFrame(_ frame: [Float]) -> Bool {
         guard !frame.isEmpty else { return false }
         var sumSquares: Float = 0
         for s in frame { sumSquares += s * s }
         let rms = (sumSquares / Float(frame.count)).squareRoot()
         if rms >= currentGate() { return true }
-        // Non-speech frame (a gap between transmissions): fold it into the noise-floor estimate
-        // (slow attack so a brief blip doesn't inflate it). Only in auto mode.
         if squelchAuto { noiseFloor = noiseFloor == 0 ? rms : (noiseFloor * 0.95 + rms * 0.05) }
         return false
     }
 
-    /// Emit the buffered segment if it has enough speech, else drop it. Port of `_finalize`.
+    /// Emit the buffered segment if it has enough speech, else drop it. Port of `_finalize`. Used by
+    /// the PLAIN path.
     private func finalize(endS: Double) -> SpeechSegment? {
         if speechFrames < minSpeechFrames || segmentFrames.isEmpty {
             segmentFrames = []
@@ -129,7 +192,7 @@ final class VADSegmenter {
         return seg
     }
 
-    /// Feed PCM and return any completed speech segments. Port of `feed`.
+    /// Feed PCM and return any completed speech segments. Port of `feed`, plus the streaming path.
     @discardableResult
     func feed(_ chunk: [Float]) -> [SpeechSegment] {
         pending.append(contentsOf: chunk)
@@ -140,12 +203,19 @@ final class VADSegmenter {
             pending.removeFirst(Self.frameSamples)
             let frameStartS = streamCursorS
             streamCursorS += Double(Self.frameSamples) / Double(Self.sampleRate)
+            let sp = isSpeechFrame(frame)                    // side effect: updates the noise floor
 
-            if isSpeechFrame(frame) {
+            if speakerAware {
+                streamingFrame(frame, sp: sp, frameStartS: frameStartS, into: &completed)
+                continue
+            }
+
+            // ----- PLAIN VAD PATH (unchanged) -----
+            if sp {
                 if !speechActive {
                     speechActive = true
                     segmentStartS = max(0.0, frameStartS - Double(preRollFrames) * Double(Self.frameMs) / 1000.0)
-                    segmentFrames = preRoll        // seed with pre-roll (value-copied)
+                    segmentFrames = preRoll
                 }
                 segmentFrames.append(frame)
                 speechFrames += 1
@@ -176,4 +246,199 @@ final class VADSegmenter {
         }
         return completed
     }
+
+    /// Drain a parked turn on stream-end / stop() so it's never lost (the streaming path defers the
+    /// last turn until the next speaker, which never comes at end-of-stream). Also flushes any open
+    /// PLAIN segment (a strict improvement that can't change mid-stream behavior).
+    @discardableResult
+    func flush() -> [SpeechSegment] {
+        var out: [SpeechSegment] = []
+        if speakerAware {
+            if (phase == .tentativeGap || phase == .confirmingOnset), !turnSnapshotFrames.isEmpty {
+                emitStreaming(turnSnapshotFrames, startS: turnStartSnapshot, endS: turnEndSnapshot,
+                              fp: turnFp, speechCount: turnSpeechSnapshot, into: &out)
+            } else if speechActive, speechFrames >= minTurnSpeechFrames {
+                emitStreaming(segmentFrames, startS: segmentStartS, endS: streamCursorS,
+                              fp: nil, speechCount: speechFrames, into: &out)
+            }
+        } else if let seg = finalize(endS: streamCursorS) {
+            out.append(seg)
+        }
+        resetToIdle()
+        return out
+    }
+
+    // MARK: streaming phase machine
+
+    private func streamingFrame(_ frame: [Float], sp: Bool, frameStartS: Double, into completed: inout [SpeechSegment]) {
+        switch phase {
+        case .idle:
+            if sp {
+                speechActive = true
+                segmentStartS = max(0.0, frameStartS - Double(preRollFrames) * Double(Self.frameMs) / 1000.0)
+                segmentFrames = preRoll
+                segmentFrames.append(frame)
+                speechFrames = 1
+                silenceCount = 0
+                gapSilenceCount = 0
+                phase = .speaking
+            } else {
+                preRoll.append(frame)
+                if preRoll.count > preRollFrames { preRoll.removeFirst(preRoll.count - preRollFrames) }
+            }
+
+        case .speaking:
+            if sp {
+                segmentFrames.append(frame); speechFrames += 1; silenceCount = 0; gapSilenceCount = 0
+                if sampleCount(segmentFrames) >= maxSegmentSamples {   // 8s cap
+                    emitStreaming(segmentFrames, startS: segmentStartS, endS: streamCursorS,
+                                  fp: nil, speechCount: speechFrames, into: &completed)
+                    // CAP RESET — clear any stale fingerprint so the next boundary decision is fresh.
+                    segmentFrames = []; speechFrames = 0; silenceCount = 0; gapSilenceCount = 0
+                    speechActive = true; segmentStartS = streamCursorS
+                    turnFp = nil; turnSnapshotFrames = []; changeVerdictStreak = 0
+                    phase = .speaking
+                }
+            } else {
+                segmentFrames.append(frame); silenceCount += 1; gapSilenceCount += 1
+                if silenceCount >= silenceFrames {                     // long-silence fallback
+                    emitStreaming(segmentFrames, startS: segmentStartS, endS: streamCursorS,
+                                  fp: nil, speechCount: speechFrames, into: &completed)
+                    resetToIdle()
+                } else if gapSilenceCount == pttBreakFrames && speechFrames >= minTurnSpeechFrames {
+                    // ARM a tentative boundary: snapshot the turn minus the trailing PTT-break silence.
+                    let trimmed = Array(segmentFrames.dropLast(min(pttBreakFrames, segmentFrames.count)))
+                    turnSnapshotFrames = trimmed
+                    turnStartSnapshot = segmentStartS
+                    turnEndSnapshot = streamCursorS - Double(pttBreakFrames) * Double(Self.frameMs) / 1000.0
+                    turnSpeechSnapshot = speechFrames
+                    turnFp = speaker.fingerprint(trimmed.flatMap { $0 })
+                    phase = .tentativeGap
+                }
+            }
+
+        case .tentativeGap:
+            if !sp {
+                silenceCount += 1; gapSilenceCount += 1; segmentFrames.append(frame)
+                if silenceCount >= silenceFrames {   // the gap was a real end-of-turn, not a turn change
+                    emitStreaming(turnSnapshotFrames, startS: turnStartSnapshot, endS: turnEndSnapshot,
+                                  fp: turnFp, speechCount: turnSpeechSnapshot, into: &completed)
+                    resetToIdle()
+                }
+            } else {
+                // A talker keyed up inside the PTT window — start confirming who.
+                phase = .confirmingOnset
+                onsetFrames = [frame]
+                onsetSpeechCount = 1
+                onsetStartS = frameStartS
+                // The new turn's lead-in = the tail of the PTT gap right before it (NOT the stale
+                // pre-roll from before the previous turn), so its onset isn't clipped. Clamp to the
+                // gap length so the suffix can never reach past the gap into the prior turn's last
+                // SPEECH frame (which would overlap/duplicate turn N into turn N+1).
+                onsetPreRoll = Array(segmentFrames.suffix(min(preRollFrames, gapSilenceCount)))
+                // The PTT-gap silence is intentional and must NOT count against the onset's own
+                // end-of-turn budget — reset so the "onset died" fallback measures silence WITHIN the
+                // onset, not the gap that preceded it.
+                silenceCount = 0
+                changeVerdictStreak = 0
+            }
+
+        case .confirmingOnset:
+            if sp {
+                onsetFrames.append(frame); onsetSpeechCount += 1; silenceCount = 0
+                // Never let a merged (turn + onset) run exceed the 8s cap.
+                if sampleCount(turnSnapshotFrames) + sampleCount(onsetFrames) >= maxSegmentSamples {
+                    emitStreaming(turnSnapshotFrames, startS: turnStartSnapshot, endS: turnEndSnapshot,
+                                  fp: turnFp, speechCount: turnSpeechSnapshot, into: &completed)
+                    reseedFromOnset(); return
+                }
+                let firstEval = onsetSpeechCount == onsetConfirmFrames
+                let secondEval = changeVerdictStreak >= 1 && onsetSpeechCount == onsetConfirmFrames + reConfirmFrames
+                if firstEval || secondEval {
+                    let onsetFp = speaker.fingerprint(onsetFrames.flatMap { $0 })
+                    let turnFingerprint = turnFp ?? onsetFp
+                    let dSame = speaker.dist(turnFingerprint, onsetFp)       // onset vs the prior turn (full)
+                    let dTimbre = speaker.timbreDist(turnFingerprint, onsetFp)   // …level-independent part
+                    let (sNew, dNew) = speaker.nearestSpeaker(onsetFp)       // onset's nearest KNOWN speaker
+                    let (sCur, _) = speaker.nearestSpeaker(turnFingerprint)  // prior turn's nearest KNOWN speaker
+                    // A genuine turn change moves TIMBRE (pitch/brightness), not loudness alone: the same
+                    // controller keying up louder differs from itself ONLY in the `level` dim, and a ~15 dB
+                    // swing there is already worth a full newSpeakerDist — so the overall distance can't be
+                    // trusted by itself. A change therefore requires the two turns to be far apart overall
+                    // AND for that separation to be carried by timbre (a loudness-only jump has dTimbre≈0 →
+                    // MERGE, the false-split guard). `sameKnownSpeaker` additionally short-circuits an onset
+                    // that lands back on the prior turn's own cluster. Every ambiguous verdict biases MERGE.
+                    let sameKnownSpeaker = sNew >= 0 && sNew == sCur && dNew < speaker.newSpeakerDist
+                    let isChange = !sameKnownSpeaker
+                        && dSame >= speaker.newSpeakerDist
+                        && dTimbre >= speaker.turnChangeTimbreMin
+                    if isChange {
+                        changeVerdictStreak += 1
+                        if changeVerdictStreak >= 2 {   // survived two evals ~reConfirm apart
+                            emitStreaming(turnSnapshotFrames, startS: turnStartSnapshot, endS: turnEndSnapshot,
+                                          fp: turnFp, speechCount: turnSpeechSnapshot, into: &completed)
+                            reseedFromOnset()
+                        }
+                        // else: keep buffering for the 2nd eval
+                    } else {
+                        // MERGE-BACK (false-split guard): same speaker / ambiguous → one continuous turn.
+                        segmentFrames.append(contentsOf: onsetFrames)
+                        speechFrames += onsetSpeechCount
+                        silenceCount = 0; gapSilenceCount = 0
+                        turnFp = nil; turnSnapshotFrames = []; changeVerdictStreak = 0
+                        onsetFrames = []; onsetSpeechCount = 0
+                        phase = .speaking
+                    }
+                }
+            } else {
+                // The onset died before confirming (a blip in the gap). Buffer the silence in onsetFrames
+                // ONLY — NOT segmentFrames too — so the later merge-back / OFF-fold (which append onsetFrames
+                // wholesale) can't double-count and reorder it. segmentFrames' copy was never consumed on
+                // this path anyway: the fallback emits the turn snapshot, then resetToIdle clears it.
+                onsetFrames.append(frame); silenceCount += 1; gapSilenceCount += 1
+                if silenceCount >= silenceFrames {
+                    emitStreaming(turnSnapshotFrames, startS: turnStartSnapshot, endS: turnEndSnapshot,
+                                  fp: turnFp, speechCount: turnSpeechSnapshot, into: &completed)
+                    resetToIdle()
+                }
+            }
+        }
+    }
+
+    /// Emit a streaming turn: apply the min-speech drop rule, fingerprint (or reuse), tag a best-guess
+    /// speaker id, and append the segment. The tag is a NON-mutating peek (`nearestSpeaker`), NOT
+    /// `assign` — the post-hoc Diarizer in `LivePipeline.emit` is the single centroid mutator + labeling
+    /// authority (it re-splits and re-labels this audio), so assigning here too would double-update the
+    /// shared EMA. The tag is a hint (non-nil on the ON path); the id the user sees is the diarizer's.
+    private func emitStreaming(_ frames: [[Float]], startS: Double, endS: Double, fp: [Float]?,
+                               speechCount: Int, into completed: inout [SpeechSegment]) {
+        guard speechCount >= minTurnSpeechFrames, !frames.isEmpty else { return }
+        let audio = frames.flatMap { $0 }
+        guard !audio.isEmpty else { return }
+        let f = fp ?? speaker.fingerprint(audio)
+        let spk = max(0, speaker.nearestSpeaker(f).id)   // peek only — first turn (no centroids) → 0
+        completed.append(SpeechSegment(audio: audio, streamStartS: startS, streamEndS: endS,
+                                       finalizedWallTime: now(), speaker: spk))
+    }
+
+    /// After a confirmed speaker change (or cap), re-seed the resumed onset as the new turn N+1.
+    private func reseedFromOnset() {
+        segmentFrames = onsetPreRoll + onsetFrames
+        segmentStartS = max(0.0, onsetStartS - Double(onsetPreRoll.count) * Double(Self.frameMs) / 1000.0)
+        speechFrames = onsetSpeechCount
+        silenceCount = 0; gapSilenceCount = 0
+        turnFp = nil; turnSnapshotFrames = []; changeVerdictStreak = 0
+        onsetFrames = []; onsetSpeechCount = 0; onsetPreRoll = []
+        speechActive = true
+        phase = .speaking
+    }
+
+    private func resetToIdle() {
+        segmentFrames = []; speechFrames = 0; silenceCount = 0; gapSilenceCount = 0
+        speechActive = false; phase = .idle
+        turnFp = nil; turnSnapshotFrames = []; changeVerdictStreak = 0
+        onsetFrames = []; onsetSpeechCount = 0
+    }
+
+    private func sampleCount(_ frames: [[Float]]) -> Int { frames.reduce(0) { $0 + $1.count } }
 }
