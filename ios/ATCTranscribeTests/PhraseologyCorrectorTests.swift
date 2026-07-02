@@ -41,8 +41,11 @@ final class PhraseologyCorrectorTests: XCTestCase {
     func testCorrectReadbacksUntouched() async {
         for s in [
             "hold short of runway 4 left",
+            "Hold short of runway 4 left",                       // capitalized — must not be downcased
             "cleared to land runway 27",
             "climb and maintain flight level 240",
+            "expect one of the following flight levels",         // correct plural — must not become singular
+            "we leveled off at flight level 350",                // "leveled" verb — must not be broken
             "line up and wait runway 33 left",
             "november one two three four five contact ground",
             "descend and maintain three thousand",
