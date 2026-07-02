@@ -97,7 +97,15 @@ final class ATCContext {
         // poller self-expires); capped small to fit the ~220-token prompt budget and to bound the risk
         // of the model over-emitting a listed callsign that wasn't actually said.
         if !trafficVocab.isEmpty, Date() < trafficExpiry {
-            let spoken = trafficVocab.prefix(6).map { Self.spokenCallsign($0, knowledge: knowledge) }.filter { !$0.isEmpty }
+            // Only AIRLINE callsigns (telephony-matched) bias the decode — NOT tail numbers. A tail's
+            // phonetic spelling ("november … zulu zulu") injects many stray letter tokens that an
+            // imperfect/stale hint can leak into a low-confidence decode (measured); an airline name is
+            // a single strong token and is the higher-value "misheard callsign" class anyway. Capped small.
+            let airline = trafficVocab.filter { code in
+                let up = code.uppercased().filter { $0.isLetter || $0.isNumber }
+                return up.count > 3 && knowledge.airlineTelephony[String(up.prefix(3))] != nil
+            }
+            let spoken = airline.prefix(4).map { Self.spokenCallsign($0, knowledge: knowledge) }.filter { !$0.isEmpty }
             if !spoken.isEmpty {
                 sections.append("Aircraft on frequency: " + spoken.joined(separator: ", ") + ".")
             }
