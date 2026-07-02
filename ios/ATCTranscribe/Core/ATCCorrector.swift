@@ -378,6 +378,7 @@ func buildCorrector(config: CorrectionConfig, vocab: @escaping () -> [String]) -
     stages.append(HallucinationFilter())   // strip known Whisper phantom phrases first
     if config.repetition { stages.append(RepetitionCollapse()) }
     if config.deterministic {
+        stages.append(PhraseologyCorrector())   // BB3: multi-word ATC phraseology mis-hears, before vocab-snapping
         stages.append(DeterministicCorrector(
             vocabProvider: vocab,
             threshold: config.threshold,
