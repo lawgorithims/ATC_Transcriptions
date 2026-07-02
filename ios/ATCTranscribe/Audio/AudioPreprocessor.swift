@@ -24,6 +24,20 @@ struct AudioPreprocessor {
         if aggressiveRadio { enableBandpass = true }   // aggressive preset enables band-pass
     }
 
+    /// Light preset for an ALREADY-narrowband, compressed source — e.g. an 8 kHz LiveATC internet
+    /// feed. High-pass + normalize ONLY: the band-pass and spectral gate that help clean wideband
+    /// radio (Stratux/mic) OVER-process a compressed feed, so they're off here. Measured on a live
+    /// 8 kHz KBOS stream, the aggressive preset caused digit hallucinations + lower model confidence
+    /// vs this light preset; on clean gold audio the aggressive preset still wins — hence
+    /// source-dependent (the live pipeline picks this for the internet feed).
+    static func lightCompressed() -> AudioPreprocessor {
+        var p = AudioPreprocessor(aggressiveRadio: false)
+        p.enableBandpass = false
+        p.enableSpectralGating = false
+        p.enableNormalize = true
+        return p
+    }
+
     /// Full pipeline. Order mirrors `preprocess`: highpass → bandpass → spectral gating
     /// → normalize. (The Python's `noise_reduction` stage sits between gating and
     /// normalize and is not yet ported — see the type doc.)
