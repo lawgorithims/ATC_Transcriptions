@@ -101,6 +101,15 @@ final class VADSegmenterTests: XCTestCase {
         XCTAssertEqual(s.feed(frames(300, 0.5)).count, 1, "loud continuous audio must not be learned as ambient")
     }
 
+    // A calibrated ABSOLUTE gate (from mic calibration) is applied verbatim, UNCAPPED by the 0…1 slider
+    // ceiling — so a loud room whose gate exceeds the slider max still gates its ambient. Here a 0.20
+    // gate passes 0.30 speech and suppresses 0.10 "ambient" (which the slider max of 0.10 could not).
+    func testCalibratedAbsoluteGateAppliedUncapped() {
+        let s = VADSegmenter(config: VADConfig(squelchAuto: false, calibratedGateRMS: 0.20), now: { 0 })
+        XCTAssertTrue(s.feed(frames(30, 0.10) + frames(23, 0.0)).isEmpty, "loud ambient below the calibrated gate must be squelched")
+        XCTAssertEqual(s.feed(frames(20, 0.30) + frames(23, 0.0)).count, 1, "speech above the calibrated gate must pass")
+    }
+
     // Manual squelch at max raises the gate (0.10 RMS) so a moderate 0.03 signal is squelched —
     // no segment opens, so the transcriber never wakes on a low-level/noisy channel.
     func testManualSquelchSuppressesBelowThreshold() {
