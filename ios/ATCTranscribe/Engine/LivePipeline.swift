@@ -192,10 +192,6 @@ actor LivePipeline {
         guard !text.isEmpty else { return nil }
         let asr = out.asr
 
-        // The transcriber already drops degenerate (repetition-loop) decodes, so any
-        // non-empty result is clean enough to feed back into the rolling prompt history.
-        context.update(text)
-
         let audioMs = Double(segment.audio.count) / 16000.0 * 1000.0
         let captureToTextMs = (Date().timeIntervalSince1970 - segment.finalizedWallTime) * 1000.0
         let rtf = audioMs > 0 ? transcribeMs / audioMs : 0.0
@@ -209,6 +205,11 @@ actor LivePipeline {
             return nil
         }
         let inlineCorrected = correction.changed ? correction.corrected : ""
+        // QW2: seed the rolling decoder-prompt history with the CORRECTED form (not raw Whisper output),
+        // AFTER the drop-check — so a mishear that the corrector fixed (or a hallucination it dropped)
+        // can't prime the same error into the next transmission. The corrector above saw only PRIOR
+        // history (this update runs after it reads `recentHistory`).
+        context.update(inlineCorrected.isEmpty ? text : inlineCorrected)
 
         var record = TranscriptRecord(
             text: text,
