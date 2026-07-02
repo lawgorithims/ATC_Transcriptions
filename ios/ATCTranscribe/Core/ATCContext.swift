@@ -89,19 +89,57 @@ final class ATCContext {
     /// static prefix + recent transmissions, tail-truncated to `maxPromptChars`.
     /// (The transcriber additionally caps the prompt at ~220 tokens.)
     func buildPrompt() -> String {
-        if staticPrefix.isEmpty && historyBuffer.isEmpty { return "" }
-
         var sections: [String] = []
         if !staticPrefix.isEmpty { sections.append(staticPrefix) }
+        // BB1: bias the DECODE toward the aircraft actually on frequency right now (fresh ADS-B), in
+        // SPOKEN form — the strongest lever for misheard callsigns, and stronger than post-correction
+        // because it shifts the acoustic decode. Freshness-gated like the LLM traffic block (a stalled
+        // poller self-expires); capped small to fit the ~220-token prompt budget and to bound the risk
+        // of the model over-emitting a listed callsign that wasn't actually said.
+        if !trafficVocab.isEmpty, Date() < trafficExpiry {
+            let spoken = trafficVocab.prefix(6).map { Self.spokenCallsign($0, knowledge: knowledge) }.filter { !$0.isEmpty }
+            if !spoken.isEmpty {
+                sections.append("Aircraft on frequency: " + spoken.joined(separator: ", ") + ".")
+            }
+        }
         if !historyBuffer.isEmpty {
             sections.append("Recent transmissions: " + historyBuffer.joined(separator: " "))
         }
+        if sections.isEmpty { return "" }
 
         var prompt = sections.joined(separator: " ").trimmingCharacters(in: .whitespaces)
         if prompt.count > maxPromptChars {
             prompt = String(prompt.suffix(maxPromptChars))
         }
         return prompt
+    }
+
+    private static let digitWords: [Character: String] = [
+        "0": "zero", "1": "one", "2": "two", "3": "three", "4": "four",
+        "5": "five", "6": "six", "7": "seven", "8": "eight", "9": "nine",
+    ]
+
+    /// Expand an ADS-B callsign/registration CODE to its spoken ATC form for decoder biasing:
+    /// "JBU1234" → "jetblue one two three four"; "N123AB" → "november one two three alpha bravo".
+    /// A leading 3-letter ICAO airline code becomes its telephony name; otherwise every character is
+    /// spelled (letters phonetic, digits spoken individually — the common US readback form). Returns ""
+    /// for an unusable code. Static + injected knowledge so it's trivially unit-testable.
+    static func spokenCallsign(_ code: String, knowledge: ATCKnowledgeBase) -> String {
+        let up = code.uppercased().filter { $0.isLetter || $0.isNumber }
+        guard !up.isEmpty else { return "" }
+        func spell(_ s: Substring) -> [String] {
+            s.map { c in
+                if c.isNumber { return digitWords[c] ?? String(c) }
+                return knowledge.phonetic[String(c)]?.lowercased() ?? String(c).lowercased()
+            }
+        }
+        if up.count > 3 {
+            let prefix = String(up.prefix(3))
+            if let tel = knowledge.airlineTelephony[prefix] {
+                return ([tel.lowercased()] + spell(up.dropFirst(3))).joined(separator: " ")
+            }
+        }
+        return spell(up[...]).joined(separator: " ")
     }
 
     /// Canonical terms for the optional corrector. With a facility config this is the
