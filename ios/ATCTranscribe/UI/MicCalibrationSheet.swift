@@ -54,7 +54,7 @@ struct MicCalibrationSheet: View {
             progressRow("Listening to the room…")
         case .ambientDone:
             step(2, "Say a test call", "At your normal volume, say something like “Boston Tower, Skyhawk one-two-three-four-five.”")
-            actionButton("Record my voice", icon: "mic.fill", enabled: true) {
+            actionButton("Record my voice", icon: "mic.fill", enabled: model.canCalibrateMic) {
                 model.recordCalibrationVoice()
             }
         case .measuringVoice:

@@ -25,6 +25,10 @@ struct VADConfig {
     var squelchAuto = true
     /// Manual squelch threshold, normalized 0…1 (mapped to an RMS gate). Used only when `!squelchAuto`.
     var squelchLevel: Float = 0.2
+    /// An ABSOLUTE manual gate (RMS) from mic calibration, used verbatim (uncapped) when `!squelchAuto`
+    /// instead of `squelchLevel`. nil = use the slider. Set precisely from a measured ambient/voice pair
+    /// so a loud room gets its true gate (which can exceed the slider ceiling) — see `SquelchCalibration`.
+    var calibratedGateRMS: Float?
 
     // MARK: streaming speaker-change segmentation (only used when `speakerAware`)
     /// A silence run this short is a candidate push-to-talk break (a turn boundary), NOT an
@@ -82,13 +86,9 @@ final class VADSegmenter {
     /// Shared session speaker clustering (fingerprint + centroids), also used by the post-hoc Diarizer.
     private let speaker: SpeakerModel
 
-    /// The RMS gate at the top of the 0…1 manual-squelch range. Sized to cover a calibrated gate in a
-    /// loud room (mic calibration maps its measured gate onto this same range — see `manualLevel`).
-    static let manualGateMaxRMS: Float = 0.15
+    /// The RMS gate at the top of the 0…1 manual-squelch slider range.
+    static let manualGateMaxRMS: Float = 0.10
     private static func manualRMS(_ level: Float) -> Float { max(0, min(1, level)) * manualGateMaxRMS }
-    /// Inverse of `manualRMS`: the 0…1 slider level that produces a given absolute gate RMS, so mic
-    /// calibration can set the manual squelch to the level it measured (and the slider reflects it).
-    static func manualLevel(forGateRMS rms: Float) -> Float { max(0, min(1, rms / manualGateMaxRMS)) }
 
     // Accumulation state (shared by both paths).
     private var pending: [Float] = []
@@ -128,7 +128,7 @@ final class VADSegmenter {
         energyThreshold = Float(0.012 - Double(config.aggressiveness) * 0.002)
         noiseMargin = max(1.0, config.noiseMargin)
         squelchAuto = config.squelchAuto
-        manualGate = Self.manualRMS(config.squelchLevel)
+        manualGate = config.calibratedGateRMS ?? Self.manualRMS(config.squelchLevel)
         pttBreakFrames = max(1, config.pttBreakMs / Self.frameMs)
         onsetConfirmFrames = max(1, (config.onsetConfirmMs + Self.frameMs - 1) / Self.frameMs)
         reConfirmFrames = max(1, (config.reConfirmMs + Self.frameMs - 1) / Self.frameMs)
@@ -167,9 +167,9 @@ final class VADSegmenter {
 
     /// Change the squelch at runtime (Settings). Auto re-learns the noise floor; manual uses a
     /// fixed normalized 0…1 threshold. Takes effect on the next frame.
-    func setSquelch(auto: Bool, level: Float) {
+    func setSquelch(auto: Bool, level: Float, calibratedGateRMS: Float? = nil) {
         squelchAuto = auto
-        manualGate = Self.manualRMS(level)
+        manualGate = calibratedGateRMS ?? Self.manualRMS(level)   // absolute calibrated gate wins over the slider
         if auto { noiseFloor = 0; floorSeeded = false }   // re-seed from the live channel on the next frame
     }
 

@@ -32,6 +32,14 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 27, version: "1.0", headline: "Calibrate the mic to your room",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "mic.badge.plus",
+                    title: "One-tap microphone calibration",
+                    detail: "In Settings (or tap the input meter), open “Calibrate microphone…”. Stay quiet for a moment while it measures your background noise, then say a short test call — it sets the squelch to sit right between the two, so a noisy cockpit or room is ignored and your voice still comes through. Best when the automatic threshold isn't quite gating your environment. You can still fine-tune it afterward with the slider."),
+            ]),
+        ReleaseNote(
             build: 26, version: "1.0", headline: "Device-microphone input fixed",
             highlights: [
                 WhatsNewHighlight(

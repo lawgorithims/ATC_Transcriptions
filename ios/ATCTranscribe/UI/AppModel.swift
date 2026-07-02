@@ -200,8 +200,23 @@ final class AppModel: ObservableObject {
         didSet { UserDefaults.standard.set(squelchAuto, forKey: "atc.squelchAuto"); applySquelch() }
     }
     @Published var manualSquelch = (UserDefaults.standard.object(forKey: "atc.manualSquelch") as? Double) ?? 0.2 {
-        didSet { UserDefaults.standard.set(manualSquelch, forKey: "atc.manualSquelch"); applySquelch() }
+        didSet {
+            UserDefaults.standard.set(manualSquelch, forKey: "atc.manualSquelch")
+            if !suppressCalibrationClear { calibratedGateRMS = nil }   // dragging the slider overrides a calibration
+            applySquelch()
+        }
     }
+    /// An absolute manual gate (RMS) from mic calibration — used verbatim (uncapped) when Manual is on,
+    /// so a loud room gets its true gate instead of one clamped to the slider ceiling. nil = use the
+    /// slider. Cleared when the user drags the slider. Persisted.
+    @Published var calibratedGateRMS: Float? = (UserDefaults.standard.object(forKey: "atc.calibratedGate") as? Double).map(Float.init) {
+        didSet {
+            if let g = calibratedGateRMS { UserDefaults.standard.set(Double(g), forKey: "atc.calibratedGate") }
+            else { UserDefaults.standard.removeObject(forKey: "atc.calibratedGate") }
+        }
+    }
+    /// Guards the manualSquelch didSet from wiping a just-applied calibration when WE move the slider.
+    private var suppressCalibrationClear = false
 
     // Speaker diarization: split merged transmissions and put each speaker on its own line. On by
     // default; persisted; hot-applied to the running pipeline.
@@ -477,7 +492,8 @@ final class AppModel: ObservableObject {
                                     gateEnabled: skipWhenConfident, gateSensitivity: gateSensitivity,
                                     diarizationEnabled: diarizationEnabled,
                                     vadConfig: VADConfig(squelchAuto: squelchAuto,
-                                                         squelchLevel: Float(manualSquelch)))
+                                                         squelchLevel: Float(manualSquelch),
+                                                         calibratedGateRMS: squelchAuto ? nil : calibratedGateRMS))
         let session = TranscriptionSession(pipeline: pipeline)
         if preserveHistory { session.adopt(records: savedRecords, stats: savedStats) }  // survive a model swap
 
@@ -553,7 +569,8 @@ final class AppModel: ObservableObject {
 
     /// Push the squelch (auto / manual threshold) into the running VAD (a Settings change).
     private func applySquelch() {
-        session?.setSquelch(auto: squelchAuto, level: Float(manualSquelch))
+        session?.setSquelch(auto: squelchAuto, level: Float(manualSquelch),
+                            calibratedGateRMS: squelchAuto ? nil : calibratedGateRMS)
     }
 
     // MARK: - Mic squelch calibration
@@ -573,6 +590,9 @@ final class AppModel: ObservableObject {
     @Published var calibrationStage: CalibrationStage = .idle
     @Published var showMicCalibration = false
     private var calibrationAmbientRMS: Float?
+    /// The in-flight measurement (cancelled by resetCalibration so a dismissed/retried flow can't keep
+    /// the mic engine running or write a stale result).
+    private var calibrationTask: Task<Void, Never>?
 
     /// Calibration and a live run can't share the audio engine, so it's only offered while stopped.
     var canCalibrateMic: Bool { !isRunning }
@@ -580,19 +600,23 @@ final class AppModel: ObservableObject {
     /// Step 1 — capture the room's background level (requests mic permission on first use).
     func recordCalibrationAmbient() {
         guard !isRunning else { calibrationStage = .failed("Stop the feed before calibrating."); return }
+        guard calibrationStage == .idle || isFailed else { return }   // reject re-entry (double-tap)
+        calibrationStage = .measuringAmbient   // flip synchronously so the button is replaced at once
         requestMicPermission { [weak self] granted in
-            guard let self else { return }
+            guard let self, self.calibrationStage == .measuringAmbient else { return }
             guard granted else {
                 self.calibrationStage = .failed("Microphone access is off. Enable it in Settings › CommSight › Microphone.")
                 return
             }
-            self.calibrationStage = .measuringAmbient
             AudioSessionManager.activate(recording: true)
-            Task { @MainActor in
+            self.calibrationTask = Task { @MainActor in
                 do {
-                    self.calibrationAmbientRMS = try await MicCalibrator.measureRMS(seconds: 2.0)
+                    let rms = try await MicCalibrator.measureRMS(seconds: 2.0)
+                    guard !Task.isCancelled, case .measuringAmbient = self.calibrationStage else { return }
+                    self.calibrationAmbientRMS = rms
                     self.calibrationStage = .ambientDone
                 } catch {
+                    guard !Task.isCancelled else { return }
                     AudioSessionManager.deactivate()
                     self.calibrationStage = .failed("Couldn't read the microphone — make sure it isn't muted or used by another app.")
                 }
@@ -602,33 +626,45 @@ final class AppModel: ObservableObject {
 
     /// Step 2 — capture the user's voice and, if it's clearly louder than the room, set the squelch.
     func recordCalibrationVoice() {
-        guard let ambient = calibrationAmbientRMS else { calibrationStage = .idle; return }
+        guard !isRunning, calibrationStage == .ambientDone, let ambient = calibrationAmbientRMS else { return }
         calibrationStage = .measuringVoice
-        Task { @MainActor in
+        AudioSessionManager.activate(recording: true)   // re-establish in case the app backgrounded between steps
+        calibrationTask = Task { @MainActor in
             defer { if !self.isRunning { AudioSessionManager.deactivate() } }
             do {
                 let voice = try await MicCalibrator.measureRMS(seconds: 3.0)
+                guard !Task.isCancelled, case .measuringVoice = self.calibrationStage else { return }
                 guard let gate = SquelchCalibration.gate(ambientRMS: ambient, speechRMS: voice) else {
                     self.calibrationStage = .failed("Your voice wasn't clearly louder than the background. Speak normally a bit closer to the device, or move somewhere quieter, and try again.")
                     return
                 }
-                // Apply: switch to manual squelch and set the slider to the calibrated gate (persisted
-                // via the didSet chain → the running/next mic session picks it up).
+                // Apply the ABSOLUTE calibrated gate (uncapped) as the manual squelch, and move the slider
+                // to reflect it (clamped for display). Persisted via the didSet chain → the running / next
+                // mic session picks it up. `suppressCalibrationClear` keeps the slider move from wiping it.
+                self.calibratedGateRMS = gate
                 self.squelchAuto = false
-                self.manualSquelch = Double(VADSegmenter.manualLevel(forGateRMS: gate))
+                self.suppressCalibrationClear = true
+                self.manualSquelch = Double(min(1, gate / VADSegmenter.manualGateMaxRMS))
+                self.suppressCalibrationClear = false
+                self.applySquelch()
                 self.calibrationStage = .success(gate: gate)
             } catch {
+                guard !Task.isCancelled else { return }
                 self.calibrationStage = .failed("Couldn't read the microphone — make sure it isn't muted or used by another app.")
             }
         }
     }
 
-    /// Reset the flow (sheet open/close/retry) and release the session we grabbed for it.
+    /// Reset the flow (sheet open/close/retry): cancel any in-flight measurement and release the session.
     func resetCalibration() {
+        calibrationTask?.cancel()
+        calibrationTask = nil
         calibrationStage = .idle
         calibrationAmbientRMS = nil
         if !isRunning { AudioSessionManager.deactivate() }
     }
+
+    private var isFailed: Bool { if case .failed = calibrationStage { return true }; return false }
 
     private func requestMicPermission(_ completion: @escaping (Bool) -> Void) {
         #if os(iOS)
