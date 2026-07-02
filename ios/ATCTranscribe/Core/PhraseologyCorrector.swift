@@ -19,8 +19,9 @@ struct PhraseologyCorrector: Corrector {
         // renders "hold" as heal/hill/hole and "short" as shore (confirmed live: "heal short of 4 left").
         (#"\b(?:heal|hill|hole|hold)\s+(?:short|shore)\s+of\b"#, "hold short of", "hold short"),
         (#"\b(?:heal|hill|hole)\s+short\b"#, "hold short", "hold short"),
-        // "flight level ###"
-        (#"\bflight\s+(?:lever|letter|levels|leveled)\b"#, "flight level", "flight level"),
+        // "flight level ###" — ONLY the homophone mis-hears ("levels"/"leveled" are correct forms:
+        // "expect one of the following flight levels", "leveled off" — never rewrite those).
+        (#"\bflight\s+(?:lever|letter)\b"#, "flight level", "flight level"),
         // "line up and wait"
         (#"\bline\s+up\s+(?:in|end)\s+wait\b"#, "line up and wait", "line up and wait"),
         // "<ATC subject> in sight" — gated on an ATC subject so the ordinary word "insight" elsewhere
@@ -33,15 +34,22 @@ struct PhraseologyCorrector: Corrector {
         var edits: [CorrectionEdit] = []
         for rule in Self.rules {
             guard let re = try? NSRegularExpression(pattern: rule.pattern, options: [.caseInsensitive]) else { continue }
-            let full = NSRange(current.startIndex..., in: current)
-            guard let m = re.firstMatch(in: current, range: full), let mr = Range(m.range, in: current) else { continue }
-            let matched = String(current[mr])
-            let matchedTo = re.stringByReplacingMatches(in: matched, range: NSRange(matched.startIndex..., in: matched), withTemplate: rule.to)
-            let replaced = re.stringByReplacingMatches(in: current, range: full, withTemplate: rule.to)
-            if replaced != current {
+            let matches = re.matches(in: current, range: NSRange(current.startIndex..., in: current))
+            guard !matches.isEmpty else { continue }
+            // Apply each match last-to-first so earlier NSRanges stay valid after a replacement, and record
+            // ONE edit per changed span. Skip a match whose replacement differs only in CASE (an
+            // already-correct readback like "Hold short of") so a correct transmission is never re-cased
+            // or flagged as an edit.
+            var next = current
+            for m in matches.reversed() {
+                guard let mr = Range(m.range, in: next) else { continue }
+                let matched = String(next[mr])
+                let matchedTo = re.stringByReplacingMatches(in: matched, range: NSRange(matched.startIndex..., in: matched), withTemplate: rule.to)
+                if matched.caseInsensitiveCompare(matchedTo) == .orderedSame { continue }
+                next.replaceSubrange(mr, with: matchedTo)
                 edits.append(CorrectionEdit(from: matched, to: matchedTo, reason: rule.reason, backend: "deterministic"))
-                current = replaced
             }
+            current = next
         }
         if edits.isEmpty || current == text { return .unchanged(text, backend: "deterministic") }
         return Correction(raw: text, corrected: current, changed: true, edits: edits, backend: "deterministic")
