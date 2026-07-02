@@ -123,9 +123,9 @@ final class TranscriptionSession: ObservableObject {
 
     /// Update the squelch (Settings) at runtime — auto noise-floor learning vs a fixed manual
     /// threshold. Safe while a run is active; takes effect on the next frame.
-    func setSquelch(auto: Bool, level: Float) {
+    func setSquelch(auto: Bool, level: Float, calibratedGateRMS: Float? = nil) {
         let pipeline = self.pipeline
-        Task { await pipeline.setSquelch(auto: auto, level: level) }
+        Task { await pipeline.setSquelch(auto: auto, level: level, calibratedGateRMS: calibratedGateRMS) }
     }
 
     /// Toggle speaker diarization (Settings) at runtime. Takes effect on the next segment.

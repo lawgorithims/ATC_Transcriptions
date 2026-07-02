@@ -33,6 +33,9 @@ struct ConsoleView: View {
         .sheet(isPresented: $model.showWhatsNew) {
             WhatsNewSheet().environmentObject(model)
         }
+        .sheet(isPresented: $model.showMicCalibration) {
+            MicCalibrationSheet().environmentObject(model)
+        }
         .fullScreenCover(isPresented: $model.needsOnboarding) {
             OnboardingDownloadView().environmentObject(model).environmentObject(downloads)
         }
@@ -755,6 +758,21 @@ struct SquelchControls: View {
                  : "Higher = needs a louder signal to start transcribing (fewer false wakes); lower = more sensitive.")
                 .font(.caption2).foregroundStyle(p.textDim)
                 .fixedSize(horizontal: false, vertical: true)
+            Button { model.showMicCalibration = true } label: {
+                Label("Calibrate microphone…", systemImage: "mic.badge.plus")
+                    .font(.caption.weight(.semibold)).foregroundStyle(p.accent)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("calibrate-mic-button")
+            if !model.squelchAuto, model.calibratedGateRMS != nil {
+                Label("Calibrated to your mic — move the slider to override.", systemImage: "checkmark.seal.fill")
+                    .font(.caption2).foregroundStyle(.green)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("Records your background noise, then your voice, and sets the threshold between them — best when Auto isn't gating a noisy room.")
+                    .font(.caption2).foregroundStyle(p.textDim)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if model.isRunning {
                 HStack(spacing: 8) {
                     Text("Live input").font(.caption2).foregroundStyle(p.textDim)
