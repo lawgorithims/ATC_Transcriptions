@@ -59,6 +59,14 @@ final class VADSegmenter {
     private let energyThreshold: Float
     private let noiseMargin: Float
     private var noiseFloor: Float = 0
+    /// Whether `noiseFloor` has been seeded from a real frame yet (distinguishes the initial 0 from a
+    /// floor that has legitimately decayed to ~0 on a truly-silent channel, so it isn't re-seeded from a
+    /// following quiet signal).
+    private var floorSeeded = false
+    /// A steady level above this is a real signal, not room ambient — so a loud frame is clamped to it
+    /// before it can train the floor. Keeps the auto floor in the ambient range (a continuously LOUD
+    /// signal still reads as speech), while letting a live mic's quiet ambient be learned + gated.
+    private static let maxNoiseFloor: Float = 0.08
     private var squelchAuto: Bool
     private var manualGate: Float
 
@@ -74,7 +82,7 @@ final class VADSegmenter {
     /// Shared session speaker clustering (fingerprint + centroids), also used by the post-hoc Diarizer.
     private let speaker: SpeakerModel
 
-    private static func manualRMS(_ level: Float) -> Float { max(0, min(1, level)) * 0.05 }
+    private static func manualRMS(_ level: Float) -> Float { max(0, min(1, level)) * 0.10 }
 
     // Accumulation state (shared by both paths).
     private var pending: [Float] = []
@@ -156,7 +164,7 @@ final class VADSegmenter {
     func setSquelch(auto: Bool, level: Float) {
         squelchAuto = auto
         manualGate = Self.manualRMS(level)
-        if auto { noiseFloor = 0 }
+        if auto { noiseFloor = 0; floorSeeded = false }   // re-seed from the live channel on the next frame
     }
 
     private func currentGate() -> Float {
@@ -165,15 +173,45 @@ final class VADSegmenter {
     }
 
     /// Energy (RMS) voice-activity test with an adaptive noise floor. Port of the energy branch of
-    /// `_is_speech_frame`, hardened against noisy channels.
+    /// `_is_speech_frame`, hardened against noisy channels — and, critically, against a CONTINUOUS one.
     private func isSpeechFrame(_ frame: [Float]) -> Bool {
         guard !frame.isEmpty else { return false }
         var sumSquares: Float = 0
         for s in frame { sumSquares += s * s }
         let rms = (sumSquares / Float(frame.count)).squareRoot()
-        if rms >= currentGate() { return true }
-        if squelchAuto { noiseFloor = noiseFloor == 0 ? rms : (noiseFloor * 0.95 + rms * 0.05) }
-        return false
+        // Decide against the floor as it stands BEFORE this frame's update, so a stream that OPENS on a
+        // quiet transmission (no leading silence) still passes at the absolute threshold — the seed
+        // then calibrates from the next frame on — rather than being gated by a floor derived from itself.
+        let speech = rms >= currentGate()
+        if squelchAuto { updateNoiseFloor(rms, isSpeech: speech) }
+        return speech
+    }
+
+    /// Track the channel noise floor for auto squelch. The OLD code only learned the floor from frames
+    /// BELOW the gate — fine for a bursty radio (its silence between transmissions trains the floor), but
+    /// on a CONTINUOUS feed (a live iPad mic, whose ambient never drops to true silence and sits above
+    /// the absolute 0.008 gate) NO frame was ever sub-gate, so the floor never learned, the gate stayed
+    /// pinned at 0.008, every frame read as speech, and the segmenter looped forever on the max-segment
+    /// cap transcribing room noise (the "stuck transcribing, no output" mic bug).
+    ///
+    /// Now it learns from every frame: seed from the first frame (so a hot continuous mic calibrates at
+    /// once), fast-attack DOWN to any quieter level (so it tracks the true quiet floor and, on a radio,
+    /// snaps back to silence between transmissions), and a slow creep UP toward a rising ambient — but
+    /// the creep-up runs ONLY on frames the gate just classified as NON-speech. That last part is
+    /// essential: a real transmission (even a sustained quiet one) must never train the floor toward
+    /// itself, or its own energy would raise the gate above it and gate it off mid-transmission. A loud
+    /// frame is also CLAMPED to `maxNoiseFloor` before it can train the floor, so a genuinely loud steady
+    /// signal can never be learned as "ambient". `currentGate()` (= max(energyThreshold, floor*margin))
+    /// is unchanged.
+    private func updateNoiseFloor(_ rms: Float, isSpeech: Bool) {
+        let sample = Swift.min(rms, Self.maxNoiseFloor)
+        if !floorSeeded {
+            noiseFloor = sample; floorSeeded = true      // seed from the first frame so a hot channel calibrates at once
+        } else if sample < noiseFloor {
+            noiseFloor = sample                          // fast-attack down to a quieter floor (incl. true silence → ~0)
+        } else if !isSpeech {
+            noiseFloor = noiseFloor * 0.985 + sample * 0.015   // creep up toward a rising ambient — NON-speech frames only
+        }
     }
 
     /// Emit the buffered segment if it has enough speech, else drop it. Port of `_finalize`. Used by
