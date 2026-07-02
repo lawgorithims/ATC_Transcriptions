@@ -31,11 +31,11 @@ final class PhraseologyCorrectorTests: XCTestCase {
     }
 
     func testInSightGatedByAtcSubject() async {
-        XCTAssertEqual((await fix("traffic insight")).corrected, "traffic in sight")
-        XCTAssertEqual((await fix("airport insight")).corrected, "airport in sight")
+        let traffic = await fix("traffic insight");   XCTAssertEqual(traffic.corrected, "traffic in sight")
+        let airport = await fix("airport insight");   XCTAssertEqual(airport.corrected, "airport in sight")
         // The ordinary word "insight" with no ATC subject must be left alone.
-        XCTAssertFalse((await fix("thanks for the insight")).changed)
-        XCTAssertFalse((await fix("insight is valuable")).changed)
+        let ord1 = await fix("thanks for the insight"); XCTAssertFalse(ord1.changed)
+        let ord2 = await fix("insight is valuable");     XCTAssertFalse(ord2.changed)
     }
 
     func testCorrectReadbacksUntouched() async {
