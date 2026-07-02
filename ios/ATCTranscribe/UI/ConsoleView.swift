@@ -33,6 +33,9 @@ struct ConsoleView: View {
         .sheet(isPresented: $model.showWhatsNew) {
             WhatsNewSheet().environmentObject(model)
         }
+        .sheet(isPresented: $model.showMicCalibration) {
+            MicCalibrationSheet().environmentObject(model)
+        }
         .fullScreenCover(isPresented: $model.needsOnboarding) {
             OnboardingDownloadView().environmentObject(model).environmentObject(downloads)
         }
@@ -753,6 +756,15 @@ struct SquelchControls: View {
             Text(model.squelchAuto
                  ? "Threshold is automatic — turn off Auto to set it manually."
                  : "Higher = needs a louder signal to start transcribing (fewer false wakes); lower = more sensitive.")
+                .font(.caption2).foregroundStyle(p.textDim)
+                .fixedSize(horizontal: false, vertical: true)
+            Button { model.showMicCalibration = true } label: {
+                Label("Calibrate microphone…", systemImage: "mic.badge.plus")
+                    .font(.caption.weight(.semibold)).foregroundStyle(p.accent)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("calibrate-mic-button")
+            Text("Records your background noise, then your voice, and sets the threshold between them — best when Auto isn't gating a noisy room.")
                 .font(.caption2).foregroundStyle(p.textDim)
                 .fixedSize(horizontal: false, vertical: true)
             if model.isRunning {

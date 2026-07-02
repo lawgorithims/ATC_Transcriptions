@@ -82,7 +82,13 @@ final class VADSegmenter {
     /// Shared session speaker clustering (fingerprint + centroids), also used by the post-hoc Diarizer.
     private let speaker: SpeakerModel
 
-    private static func manualRMS(_ level: Float) -> Float { max(0, min(1, level)) * 0.10 }
+    /// The RMS gate at the top of the 0…1 manual-squelch range. Sized to cover a calibrated gate in a
+    /// loud room (mic calibration maps its measured gate onto this same range — see `manualLevel`).
+    static let manualGateMaxRMS: Float = 0.15
+    private static func manualRMS(_ level: Float) -> Float { max(0, min(1, level)) * manualGateMaxRMS }
+    /// Inverse of `manualRMS`: the 0…1 slider level that produces a given absolute gate RMS, so mic
+    /// calibration can set the manual squelch to the level it measured (and the slider reflects it).
+    static func manualLevel(forGateRMS rms: Float) -> Float { max(0, min(1, rms / manualGateMaxRMS)) }
 
     // Accumulation state (shared by both paths).
     private var pending: [Float] = []

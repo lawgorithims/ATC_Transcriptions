@@ -101,7 +101,7 @@ final class VADSegmenterTests: XCTestCase {
         XCTAssertEqual(s.feed(frames(300, 0.5)).count, 1, "loud continuous audio must not be learned as ambient")
     }
 
-    // Manual squelch at max raises the gate (0.10 RMS) so a moderate 0.03 signal is squelched —
+    // Manual squelch at max raises the gate (0.15 RMS) so a moderate 0.03 signal is squelched —
     // no segment opens, so the transcriber never wakes on a low-level/noisy channel.
     func testManualSquelchSuppressesBelowThreshold() {
         let s = VADSegmenter(config: VADConfig(squelchAuto: false, squelchLevel: 1.0), now: { 0 })
