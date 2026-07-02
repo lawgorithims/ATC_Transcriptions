@@ -33,7 +33,9 @@ final class ConsoleUITests: XCTestCase {
 
     /// Scroll the current scroll view until `el` is hittable (top-to-bottom reveal).
     @discardableResult
-    private func reveal(_ el: XCUIElement, _ app: XCUIApplication, maxSwipes: Int = 6) -> Bool {
+    // 12 swipes: on a portrait compact phone the sidebar stacks below the transcript, and the deep
+    // cards (proof-of-life) sit beyond 6 swipes — that budget only worked on wide/regular layouts.
+    private func reveal(_ el: XCUIElement, _ app: XCUIApplication, maxSwipes: Int = 12) -> Bool {
         var n = 0
         while !el.isHittable && n < maxSwipes { app.swipeUp(); n += 1 }
         return el.isHittable
