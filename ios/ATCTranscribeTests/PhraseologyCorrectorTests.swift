@@ -17,22 +17,22 @@ final class PhraseologyCorrectorTests: XCTestCase {
         for (input, expect) in cases {
             let c = await fix(input)
             XCTAssertTrue(c.changed, "should repair: \(input)")
-            XCTAssertEqual(c.corrected, expect)
+            XCTAssertEqual(c.display, expect)
         }
     }
 
     func testFlightLevelAndLineUp() async {
         let fl = await fix("climb and maintain flight lever 350")
-        XCTAssertEqual(fl.corrected, "climb and maintain flight level 350")
+        XCTAssertEqual(fl.display, "climb and maintain flight level 350")
         let lu = await fix("runway 4 left line up and wait")
         XCTAssertFalse(lu.changed, "already-correct phraseology is untouched")
         let lu2 = await fix("runway 4 left line up in wait")
-        XCTAssertEqual(lu2.corrected, "runway 4 left line up and wait")
+        XCTAssertEqual(lu2.display, "runway 4 left line up and wait")
     }
 
     func testInSightGatedByAtcSubject() async {
-        let traffic = await fix("traffic insight");   XCTAssertEqual(traffic.corrected, "traffic in sight")
-        let airport = await fix("airport insight");   XCTAssertEqual(airport.corrected, "airport in sight")
+        let traffic = await fix("traffic insight");   XCTAssertEqual(traffic.display, "traffic in sight")
+        let airport = await fix("airport insight");   XCTAssertEqual(airport.display, "airport in sight")
         // The ordinary word "insight" with no ATC subject must be left alone.
         let ord1 = await fix("thanks for the insight"); XCTAssertFalse(ord1.changed)
         let ord2 = await fix("insight is valuable");     XCTAssertFalse(ord2.changed)
@@ -49,7 +49,7 @@ final class PhraseologyCorrectorTests: XCTestCase {
         ] {
             let c = await fix(s)
             XCTAssertFalse(c.changed, "must not alter a correct transmission: \(s)")
-            XCTAssertEqual(c.corrected, s)
+            XCTAssertEqual(c.display, s)
         }
     }
 
