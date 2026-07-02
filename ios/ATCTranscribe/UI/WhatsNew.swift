@@ -32,6 +32,14 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 26, version: "1.0", headline: "Device-microphone input fixed",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "mic.fill",
+                    title: "The mic no longer gets stuck on “Transcribing…”",
+                    detail: "Using your iPad's built-in microphone, the app would sit on “Transcribing…” and almost never show anything. It was treating the constant background room tone as if someone were always talking, so it never finished a transmission. It now learns the room's background level in the first moment of listening and only wakes on speech above it — so real calls come through and the quiet room is ignored. If you're in a very loud space you can still fine-tune it with the squelch control (tap the input meter). Radio/Stratux input is unchanged."),
+            ]),
+        ReleaseNote(
             build: 25, version: "1.0", headline: "Each call appears the moment the next one starts",
             highlights: [
                 WhatsNewHighlight(
