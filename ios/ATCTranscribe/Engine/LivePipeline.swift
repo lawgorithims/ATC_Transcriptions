@@ -345,7 +345,9 @@ actor LivePipeline {
 
     /// Update the squelch (Settings) at runtime. Auto re-learns the channel noise floor; manual
     /// uses a fixed threshold. Takes effect on the next audio frame.
-    func setSquelch(auto: Bool, level: Float) { segmenter.setSquelch(auto: auto, level: level) }
+    func setSquelch(auto: Bool, level: Float, calibratedGateRMS: Float? = nil) {
+        segmenter.setSquelch(auto: auto, level: level, calibratedGateRMS: calibratedGateRMS)
+    }
 
     /// Inject the filed flight plan into the LLM correction context (Electronic Flight Bag). An
     /// empty block clears it. Takes effect on the next transmission.

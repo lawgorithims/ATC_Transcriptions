@@ -51,11 +51,13 @@ enum MicCalibrator {
             if engine.isRunning { engine.stop() }
         }
 
-        // Gather until we have `seconds` of samples, or bail after a grace period if the mic is dead.
+        // Gather until we have `seconds` of samples, or bail after a grace period if the mic is dead —
+        // or as soon as the measurement is cancelled (sheet dismissed / retried), so `defer` tears the
+        // engine down promptly instead of holding the mic hot for the rest of the grace window.
         let target = Int(seconds * outFormat.sampleRate)
         var waited = 0.0
         let grace = seconds + 3.0
-        while acc.count < target, waited < grace {
+        while acc.count < target, waited < grace, !Task.isCancelled {
             try? await Task.sleep(nanoseconds: 100_000_000)   // 0.1 s
             waited += 0.1
         }

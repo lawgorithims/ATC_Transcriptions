@@ -764,9 +764,15 @@ struct SquelchControls: View {
             }
             .buttonStyle(.plain)
             .accessibilityIdentifier("calibrate-mic-button")
-            Text("Records your background noise, then your voice, and sets the threshold between them — best when Auto isn't gating a noisy room.")
-                .font(.caption2).foregroundStyle(p.textDim)
-                .fixedSize(horizontal: false, vertical: true)
+            if !model.squelchAuto, model.calibratedGateRMS != nil {
+                Label("Calibrated to your mic — move the slider to override.", systemImage: "checkmark.seal.fill")
+                    .font(.caption2).foregroundStyle(.green)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("Records your background noise, then your voice, and sets the threshold between them — best when Auto isn't gating a noisy room.")
+                    .font(.caption2).foregroundStyle(p.textDim)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             if model.isRunning {
                 HStack(spacing: 8) {
                     Text("Live input").font(.caption2).foregroundStyle(p.textDim)

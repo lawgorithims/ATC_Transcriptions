@@ -40,17 +40,13 @@ final class SquelchCalibrationTests: XCTestCase {
         XCTAssertLessThanOrEqual(g, s * 0.75)
     }
 
-    // The calibrated gate maps onto the manual-squelch 0…1 range and back, so the slider reflects the
-    // calibration and the VAD reconstructs the same absolute gate.
-    func testManualLevelRoundTripsGate() {
-        let gate: Float = 0.06
-        let level = VADSegmenter.manualLevel(forGateRMS: gate)
-        XCTAssertEqual(level, gate / VADSegmenter.manualGateMaxRMS, accuracy: 1e-6)
-        XCTAssertEqual(level * VADSegmenter.manualGateMaxRMS, gate, accuracy: 1e-6)
-    }
-
-    func testManualLevelClamps() {
-        XCTAssertEqual(VADSegmenter.manualLevel(forGateRMS: 10.0), 1.0, accuracy: 1e-6)
-        XCTAssertEqual(VADSegmenter.manualLevel(forGateRMS: -1.0), 0.0, accuracy: 1e-6)
+    // The gate is always strictly above the measured ambient (never under-gates the room), for a range
+    // of ratios — the property that makes applying it as an absolute gate safe even in a loud room.
+    func testGateAlwaysAboveAmbient() {
+        for ratio: Float in [1.8, 2.5, 4, 10] {
+            let a: Float = 0.12   // a loud room
+            let g = SquelchCalibration.gate(ambientRMS: a, speechRMS: a * ratio)!
+            XCTAssertGreaterThan(g, a, "calibrated gate must sit above ambient (ratio \(ratio))")
+        }
     }
 }
