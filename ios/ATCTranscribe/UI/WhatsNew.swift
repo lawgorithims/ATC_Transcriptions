@@ -32,6 +32,22 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 29, version: "1.0", headline: "A quick-settings bar + an always-on Stratux link",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "slider.horizontal.3",
+                    title: "Quick settings, right on the console",
+                    detail: "The first page of the strip above the transcript is now a settings bar: switch the audio input, toggle the Stratux link, pick the AI-cleanup backend, and see your GPS fix — without opening Settings. Swipe it sideways for the flight-plan and live-traffic pages, as before."),
+                WhatsNewHighlight(
+                    icon: "dot.radiowaves.up.forward",
+                    title: "Stratux traffic + GPS without pressing Start",
+                    detail: "The Stratux receiver link now runs on its own: turn it on in the settings bar (or in Settings) and traffic + GPS stream whenever the app is open — no need to make it the audio input or start transcribing. Picking “Stratux receiver” as the input still switches the link on automatically, and standby still pauses it to save battery."),
+                WhatsNewHighlight(
+                    icon: "rectangle.topthird.inset.filled",
+                    title: "Where the status pills went",
+                    detail: "The old diagnostics chips (performance check, stream state, device/model badges) made way for the settings bar. The same information still lives in the sidebar widgets — long-press a card to add Performance check or Host — and in Settings."),
+            ]),
+        ReleaseNote(
             build: 28, version: "1.0", headline: "Clearer transcripts on the internet feed",
             highlights: [
                 WhatsNewHighlight(
