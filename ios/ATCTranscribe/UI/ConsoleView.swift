@@ -1,9 +1,9 @@
 import SwiftUI
 
-/// The live console — a SwiftUI port of the browser UI (`server/static/*`): brand +
-/// status pills, a source/controls bar, the live transcript, and a latency/host
-/// sidebar. Adapts to a 2-column layout on iPad (regular width) and a stacked scroll
-/// on iPhone (compact).
+/// The live console — a SwiftUI port of the browser UI (`server/static/*`): brand top bar,
+/// a swipeable settings/flight-info carousel, a controls bar, the live transcript, and a
+/// latency/host sidebar. Adapts to a 2-column layout on iPad (regular width) and a stacked
+/// scroll on iPhone (compact).
 struct ConsoleView: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var downloads: ModelDownloadManager
@@ -188,11 +188,11 @@ struct ThemeSwitcher: View {
     }
 }
 
-// MARK: - Notification carousel (paged: status · flight plan · flight data)
+// MARK: - Notification carousel (paged: settings · flight plan · flight data)
 
-/// The top notification strip is a swipeable, paged carousel: page 1 is the live status pills,
-/// page 2 summarizes the filed flight plan, page 3 is reserved for live flight data (GPS). A
-/// fixed height is required — `TabView(.page)` has no intrinsic height.
+/// The top notification strip is a swipeable, paged carousel: page 1 is the settings bar (input
+/// source, Stratux link, AI cleanup, GPS fix), page 2 summarizes the filed flight plan, page 3 is
+/// live flight data (traffic). A fixed height is required — `TabView(.page)` has no intrinsic height.
 struct NotificationCarousel: View {
     @EnvironmentObject var model: AppModel
     @State private var page = 0
@@ -201,7 +201,7 @@ struct NotificationCarousel: View {
     var body: some View {
         let p = model.palette
         TabView(selection: $page) {
-            StatusBar().tag(0)
+            SettingsBar().tag(0)
             FlightPlanPage().tag(1)
             FlightDataPage().tag(2)
         }
@@ -222,108 +222,150 @@ struct NotificationCarousel: View {
     }
 }
 
-// MARK: - Status strip (pills + badges) — carousel page 1
+// MARK: - Settings bar (quick controls) — carousel page 1
 
-struct StatusBar: View {
+/// Quick controls for the live console: the input-source picker, the Stratux link chip (tap to
+/// turn the always-on traffic/GPS link on or off), the AI-cleanup backend menu, and the receiver's
+/// GPS fix. These mirror their Settings-sheet counterparts — same state, faster reach.
+struct SettingsBar: View {
     @EnvironmentObject var model: AppModel
+    @EnvironmentObject var downloads: ModelDownloadManager
+
     var body: some View {
         let p = model.palette
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                StatusPill(label: "Performance check",
-                           state: model.proofOfLife == nil ? .idle : (model.proofOfLife?.passed == true ? .good : .bad))
-                StatusPill(label: "Stream", state: streamState)
-                Badge(text: "device · \(model.deviceLabel)")
-                Badge(text: "model · \(model.activeModelLabel)")
-                Badge(text: "src · \(model.modelSource)")
-                if let s = model.measuredSpeed { Badge(text: String(format: "%.1f× real-time", s)) }
+                sourceChip(p)
+                StratuxConnectChip()
+                aiCleanupChip(p)
+                gpsChip(p)
             }
             .padding(.horizontal, 14).padding(.vertical, 8)
+            .frame(maxHeight: .infinity)   // centre the chips in the carousel's fixed 84pt page
         }
         .background(p.bg)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("settings-bar")
     }
 
-    private var streamState: StatusPill.State {
-        switch model.status {
-        case .live: return .good
-        case .connecting, .starting: return .pending
-        case .error: return .bad
-        default: return .idle
-        }
-    }
-}
-
-struct StatusPill: View {
-    enum State { case good, warn, bad, idle, pending }
-    @EnvironmentObject var model: AppModel
-    let label: String
-    let state: State
-
-    var body: some View {
-        let p = model.palette
+    /// The input-source picker (moved here from the controls bar). The collapsed label stays the
+    /// selected `SourceKind.rawValue` (the UI tests find it by that label).
+    private func sourceChip(_ p: Palette) -> some View {
         HStack(spacing: 6) {
-            Circle().fill(color(p)).frame(width: 8, height: 8)
-            Text(label).font(.caption).foregroundStyle(p.text)
+            Text("Input").font(.caption).foregroundStyle(p.textDim)
+            Picker("Input", selection: $model.source) {
+                ForEach(SourceKind.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .labelsHidden().pickerStyle(.menu).tint(p.text)
+            // Locked while a REAL capture is live: the audio source is bound into the pipeline at
+            // Start, so switching it mid-run would leave the run pulling from the old provider (a
+            // Stratux↔feed split-brain). Stop to change inputs — mirrors the model picker's gate.
+            // (Not locked in the model-less demo, which shows `.live` but binds no source.)
+            .disabled(model.isLiveCapturing)
+            .accessibilityIdentifier("source-picker")
         }
         .padding(.horizontal, 10).padding(.vertical, 6)
-        .background(p.surface)
-        .clipShape(Capsule())
-        .overlay(Capsule().stroke(p.border, lineWidth: 1))
+        .background(p.surfaceAlt).clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(p.border, lineWidth: 1))
     }
 
-    private func color(_ p: Palette) -> Color {
-        switch state {
-        case .good: return p.good
-        case .warn: return p.warn
-        case .bad: return p.bad
-        case .pending: return p.warn
-        case .idle: return p.textDim
+    /// Same readiness probe as `FlightPlanPage.contextReady` — the fixer GGUF may still be downloading.
+    private var llmReady: Bool {
+        if case .ready = downloads.state(ModelCatalog.llm.id) { return true }
+        return ModelStore.isReady(ModelCatalog.llm)
+    }
+
+    private var backendLabel: String {
+        switch model.llmBackend {
+        case .off: return "Off"
+        case .local: return llmReady ? "On-device" : "On-device (downloading…)"
+        case .foundation: return "Apple Intel."
         }
     }
-}
 
-struct Badge: View {
-    @EnvironmentObject var model: AppModel
-    let text: String
-    var body: some View {
-        let p = model.palette
-        Text(text)
-            .font(.caption2.monospaced()).foregroundStyle(p.textDim)
-            .padding(.horizontal, 9).padding(.vertical, 6)
-            .background(p.surfaceAlt)
-            .clipShape(Capsule())
-            .overlay(Capsule().stroke(p.border, lineWidth: 1))
-    }
-}
-
-/// Compact live status for the Stratux link: connecting / linked (with GPS fix + sat count + traffic
-/// count) / error. Only meaningful while the Stratux source is running; idle otherwise.
-struct StratuxStatusChip: View {
-    @EnvironmentObject var model: AppModel
-    var body: some View {
-        let p = model.palette
-        let (text, color): (String, Color) = {
-            switch model.stratuxStatus {
-            case .idle:        return ("Stratux idle", p.textDim)
-            case .connecting:  return ("Linking…", p.warn)
-            case .connected:
-                let tfc = "\(model.aircraft.count) tfc"
-                if let g = model.stratuxGPS, g.hasFix {
-                    return ("\(g.fixLabel) · \(g.satellites) sat · \(tfc)", p.good)
-                }
-                return ("Linked · acquiring GPS · \(tfc)", p.good)
-            case .error(let m): return ("Stratux: \(m)", p.bad)
+    /// Pick the AI-cleanup backend (the slow-tier LLM fixer) without opening Settings. The master
+    /// vocabulary-correction toggle deliberately stays in Settings › Transcript correction.
+    private func aiCleanupChip(_ p: Palette) -> some View {
+        Menu {
+            backendRow(.off, "Off")
+            backendRow(.local, "On-device")
+            backendRow(.foundation, "Apple Intelligence")
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "wand.and.stars").font(.caption2)
+                Text("AI cleanup · \(backendLabel)")
+                    .font(.caption).lineLimit(1).minimumScaleFactor(0.8)
             }
+            .foregroundStyle(model.llmBackend == .off ? p.textDim : p.text)
+            .padding(.horizontal, 10).padding(.vertical, 8)
+            .background(p.surfaceAlt).clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(p.border, lineWidth: 1))
+        }
+        .accessibilityIdentifier("ai-cleanup")
+        .accessibilityLabel("AI cleanup backend")
+    }
+
+    private func backendRow(_ backend: LLMBackend, _ label: String) -> some View {
+        Button { model.llmBackend = backend } label: {
+            if model.llmBackend == backend {
+                Label(label, systemImage: "checkmark")
+            } else {
+                Text(label)
+            }
+        }
+    }
+
+    /// Read-only GPS fix from the Stratux receiver — "GPS —" until the link is on, amber while
+    /// acquiring, green once it has a fix.
+    private func gpsChip(_ p: Palette) -> some View {
+        let (text, color): (String, Color) = {
+            guard model.stratuxEnabled else { return ("GPS —", p.textDim) }
+            if let g = model.stratuxGPS, g.hasFix { return ("\(g.fixLabel) · \(g.satellites) sat", p.good) }
+            return ("GPS acquiring", p.warn)
         }()
         return HStack(spacing: 5) {
-            Image(systemName: "dot.radiowaves.up.forward").font(.caption2)
-            Text(text).font(.caption2).lineLimit(1).minimumScaleFactor(0.8)
+            Image(systemName: "location.fill").font(.caption2)
+            Text(text).font(.caption).lineLimit(1).minimumScaleFactor(0.8)
         }
         .foregroundStyle(color)
         .padding(.horizontal, 10).padding(.vertical, 8)
         .background(p.surfaceAlt).clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(p.border, lineWidth: 1))
-        .accessibilityIdentifier("stratux-status")
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("gps-status")
+        .accessibilityLabel("Stratux GPS status")
+    }
+}
+
+/// The Stratux link switch + live status in one chip: tap to enable/disable the always-on
+/// traffic/GPS link (independent of the audio source — see `AppModel.stratuxEnabled`). Off → dim;
+/// linking → amber; linked (with traffic count) → green; error → red.
+struct StratuxConnectChip: View {
+    @EnvironmentObject var model: AppModel
+    var body: some View {
+        let p = model.palette
+        let (text, color): (String, Color) = {
+            guard model.stratuxEnabled else { return ("Stratux off", p.textDim) }
+            switch model.stratuxStatus {
+            case .idle:         return ("Stratux on", p.textDim)
+            case .connecting:   return ("Linking…", p.warn)
+            case .connected:    return ("Stratux linked · \(model.aircraft.count) tfc", p.good)
+            case .error(let m): return ("Stratux: \(m)", p.bad)
+            }
+        }()
+        return Button { model.stratuxEnabled.toggle() } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "dot.radiowaves.up.forward").font(.caption2)
+                Text(text).font(.caption).lineLimit(1).minimumScaleFactor(0.8)
+            }
+            .foregroundStyle(color)
+            .padding(.horizontal, 10).padding(.vertical, 8)
+            .background(p.surfaceAlt).clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(p.border, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("stratux-connect")
+        .accessibilityLabel("Stratux link")
     }
 }
 
@@ -410,16 +452,16 @@ struct FlightPlanPage: View {
 
 // MARK: - Carousel page 3: live traffic (Stratux receiver, else airplanes.live)
 
-/// Live ADS-B traffic in range — from the **Stratux receiver** when it's the input source, otherwise
-/// airplanes.live. Renders `model.aircraft` verbatim (the freshness authority is the service actor,
-/// not this view). For the Stratux source it also shows the LINK state, so "the ADS-B connection to my
-/// Stratux is up" is unmistakable: idle → connecting → **connected** (green) → error.
+/// Live ADS-B traffic in range — from the **Stratux receiver** whenever its link is enabled,
+/// otherwise airplanes.live. Renders `model.aircraft` verbatim (the freshness authority is the
+/// service actor, not this view). For the Stratux link it also shows the LINK state, so "the ADS-B
+/// connection to my Stratux is up" is unmistakable: idle → connecting → **connected** (green) → error.
 struct FlightDataPage: View {
     @EnvironmentObject var model: AppModel
     var body: some View {
         let p = model.palette
         Group {
-            if model.source == .stratux {
+            if model.stratuxEnabled {
                 stratux(p)
             } else if !model.adsbStreamingEnabled {
                 offState(p, "antenna.radiowaves.left.and.right.slash", "Online ADS-B off — enable in Settings")
@@ -438,7 +480,8 @@ struct FlightDataPage: View {
     @ViewBuilder private func stratux(_ p: Palette) -> some View {
         switch model.stratuxStatus {
         case .idle:
-            offState(p, "dot.radiowaves.up.forward", "Stratux ADS-B — press Start to connect")
+            // Idle is transient now — the link auto-connects whenever it's enabled + foregrounded.
+            offState(p, "dot.radiowaves.up.forward", "Stratux ADS-B — link starting…")
         case .connecting:
             HStack(spacing: 10) {
                 ProgressView().controlSize(.mini).tint(p.warn)
@@ -521,23 +564,9 @@ struct ControlsBar: View {
     var body: some View {
         let p = model.palette
         VStack(spacing: 8) {
+            // The input-source picker lives in the settings bar (carousel page 1) now; this row
+            // keeps the run controls: monitor toggle, input meter, Start/Stop.
             HStack(spacing: 10) {
-                HStack(spacing: 6) {
-                    Text("Input").font(.caption).foregroundStyle(p.textDim)
-                    Picker("Input", selection: $model.source) {
-                        ForEach(SourceKind.allCases) { Text($0.rawValue).tag($0) }
-                    }
-                    .labelsHidden().pickerStyle(.menu).tint(p.text)
-                    // Locked while a REAL capture is live: the audio source is bound into the pipeline at
-                    // Start, so switching it mid-run would leave the run pulling from the old provider (a
-                    // Stratux↔feed split-brain). Stop to change inputs — mirrors the model picker's gate.
-                    // (Not locked in the model-less demo, which shows `.live` but binds no source.)
-                    .disabled(model.isLiveCapturing)
-                }
-                .padding(.horizontal, 10).padding(.vertical, 6)
-                .background(p.surfaceAlt).clipShape(RoundedRectangle(cornerRadius: 8))
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(p.border, lineWidth: 1))
-
                 Spacer(minLength: 0)
 
                 // Listen to the live feed / Stratux cockpit audio through the speakers (verify it's
@@ -597,13 +626,10 @@ struct ControlsBar: View {
             }
 
             // Stratux: cockpit audio + on-board traffic/GPS over the receiver's Wi-Fi. The airport sets
-            // the corrector's facility phraseology; the chip shows the live link/GPS/traffic state. The
-            // receiver address lives in Settings › Stratux receiver.
+            // the corrector's facility phraseology; the live link/GPS/traffic state shows in the settings
+            // bar above. The receiver address lives in Settings › Stratux receiver.
             if model.source == .stratux {
-                HStack(spacing: 10) {
-                    field(icon: "airplane", placeholder: "Airport context (e.g. KBOS)", text: $model.airport)
-                    StratuxStatusChip()
-                }
+                field(icon: "airplane", placeholder: "Airport context (e.g. KBOS)", text: $model.airport)
             }
 
             HStack(spacing: 8) {

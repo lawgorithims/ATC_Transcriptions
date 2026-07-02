@@ -70,7 +70,11 @@ struct SettingsSheet: View {
                     }
                     Card(title: "Stratux receiver") {
                         VStack(alignment: .leading, spacing: 10) {
-                            Text("Connect to a Stratux ADS-B/GPS receiver over its Wi-Fi for cockpit audio plus on-board traffic and GPS — no internet needed in flight. Pick “Stratux receiver” as the input source, then Start.")
+                            Toggle(isOn: $model.stratuxEnabled) {
+                                Text("Stratux link").font(.caption).foregroundStyle(p.text)
+                            }
+                            .accessibilityIdentifier("stratux-enable")
+                            Text("Connect to a Stratux ADS-B/GPS receiver over its Wi-Fi for cockpit audio plus on-board traffic and GPS — no internet needed in flight. Turn the Stratux link on (here or in the console settings bar) to stream traffic + GPS; pick “Stratux receiver” as the input source to transcribe its audio.")
                                 .font(.caption2).foregroundStyle(p.textDim)
                             HStack(spacing: 10) {
                                 Text("Address").font(.caption).foregroundStyle(p.textDim)

@@ -205,6 +205,31 @@ final class ConsoleUITests: XCTestCase {
                       "did not return to console from standby")
     }
 
+    // 8. The settings bar (carousel page 1): the container renders, the Stratux link chip toggles
+    // on/off without crashing, and the AI-cleanup menu chip is present.
+    func test8_settingsBar() {
+        let app = launch(onboardingDismissed: true)
+        XCTAssertTrue(app.staticTexts[consoleMarker].waitForExistence(timeout: 20))
+
+        let bar = app.descendants(matching: .any).matching(identifier: "settings-bar").firstMatch
+        XCTAssertTrue(bar.waitForExistence(timeout: 5), "settings bar missing")
+
+        let stratux = app.buttons["stratux-connect"]
+        XCTAssertTrue(stratux.waitForExistence(timeout: 5), "stratux connect chip missing")
+        // Toggle the link on then off again — a round-trip that must not crash and must leave the
+        // persisted state as it started. Soft on hittability (layout-dependent).
+        if stratux.isHittable {
+            stratux.tap()
+            stratux.tap()
+        }
+
+        let cleanup = app.descendants(matching: .any).matching(identifier: "ai-cleanup").firstMatch
+        XCTAssertTrue(cleanup.waitForExistence(timeout: 5), "AI cleanup chip missing")
+
+        XCTAssertTrue(app.staticTexts[consoleMarker].exists, "console gone after settings-bar interaction")
+        snap(app, "11-settings-bar")
+    }
+
     private func waitForLabel(_ el: XCUIElement, _ label: String, timeout: TimeInterval) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         repeat {
