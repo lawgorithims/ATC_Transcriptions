@@ -93,6 +93,70 @@ do {
     }
     guard !clips.isEmpty else { die("no diagnostic clips found at \(audioDir)") }
 
+    // --- BB1: decoder callsign-biasing HALLUCINATION check (opt-in ATC_BB1=1) --------------------
+    // Decodes each captured live transmission with NO callsign hint vs an ADVERSARIAL hint (callsigns
+    // that are almost certainly NOT in the audio). If the adversarial hint makes the model EMIT those
+    // callsigns, decoder biasing is unsafe; if the two transcripts match, it's safe. Needs ATC_STREAM_URL.
+    if env["ATC_BB1"] == "1" {
+        print("=== BB1 callsign-biasing hallucination check ===")
+        let tr = ATCTranscriber(modelFolder: modelDir, cpuOnly: false)
+        try await tr.load()
+        let kb = ATCKnowledgeBase(
+            airlineTelephony: ["JBU": "JetBlue", "AAL": "American", "DAL": "Delta", "UAL": "United",
+                               "SWA": "Southwest", "FDX": "FedEx", "RPA": "Brickyard", "EDV": "Endeavor"],
+            spokenNamesByAirport: [:], spokenBaseByAirport: [:], phrasesByType: [:], spellingByType: [:],
+            phonetic: ["N": "November", "Z": "Zulu"], digits: [:])
+        func ctx(_ vocab: [String]) -> ATCContext {
+            let c = ATCContext(knowledge: kb)
+            if !vocab.isEmpty { c.setTraffic(block: "traffic", vocab: vocab, expiry: Date().addingTimeInterval(3600), epoch: 1) }
+            return c
+        }
+        let noneP = ctx([]).buildPrompt()
+        let advVocab = ["UAL111", "SWA222", "FDX333", "N999ZZ"]
+        let advP = ctx(advVocab).buildPrompt()
+        let advSpoken = advVocab.map { ATCContext.spokenCallsign($0, knowledge: kb) }
+        print("adversarial hint: \(advSpoken.joined(separator: " | "))")
+
+        var pcm: [Float] = []
+        if let urlRaw = env["ATC_STREAM_URL"], !urlRaw.isEmpty {
+            let secs = Double(env["ATC_STREAM_SECONDS"] ?? "") ?? 120
+            let resolved = (try? StreamURLResolver.resolve(streamURL: urlRaw)) ?? urlRaw
+            print("--- live capture \(Int(secs))s: \(resolved) ---")
+            final class PCM: @unchecked Sendable { let lock = NSLock(); var buf: [Float] = []; func add(_ c: [Float]) { lock.lock(); buf += c; lock.unlock() } }
+            let acc = PCM()
+            if let url = URL(string: resolved) {
+                let src = StreamAudioSource(url: url)
+                let t = Task { for await c in src.makeStream() { acc.add(c) } }
+                try? await Task.sleep(nanoseconds: UInt64(secs * 1_000_000_000))
+                src.stop(); _ = await t.value
+            }
+            pcm = acc.buf
+        }
+        print("captured \(pcm.count / 16_000)s")
+        guard pcm.count > 16_000 else { die("BB1: no stream audio captured") }
+        // Light preset (matches the shipped internet-feed path).
+        let pp = AudioPreprocessor.lightCompressed()
+        let seg = VADSegmenter(config: VADConfig())
+        var segs = seg.feed(pcm); segs += seg.flush()
+        let advWords: Set<String> = ["united", "southwest", "fedex", "november"]
+        var leaks = 0
+        print("--- \(segs.count) transmissions: NONE vs ADVERSARIAL hint ---")
+        for (i, s) in segs.enumerated() {
+            let a = pp.preprocess(s.audio)
+            let none = (try? await tr.transcribe(a, context: noneP)) ?? .empty
+            let adv = (try? await tr.transcribe(a, context: advP)) ?? .empty
+            let nl = Set(none.text.lowercased().split(separator: " ").map(String.init))
+            let al = Set(adv.text.lowercased().split(separator: " ").map(String.init))
+            let newAdv = al.subtracting(nl).intersection(advWords)
+            if !newAdv.isEmpty { leaks += 1 }
+            print("SEG \(i)\(newAdv.isEmpty ? "" : "  ⚠️LEAK \(newAdv.sorted())")")
+            print("   NONE: \(none.text)")
+            print("   ADV : \(adv.text)")
+        }
+        print("BB1 RESULT: \(leaks)/\(segs.count) transmissions leaked an adversarial callsign (0 = biasing is safe)")
+        exit(0)
+    }
+
     // --- proof-of-life on the real Neural Engine (real ANE → cpuOnly: false) ---
     let engine = TranscriberEngine(models: ["small": modelDir], defaultModel: "small",
                                    fallbackModel: "small", adaptive: false, cpuOnly: false)
