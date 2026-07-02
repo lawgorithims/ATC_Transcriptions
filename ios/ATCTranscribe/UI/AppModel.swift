@@ -462,8 +462,11 @@ final class AppModel: ObservableObject {
         // is superseded mid-load — or whose model loaded but is no longer wanted — can be discarded
         // without disturbing the live session. Load a facility config so the corrector vocabulary +
         // RAG retrieval have data (shipping default KDFW; a typed airport overrides it).
-        let configName = airport.isEmpty ? "kdfw" : airport.lowercased()
-        let cfg = try? AirportConfig.load(named: configName)
+        // QW1: only load a facility config when the user actually named an airport. Defaulting to KDFW
+        // primed Whisper with DFW runways/fixes/TRACON on ANY feed (e.g. a KBOS internet stream),
+        // biasing the decode toward the wrong runway numbers + facility names. No airport → neutral
+        // ATC prompt, which can't mislead.
+        let cfg = airport.isEmpty ? nil : (try? AirportConfig.load(named: airport.lowercased()))
         let feedKey = cfg?.streams?.keys.sorted().first
         let context = ATCContext(config: cfg, feedKey: feedKey)
         // Seed the filed flight plan (Electronic Flight Bag) before the pipeline starts using the
@@ -487,7 +490,7 @@ final class AppModel: ObservableObject {
         let llm = await makeLLMCorrector(knowledge: context.knowledge, feedKey: feedKey)
 
         let pipeline = LivePipeline(transcriber: transcriber, context: context,
-                                    preprocessor: AudioPreprocessor(aggressiveRadio: true),
+                                    preprocessor: livePreprocessor(),
                                     corrector: currentCorrector(), llm: llm,
                                     gateEnabled: skipWhenConfident, gateSensitivity: gateSensitivity,
                                     diarizationEnabled: diarizationEnabled,
@@ -717,10 +720,20 @@ final class AppModel: ObservableObject {
         Task { await service?.sync(host: host, enabled: active) }
     }
 
-    /// The center for the 30 NM query: the typed airport's coordinate (bundled table; default KDFW
-    /// when blank), or nil when unknown (→ no polling). Device GPS will sit ahead of this later.
+    /// The center for the 30 NM query: the typed airport's coordinate, or nil when blank/unknown (→ no
+    /// polling). QW1: no longer defaults to KDFW when blank — pulling Dallas traffic into the correction
+    /// prompt of a KBOS (or any) feed injects wrong-facility aircraft, the same wrong-airport bias QW1
+    /// removed from the decoder prompt. Device GPS will sit ahead of this later.
     private func facilityCoordinate() -> Coord? {
-        AirportCoordinates.coordinate(icao: airport.isEmpty ? "KDFW" : airport)
+        airport.isEmpty ? nil : AirportCoordinates.coordinate(icao: airport)
+    }
+
+    /// The audio preprocessor preset for the CURRENT source: a lighter touch for the already-compressed
+    /// internet feed, the aggressive radio cleanup for clean wideband sources (Stratux/mic/USB/replay).
+    /// Measured on a live 8 kHz feed: the aggressive band-pass + spectral gate caused hallucinations +
+    /// lower confidence there, while still helping clean audio.
+    private func livePreprocessor() -> AudioPreprocessor {
+        source == .liveFeed ? AudioPreprocessor.lightCompressed() : AudioPreprocessor(aggressiveRadio: true)
     }
 
     /// Service published a snapshot: update the UI state and re-inject the corrector block. Guarded
@@ -939,6 +952,10 @@ final class AppModel: ObservableObject {
         // backgrounded (the `audio` background mode is declared). mic/USB record; feed/replay/Stratux play.
         AudioSessionManager.activate(recording: source == .microphone || source == .usbAudio,
                                      preferUSB: source == .usbAudio)
+        // Bind the source-appropriate preprocessor NOW: the session/pipeline was built at setupLive, but
+        // the user can Stop → switch source → Start without rebuilding it, so re-pick the preset here so a
+        // wideband source never keeps the internet feed's light preset (or vice-versa).
+        session.setPreprocessor(livePreprocessor())
         session.start(source: src, label: source.rawValue, clearHistory: !resuming)
         if !resuming { callsignFilter = nil }   // a fresh transcript replaces history → drop a stale filter
         sourceLabel = source.rawValue

@@ -108,10 +108,25 @@ actor ATCTranscriber {
         let avgLogprob = segments.isEmpty ? 0 : segments.map(\.avgLogprob).reduce(0, +) / Float(segments.count)
         let asr = ASRConfidence(avgLogprob: avgLogprob, compressionRatio: compression)
 
-        // Drop if still degenerate after WhisperKit's temperature fallback — a segment above the
-        // compression-ratio threshold is a stuck repetition loop ("runway three right runway three
-        // right ..."), which gzip-compresses far better than speech.
+        // If still degenerate after WhisperKit's temperature fallback (a stuck repetition loop —
+        // "runway three right runway three right ...", which gzip-compresses far better than speech),
+        // QW4: try ONE no-prompt re-decode before giving up. Repetition loops are frequently prompt-
+        // or greedy-induced, so dropping the context prompt + starting warmer often recovers real
+        // text; only if THAT is still degenerate do we drop the segment (return "").
         if compression > compressionRatioThreshold {
+            if let recovered = try? await pipe.transcribe(audioArray: audio, decodeOptions: DecodingOptions(
+                task: .transcribe, language: language,
+                temperature: 0.4, temperatureFallbackCount: temperatureFallbackCount,
+                usePrefillPrompt: true, skipSpecialTokens: true, withoutTimestamps: true,
+                promptTokens: nil, compressionRatioThreshold: compressionRatioThreshold, noSpeechThreshold: 0.6)) {
+                let rSegs = recovered.flatMap(\.segments)
+                let rComp = rSegs.map(\.compressionRatio).max() ?? 0
+                if rComp <= compressionRatioThreshold {
+                    let rText = recovered.map(\.text).joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+                    let rLp = rSegs.isEmpty ? 0 : rSegs.map(\.avgLogprob).reduce(0, +) / Float(rSegs.count)
+                    if !rText.isEmpty { return TranscriptionOutput(text: rText, asr: ASRConfidence(avgLogprob: rLp, compressionRatio: rComp)) }
+                }
+            }
             return TranscriptionOutput(text: "", asr: asr)
         }
         let text = results.map(\.text).joined(separator: " ")

@@ -123,7 +123,7 @@ private func round3(_ x: Double) -> Double { (x * 1000).rounded() / 1000 }
 actor LivePipeline {
     private let transcriber: ATCTranscriber
     private let context: ATCContext
-    private let preprocessor: AudioPreprocessor?
+    private var preprocessor: AudioPreprocessor?
     private var corrector: Corrector
     private let segmenter: VADSegmenter
     private var running = false
@@ -192,10 +192,6 @@ actor LivePipeline {
         guard !text.isEmpty else { return nil }
         let asr = out.asr
 
-        // The transcriber already drops degenerate (repetition-loop) decodes, so any
-        // non-empty result is clean enough to feed back into the rolling prompt history.
-        context.update(text)
-
         let audioMs = Double(segment.audio.count) / 16000.0 * 1000.0
         let captureToTextMs = (Date().timeIntervalSince1970 - segment.finalizedWallTime) * 1000.0
         let rtf = audioMs > 0 ? transcribeMs / audioMs : 0.0
@@ -209,6 +205,11 @@ actor LivePipeline {
             return nil
         }
         let inlineCorrected = correction.changed ? correction.corrected : ""
+        // QW2: seed the rolling decoder-prompt history with the CORRECTED form (not raw Whisper output),
+        // AFTER the drop-check — so a mishear that the corrector fixed (or a hallucination it dropped)
+        // can't prime the same error into the next transmission. The corrector above saw only PRIOR
+        // history (this update runs after it reads `recentHistory`).
+        context.update(inlineCorrected.isEmpty ? text : inlineCorrected)
 
         var record = TranscriptRecord(
             text: text,
@@ -348,6 +349,10 @@ actor LivePipeline {
     func setSquelch(auto: Bool, level: Float, calibratedGateRMS: Float? = nil) {
         segmenter.setSquelch(auto: auto, level: level, calibratedGateRMS: calibratedGateRMS)
     }
+
+    /// Swap the audio preprocessor at runtime (source-dependent preset). Takes effect on the next
+    /// segment; the internet feed uses a lighter preset than clean wideband radio (see AppModel).
+    func setPreprocessor(_ p: AudioPreprocessor?) { preprocessor = p }
 
     /// Inject the filed flight plan into the LLM correction context (Electronic Flight Bag). An
     /// empty block clears it. Takes effect on the next transmission.

@@ -32,6 +32,22 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 28, version: "1.0", headline: "Clearer transcripts on the internet feed",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "waveform.badge.magnifyingglass",
+                    title: "Better accuracy on live internet feeds",
+                    detail: "Internet ATC streams are heavily compressed, and the radio “cleanup” we ran was actually over-processing them — causing misheard words and made-up numbers. On an internet feed the app now uses a lighter touch tuned for that audio, which testing showed clearly reduces errors. (Stratux and mic input are unchanged.)"),
+                WhatsNewHighlight(
+                    icon: "character.book.closed",
+                    title: "Fixes common ATC mishears",
+                    detail: "A new correction pass repairs frequent phraseology slips — e.g. “heal short” → “hold short,” “flight lever” → “flight level” — without touching correct readbacks."),
+                WhatsNewHighlight(
+                    icon: "mappin.slash",
+                    title: "No more wrong-airport guessing",
+                    detail: "The app no longer assumes Dallas/Fort Worth when you haven't set an airport — which had been nudging it toward the wrong runways and facilities on other fields. Set your airport in Settings for the best results."),
+            ]),
+        ReleaseNote(
             build: 27, version: "1.0", headline: "Calibrate the mic to your room",
             highlights: [
                 WhatsNewHighlight(

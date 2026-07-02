@@ -128,6 +128,13 @@ final class TranscriptionSession: ObservableObject {
         Task { await pipeline.setSquelch(auto: auto, level: level, calibratedGateRMS: calibratedGateRMS) }
     }
 
+    /// Swap the audio preprocessor at runtime (source-dependent preset). Safe while stopped/before a
+    /// run; takes effect on the next segment.
+    func setPreprocessor(_ p: AudioPreprocessor?) {
+        let pipeline = self.pipeline
+        Task { await pipeline.setPreprocessor(p) }
+    }
+
     /// Toggle speaker diarization (Settings) at runtime. Takes effect on the next segment.
     func setDiarization(_ on: Bool) {
         let pipeline = self.pipeline
