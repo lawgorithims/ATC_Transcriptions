@@ -73,6 +73,26 @@ final class VADSegmenterTests: XCTestCase {
         }
     }
 
+    // A sustained near-constant QUIET transmission must NOT self-gate partway through. The auto floor
+    // must never train UP on frames it just classified as speech — otherwise a steady 0.05 call would
+    // raise its own gate above itself after ~1.5 s and drop the rest of the transmission (a regression
+    // the shared gate would have inflicted on radio/replay too). The emitted segment must span the tone.
+    func testSustainedQuietTransmissionDoesNotSelfGate() {
+        let s = VADSegmenter(config: VADConfig(), now: { 0 })
+        let out = s.feed(frames(23, 0.0) + frames(200, 0.05) + frames(23, 0.0))
+        XCTAssertEqual(out.count, 1)
+        XCTAssertGreaterThanOrEqual(out[0].audio.count, 200 * VADSegmenter.frameSamples,
+                                    "a steady quiet transmission must not self-gate partway through")
+    }
+
+    // A normal-volume transmission that OPENS the stream with no leading silence must still segment: the
+    // first frame is judged at the absolute threshold BEFORE the seed, and 0.2 clears the clamped gate.
+    // (Guards the seed from gating a stream that opens mid-transmission — for normal signal levels.)
+    func testTransmissionOpeningStreamStillEmits() {
+        let s = VADSegmenter(config: VADConfig(), now: { 0 })
+        XCTAssertEqual(s.feed(frames(20, 0.2) + frames(23, 0.0)).count, 1)
+    }
+
     // A genuinely LOUD steady signal (0.5) is a real transmission, not ambient — the clamp keeps the
     // learned floor in the ambient range so it still reads as speech and caps (guards the fix from
     // over-gating loud continuous audio). Mirrors testMaxSegmentCapEmits under the shipped default cap.

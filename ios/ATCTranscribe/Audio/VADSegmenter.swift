@@ -179,8 +179,12 @@ final class VADSegmenter {
         var sumSquares: Float = 0
         for s in frame { sumSquares += s * s }
         let rms = (sumSquares / Float(frame.count)).squareRoot()
-        if squelchAuto { updateNoiseFloor(rms) }   // learn from EVERY frame (see below), then gate
-        return rms >= currentGate()
+        // Decide against the floor as it stands BEFORE this frame's update, so a stream that OPENS on a
+        // quiet transmission (no leading silence) still passes at the absolute threshold — the seed
+        // then calibrates from the next frame on — rather than being gated by a floor derived from itself.
+        let speech = rms >= currentGate()
+        if squelchAuto { updateNoiseFloor(rms, isSpeech: speech) }
+        return speech
     }
 
     /// Track the channel noise floor for auto squelch. The OLD code only learned the floor from frames
@@ -190,20 +194,23 @@ final class VADSegmenter {
     /// pinned at 0.008, every frame read as speech, and the segmenter looped forever on the max-segment
     /// cap transcribing room noise (the "stuck transcribing, no output" mic bug).
     ///
-    /// Now it learns from every frame: fast-attack DOWN to any quieter level (so it tracks the true quiet
-    /// floor and, on a radio, snaps back to silence between transmissions) and a slow creep UP toward a
-    /// rising ambient (so a continuous mic converges to its own room tone within ~a second and gates it).
-    /// A loud frame is CLAMPED to `maxNoiseFloor` before it can train the floor, so a genuinely loud
-    /// steady signal — or loud speech — can never be learned as "ambient" and still reads as speech
-    /// (`currentGate()` = `max(energyThreshold, noiseFloor * noiseMargin)` is unchanged).
-    private func updateNoiseFloor(_ rms: Float) {
+    /// Now it learns from every frame: seed from the first frame (so a hot continuous mic calibrates at
+    /// once), fast-attack DOWN to any quieter level (so it tracks the true quiet floor and, on a radio,
+    /// snaps back to silence between transmissions), and a slow creep UP toward a rising ambient — but
+    /// the creep-up runs ONLY on frames the gate just classified as NON-speech. That last part is
+    /// essential: a real transmission (even a sustained quiet one) must never train the floor toward
+    /// itself, or its own energy would raise the gate above it and gate it off mid-transmission. A loud
+    /// frame is also CLAMPED to `maxNoiseFloor` before it can train the floor, so a genuinely loud steady
+    /// signal can never be learned as "ambient". `currentGate()` (= max(energyThreshold, floor*margin))
+    /// is unchanged.
+    private func updateNoiseFloor(_ rms: Float, isSpeech: Bool) {
         let sample = Swift.min(rms, Self.maxNoiseFloor)
         if !floorSeeded {
             noiseFloor = sample; floorSeeded = true      // seed from the first frame so a hot channel calibrates at once
         } else if sample < noiseFloor {
             noiseFloor = sample                          // fast-attack down to a quieter floor (incl. true silence → ~0)
-        } else {
-            noiseFloor = noiseFloor * 0.985 + sample * 0.015   // slow creep up toward a rising ambient floor
+        } else if !isSpeech {
+            noiseFloor = noiseFloor * 0.985 + sample * 0.015   // creep up toward a rising ambient — NON-speech frames only
         }
     }
 
