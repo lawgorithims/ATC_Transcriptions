@@ -94,8 +94,8 @@ final class WhatsNewTests: XCTestCase {
     /// Pin the concrete shipped contract (not just self-consistency) so a renumber or a dropped entry
     /// is caught, and so the dev-dormant guarantee (no note ≤ build 1) is explicit.
     func testConcreteChangelogContract() {
-        XCTAssertEqual(builds, [28, 27, 26, 25, 24, 23, 22, 21, 18, 17, 16, 15, 14, 13, 12, 11, 10, 8], "the shipped build list changed — update the gate tests")
-        XCTAssertEqual(WhatsNew.releaseNotes.first?.build, 28)
+        XCTAssertEqual(builds, [29, 28, 27, 26, 25, 24, 23, 22, 21, 18, 17, 16, 15, 14, 13, 12, 11, 10, 8], "the shipped build list changed — update the gate tests")
+        XCTAssertEqual(WhatsNew.releaseNotes.first?.build, 29)
         XCTAssertTrue(builds.allSatisfy { $0 > 1 }, "the dev-dormant guarantee assumes no release note ≤ build 1")
     }
 

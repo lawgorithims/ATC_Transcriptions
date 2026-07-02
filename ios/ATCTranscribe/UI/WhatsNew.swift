@@ -32,6 +32,14 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 29, version: "1.0", headline: "Locks onto the aircraft actually on frequency",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "airplane.circle.fill",
+                    title: "Live traffic now sharpens callsigns",
+                    detail: "When you set your airport and turn on Live traffic, the app now tells the speech model which airline flights are actually in range — so a garbled “Rockfish 5546” is far more likely to come out as the real callsign. It only nudges toward airlines that are genuinely nearby, so it won't invent one. Set your airport in Settings and enable Live traffic to use it."),
+            ]),
+        ReleaseNote(
             build: 28, version: "1.0", headline: "Clearer transcripts on the internet feed",
             highlights: [
                 WhatsNewHighlight(
