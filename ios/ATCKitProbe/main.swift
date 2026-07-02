@@ -93,6 +93,72 @@ do {
     }
     guard !clips.isEmpty else { die("no diagnostic clips found at \(audioDir)") }
 
+    // --- A/B: audio-preprocessing variant sweep (opt-in ATC_AB=1) --------------------------------
+    // Diagnoses whether the aggressive live preprocessor helps or HURTS accuracy: transcribes the
+    // gold set through 4 preprocessing variants (same model/prompt) and reports normalized WER +
+    // mean avgLogprob. With ATC_STREAM_URL it also captures the live feed and prints each variant's
+    // transcript per transmission (no reference → confidence + eyeball). Exits after.
+    if env["ATC_AB"] == "1" {
+        print("=== A/B preprocessing sweep ===")
+        let ab = ATCTranscriber(modelFolder: modelDir, cpuOnly: false)
+        try await ab.load()
+        func pad(_ s: String, _ n: Int) -> String { s.count >= n ? s : s + String(repeating: " ", count: n - s.count) }
+        func rmsNorm(_ x: [Float], _ target: Float) -> [Float] {
+            let r = (x.reduce(0) { $0 + $1 * $1 } / Float(Swift.max(1, x.count))).squareRoot()
+            guard r > 0 else { return x }
+            let g = Swift.min(20, target / r)
+            return x.map { Swift.max(-1, Swift.min(1, $0 * g)) }
+        }
+        func lightPeak() -> AudioPreprocessor { var p = AudioPreprocessor(aggressiveRadio: false); p.enableBandpass = false; p.enableSpectralGating = false; p.enableNormalize = true; return p }
+        func hpOnly() -> AudioPreprocessor { var p = AudioPreprocessor(aggressiveRadio: false); p.enableBandpass = false; p.enableSpectralGating = false; p.enableNormalize = false; return p }
+        let ppPeak = lightPeak(), ppHP = hpOnly(), ppAgg = AudioPreprocessor(aggressiveRadio: true)
+        let variants: [(String, ([Float]) -> [Float])] = [
+            ("raw", { $0 }),
+            ("hp+peaknorm", { ppPeak.preprocess($0) }),
+            ("aggressive", { ppAgg.preprocess($0) }),
+            ("hp+rmsnorm", { rmsNorm(ppHP.preprocess($0), 0.06) }),
+        ]
+        func nWER(_ ref: String, _ hyp: String) -> Double {
+            WER.rate(reference: ATCNormalize.normalize(ref), hypothesis: ATCNormalize.normalize(hyp))
+        }
+        print("--- gold WER (normalized), n=\(clips.count) ---")
+        for (name, f) in variants {
+            var tot = 0.0, lp = 0.0
+            for clip in clips {
+                let out = (try? await ab.transcribe(f(clip.audio))) ?? .empty
+                tot += nWER(clip.reference, out.text); lp += out.asr.avgLogprob
+            }
+            print("AB-GOLD  \(pad(name, 14)) meanWER=\(String(format: "%.3f", tot / Double(clips.count)))  avgLogprob=\(String(format: "%.3f", lp / Double(clips.count)))")
+        }
+        if let urlRaw = env["ATC_STREAM_URL"], !urlRaw.isEmpty {
+            let secs = Double(env["ATC_STREAM_SECONDS"] ?? "") ?? 90
+            let resolved = (try? StreamURLResolver.resolve(streamURL: urlRaw)) ?? urlRaw
+            print("--- live capture \(Int(secs))s: \(resolved) ---")
+            final class PCM: @unchecked Sendable { let lock = NSLock(); var buf: [Float] = []; func add(_ c: [Float]) { lock.lock(); buf += c; lock.unlock() } }
+            let pcm = PCM()
+            if let url = URL(string: resolved) {
+                let src = StreamAudioSource(url: url)
+                let t = Task { for await c in src.makeStream() { pcm.add(c) } }
+                try? await Task.sleep(nanoseconds: UInt64(secs * 1_000_000_000))
+                src.stop(); _ = await t.value
+            }
+            print("captured \(pcm.buf.count) samples (\(pcm.buf.count / 16_000)s)")
+            if pcm.buf.count > 16_000 {
+                let seg = VADSegmenter(config: VADConfig())
+                var segs = seg.feed(pcm.buf); segs += seg.flush()
+                print("--- KBOS live: \(segs.count) transmissions × 4 variants ---")
+                for (i, s) in segs.enumerated() {
+                    print("SEG \(i) (\(String(format: "%.1f", Double(s.audio.count) / 16_000))s)")
+                    for (name, f) in variants {
+                        let out = (try? await ab.transcribe(f(s.audio))) ?? .empty
+                        print("   \(pad(name, 14)) lp=\(String(format: "%.2f", out.asr.avgLogprob)) | \(out.text)")
+                    }
+                }
+            }
+        }
+        print("AB OK"); exit(0)
+    }
+
     // --- proof-of-life on the real Neural Engine (real ANE → cpuOnly: false) ---
     let engine = TranscriberEngine(models: ["small": modelDir], defaultModel: "small",
                                    fallbackModel: "small", adaptive: false, cpuOnly: false)
