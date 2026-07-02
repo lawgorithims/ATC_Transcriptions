@@ -462,8 +462,11 @@ final class AppModel: ObservableObject {
         // is superseded mid-load — or whose model loaded but is no longer wanted — can be discarded
         // without disturbing the live session. Load a facility config so the corrector vocabulary +
         // RAG retrieval have data (shipping default KDFW; a typed airport overrides it).
-        let configName = airport.isEmpty ? "kdfw" : airport.lowercased()
-        let cfg = try? AirportConfig.load(named: configName)
+        // QW1: only load a facility config when the user actually named an airport. Defaulting to KDFW
+        // primed Whisper with DFW runways/fixes/TRACON on ANY feed (e.g. a KBOS internet stream),
+        // biasing the decode toward the wrong runway numbers + facility names. No airport → neutral
+        // ATC prompt, which can't mislead.
+        let cfg = airport.isEmpty ? nil : (try? AirportConfig.load(named: airport.lowercased()))
         let feedKey = cfg?.streams?.keys.sorted().first
         let context = ATCContext(config: cfg, feedKey: feedKey)
         // Seed the filed flight plan (Electronic Flight Bag) before the pipeline starts using the
@@ -486,8 +489,14 @@ final class AppModel: ObservableObject {
         // reads `self.liveContext` lazily at transcribe time, so building it before the commit is fine.)
         let llm = await makeLLMCorrector(knowledge: context.knowledge, feedKey: feedKey)
 
+        // Source-dependent preprocessing: the internet live feed is already narrowband + compressed
+        // (an 8 kHz LiveATC MP3), where the aggressive band-pass + spectral gate hurt (A/B-measured
+        // hallucinations + lower confidence). Clean wideband radio (Stratux/mic/USB) still benefits
+        // from the aggressive preset.
+        let preprocessor = source == .liveFeed ? AudioPreprocessor.lightCompressed()
+                                               : AudioPreprocessor(aggressiveRadio: true)
         let pipeline = LivePipeline(transcriber: transcriber, context: context,
-                                    preprocessor: AudioPreprocessor(aggressiveRadio: true),
+                                    preprocessor: preprocessor,
                                     corrector: currentCorrector(), llm: llm,
                                     gateEnabled: skipWhenConfident, gateSensitivity: gateSensitivity,
                                     diarizationEnabled: diarizationEnabled,
