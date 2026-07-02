@@ -8,6 +8,9 @@ struct TranscriptCard: View {
     /// True while the user is pinned to the newest end (so we follow new transmissions); false once
     /// they scroll into history (auto-scroll pauses, the jump-to-newest button appears).
     @State private var atNewest = true
+    /// Drives the squelch popover from the input-level meter, which now lives in this always-visible
+    /// header (moved out of the old controls bar) so proof-of-audio survives collapsing the strips.
+    @State private var showSquelch = false
 
     /// Records in display order: filtered to one aircraft's conversation when a callsign filter is
     /// active, then reversed (newest first) when the user prefers it.
@@ -29,6 +32,21 @@ struct TranscriptCard: View {
                 Text("Transcript").font(.headline).foregroundStyle(p.text)
                 Spacer(minLength: 4)
                 Text(model.sourceLabel).font(.caption).foregroundStyle(p.textDim).lineLimit(1)
+                // Live run status, moved here from the old controls bar so it stays visible no matter
+                // which heading-bar strips are open: the "Transcribing…" pulse and the input-level
+                // meter (tap → squelch). Both appear only during a live session.
+                if model.transcribing { TranscribingIndicator() }
+                if model.isRunning {
+                    Button { showSquelch = true } label: { InputLevelMeter() }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("input-level-meter")
+                        .accessibilityLabel("Input level / squelch")
+                        .popover(isPresented: $showSquelch) {
+                            SquelchControls().environmentObject(model)
+                                .padding(16).frame(width: 300)
+                                .presentationCompactAdaptation(.popover)
+                        }
+                }
                 Button { model.transcriptNewestFirst.toggle() } label: {
                     HStack(spacing: 3) {
                         Image(systemName: model.transcriptNewestFirst ? "arrow.up" : "arrow.down")

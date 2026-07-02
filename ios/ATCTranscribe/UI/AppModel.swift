@@ -134,6 +134,24 @@ final class AppModel: ObservableObject {
 
     @Published var showSettings = false
 
+    // Heading-bar view toggles: each collapsible strip below the heading bar (input controls,
+    // diagnostics, flight plan, Stratux) is shown/hidden by its own heading-bar icon. Persisted so
+    // the console reopens the way it was left; first launch shows only the Input bar (so a source can
+    // be picked and started) with the rest collapsed for a clean, transcript-first screen. UI-only —
+    // these gate visibility, never capture/pipeline behaviour.
+    @Published var showInputBar = (UserDefaults.standard.object(forKey: "atc.bar.input") as? Bool) ?? true {
+        didSet { UserDefaults.standard.set(showInputBar, forKey: "atc.bar.input") }
+    }
+    @Published var showDiagnosticsBar = UserDefaults.standard.bool(forKey: "atc.bar.diag") {
+        didSet { UserDefaults.standard.set(showDiagnosticsBar, forKey: "atc.bar.diag") }
+    }
+    @Published var showFlightPlanBar = UserDefaults.standard.bool(forKey: "atc.bar.plan") {
+        didSet { UserDefaults.standard.set(showFlightPlanBar, forKey: "atc.bar.plan") }
+    }
+    @Published var showStratuxBar = UserDefaults.standard.bool(forKey: "atc.bar.stratux") {
+        didSet { UserDefaults.standard.set(showStratuxBar, forKey: "atc.bar.stratux") }
+    }
+
     // Electronic Flight Bag: the filed flight plan (ForeFlight-style). Persisted as JSON; whenever
     // it changes, its context block is packed into the live correction layer (both LLM backends)
     // and saved. `showFlightBag` drives the briefcase editor sheet.

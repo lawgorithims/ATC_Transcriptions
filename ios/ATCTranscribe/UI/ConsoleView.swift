@@ -10,14 +10,24 @@ struct ConsoleView: View {
     @Environment(\.horizontalSizeClass) private var hSize
     @Environment(\.scenePhase) private var scenePhase
 
+    /// Strips slide in from under the heading bar and fade — a "drop-down" reveal that pushes the
+    /// transcript down (it's maxHeight:.infinity below) rather than covering it. The toggles are
+    /// wrapped in `withAnimation` at the tap site, which is what drives these transitions.
+    static let barTransition: AnyTransition = .move(edge: .top).combined(with: .opacity)
+
     var body: some View {
         let p = model.palette
         ZStack {
             p.bg.ignoresSafeArea()
             VStack(spacing: 0) {
                 TopBar()
-                NotificationCarousel()
-                ControlsBar()
+                // Collapsible strips — each toggled by its own heading-bar icon (default: only Input on
+                // first launch; the choice is remembered). As one appears/disappears the transcript
+                // below reflows to fill the freed space.
+                if model.showInputBar { InputBar().transition(Self.barTransition) }
+                if model.showDiagnosticsBar { StatusBar().transition(Self.barTransition) }
+                if model.showFlightPlanBar { FlightPlanBar().transition(Self.barTransition) }
+                if model.showStratuxBar { StratuxBar().transition(Self.barTransition) }
                 hairline
                 mainArea
             }
@@ -112,117 +122,248 @@ struct ConsoleView: View {
     }
 }
 
-// MARK: - Top bar
+// MARK: - Heading bar
 
+/// The heading bar is the console's control surface: it toggles the collapsible strips (input,
+/// diagnostics, flight plan, Stratux) in and out, picks the screen theme, and holds the single
+/// Start/Stop power button. Icons run ~10% larger with ~15% more spacing than before (easier to hit
+/// on a bumpy flight deck) and every button gives a light haptic tap. On iPhone the brand collapses
+/// to the logo alone so the larger control icons fit one row; the wordmark returns on iPad.
 struct TopBar: View {
     @EnvironmentObject var model: AppModel
+    @Environment(\.horizontalSizeClass) private var hSize
+
+    // Centralized sizing so the whole bar scales together (the "bigger + roomier" ask).
+    private let iconSize: CGFloat = 19        // ~+10% over the old 15–17pt icons
+    private let barSpacing: CGFloat = 14      // ~+15% over the old 12pt
+    private let hit = CGSize(width: 30, height: 30)
+
     var body: some View {
         let p = model.palette
-        HStack(spacing: 12) {
-            Image("BrandMark")
-                .resizable().scaledToFit()
-                .frame(width: 30, height: 30)
-                .clipShape(RoundedRectangle(cornerRadius: 7))
-            VStack(alignment: .leading, spacing: 1) {
-                Text("CommSight").font(.headline).foregroundStyle(p.text)
-                Text("On-device ATC transcription").font(.caption2).foregroundStyle(p.textDim)
+        HStack(spacing: 0) {
+            brand(p)
+            Spacer(minLength: 8)
+            HStack(spacing: barSpacing) {
+                toggle(p, "slider.horizontal.3", on: model.showInputBar,
+                       id: "input-toggle", label: "Input controls") { model.showInputBar.toggle() }
+                toggle(p, "gauge.with.dots.needle.bottom.50percent", on: model.showDiagnosticsBar,
+                       id: "diagnostics-toggle", label: "Diagnostics") { model.showDiagnosticsBar.toggle() }
+                flightPlanToggle(p)
+                stratuxToggle(p)
+                ThemeMenu()
+                PowerButton()
+                iconButton(p, "gearshape.fill", id: "settings-button", label: "Settings") {
+                    model.showSettings = true
+                }
             }
-            Spacer()
-            ThemeSwitcher()
-            // Electronic Flight Bag: file/edit a flight plan. A yellow warning rides the briefcase
-            // when the saved plan is over a week old (refile recommended before the next flight).
-            Button { model.showFlightBag = true } label: {
-                Image(systemName: "briefcase.fill").font(.system(size: 15))
-                    .overlay(alignment: .topTrailing) {
-                        if model.flightPlan?.isStale == true {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .font(.system(size: 9)).foregroundStyle(p.warn)
-                                .offset(x: 6, y: -5)
-                        }
-                    }
-            }
-            .buttonStyle(.plain).foregroundStyle(p.textDim)
-            .accessibilityIdentifier("flight-bag-button")
-            .accessibilityLabel("Flight bag")
-            Button { model.enterStandby() } label: {
-                Image(systemName: "power").font(.system(size: 16, weight: .semibold))
-            }
-            .buttonStyle(.plain).foregroundStyle(p.textDim)
-            .accessibilityIdentifier("standby-button")
-            .accessibilityLabel("Standby")
-            Button { model.showSettings = true } label: {
-                Image(systemName: "gearshape.fill").font(.system(size: 17))
-            }
-            .buttonStyle(.plain).foregroundStyle(p.textDim)
-            .accessibilityIdentifier("settings-button")
-            .accessibilityLabel("Settings")
         }
-        .padding(.horizontal, 14).padding(.vertical, 10)
+        .padding(.horizontal, 12).padding(.vertical, 10)
         .background(p.surface)
     }
+
+    // MARK: brand
+
+    @ViewBuilder private func brand(_ p: Palette) -> some View {
+        HStack(spacing: 10) {
+            Image("BrandMark").resizable().scaledToFit()
+                .frame(width: 30, height: 30)
+                .clipShape(RoundedRectangle(cornerRadius: 7))
+            // Wordmark + subtitle only where there's room (iPad / regular width). On iPhone the logo
+            // stands alone so the larger control icons fit one row.
+            if hSize == .regular {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("CommSight").font(.headline).foregroundStyle(p.text)
+                    Text("On-device ATC transcription").font(.caption2).foregroundStyle(p.textDim)
+                }
+            }
+        }
+    }
+
+    // MARK: heading buttons
+
+    /// A strip-toggle icon: tints accent + gets a soft fill while its strip is open, and animates the
+    /// strip in/out (the withAnimation here is what drives the drop-down reveal + transcript reflow).
+    private func toggle(_ p: Palette, _ symbol: String, on: Bool, id: String, label: String,
+                        _ action: @escaping () -> Void) -> some View {
+        Button {
+            Haptics.impact(.light)
+            withAnimation(.easeInOut(duration: 0.22)) { action() }
+        } label: {
+            Image(systemName: symbol)
+                .font(.system(size: iconSize, weight: .semibold))
+                .frame(width: hit.width, height: hit.height)
+                .foregroundStyle(on ? p.accent : p.textDim)
+                .background(on ? p.accent.opacity(0.16) : .clear)
+                .clipShape(RoundedRectangle(cornerRadius: 7))
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier(id)
+        .accessibilityLabel(label)
+        .accessibilityAddTraits(on ? [.isSelected] : [])
+    }
+
+    /// A plain icon action button (no toggle state) — e.g. Settings.
+    private func iconButton(_ p: Palette, _ symbol: String, id: String, label: String,
+                            _ action: @escaping () -> Void) -> some View {
+        Button {
+            Haptics.impact(.light)
+            action()
+        } label: {
+            Image(systemName: symbol)
+                .font(.system(size: iconSize, weight: .semibold))
+                .frame(width: hit.width, height: hit.height)
+                .foregroundStyle(p.textDim)
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier(id)
+        .accessibilityLabel(label)
+    }
+
+    /// Flight-plan strip toggle — lives on the briefcase (per the brief), keeping the stale ⚠ badge.
+    private func flightPlanToggle(_ p: Palette) -> some View {
+        let on = model.showFlightPlanBar
+        return Button {
+            Haptics.impact(.light)
+            withAnimation(.easeInOut(duration: 0.22)) { model.showFlightPlanBar.toggle() }
+        } label: {
+            Image(systemName: "briefcase.fill")
+                .font(.system(size: iconSize, weight: .semibold))
+                .frame(width: hit.width, height: hit.height)
+                .foregroundStyle(on ? p.accent : p.textDim)
+                .background(on ? p.accent.opacity(0.16) : .clear)
+                .clipShape(RoundedRectangle(cornerRadius: 7))
+                .overlay(alignment: .topTrailing) {
+                    if model.flightPlan?.isStale == true {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 9)).foregroundStyle(p.warn)
+                            .offset(x: 1, y: -1)
+                    }
+                }
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("flight-bag-button")
+        .accessibilityLabel("Flight plan")
+        .accessibilityAddTraits(on ? [.isSelected] : [])
+    }
+
+    /// Stratux strip toggle — the icon itself is tinted by live link health (idle/connecting/
+    /// connected/error) so the connection state reads at a glance from the heading bar.
+    private func stratuxToggle(_ p: Palette) -> some View {
+        let on = model.showStratuxBar
+        return Button {
+            Haptics.impact(.light)
+            withAnimation(.easeInOut(duration: 0.22)) { model.showStratuxBar.toggle() }
+        } label: {
+            Image(systemName: "dot.radiowaves.up.forward")
+                .font(.system(size: iconSize, weight: .semibold))
+                .frame(width: hit.width, height: hit.height)
+                .foregroundStyle(stratuxTint(p))
+                .background(on ? p.accent.opacity(0.16) : .clear)
+                .clipShape(RoundedRectangle(cornerRadius: 7))
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("stratux-toggle")
+        .accessibilityLabel("Stratux link")
+        .accessibilityAddTraits(on ? [.isSelected] : [])
+    }
+
+    /// Stratux icon colour — live health when the receiver is the source, neutral otherwise.
+    private func stratuxTint(_ p: Palette) -> Color {
+        guard model.source == .stratux else { return model.showStratuxBar ? p.accent : p.textDim }
+        switch model.stratuxStatus {
+        case .idle:       return p.textDim
+        case .connecting: return p.warn
+        case .connected:  return p.good
+        case .error:      return p.bad
+        }
+    }
 }
 
-struct ThemeSwitcher: View {
+// MARK: - Theme menu
+
+/// Screen-colour picker collapsed into a single heading-bar dropdown (was a 3-button inline switcher)
+/// — the label is the current theme's glyph; the menu offers all three. Keeps the `theme-*` ids so
+/// the theme UI test still drives it (after opening the menu).
+struct ThemeMenu: View {
     @EnvironmentObject var model: AppModel
     var body: some View {
         let p = model.palette
-        HStack(spacing: 2) {
+        Menu {
             ForEach(AppTheme.allCases) { theme in
-                Button { model.theme = theme } label: {
-                    Image(systemName: theme.symbol)
-                        .font(.system(size: 13, weight: .semibold))
-                        .frame(width: 30, height: 26)
-                        .background(model.theme == theme ? p.accent.opacity(0.22) : .clear)
-                        .foregroundStyle(model.theme == theme ? p.accent : p.textDim)
-                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                Button {
+                    Haptics.impact(.light)
+                    model.theme = theme
+                } label: {
+                    Label(theme.label, systemImage: theme.symbol)
                 }
-                .buttonStyle(.plain)
                 .accessibilityIdentifier("theme-\(theme.rawValue)")
-                .accessibilityLabel("\(theme.label) theme")
             }
+        } label: {
+            Image(systemName: model.theme.symbol)
+                .font(.system(size: 19, weight: .semibold))
+                .frame(width: 30, height: 30)
+                .foregroundStyle(p.textDim)
         }
-        .padding(3)
-        .background(p.surfaceAlt)
-        .clipShape(RoundedRectangle(cornerRadius: 9))
-        .overlay(RoundedRectangle(cornerRadius: 9).stroke(p.border, lineWidth: 1))
+        .accessibilityIdentifier("theme-menu")
+        .accessibilityLabel("Screen color")
     }
 }
 
-// MARK: - Notification carousel (paged: status · flight plan · flight data)
+// MARK: - Power button (Start / Stop / long-press Standby)
 
-/// The top notification strip is a swipeable, paged carousel: page 1 is the live status pills,
-/// page 2 summarizes the filed flight plan, page 3 is reserved for live flight data (GPS). A
-/// fixed height is required — `TabView(.page)` has no intrinsic height.
-struct NotificationCarousel: View {
+/// The one control that runs the app: tap to Start/Stop capture, touch-and-hold for low-power
+/// Standby. Colour-coded by state (accent = ready to start, amber = connecting, red = live/stop) —
+/// the same at-a-glance colour idea the old Start/Stop button used. `accessibilityLabel` stays
+/// "Start"/"Stop" so the run-toggle UI test keeps working.
+struct PowerButton: View {
     @EnvironmentObject var model: AppModel
-    @State private var page = 0
-    private let pageCount = 3
-
     var body: some View {
         let p = model.palette
-        TabView(selection: $page) {
-            StatusBar().tag(0)
-            FlightPlanPage().tag(1)
-            FlightDataPage().tag(2)
-        }
-        // Custom dots (the system page indicator ran ~33% larger); ~5.5pt circles.
-        .tabViewStyle(.page(indexDisplayMode: .never))
-        .frame(height: 84)
-        .overlay(alignment: .bottom) {
-            HStack(spacing: 6) {
-                ForEach(0..<pageCount, id: \.self) { i in
-                    Circle()
-                        .fill(i == page ? p.text : p.textDim.opacity(0.4))
-                        .frame(width: 5.5, height: 5.5)
-                }
+        let running = model.isRunning
+        let (bg, symbol): (Color, String) = {
+            switch model.status {
+            case .connecting, .starting: return (p.warn, "power")
+            case .live:                  return (p.bad, "stop.fill")
+            default:                     return (p.accent, "play.fill")
             }
-            .padding(.bottom, 5)
-        }
-        .background(p.bg)
+        }()
+        return Image(systemName: symbol)
+            .font(.system(size: 18, weight: .bold))
+            .frame(width: 40, height: 32)
+            .background(bg)
+            .foregroundStyle(p.bg)
+            .clipShape(RoundedRectangle(cornerRadius: 9))
+            .contentShape(RoundedRectangle(cornerRadius: 9))
+            .onTapGesture {
+                Haptics.impact(.medium)
+                running ? model.stop() : model.start()
+            }
+            .onLongPressGesture(minimumDuration: 0.5) {
+                Haptics.impact(.rigid)
+                model.enterStandby()
+            }
+            .accessibilityIdentifier("start-stop-button")
+            .accessibilityLabel(running ? "Stop" : "Start")
+            .accessibilityAddTraits(.isButton)
+            .accessibilityHint("Touch and hold for standby")
     }
 }
 
-// MARK: - Status strip (pills + badges) — carousel page 1
+// MARK: - Collapsible strips
+//
+// The old swipeable carousel is gone: its three pages are now independent strips, each toggled by a
+// heading-bar icon and rendered directly in the console VStack (see `ConsoleView.body`). Diagnostics
+// reuses `StatusBar` verbatim; `FlightPlanBar` and `StratuxBar` are the former carousel pages resized
+// to sit as strips; `InputBar` is the source/controls half of the old controls bar.
+
+private extension View {
+    /// A 1pt bottom rule so stacked heading-bar strips read as distinct rows.
+    func barSeparator(_ p: Palette) -> some View {
+        overlay(alignment: .bottom) { Rectangle().fill(p.border).frame(height: 1) }
+    }
+}
+
+// MARK: - Diagnostics strip (pills + badges)
 
 struct StatusBar: View {
     @EnvironmentObject var model: AppModel
@@ -241,6 +382,8 @@ struct StatusBar: View {
             .padding(.horizontal, 14).padding(.vertical, 8)
         }
         .background(p.bg)
+        .barSeparator(p)
+        .accessibilityIdentifier("diagnostics-bar")
     }
 
     private var streamState: StatusPill.State {
@@ -327,13 +470,14 @@ struct StratuxStatusChip: View {
     }
 }
 
-// MARK: - Carousel page 2: flight plan summary
+// MARK: - Flight-plan strip
 
 /// The filed flight plan shown as the full, colour-coded route (departure → fixes/airways →
 /// destination), or a prompt to file one. Airports are purple-pink, VOR navaids green, RNAV/GPS
 /// fixes blue, airways amber. The route is greyed until the on-device AI context (the fixer GGUF)
-/// has downloaded — until then the plan can't actually bias corrections. Tapping opens the editor.
-struct FlightPlanPage: View {
+/// has downloaded — until then the plan can't actually bias corrections. The briefcase heading icon
+/// toggles this strip; the Edit button opens the Electronic Flight Bag editor. (Was carousel page 2.)
+struct FlightPlanBar: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var downloads: ModelDownloadManager
 
@@ -344,56 +488,69 @@ struct FlightPlanPage: View {
 
     var body: some View {
         let p = model.palette
-        Group {
+        VStack(alignment: .leading, spacing: 5) {
             if let fp = model.flightPlan, !fp.fullRoute.isEmpty {
-                VStack(alignment: .leading, spacing: 5) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "briefcase.fill").font(.caption2).foregroundStyle(p.textDim)
-                        if !fp.callsign.isEmpty {
-                            Text(fp.callsign).font(.caption.weight(.semibold)).foregroundStyle(p.text)
-                        }
-                        if !fp.aircraftType.isEmpty {
-                            Text(fp.aircraftType).font(.caption2).foregroundStyle(p.textDim).lineLimit(1)
-                        }
-                        Spacer(minLength: 4)
-                        if fp.isStale {
-                            Label("Update", systemImage: "exclamationmark.triangle.fill")
-                                .font(.caption2.weight(.semibold)).foregroundStyle(p.warn)
-                        } else if !contextReady {
-                            Label("AI context downloading", systemImage: "arrow.down.circle")
-                                .font(.caption2).foregroundStyle(p.textDim)
-                        }
+                HStack(spacing: 8) {
+                    Image(systemName: "briefcase.fill").font(.caption2).foregroundStyle(p.textDim)
+                    if !fp.callsign.isEmpty {
+                        Text(fp.callsign).font(.caption.weight(.semibold)).foregroundStyle(p.text)
                     }
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 5) {
-                            ForEach(Array(fp.fullRoute.enumerated()), id: \.offset) { i, leg in
-                                if i > 0 {
-                                    Image(systemName: "chevron.compact.right")
-                                        .font(.caption2).foregroundStyle(p.textDim.opacity(0.5))
-                                }
-                                Text(leg.ident)
-                                    .font(.caption.weight(.semibold).monospaced())
-                                    .foregroundStyle(contextReady ? legColor(leg.kind, p) : p.textDim.opacity(0.7))
-                            }
-                        }
-                        .padding(.trailing, 16)
+                    if !fp.aircraftType.isEmpty {
+                        Text(fp.aircraftType).font(.caption2).foregroundStyle(p.textDim).lineLimit(1)
                     }
-                    .opacity(contextReady ? 1 : 0.55)
+                    Spacer(minLength: 4)
+                    if fp.isStale {
+                        Label("Update", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption2.weight(.semibold)).foregroundStyle(p.warn)
+                    } else if !contextReady {
+                        Label("AI context downloading", systemImage: "arrow.down.circle")
+                            .font(.caption2).foregroundStyle(p.textDim)
+                    }
+                    editButton(p)
                 }
-                .padding(.horizontal, 16)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 5) {
+                        ForEach(Array(fp.fullRoute.enumerated()), id: \.offset) { i, leg in
+                            if i > 0 {
+                                Image(systemName: "chevron.compact.right")
+                                    .font(.caption2).foregroundStyle(p.textDim.opacity(0.5))
+                            }
+                            Text(leg.ident)
+                                .font(.caption.weight(.semibold).monospaced())
+                                .foregroundStyle(contextReady ? legColor(leg.kind, p) : p.textDim.opacity(0.7))
+                        }
+                    }
+                    .padding(.trailing, 16)
+                }
+                .opacity(contextReady ? 1 : 0.55)
             } else {
                 HStack(spacing: 10) {
                     Image(systemName: "briefcase.fill").font(.callout).foregroundStyle(p.textDim)
-                    Text("No flight plan — tap to file one").font(.caption).foregroundStyle(p.textDim)
+                    Text("No flight plan filed").font(.caption).foregroundStyle(p.textDim)
                     Spacer(minLength: 0)
+                    editButton(p)
                 }
-                .padding(.horizontal, 16)
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .contentShape(Rectangle())
-        .onTapGesture { model.showFlightBag = true }
-        .accessibilityIdentifier("carousel-flight-plan")
+        .padding(.horizontal, 16).padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(p.bg)
+        .barSeparator(p)
+        .accessibilityIdentifier("flight-plan-bar")
+    }
+
+    /// Opens the Electronic Flight Bag editor sheet (the briefcase heading icon only toggles the strip).
+    private func editButton(_ p: Palette) -> some View {
+        Button {
+            Haptics.impact(.light)
+            model.showFlightBag = true
+        } label: {
+            Label("Edit", systemImage: "square.and.pencil")
+                .font(.caption2.weight(.semibold)).foregroundStyle(p.accent)
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("flight-plan-edit")
+        .accessibilityLabel("Edit flight plan")
     }
 
     /// Colour per route-leg kind (see the user's spec: airports purple-pink, VOR green, GPS blue).
@@ -408,13 +565,14 @@ struct FlightPlanPage: View {
     }
 }
 
-// MARK: - Carousel page 3: live traffic (Stratux receiver, else airplanes.live)
+// MARK: - Stratux / traffic strip
 
 /// Live ADS-B traffic in range — from the **Stratux receiver** when it's the input source, otherwise
 /// airplanes.live. Renders `model.aircraft` verbatim (the freshness authority is the service actor,
 /// not this view). For the Stratux source it also shows the LINK state, so "the ADS-B connection to my
-/// Stratux is up" is unmistakable: idle → connecting → **connected** (green) → error.
-struct FlightDataPage: View {
+/// Stratux is up" is unmistakable: idle → connecting → **connected** (green) → error. Toggled by the
+/// Stratux heading icon (which is itself tinted by the link state). (Was carousel page 3.)
+struct StratuxBar: View {
     @EnvironmentObject var model: AppModel
     var body: some View {
         let p = model.palette
@@ -430,8 +588,11 @@ struct FlightDataPage: View {
                         title: "\(model.aircraft.count) in range", trailing: model.aircraftUpdatedAt.map(updatedLabel))
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .accessibilityIdentifier("carousel-flight-data")
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(p.bg)
+        .barSeparator(p)
+        .accessibilityIdentifier("stratux-bar")
     }
 
     /// The Stratux ADS-B link state.
@@ -511,11 +672,15 @@ struct FlightDataPage: View {
     }
 }
 
-// MARK: - Controls
+// MARK: - Input strip
 
-struct ControlsBar: View {
+/// The input controls, extracted from the old controls bar into a collapsible strip (toggled by the
+/// heading-bar input icon; the ✓ collapses it). Start/Stop moved to the heading power button and the
+/// live input meter moved to the transcript header, so this strip is purely "what am I listening to
+/// and how": source picker, feed monitor, and the link/airport/frequency context for the chosen
+/// source. Nothing here changes the capture pipeline — same bindings as before.
+struct InputBar: View {
     @EnvironmentObject var model: AppModel
-    @State private var showSquelch = false
     static let freqs = ["auto", "approach", "departure", "tower", "ground", "clearance", "center", "ctaf"]
 
     var body: some View {
@@ -533,6 +698,7 @@ struct ControlsBar: View {
                     // Stratux↔feed split-brain). Stop to change inputs — mirrors the model picker's gate.
                     // (Not locked in the model-less demo, which shows `.live` but binds no source.)
                     .disabled(model.isLiveCapturing)
+                    .accessibilityIdentifier("source-picker")
                 }
                 .padding(.horizontal, 10).padding(.vertical, 6)
                 .background(p.surfaceAlt).clipShape(RoundedRectangle(cornerRadius: 8))
@@ -543,7 +709,10 @@ struct ControlsBar: View {
                 // Listen to the live feed / Stratux cockpit audio through the speakers (verify it's
                 // arriving). Feed/Stratux only — mic/USB would feed back.
                 if model.source == .liveFeed || model.source == .stratux {
-                    Button { model.monitorEnabled.toggle() } label: {
+                    Button {
+                        Haptics.impact(.light)
+                        model.monitorEnabled.toggle()
+                    } label: {
                         Image(systemName: model.monitorEnabled ? "speaker.wave.2.fill" : "speaker.slash.fill")
                             .font(.system(size: 15))
                             .foregroundStyle(model.monitorEnabled ? p.accent : p.textDim)
@@ -554,30 +723,17 @@ struct ControlsBar: View {
                     .accessibilityLabel("Listen to feed")
                 }
 
-                // Tap the input meter to open squelch (set the minimum energy that wakes Whisper).
-                if model.isRunning {
-                    Button { showSquelch = true } label: { InputLevelMeter() }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("input-level-meter")
-                        .accessibilityLabel("Input level / squelch")
-                        .popover(isPresented: $showSquelch) {
-                            SquelchControls().environmentObject(model)
-                                .padding(16).frame(width: 300)
-                                .presentationCompactAdaptation(.popover)
-                        }
-                }
-
-                Button { model.isRunning ? model.stop() : model.start() } label: {
-                    Label(model.isRunning ? "Stop" : "Start",
-                          systemImage: model.isRunning ? "stop.fill" : "play.fill")
-                        .font(.subheadline.weight(.semibold))
-                        .padding(.horizontal, 16).padding(.vertical, 9)
-                        .background(model.isRunning ? p.bad.opacity(0.18) : p.accent)
-                        .foregroundStyle(model.isRunning ? p.bad : p.bg)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                // Collapse the strip to tidy the screen — mirrors the heading-bar input toggle.
+                Button {
+                    Haptics.impact(.light)
+                    withAnimation(.easeInOut(duration: 0.22)) { model.showInputBar = false }
+                } label: {
+                    Image(systemName: "checkmark").font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(p.accent).frame(width: 30, height: 26)
                 }
                 .buttonStyle(.plain)
-                .accessibilityIdentifier("start-stop-button")
+                .accessibilityIdentifier("input-bar-done")
+                .accessibilityLabel("Collapse input")
             }
 
             // The link + airport/frequency context apply ONLY to the internet live feed;
@@ -609,11 +765,12 @@ struct ControlsBar: View {
             HStack(spacing: 8) {
                 Text(model.detail).font(.caption).foregroundStyle(p.textDim).lineLimit(1)
                 Spacer(minLength: 4)
-                if model.transcribing { TranscribingIndicator() }
             }
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
         .background(p.bg)
+        .barSeparator(p)
+        .accessibilityIdentifier("input-bar")
     }
 
     private func field(icon: String, placeholder: String, text: Binding<String>) -> some View {
