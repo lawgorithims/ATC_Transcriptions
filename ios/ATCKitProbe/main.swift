@@ -126,7 +126,7 @@ do {
             var tot = 0.0, lp = 0.0
             for clip in clips {
                 let out = (try? await ab.transcribe(f(clip.audio))) ?? .empty
-                tot += nWER(clip.reference, out.text); lp += out.asr.avgLogprob
+                tot += nWER(clip.reference, out.text); lp += Double(out.asr.avgLogprob)
             }
             print("AB-GOLD  \(pad(name, 14)) meanWER=\(String(format: "%.3f", tot / Double(clips.count)))  avgLogprob=\(String(format: "%.3f", lp / Double(clips.count)))")
         }
@@ -151,7 +151,7 @@ do {
                     print("SEG \(i) (\(String(format: "%.1f", Double(s.audio.count) / 16_000))s)")
                     for (name, f) in variants {
                         let out = (try? await ab.transcribe(f(s.audio))) ?? .empty
-                        print("   \(pad(name, 14)) lp=\(String(format: "%.2f", out.asr.avgLogprob)) | \(out.text)")
+                        print("   \(pad(name, 14)) lp=\(String(format: "%.2f", Double(out.asr.avgLogprob))) | \(out.text)")
                     }
                 }
             }
