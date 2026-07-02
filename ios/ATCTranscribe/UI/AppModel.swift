@@ -556,6 +556,88 @@ final class AppModel: ObservableObject {
         session?.setSquelch(auto: squelchAuto, level: Float(manualSquelch))
     }
 
+    // MARK: - Mic squelch calibration
+    // Guided two-step measurement: record the room's ambient noise, then record the user speaking, and
+    // set the squelch to a gate between the two (via `SquelchCalibration`). This hands the threshold a
+    // real measurement of THIS device + room instead of a guessed constant — the reliable fix for a
+    // mic whose ambient the auto floor can't perfectly separate. Device-only (needs a real mic).
+
+    enum CalibrationStage: Equatable {
+        case idle              // ready to record ambient (step 1)
+        case measuringAmbient
+        case ambientDone       // ambient captured, ready to record the voice (step 2)
+        case measuringVoice
+        case success(gate: Float)
+        case failed(String)
+    }
+    @Published var calibrationStage: CalibrationStage = .idle
+    @Published var showMicCalibration = false
+    private var calibrationAmbientRMS: Float?
+
+    /// Calibration and a live run can't share the audio engine, so it's only offered while stopped.
+    var canCalibrateMic: Bool { !isRunning }
+
+    /// Step 1 — capture the room's background level (requests mic permission on first use).
+    func recordCalibrationAmbient() {
+        guard !isRunning else { calibrationStage = .failed("Stop the feed before calibrating."); return }
+        requestMicPermission { [weak self] granted in
+            guard let self else { return }
+            guard granted else {
+                self.calibrationStage = .failed("Microphone access is off. Enable it in Settings › CommSight › Microphone.")
+                return
+            }
+            self.calibrationStage = .measuringAmbient
+            AudioSessionManager.activate(recording: true)
+            Task { @MainActor in
+                do {
+                    self.calibrationAmbientRMS = try await MicCalibrator.measureRMS(seconds: 2.0)
+                    self.calibrationStage = .ambientDone
+                } catch {
+                    AudioSessionManager.deactivate()
+                    self.calibrationStage = .failed("Couldn't read the microphone — make sure it isn't muted or used by another app.")
+                }
+            }
+        }
+    }
+
+    /// Step 2 — capture the user's voice and, if it's clearly louder than the room, set the squelch.
+    func recordCalibrationVoice() {
+        guard let ambient = calibrationAmbientRMS else { calibrationStage = .idle; return }
+        calibrationStage = .measuringVoice
+        Task { @MainActor in
+            defer { if !self.isRunning { AudioSessionManager.deactivate() } }
+            do {
+                let voice = try await MicCalibrator.measureRMS(seconds: 3.0)
+                guard let gate = SquelchCalibration.gate(ambientRMS: ambient, speechRMS: voice) else {
+                    self.calibrationStage = .failed("Your voice wasn't clearly louder than the background. Speak normally a bit closer to the device, or move somewhere quieter, and try again.")
+                    return
+                }
+                // Apply: switch to manual squelch and set the slider to the calibrated gate (persisted
+                // via the didSet chain → the running/next mic session picks it up).
+                self.squelchAuto = false
+                self.manualSquelch = Double(VADSegmenter.manualLevel(forGateRMS: gate))
+                self.calibrationStage = .success(gate: gate)
+            } catch {
+                self.calibrationStage = .failed("Couldn't read the microphone — make sure it isn't muted or used by another app.")
+            }
+        }
+    }
+
+    /// Reset the flow (sheet open/close/retry) and release the session we grabbed for it.
+    func resetCalibration() {
+        calibrationStage = .idle
+        calibrationAmbientRMS = nil
+        if !isRunning { AudioSessionManager.deactivate() }
+    }
+
+    private func requestMicPermission(_ completion: @escaping (Bool) -> Void) {
+        #if os(iOS)
+        AVAudioApplication.requestRecordPermission { granted in Task { @MainActor in completion(granted) } }
+        #else
+        completion(true)
+        #endif
+    }
+
     /// Push the filed flight plan into the running correction context (or clear it). Called when
     /// the plan changes; the initial value is seeded directly onto the context in `setupLive`.
     func pushFlightPlanContext() {
