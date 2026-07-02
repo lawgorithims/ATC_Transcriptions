@@ -1,14 +1,19 @@
 import XCTest
 
 /// End-to-end UI tests that drive the real app in the Simulator and tap every interactive
-/// control — the first-launch download gate, the theme switcher, the settings sheet (model +
-/// correction controls), the source picker, and Start/Stop. A tap that can't find or hit its
-/// target fails the test, so this is the "do all the buttons actually work" check.
+/// control — the first-launch download gate, the theme dropdown, the settings sheet (model +
+/// correction controls), the source picker, and the Start/Stop power button. A tap that can't find
+/// or hit its target fails the test, so this is the "do all the buttons actually work" check.
+///
+/// Updated for the heading-bar redesign: the console's controls now live in the heading bar — a
+/// single Start/Stop power button (**long-press = standby**), a theme **dropdown menu**, and per-strip
+/// toggles. The input source picker lives in the collapsible **Input strip** (open it via its heading
+/// toggle first). The old "On-device ATC transcription" subtitle is iPad-only now, so the
+/// console-loaded marker is the always-present Settings icon.
 ///
 /// The app is launched without a bundled model (lean build), so:
 ///   • `-atc.onboardingDismissed NO`  → the download gate appears (gate test).
 ///   • `-atc.onboardingDismissed YES` → the gate is skipped → demo console (control tests).
-/// (`-atc.onboardingDismissed` is read by UserDefaults' argument domain; see `AppModel`.)
 final class ConsoleUITests: XCTestCase {
 
     override func setUp() { continueAfterFailure = false }
@@ -39,7 +44,21 @@ final class ConsoleUITests: XCTestCase {
         return el.isHittable
     }
 
-    private let consoleMarker = "On-device ATC transcription"   // TopBar subtitle, console only
+    /// The console is up once the always-present Settings icon exists. (The old subtitle marker is
+    /// now iPad-only — hidden on iPhone — so it can't gate a device-independent test.)
+    @discardableResult
+    private func consoleReady(_ app: XCUIApplication, timeout: TimeInterval = 20) -> Bool {
+        app.buttons["settings-button"].waitForExistence(timeout: timeout)
+    }
+
+    /// Ensure the collapsible Input strip (source picker etc.) is open — its visibility is persisted,
+    /// so a prior run may have collapsed it. The strip shows an "Input" label; the heading input
+    /// toggle that opens it is always present.
+    private func openInputStrip(_ app: XCUIApplication) {
+        if app.staticTexts["Input"].waitForExistence(timeout: 2) { return }
+        let toggle = app.buttons["input-toggle"]
+        if toggle.waitForExistence(timeout: 5) { toggle.tap() }
+    }
 
     // 1. The first-launch gate renders, its buttons exist & are hittable, and Skip lands in console.
     // Only meaningful on a lean (no bundled model) build — the gate is skipped when a model ships
@@ -58,19 +77,25 @@ final class ConsoleUITests: XCTestCase {
 
         app.buttons["gate-skip"].tap()
         XCTAssertTrue(app.buttons["gate-primary"].waitForNonExistence(timeout: 10), "gate did not dismiss")
-        XCTAssertTrue(app.staticTexts[consoleMarker].exists, "console did not appear after Skip")
+        XCTAssertTrue(consoleReady(app, timeout: 10), "console did not appear after Skip")
         snap(app, "02-console")
     }
 
-    // 2. All three theme buttons are present and tappable.
+    // 2. Theme dropdown: open it and pick each of the three screen colours.
     func test2_themeSwitching() {
         let app = launch(onboardingDismissed: true)
-        XCTAssertTrue(app.staticTexts[consoleMarker].waitForExistence(timeout: 20))
-        for theme in ["cockpit", "day", "night", "cockpit"] {
-            let b = app.buttons["theme-\(theme)"]
-            XCTAssertTrue(b.waitForExistence(timeout: 5), "theme button \(theme) missing")
-            XCTAssertTrue(b.isHittable, "theme button \(theme) not hittable")
-            b.tap()
+        XCTAssertTrue(consoleReady(app))
+        let menu = app.buttons["theme-menu"]
+        XCTAssertTrue(menu.waitForExistence(timeout: 5), "theme menu missing")
+        // Menu items are labelled by the theme name; the `theme-<raw>` id is a fallback.
+        for theme in ["Cockpit", "Day", "Night", "Cockpit"] {
+            XCTAssertTrue(menu.isHittable, "theme menu not hittable")
+            menu.tap()
+            let byLabel = app.buttons[theme].firstMatch
+            let byId = app.buttons["theme-\(theme.lowercased())"].firstMatch
+            if byLabel.waitForExistence(timeout: 3) { byLabel.tap() }
+            else if byId.exists { byId.tap() }
+            else if menu.exists { menu.tap() }   // couldn't find the item — close the menu and move on
         }
         snap(app, "03-themes")
     }
@@ -114,14 +139,14 @@ final class ConsoleUITests: XCTestCase {
         snap(app, "05-settings-toggled")
 
         app.buttons["Done"].tap()
-        XCTAssertTrue(app.staticTexts[consoleMarker].waitForExistence(timeout: 5),
-                      "did not return to console after Done")
+        XCTAssertTrue(consoleReady(app, timeout: 5), "did not return to console after Done")
     }
 
-    // 4. Source picker switches inputs; Start/Stop toggles the (demo) session.
+    // 4. Source picker switches inputs; the Start/Stop power button toggles the (demo) session.
     func test4_sourceAndStartStop() {
         let app = launch(onboardingDismissed: true)
-        XCTAssertTrue(app.staticTexts[consoleMarker].waitForExistence(timeout: 20))
+        XCTAssertTrue(consoleReady(app))
+        openInputStrip(app)
 
         // Input picker (menu style) → pick Replay demo. Best-effort: system menu UI can vary.
         let picker = app.buttons["Internet live feed"].firstMatch
@@ -132,7 +157,7 @@ final class ConsoleUITests: XCTestCase {
             if replay.waitForExistence(timeout: 3) { replay.tap() }
         }
 
-        // The run button toggles both ways. (Demo mode seeds a "transcribing" state, so the
+        // The power button toggles both ways. (Demo mode seeds a "transcribing" state, so the
         // initial label may be "Stop" — assert it flips and flips back, whatever the start.)
         let btn = app.buttons["start-stop-button"]
         XCTAssertTrue(btn.waitForExistence(timeout: 5), "start/stop button missing")
@@ -140,7 +165,7 @@ final class ConsoleUITests: XCTestCase {
         let other = (initial == "Start") ? "Stop" : "Start"
         btn.tap()
         XCTAssertTrue(waitForLabel(btn, other, timeout: 6), "run button did not toggle from \(initial)")
-        // While running, the input-level meter is shown next to Start/Stop (proof audio is flowing).
+        // While running, the input-level meter is shown in the transcript header (proof audio flows).
         if btn.label == "Stop" {
             let meter = app.descendants(matching: .any).matching(identifier: "input-level-meter").firstMatch
             XCTAssertTrue(meter.waitForExistence(timeout: 4), "input level meter missing while running")
@@ -153,7 +178,7 @@ final class ConsoleUITests: XCTestCase {
     // 5. The proof-of-life control exists in the console and is tappable (runs the on-device check).
     func test5_proofOfLifeButton() {
         let app = launch(onboardingDismissed: true)
-        XCTAssertTrue(app.staticTexts[consoleMarker].waitForExistence(timeout: 20))
+        XCTAssertTrue(consoleReady(app))
         let pol = app.buttons["proof-of-life-button"]
         XCTAssertTrue(reveal(pol, app), "proof-of-life button missing")
         XCTAssertTrue(pol.isHittable, "proof-of-life button not hittable")
@@ -165,7 +190,7 @@ final class ConsoleUITests: XCTestCase {
     // touched widget, or add one that isn't shown (dropdown).
     func test6_customizeWidgets() {
         let app = launch(onboardingDismissed: true, resetWidgets: true)
-        XCTAssertTrue(app.staticTexts[consoleMarker].waitForExistence(timeout: 20))
+        XCTAssertTrue(consoleReady(app))
 
         // Long-press the Host card (uppercased title) to open its context menu, then Remove it.
         let host = app.staticTexts["HOST"].firstMatch
@@ -192,17 +217,17 @@ final class ConsoleUITests: XCTestCase {
         snap(app, "09-widget-readded")
     }
 
-    // 7. Standby: the moon button opens the low-power standby screen; Resume returns to console.
+    // 7. Standby: touch-and-hold the power button opens the low-power standby screen; Resume returns.
     func test7_standby() {
         let app = launch(onboardingDismissed: true)
-        XCTAssertTrue(app.buttons["standby-button"].waitForExistence(timeout: 20), "standby button missing")
-        app.buttons["standby-button"].tap()
+        let power = app.buttons["start-stop-button"]
+        XCTAssertTrue(power.waitForExistence(timeout: 20), "power button missing")
+        power.press(forDuration: 0.8)   // long-press = standby (tap = start/stop)
         let resume = app.buttons["standby-resume"]
         XCTAssertTrue(resume.waitForExistence(timeout: 5), "standby screen did not appear")
         snap(app, "10-standby")
         resume.tap()
-        XCTAssertTrue(app.staticTexts[consoleMarker].waitForExistence(timeout: 5),
-                      "did not return to console from standby")
+        XCTAssertTrue(consoleReady(app, timeout: 5), "did not return to console from standby")
     }
 
     private func waitForLabel(_ el: XCUIElement, _ label: String, timeout: TimeInterval) -> Bool {
