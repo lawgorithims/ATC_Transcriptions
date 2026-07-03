@@ -263,7 +263,7 @@ struct TopBar: View {
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("stratux-toggle")
-        .accessibilityLabel("Stratux link")
+        .accessibilityLabel("Stratux strip")
         .accessibilityAddTraits(on ? [.isSelected] : [])
     }
 
