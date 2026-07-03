@@ -1,0 +1,15 @@
+{
+  "airport_code": "ZAN",
+  "airport_name": "Anchorage ARTCC (Anchorage Center)",
+  "tracon": "Anchorage Center (ZAN)",
+  "runways": [],
+  "frequencies": {},
+  "streams": {
+    "center": {
+      "label": "Anchorage Center (Bethel)",
+      "url": "https://d.liveatc.net/pabe1_zan",
+      "liveatc_page": "https://www.liveatc.net/hlisten.php?mount=pabe1_zan&icao=pabe",
+      "archive_mount": "pabe1_zan"
+    }
+  }
+}

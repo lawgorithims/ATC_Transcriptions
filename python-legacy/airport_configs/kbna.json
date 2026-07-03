@@ -1,0 +1,14 @@
+{
+  "airport_code": "KBNA",
+  "airport_name": "Nashville International Airport",
+  "runways": [],
+  "frequencies": {},
+  "streams": {
+    "tower_primary": {
+      "label": "KBNA Tower",
+      "url": "https://d.liveatc.net/kbna_twr",
+      "liveatc_page": "https://www.liveatc.net/hlisten.php?mount=kbna_twr",
+      "archive_mount": "kbna_twr"
+    }
+  }
+}

@@ -1,0 +1,140 @@
+# Configuration for the US ATC pseudo-labeling pipeline.
+#
+# Times are UTC. Adjust the windows to recent dates within LiveATC's ~30-day
+# archive retention. Pick busy daytime-local hours for dense, diverse phraseology.
+
+# PERSISTENT storage root — point this at a mounted block volume on the H100 so the
+# data (raw audio, segments, pseudo-labels, train_metadata.json) survives instance
+# teardown. The H100's root disk is EPHEMERAL. All sub-paths derive from here unless
+# explicitly overridden. Example after mounting your volume at /mnt/atc-data:
+storage_root: /mnt/atc-data
+# raw audio   -> {storage_root}/raw_us           (LOCAL ONLY, never redistributed)
+# segments    -> {storage_root}/segments
+# pseudo-labels + train_metadata.json -> {storage_root}/us_pseudo
+# eval set    -> {storage_root}/us_eval
+
+models:
+  # Teacher A: most accurate Whisper available (accuracy > speed for a labeler).
+  teacher_a: openai/whisper-large-v3
+  # Consensus partner B: the project's fine-tuned ATC model, decoded PROMPT-FREE.
+  partner_b: openai/whisper-large-v3-turbo   # strong general partner; fine-tuned turbo too noisy on US audio for consensus
+  device: auto          # cuda on the H100/L40S box
+  num_beams_a: 1        # greedy: transformers beam-search+prompt triggers a CUDA index assert
+  num_beams_b: 1        # greedy partner is fine; it only needs to (dis)agree
+
+acquisition:
+  # mode: "live" records active feeds off the Icecast edge servers (NO Cloudflare,
+  # recommended) — needs ffmpeg + to run during busy local hours. "archive" pulls
+  # historical 30-min blocks from the Cloudflare-protected site (set cloudflare: true).
+  mode: live
+  queue_size: 16
+  loop: true                  # keep cycling feeds forever (models stay loaded); Ctrl-C to stop
+  loop_sleep_s: 30
+
+  # Speech gate: skip blocks/chunks with less than this many seconds of speech
+  # (30-min ATC blocks are often near-silent). Keeps dead air off the GPU.
+  min_block_speech_s: 20.0
+
+  # --- live mode ---
+  chunks_per_feed: 1          # 30 min per feed per pass; launch.sh loops over passes
+  chunk_minutes: 10.0   # shorter chunks: better feed breadth + faster first data
+  # Probe each feed before recording and skip ones that aren't active right now
+  # (push-to-talk: silent when there's no traffic). No scraping, no Cloudflare.
+  probe_active: true
+  probe_seconds: 60
+  probe_min_speech_s: 3.0
+
+  # --- archive mode (only used when mode: archive) ---
+  cloudflare: true            # drive Chromium (Playwright) to clear Cloudflare
+  start: "2026-06-20T13:00"   # UTC window (within ~30-day archive retention)
+  end: "2026-06-20T17:00"
+  # template: override only if LiveATC's archive URL format changes.
+
+correction:
+  enabled: true        # run the deterministic corrector on the final label
+
+# Feeds to harvest for TRAINING. Start with the shipped KDFW/KJFK configs and add
+# more airports/frequency-types (tower/ground/approach/clearance) for diversity.
+feeds:
+  - airport_config: airport_configs/kdfw.json
+    feed_keys:
+      - tower_east
+      - lone_star_approach_17c_final
+      - lone_star_approach_18r_final
+      # NOTE: lone_star_approach_17l_final is reserved for EVAL -> not listed here.
+  - airport_config: airport_configs/kjfk.json
+    feed_keys:
+      - tower_primary
+      - tower_1191
+      - tower_2
+      - sector_9s
+  - airport_config: airport_configs/kbos.json
+    feed_keys:
+      - tower_primary
+  - airport_config: airport_configs/katl.json
+    feed_keys:
+      - tower_primary
+  - airport_config: airport_configs/ksfo.json
+    feed_keys:
+      - tower_primary
+  - airport_config: airport_configs/klax.json
+    feed_keys:
+      - final_approach
+  - airport_config: airport_configs/kewr.json
+    feed_keys:
+      - tower_primary
+  - airport_config: airport_configs/paed.json
+    feed_keys:
+      - tower_primary
+  # En-route Centers — different phraseology (handoffs, altitudes, direct-to fixes).
+  - airport_config: airport_configs/zoa.json
+    feed_keys:
+      - center
+  - airport_config: airport_configs/zan.json
+    feed_keys:
+      - center
+  - airport_config: airport_configs/zkc.json
+    feed_keys:
+      - center
+  - airport_config: airport_configs/zfw.json
+    feed_keys:
+      - center
+  # --- added 2026-06-28: probe-verified extra US hubs (tower) ---
+  - airport_config: airport_configs/kbna.json
+    feed_keys:
+      - tower_primary
+  - airport_config: airport_configs/kdtw.json
+    feed_keys:
+      - tower_primary
+  - airport_config: airport_configs/klga.json
+    feed_keys:
+      - tower_primary
+  - airport_config: airport_configs/ksdf.json
+    feed_keys:
+      - tower_primary
+
+# Acceptance gates for a TRAINING pseudo-label (tune on the eval set).
+thresholds:
+  max_cer: 0.30   # number-canon CER between two strong general models
+  min_avg_logprob: -0.55
+  max_no_speech_prob: 0.30
+  max_compression_ratio: 2.4
+  min_duration_s: 0.8
+  max_duration_s: 12.0
+  min_words: 2
+  max_words: 60
+  max_corrector_delta: 0.30
+  require_english: true
+
+# EVAL set: kept DISJOINT from training by feed/airport/time, built with STRICT
+# thresholds. In live mode, run the eval `build` at a different wall-clock time than
+# the training harvest AND use a different feed (below) so there is no overlap.
+eval:
+  # mode: inherits acquisition.mode if omitted. For archive mode add start/end.
+  # Paths derive from storage_root (us_eval / raw_us_eval / segments_eval).
+  chunks_per_feed: 4          # ~2 h of eval audio per feed (live mode)
+  min_block_speech_s: 20.0
+  feeds:
+    - airport_config: airport_configs/kdfw.json
+      feed_keys:
+        - lone_star_approach_17l_final   # NOT a training feed -> disjoint

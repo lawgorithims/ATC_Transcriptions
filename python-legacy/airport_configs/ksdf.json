@@ -1,0 +1,14 @@
+{
+  "airport_code": "KSDF",
+  "airport_name": "Louisville Muhammad Ali Intl (UPS hub)",
+  "runways": [],
+  "frequencies": {},
+  "streams": {
+    "tower_primary": {
+      "label": "KSDF Tower",
+      "url": "https://d.liveatc.net/ksdf_twr",
+      "liveatc_page": "https://www.liveatc.net/hlisten.php?mount=ksdf_twr",
+      "archive_mount": "ksdf_twr"
+    }
+  }
+}
