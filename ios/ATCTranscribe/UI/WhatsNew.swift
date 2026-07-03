@@ -32,6 +32,30 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 31, version: "1.0", headline: "Stratux traffic always on — and everything's built in",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "dot.radiowaves.up.forward",
+                    title: "Keep the Stratux link on, whatever you're listening to",
+                    detail: "Your Stratux receiver's traffic and GPS now stream on their own — turn the Stratux link on (in the Stratux bar or Settings › Stratux receiver) and you get in-range aircraft plus your GPS fix even while you listen to a different source. Picking “Stratux receiver” as your input still adds its cockpit audio."),
+                WhatsNewHighlight(
+                    icon: "internaldrive.fill",
+                    title: "No first-launch download",
+                    detail: "The fine-tuned Small speech model and the on-device AI fixer are bundled into the app again, so a fresh install is ready to transcribe immediately — no waiting on a download, which matters before you lose signal."),
+            ]),
+        ReleaseNote(
+            build: 30, version: "1.0", headline: "A cleaner console you control from the top",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "slider.horizontal.3",
+                    title: "Show only what you need",
+                    detail: "The top of the screen is now a control bar: tap an icon to drop down the input controls, diagnostics, flight plan, or Stratux — tap again to tuck them away. The transcript stays front and center, and your layout is remembered between flights."),
+                WhatsNewHighlight(
+                    icon: "power",
+                    title: "One power button, easier to hit",
+                    detail: "Start, stop, and standby are now a single colour-coded button in the top bar — tap to start or stop transcribing, touch and hold for low-power standby. Buttons are bigger, better spaced, and give a haptic tap so they're easier to use in a bumpy cockpit."),
+            ]),
+        ReleaseNote(
             build: 29, version: "1.0", headline: "Locks onto the aircraft actually on frequency",
             highlights: [
                 WhatsNewHighlight(

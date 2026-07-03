@@ -1,6 +1,7 @@
 """ALSA capture helpers: enumerate capture devices, auto-pick the USB adapter, build the arecord
 command. Thin wrappers over `arecord` so the server stays simple and the logic is testable.
 """
+import os
 import re
 import shutil
 import subprocess
@@ -17,7 +18,8 @@ def have_arecord() -> bool:
 def list_capture_devices():
     """Parse `arecord -l` into a list of {card, device, id, name}. Empty on any error."""
     try:
-        out = subprocess.run(["arecord", "-l"], capture_output=True, text=True, timeout=5).stdout
+        out = subprocess.run(["arecord", "-l"], capture_output=True, text=True, timeout=5,
+                             env=dict(os.environ, LC_ALL="C")).stdout   # parser expects English output
     except Exception:
         return []
     devices = []
