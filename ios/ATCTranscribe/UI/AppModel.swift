@@ -39,6 +39,9 @@ final class AppModel: ObservableObject {
         didSet {
             UserDefaults.standard.set(source.rawValue, forKey: "atc.source")
             if didFinishInit, source != oldValue {
+                // Picking the Stratux receiver as the input implies wanting its link up — auto-enable
+                // it (its own didSet persists, adds the sidebar widget, and re-syncs both providers).
+                if source == .stratux, !stratuxEnabled { stratuxEnabled = true }
                 // Switching to/from the Stratux receiver changes which traffic provider is active.
                 syncTraffic()
                 // Surface the Stratux link card in the sidebar when the receiver becomes the source, so
@@ -59,10 +62,10 @@ final class AppModel: ObservableObject {
             // NOTE: this recenters ADS-B only; the facility RAG/Whisper-prompt config is built once in
             // setupLive, so a mid-session airport change needs a Stop/Start to fully retarget the
             // corrector (pre-existing behavior, unchanged by ADS-B).
-            // Under the Stratux source the airport coordinate doesn't drive traffic (the receiver
-            // reports its own in-range aircraft via on-board GPS), so skip the clear/re-sync — it would
-            // only blink the live Stratux traffic off for a refresh tick.
-            if !usingStratux,
+            // While the Stratux link is streaming, the airport coordinate doesn't drive traffic (the
+            // receiver reports its own in-range aircraft via on-board GPS), so skip the clear/re-sync —
+            // it would only blink the live Stratux traffic off for a refresh tick.
+            if !stratuxTrafficActive,
                AirportCoordinates.coordinate(icao: airport) != AirportCoordinates.coordinate(icao: oldValue) {
                 clearTraffic(); syncADSB()
             }
@@ -285,9 +288,27 @@ final class AppModel: ObservableObject {
     private var adsbService: ADSBService!
 
     // Stratux receiver: an on-board ADS-B/GPS box (+ a cockpit-audio sidecar on its Pi) reached over
-    // its own Wi-Fi. When the input source is "Stratux receiver", audio streams from the sidecar and
-    // traffic/GPS come from the receiver — no internet needed in flight. Host + audio port persisted;
+    // its own Wi-Fi. The traffic/GPS link runs whenever `stratuxEnabled` is on and the app is
+    // foregrounded — no Start needed (see `stratuxTrafficActive`); cockpit AUDIO additionally requires
+    // picking "Stratux receiver" as the input source and starting a run. Host + audio port persisted;
     // the traffic block feeds the SAME corrector pipeline as airplanes.live (see `applyTraffic`).
+    /// The always-on Stratux link switch: traffic + GPS stream whenever this is on and the app is
+    /// foregrounded (standby off) — independent of the input source (that only gates audio). Toggled
+    /// from the Stratux bar (console) or Settings; auto-enabled by picking the receiver as the input.
+    /// The initial value is assigned in `init` (migration: users who had the receiver selected as
+    /// their source before this switch existed keep working).
+    @Published var stratuxEnabled = false {
+        didSet {
+            guard didFinishInit, stratuxEnabled != oldValue else { return }
+            UserDefaults.standard.set(stratuxEnabled, forKey: "atc.stratuxEnabled")
+            // Surface the link card in the sidebar when the link turns on (mirrors the source
+            // picker's auto-add) so the connection state is visible without the Add-widget menu.
+            if stratuxEnabled, !widgets.contains(.stratux) { widgets.append(.stratux) }
+            // Flipping the link changes BOTH providers — an enabled link also suppresses the
+            // internet ADS-B poller (see `adsbActive`) — so reconcile both, not just Stratux.
+            syncTraffic()
+        }
+    }
     @Published var stratuxHost = UserDefaults.standard.string(forKey: "atc.stratuxHost") ?? "192.168.10.1" {
         didSet {
             UserDefaults.standard.set(stratuxHost, forKey: "atc.stratuxHost")
@@ -349,7 +370,8 @@ final class AppModel: ObservableObject {
                 Task { @MainActor in self?.adsbStatus = status }
             })
         // Stratux receiver: traffic feeds the SAME `applyTraffic` pipeline as airplanes.live; GPS +
-        // link health drive UI status only. Active only while the source is the Stratux receiver.
+        // link health drive UI status only. Active whenever the Stratux link is enabled + the app is
+        // foregrounded — independent of the input source (see `stratuxTrafficActive`).
         stratuxService = StratuxService(
             onTraffic: { [weak self] list, snapshotAt in
                 Task { @MainActor in self?.applyTraffic(list, snapshotAt: snapshotAt) }
@@ -374,6 +396,12 @@ final class AppModel: ObservableObject {
         case "replay": source = .replay
         default: break
         }
+        // The Stratux link switch, evaluated AFTER `source` is settled. Migration: the switch didn't
+        // exist before build 29 — "enabled" was implied by having the receiver selected as the source —
+        // so a user in that state keeps traffic/GPS streaming without touching anything. (didSet side
+        // effects are inert here: `didFinishInit` is still false.)
+        stratuxEnabled = (UserDefaults.standard.object(forKey: "atc.stratuxEnabled") as? Bool)
+            ?? (source == .stratux)
         if let link = value("--link") { streamURL = link }
         if args.contains("--debug") { showDebug = true }   // surface perf metrics (verification)
         if args.contains("--correct") { correctionEnabled = true }
@@ -424,6 +452,11 @@ final class AppModel: ObservableObject {
             needsOnboarding = explicitModel == nil && !Self.onboardingDismissed
         }
         didFinishInit = true   // from here, a showDebug toggle may add the debug widgets
+        // Bring the traffic providers in line with the restored state: the Stratux link is decoupled
+        // from Start (see `stratuxTrafficActive`), so an enabled link must connect at launch — nothing
+        // else fires an edge on a plain foreground launch (`scenePhaseActive` starts true, making the
+        // first `.active` scene-phase change a no-op). Harmless when everything is off.
+        syncTraffic()
         evaluateWhatsNew()     // decide whether to greet this launch with the "What's new" popup
     }
 
@@ -704,24 +737,27 @@ final class AppModel: ObservableObject {
 
     // MARK: ADS-B live traffic
 
-    /// Whether the active input source is a Stratux receiver (audio + on-board traffic/GPS).
-    private var usingStratux: Bool { source == .stratux }
-
-    /// Whether airplanes.live (internet) ADS-B should be polling now. Suppressed while the Stratux
-    /// receiver is the source — that path provides traffic on-board instead (works with no internet).
-    private var adsbActive: Bool { adsbStreamingEnabled && !usingStratux && isRunning && liveMode && scenePhaseActive }
-    /// Whether the Stratux link should be streaming traffic/GPS now.
-    private var stratuxTrafficActive: Bool { usingStratux && isRunning && liveMode && scenePhaseActive }
+    /// Whether airplanes.live (internet) ADS-B should be polling now. Session-coupled by design (its
+    /// Settings copy promises it only runs while transcribing) and suppressed while the Stratux link
+    /// is streaming — that path provides traffic on-board instead (works with no internet), and both
+    /// providers publish into the same `applyTraffic`, so at most one may run.
+    private var adsbActive: Bool { adsbStreamingEnabled && !stratuxTrafficActive && isRunning && liveMode && scenePhaseActive }
+    /// Whether the Stratux link should be streaming traffic/GPS now: whenever it's enabled, the app
+    /// is foregrounded, and standby is off — independent of the input source and of a running
+    /// session (audio still requires picking the source + Start; see `beginCapture`). `!standby`
+    /// is explicit because standby's whole point is stopping battery drain, and without `isRunning`
+    /// in this predicate nothing else would stop the link there.
+    private var stratuxTrafficActive: Bool { stratuxEnabled && scenePhaseActive && !standby }
     /// Either traffic provider is feeding the corrector/UI right now.
     private var trafficActive: Bool { adsbActive || stratuxTrafficActive }
 
-    /// Reconcile BOTH traffic providers with the current state. Only the one matching the active source
-    /// actually streams; the other is told to stop. Call on every transition (start/stop, source
-    /// change, standby, scene phase).
+    /// Reconcile BOTH traffic providers with the current state (at most one streams — an enabled
+    /// Stratux link outranks the internet poller). Call on every transition (start/stop, source
+    /// change, link toggle, standby, scene phase).
     func syncTraffic() { syncADSB(); syncStratux() }
 
     /// Reconcile the airplanes.live poller (single edge-triggered call). Polls only while online ADS-B
-    /// is ON, the source is NOT Stratux, a live session is running, and the app is foregrounded.
+    /// is ON, the Stratux link is not streaming, a live session is running, and the app is foregrounded.
     func syncADSB() {
         let center = facilityCoordinate()
         let active = adsbActive
@@ -729,8 +765,8 @@ final class AppModel: ObservableObject {
         Task { await service?.sync(center: center, enabled: active) }
     }
 
-    /// Reconcile the Stratux link (traffic WebSocket + GPS poll). Active only while the Stratux
-    /// receiver is the source, a live session is running, and the app is foregrounded.
+    /// Reconcile the Stratux link (traffic WebSocket + GPS poll). Streams whenever the link is
+    /// enabled and the app is foregrounded (standby off) — no session or source selection required.
     func syncStratux() {
         let active = stratuxTrafficActive
         let host = stratuxHost
@@ -957,8 +993,9 @@ final class AppModel: ObservableObject {
             src = MonitoredSource(StreamAudioSource(url: url), monitor: audioMonitor)
         case .stratux:
             // Cockpit audio from the Stratux sidecar (raw 16 kHz PCM at <host>:<port>/audio.raw). On-
-            // board ADS-B/GPS for this source starts via syncTraffic() below. Monitored like the feed
-            // so it can be heard/verified on the ground (mute it in the cockpit via the speaker toggle).
+            // board ADS-B/GPS run over the always-on Stratux link (auto-enabled when this source is
+            // picked), not through this capture path. Monitored like the feed so it can be heard/
+            // verified on the ground (mute it in the cockpit via the speaker toggle).
             guard let stx = StratuxAudioSource(host: stratuxHost, audioPort: stratuxAudioPort,
                                                onTrouble: { [weak self] msg in Task { @MainActor in self?.detail = msg } }) else {
                 detail = "Set a valid Stratux address in Settings › Stratux receiver."; return
@@ -978,7 +1015,7 @@ final class AppModel: ObservableObject {
         if !resuming { callsignFilter = nil }   // a fresh transcript replaces history → drop a stale filter
         sourceLabel = source.rawValue
         detail = "Transcribing."
-        syncTraffic()   // a live session started → begin the matching traffic provider (airplanes.live or Stratux)
+        syncTraffic()   // a live session started → the session-coupled ADS-B poller may begin (Stratux is independent)
     }
 
     func stop() {
@@ -986,7 +1023,7 @@ final class AppModel: ObservableObject {
         // path never activated one, so nothing to release here.
         if let session { session.stop() } else { status = .stopped }
         detail = "Stopped."
-        syncTraffic()   // no live session → stop both traffic providers + clear traffic
+        syncTraffic()   // no live session → stop the session-coupled ADS-B poller (an enabled Stratux link keeps streaming)
     }
 
     /// Enter standby: stop capture and release the audio session so a quiet, unattended feed
@@ -1001,12 +1038,16 @@ final class AppModel: ObservableObject {
         AudioSessionManager.deactivate()
         detail = "Standby — capture paused."
         standby = true
+        // Standby exists to stop battery drain — the always-on Stratux link follows it down too
+        // (`stratuxTrafficActive` gates on `!standby`; the stop() above only fired if capture ran).
+        syncTraffic()
     }
 
     /// Leave standby. If a source was running when standby began, restart it; otherwise just
     /// return to the idle console.
     func exitStandby() {
         standby = false
+        syncTraffic()   // re-open an enabled Stratux link on wake (the resume below only covers capture)
         if let s = resumeSource { source = s; start(resuming: true) }
         resumeSource = nil
     }
