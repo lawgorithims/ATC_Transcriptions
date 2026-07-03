@@ -1,0 +1,21 @@
+{
+  "airport_code": "KBOS",
+  "airport_name": "Boston Logan International Airport",
+  "tracon": "Boston Approach (A90)",
+  "runways": [
+    "4L", "4R", "9", "14", "15R", "22L", "22R", "27", "32", "33L"
+  ],
+  "frequencies": {
+    "tower": "128.8",
+    "ground": "121.9"
+  },
+  "streams": {
+    "tower_primary": {
+      "label": "KBOS Tower",
+      "url": "https://s1-bos.liveatc.net/kbos1_twr",
+      "liveatc_page": "https://www.liveatc.net/hlisten.php?mount=kbos1_twr&icao=kbos",
+      "frequency_mhz": "128.8",
+      "archive_mount": "kbos1_twr"
+    }
+  }
+}

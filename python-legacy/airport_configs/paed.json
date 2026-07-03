@@ -1,0 +1,20 @@
+{
+  "airport_code": "PAED",
+  "airport_name": "Joint Base Elmendorf-Richardson (Anchorage)",
+  "tracon": "Anchorage Approach",
+  "runways": [
+    "6", "16", "24", "34"
+  ],
+  "frequencies": {
+    "tower": "127.2"
+  },
+  "streams": {
+    "tower_primary": {
+      "label": "PAED Tower",
+      "url": "https://d.liveatc.net/pamr2_paed_twr",
+      "liveatc_page": "https://www.liveatc.net/hlisten.php?mount=pamr2_paed_twr&icao=paed",
+      "frequency_mhz": "127.2",
+      "archive_mount": "pamr2_paed_twr"
+    }
+  }
+}

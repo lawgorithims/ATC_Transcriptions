@@ -1,0 +1,14 @@
+{
+  "airport_code": "KLGA",
+  "airport_name": "LaGuardia Airport",
+  "runways": [],
+  "frequencies": {},
+  "streams": {
+    "tower_primary": {
+      "label": "KLGA Tower",
+      "url": "https://d.liveatc.net/klga_twr",
+      "liveatc_page": "https://www.liveatc.net/hlisten.php?mount=klga_twr",
+      "archive_mount": "klga_twr"
+    }
+  }
+}
