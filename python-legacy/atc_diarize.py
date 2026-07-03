@@ -115,17 +115,22 @@ def extract_callsign(text: str) -> Optional[str]:
     Recognizes two shapes:
       * airline:  <telephony> <number/letter run>   ("delta twelve thirty four")
       * tail:     november <phonetic/number run>     ("november three four five alpha bravo")
+    Number tokens may be spoken words OR numerals ("delta 232") — canonicalized
+    transcripts and Whisper output both use digits.
     Returns the matched span as spoken (normalized) text, or None.
     """
     tokens = _normalize_for_match(text).split()
     if not tokens:
         return None
 
+    def _is_digitish(tok: str) -> bool:
+        return tok in _DIGIT_WORDS or tok.isdigit()
+
     def _run_from(idx: int) -> List[str]:
         run = [tokens[idx]]
         j = idx + 1
         while j < len(tokens) and (
-            tokens[j] in _DIGIT_WORDS or tokens[j] in _PHONETIC_WORDS
+            _is_digitish(tokens[j]) or tokens[j] in _PHONETIC_WORDS
         ):
             run.append(tokens[j])
             j += 1
@@ -134,13 +139,13 @@ def extract_callsign(text: str) -> Optional[str]:
     # Tail number: "november ..." (november is also the phonetic for N).
     for i, tok in enumerate(tokens):
         if tok == "november" and i + 1 < len(tokens) and (
-            tokens[i + 1] in _DIGIT_WORDS or tokens[i + 1] in _PHONETIC_WORDS
+            _is_digitish(tokens[i + 1]) or tokens[i + 1] in _PHONETIC_WORDS
         ):
             return " ".join(_run_from(i))
 
     # Airline: telephony name followed by at least one number word.
     for i, tok in enumerate(tokens):
-        if tok in _TELEPHONY and i + 1 < len(tokens) and tokens[i + 1] in _DIGIT_WORDS:
+        if tok in _TELEPHONY and i + 1 < len(tokens) and _is_digitish(tokens[i + 1]):
             return " ".join(_run_from(i))
 
     return None
