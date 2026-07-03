@@ -9,6 +9,7 @@ One capture at a time (the USB adapter is a single input); a second client gets 
 """
 import json
 import signal
+import socket
 import subprocess
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -24,15 +25,42 @@ def _kill(proc):
     except Exception:
         try:
             proc.kill()
+            proc.wait(timeout=1)              # reap, or the dead arecord lingers as a zombie
         except Exception:
             pass
+
+
+def _drain(pipe):
+    """Read a pipe to EOF and discard — runs on a daemon thread while a capture streams."""
+    try:
+        while pipe.read(65536):
+            pass
+    except Exception:
+        pass
 
 
 class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "CommSightCockpitAudio/" + __version__
+    # Socket timeout (BaseHTTPRequestHandler applies it to the connection). Without it an iPad
+    # that drops off the WiFi uncleanly leaves sends stuck in kernel retransmit for ~15 min
+    # while holding the single-stream lock, so every reconnect gets 409.
+    timeout = 10
     config: Config = None                       # injected by make_server
     capture_lock: threading.Lock = None         # injected by make_server
+
+    def setup(self):
+        # Keepalive catches the half-open case with no data in flight (idle connection) in
+        # ~10 s; the timeout above catches the blocked-send case.
+        s = self.request
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        for opt, val in (("TCP_KEEPIDLE", 5), ("TCP_KEEPINTVL", 2), ("TCP_KEEPCNT", 3)):
+            if hasattr(socket, opt):
+                try:
+                    s.setsockopt(socket.IPPROTO_TCP, getattr(socket, opt), val)
+                except OSError:
+                    pass
+        super().setup()
 
     def log_message(self, fmt, *args):
         print("%s %s" % (self.address_string(), fmt % args))
@@ -95,6 +123,10 @@ class _Handler(BaseHTTPRequestHandler):
                 detail = (proc.stderr.read() or b"").decode("utf-8", "replace").strip()
                 return self._json(503, {"ok": False, "error": "capture_failed",
                                         "device": device, "detail": detail[:300]})
+            # arecord keeps writing warnings ("overrun!!!") to stderr; drain them or the 64 KiB
+            # pipe fills and freezes capture mid-stream. (Closing the pipe instead would
+            # SIGPIPE-kill arecord on its next warning.)
+            threading.Thread(target=_drain, args=(proc.stderr,), daemon=True).start()
             self.send_response(200)
             self.send_header("Content-Type", "audio/wav" if wav else "application/octet-stream")
             self.send_header("Cache-Control", "no-store")
@@ -111,8 +143,8 @@ class _Handler(BaseHTTPRequestHandler):
                     break
                 self.wfile.write(data)
                 self.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError):
-            pass                                 # the iPad disconnected — normal
+        except (ConnectionError, TimeoutError):
+            pass                                 # the iPad disconnected or vanished — normal
         except Exception as exc:
             try:
                 self._json(500, {"ok": False, "error": str(exc)})
@@ -130,10 +162,17 @@ def make_server(cfg: Config) -> ThreadingHTTPServer:
     return ThreadingHTTPServer((cfg.bind_host, cfg.port), handler)
 
 
+def _shutdown_async(srv):
+    """Stop the server without blocking the caller. Signal handlers run on the main thread —
+    the one inside serve_forever() — and a synchronous srv.shutdown() there deadlocks (it
+    waits on an event only serve_forever can set), so hand the call to a throwaway thread."""
+    threading.Thread(target=srv.shutdown, daemon=True).start()
+
+
 def serve(cfg: Config):
     srv = make_server(cfg)
-    signal.signal(signal.SIGTERM, lambda *_: srv.shutdown())
-    signal.signal(signal.SIGINT, lambda *_: srv.shutdown())
+    signal.signal(signal.SIGTERM, lambda *_: _shutdown_async(srv))
+    signal.signal(signal.SIGINT, lambda *_: _shutdown_async(srv))
     device = capture.resolve_device(cfg.device)
     print("commsight-cockpit-audio v%s on %s:%d  device=%s (%s)  %dHz x%d %s"
           % (__version__, cfg.bind_host, cfg.port, device, cfg.device, cfg.rate, cfg.channels, cfg.fmt),

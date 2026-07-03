@@ -273,14 +273,15 @@ struct HostCard: View {
     }
 }
 
-/// The Stratux receiver connection at a glance: link state (idle/connecting/connected/error with a
-/// colour dot), receiver address, GPS fix, and the in-range traffic count. Live while the Stratux
-/// receiver is the input source; muted otherwise. Auto-added to the sidebar when you pick that source.
+/// The Stratux receiver connection at a glance: link state (off/idle/connecting/connected/error with
+/// a colour dot), receiver address, GPS fix, and the in-range traffic count. Live while the Stratux
+/// link is enabled (Stratux bar / Settings); muted otherwise. Auto-added to the sidebar when the
+/// link turns on (including when the receiver is picked as the input source).
 struct StratuxCard: View {
     @EnvironmentObject var model: AppModel
     var body: some View {
         let p = model.palette
-        let active = model.source == .stratux
+        let active = model.stratuxEnabled
         Card(title: "Stratux link") {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
@@ -299,7 +300,7 @@ struct StratuxCard: View {
                 }
                 KV("Traffic", active ? "\(model.aircraft.count) in range" : "—")
                 if !active {
-                    Text("Pick “Stratux receiver” as the input source, then Start, to connect.")
+                    Text("Turn on the Stratux link in Settings or the Stratux bar. Pick “Stratux receiver” as the input source to transcribe its audio.")
                         .font(.caption2).foregroundStyle(p.textDim)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -310,7 +311,7 @@ struct StratuxCard: View {
 
     private var statusText: String {
         switch model.stratuxStatus {
-        case .idle:       return model.source == .stratux ? "idle" : "not selected"
+        case .idle:       return model.stratuxEnabled ? "idle" : "off"
         case .connecting: return "connecting"
         case .connected:  return "connected"
         case .error:      return "error"

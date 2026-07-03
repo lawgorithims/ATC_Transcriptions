@@ -263,13 +263,13 @@ struct TopBar: View {
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("stratux-toggle")
-        .accessibilityLabel("Stratux link")
+        .accessibilityLabel("Stratux strip")
         .accessibilityAddTraits(on ? [.isSelected] : [])
     }
 
-    /// Stratux icon colour — live health when the receiver is the source, neutral otherwise.
+    /// Stratux icon colour — live link health when the always-on link is enabled, neutral otherwise.
     private func stratuxTint(_ p: Palette) -> Color {
-        guard model.source == .stratux else { return model.showStratuxBar ? p.accent : p.textDim }
+        guard model.stratuxEnabled else { return model.showStratuxBar ? p.accent : p.textDim }
         switch model.stratuxStatus {
         case .idle:       return p.textDim
         case .connecting: return p.warn
@@ -567,25 +567,36 @@ struct FlightPlanBar: View {
 
 // MARK: - Stratux / traffic strip
 
-/// Live ADS-B traffic in range — from the **Stratux receiver** when it's the input source, otherwise
-/// airplanes.live. Renders `model.aircraft` verbatim (the freshness authority is the service actor,
-/// not this view). For the Stratux source it also shows the LINK state, so "the ADS-B connection to my
-/// Stratux is up" is unmistakable: idle → connecting → **connected** (green) → error. Toggled by the
-/// Stratux heading icon (which is itself tinted by the link state). (Was carousel page 3.)
+/// Live ADS-B traffic in range — from the **Stratux receiver** when its link is enabled, otherwise
+/// airplanes.live. The always-on link toggle (top of the strip) streams traffic + GPS independent of
+/// the input source (that only gates cockpit audio + Start). Renders `model.aircraft` verbatim
+/// (freshness is the service actor's job). While the link is on it shows the LINK state:
+/// idle → connecting → **connected** (green) → error. Shown/hidden by the Stratux heading icon
+/// (itself tinted by link state). (Was carousel page 3.)
 struct StratuxBar: View {
     @EnvironmentObject var model: AppModel
     var body: some View {
         let p = model.palette
-        Group {
-            if model.source == .stratux {
-                stratux(p)
-            } else if !model.adsbStreamingEnabled {
-                offState(p, "antenna.radiowaves.left.and.right.slash", "Online ADS-B off — enable in Settings")
-            } else if model.aircraft.isEmpty {
-                offState(p, "antenna.radiowaves.left.and.right", emptyText)
-            } else {
-                traffic(p, icon: "antenna.radiowaves.left.and.right", iconColor: p.accent, titleColor: p.text,
-                        title: "\(model.aircraft.count) in range", trailing: model.aircraftUpdatedAt.map(updatedLabel))
+        VStack(alignment: .leading, spacing: 8) {
+            // The always-on Stratux link: traffic + GPS stream whenever this is on and the app is
+            // foregrounded — independent of the input source (that only gates cockpit audio + Start).
+            Toggle(isOn: linkBinding) {
+                Text("Stratux link").font(.caption.weight(.semibold)).foregroundStyle(p.text)
+            }
+            .tint(p.accent)
+            .padding(.horizontal, 16)
+            .accessibilityIdentifier("stratux-enable-bar")
+            Group {
+                if model.stratuxEnabled {
+                    stratux(p)
+                } else if !model.adsbStreamingEnabled {
+                    offState(p, "antenna.radiowaves.left.and.right.slash", "Online ADS-B off — enable in Settings")
+                } else if model.aircraft.isEmpty {
+                    offState(p, "antenna.radiowaves.left.and.right", emptyText)
+                } else {
+                    traffic(p, icon: "antenna.radiowaves.left.and.right", iconColor: p.accent, titleColor: p.text,
+                            title: "\(model.aircraft.count) in range", trailing: model.aircraftUpdatedAt.map(updatedLabel))
+                }
             }
         }
         .padding(.vertical, 10)
@@ -595,11 +606,17 @@ struct StratuxBar: View {
         .accessibilityIdentifier("stratux-bar")
     }
 
+    /// Toggle binding that adds a haptic tap on change; `AppModel.stratuxEnabled`'s didSet stays the
+    /// source of truth (persists + reconciles the traffic providers).
+    private var linkBinding: Binding<Bool> {
+        Binding(get: { model.stratuxEnabled }, set: { Haptics.impact(.light); model.stratuxEnabled = $0 })
+    }
+
     /// The Stratux ADS-B link state.
     @ViewBuilder private func stratux(_ p: Palette) -> some View {
         switch model.stratuxStatus {
         case .idle:
-            offState(p, "dot.radiowaves.up.forward", "Stratux ADS-B — press Start to connect")
+            offState(p, "dot.radiowaves.up.forward", "Stratux link on — waiting for the receiver")
         case .connecting:
             HStack(spacing: 10) {
                 ProgressView().controlSize(.mini).tint(p.warn)
