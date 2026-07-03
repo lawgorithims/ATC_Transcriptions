@@ -13,13 +13,17 @@ Gold set: `C:\Users\bsusl\atc_training_data\verification_sample\gold_testset.jso
 | model | stock | US fine-tuned (5,410 pseudo-label clips) | checkpoint |
 |---|---|---|---|
 | small (244M) | 63.9% | **32.2%** | HF `ATC-whisper-small-us` (ships as small-v2) |
-| medium (769M) | 35.8% | 32.7% | lost with H100 |
-| turbo (809M) | 34.9% | **28.9%** | **lost with H100** (hyps survive) |
+| medium (769M) | 35.8% | 32.7% | lost with H100 (≈small anyway) |
+| turbo (809M) | 34.9% | **28.9%** | local `whisper-turbo-us.tar.gz` — NOT yet on HF/CoreML |
 | large-v3 (1.5B) | 26.3% | 190.1% — see `AUTOPSY_us_finetune.md` | n/a |
 
-Takeaways: pseudo-labeling works (small −31.7 pts from 3.5 h of accepted
-labels); at this data scale model size buys almost nothing (medium-FT ≈
-small-FT) — data volume is the bottleneck, as planned (T2 = 100 h+).
+Takeaways: pseudo-labeling works (small −31.7 pts from ~3.5 h of accepted
+labels); parameter count is not the lever (medium-FT ≈ small-FT) — the lever
+is base-encoder quality (turbo broke the 32% plateau) and DATA (a fuller
+15.4 h snapshot exists in `backup_20260630\`; T2 target 100 h+). Known dead
+end: beam search on Whisper for short noisy ATC clips (measured 48.9% vs
+greedy 22.8% canon on small-us) — greedy + temperature fallback is optimal
+for the Whisper path.
 
 ## Reading this table (gold v0, 2026-07-03)
 
