@@ -18,16 +18,23 @@ teardown; see scripts in `atc_training_data/scripts/run_finetune_*.sh`).
 
 ## Root cause (large-v3 run only)
 
-The lv3 run was the only one launched with **gradient checkpointing**
-(`run_finetune_largev3.sh`: "fine-tune large-v3 (grad-ckpt, bs8, 3ep)").
-Whisper + HF gradient checkpointing is a known-broken combination in this
-codebase — `train_distil_whisper.py` disables it with the comment "causes
-backward through graph twice error with Whisper" — and large-v3 fine-tuning in
-fp16 is additionally NaN-prone. A 97.8% CER means the model emitted
-garbage/empty output: training-time weight destruction, not a data or eval
-artifact. The turbo run in the same "big" pipeline also failed once
-(`TURBO_TRAIN_FAILED`, OOM-class) and succeeded when re-run standalone without
-grad-ckpt.
+Two compounding suspects, both specific to this run:
+
+1. **Self-distillation loop**: large-v3 was consensus teacher A — the model
+   that PRODUCED the pseudo-labels. Fine-tuning the teacher on its own labels
+   is a known degenerate setup (the 2026-06-30 session's own conclusion:
+   "fine-tuning the 1.55B teacher on its own labels is harmful; large-v3 base
+   26.3% is the ceiling").
+2. **Gradient checkpointing**: the lv3 run was the only one launched with
+   grad-ckpt (`run_finetune_largev3.sh`), a known-broken combination with
+   Whisper in this repo (`train_distil_whisper.py` disables it: "backward
+   through graph twice"). Related fp16 gotcha (bit the turbo run first):
+   large-v3/turbo ship fp16 weights → must load `torch_dtype=float32` or
+   fp16-AMP dies with "Attempting to unscale FP16 gradients".
+
+A 97.8% CER means garbage/empty output — training-time weight destruction,
+not a data or eval artifact. Either suspect suffices; do not fine-tune the
+consensus teacher on its own labels, and never grad-ckpt Whisper.
 
 Noisy labels were ruled out directly: a 20-row random audit of the accepted
 pseudo-labels found 0 empty / 0 missing / format-correct transcripts (~25-35%
@@ -40,19 +47,22 @@ the small/turbo results show).
 - **Pseudo-labeling works.** 3.5 h of accepted labels halved whisper-small's US
   error (63.9 → 32.2 norm). Scale is the bottleneck, not the method:
   medium-FT ≈ small-FT at this data size.
-- **Checkpoint survival** (H100 volume is gone):
-  - `whisper-small-us` → SAFE: HF `SingularityUS/ATC-whisper-small-us`, ships
-    as app variant `small-v2` (CoreML on HF `atc-whisperkit/small-v2`).
-  - `whisper-turbo-us` (best US model, 20.2% canon WER) → **LOST**. Only its
-    gold hypotheses survive (`atc_training_data/gold_hyps/gold_hyps_turbo_ft.jsonl`).
-    The app's `turbo` CoreML variant is still the OLD European fine-tune
-    (M4 `~/atc-coreml/turbo` dated Jun 23, i.e. pre-US-training).
-  - `whisper-medium-us` → LOST (scores survive).
-- Training data survives locally: `C:\Users\bsusl\atc_training_data\` (16 GB —
-  h100 + l4_1 + l4_2 manifests/segments/scores, 3,513 accepted rows rescued;
-  the June-30 runs used a 5,410-clip merged manifest whose builder
-  (`build_trainmanifest_v2.py`, gold-window-held-out) lived only on the H100
-  and needs ~30 lines of recreation).
+- **Checkpoint survival** (H100 volume is gone; local rescue copies exist):
+  - `whisper-small-us` → SAFE twice over: HF `SingularityUS/ATC-whisper-small-us`
+    (ships as app variant `small-v2`) + local `whisper-small-us.tar.gz`.
+  - `whisper-turbo-us` (best US model, 20.2% canon WER) → SAFE locally:
+    `C:\Users\bsusl\atc_training_data\whisper-turbo-us.tar.gz` (2.8 GB fp32,
+    backed up right after training). NOT yet on HF and NOT yet converted —
+    the app's `turbo` CoreML variant is still the OLD European fine-tune
+    (M4 `~/atc-coreml/turbo` dated Jun 23). Next: verify vs its saved gold
+    hyps, push to HF, convert, ship.
+  - `whisper-medium-us` → lost (scores survive; ≈small-us anyway).
+- Training data survives locally: `C:\Users\bsusl\atc_training_data\` —
+  per-box trainset tarballs (Jun 29) + `backup_20260630\trainset_*_20260630.tar.gz`
+  (the fuller snapshot: 7,309 accepted clips ≈ 15.4 h across h100/l4_1/l4_2,
+  airport-prefixed clip names + relative-path `manifest_rel.jsonl`) +
+  `backup_20260630_final\` (4.6 GB incl. ~19k consensus-REJECT segments —
+  future SSL-pretraining corpus + reject-mining pool).
 
 ## Rules going forward
 
