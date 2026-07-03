@@ -92,6 +92,22 @@ ffplay -f s16le -ar 16000 -ac 1 cockpit.raw  # should be the cockpit audio
 # (or just open http://192.168.10.1:8090/audio.wav in a browser / ffplay)
 ```
 
+### The Pi's LEDs are a live input meter
+
+While the service runs, the Pi's onboard LEDs show what the capture input hears — no laptop
+needed. Play audio into the USB adapter's mic-in and watch the board:
+
+| LED | Meaning |
+| --- | --- |
+| **Green (ACT) flickering** | audio is arriving at the input — the wiring works |
+| **Green dark** | input is silent: wrong jack (use the pink mic-in), dead cable, or volume at zero |
+| **Red (PWR) blinking** | the signal is clipping — turn the inline volume / capture gain down |
+
+It works with or without the iPad connected (the meter borrows the mic between client streams
+and hands it over the instant CommSight connects). `/health` reports the same numbers as
+`led_meter.rms_dbfs` / `peak_dbfs` if you want values instead of blinkenlights. Set
+`LED_METER=off` to return the LEDs to their normal duties (SD activity / power).
+
 ## 5. Use in CommSight
 
 In the app: **Settings → Stratux receiver** → set the address (`192.168.10.1`) and audio port
@@ -110,6 +126,9 @@ GPS fix, and traffic count; transcripts start as audio arrives.
 | `AUDIO_RATE` | `16000` | CommSight's native rate — leave it |
 | `AUDIO_CHANNELS` | `1` | mono — leave it |
 | `AUDIO_FORMAT` | `S16_LE` | signed 16-bit LE — leave it |
+| `LED_METER` | `on` | drive the Pi's ACT/PWR LEDs as an input level meter; `off` restores normal LED duty |
+| `LED_THRESHOLD_DBFS` | `-50` | green flickers while input RMS is above this; raise it if noise false-triggers |
+| `LED_CLIP_DBFS` | `-3` | red lights when a peak crosses this |
 
 ## HTTP API
 

@@ -16,6 +16,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import __version__, capture
 from .config import Config
+from .ledmeter import LedMeter
 
 
 def _kill(proc):
@@ -48,6 +49,7 @@ class _Handler(BaseHTTPRequestHandler):
     timeout = 10
     config: Config = None                       # injected by make_server
     capture_lock: threading.Lock = None         # injected by make_server
+    led_meter: LedMeter = None                  # injected by serve (None when disabled)
 
     def setup(self):
         # Keepalive catches the half-open case with no data in flight (idle connection) in
@@ -88,6 +90,7 @@ class _Handler(BaseHTTPRequestHandler):
     def _health(self):
         cfg = self.config
         device = capture.resolve_device(cfg.device)
+        meter = self.led_meter
         self._json(200, {
             "service": "commsight-cockpit-audio",
             "version": __version__,
@@ -101,7 +104,10 @@ class _Handler(BaseHTTPRequestHandler):
             "capture_devices": capture.list_capture_devices(),
             "rate": cfg.rate, "channels": cfg.channels, "format": cfg.fmt,
             "frame_bytes_20ms": cfg.frame_bytes,
-            "streaming": self.capture_lock.locked(),
+            # The idle LED meter also holds capture_lock between real clients — don't report that
+            # as "an iPad is streaming".
+            "streaming": self.capture_lock.locked() and not (meter and meter.holding),
+            "led_meter": meter.status() if meter else {"enabled": False},
         })
 
     def _stream(self, wav):
@@ -109,8 +115,18 @@ class _Handler(BaseHTTPRequestHandler):
         if not capture.have_arecord():
             return self._json(503, {"ok": False, "error": "arecord_not_found",
                                     "hint": "sudo apt-get install -y alsa-utils"})
-        if not self.capture_lock.acquire(blocking=False):
+        # The idle LED meter shares the capture device: tell it to yield, then wait briefly for
+        # its arecord to die. A GENUINE second client still 409s — the meter releases within a
+        # frame, so the only way the timeout expires is another client holding the stream.
+        meter = self.led_meter
+        acquired = self.capture_lock.acquire(blocking=False)
+        if not acquired and meter is not None and meter.holding:
+            meter.yield_now()
+            acquired = self.capture_lock.acquire(timeout=2.0)
+        if not acquired:
             return self._json(409, {"ok": False, "error": "audio_stream_already_in_use"})
+        if meter is not None:
+            meter.yield_now()                   # keep the idle loop parked while we stream
         proc = None
         try:
             device = capture.resolve_device(cfg.device)
@@ -137,12 +153,16 @@ class _Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(first)
             self.wfile.flush()
+            if meter is not None and not wav:
+                meter.feed(first)               # wav's first chunk is header bytes — skip those
             while True:
                 data = proc.stdout.read(cfg.frame_bytes)
                 if not data:
                     break
                 self.wfile.write(data)
                 self.wfile.flush()
+                if meter is not None and not wav:
+                    meter.feed(data)
         except (ConnectionError, TimeoutError):
             pass                                 # the iPad disconnected or vanished — normal
         except Exception as exc:
@@ -154,6 +174,8 @@ class _Handler(BaseHTTPRequestHandler):
             if proc is not None:
                 _kill(proc)
             self.capture_lock.release()
+            if meter is not None:
+                meter.client_done()             # idle metering may resume
 
 
 def make_server(cfg: Config) -> ThreadingHTTPServer:
@@ -171,6 +193,10 @@ def _shutdown_async(srv):
 
 def serve(cfg: Config):
     srv = make_server(cfg)
+    meter = None
+    if cfg.led_meter:
+        meter = LedMeter(cfg, srv.RequestHandlerClass.capture_lock)
+        srv.RequestHandlerClass.led_meter = meter
     signal.signal(signal.SIGTERM, lambda *_: _shutdown_async(srv))
     signal.signal(signal.SIGINT, lambda *_: _shutdown_async(srv))
     device = capture.resolve_device(cfg.device)
@@ -180,7 +206,11 @@ def serve(cfg: Config):
     if not capture.device_present(device):
         print("WARNING: capture device %s not found — check the USB adapter / AUDIO_DEVICE "
               "(arecord -l)." % device, flush=True)
+    if meter is not None:
+        meter.start()
     try:
         srv.serve_forever()
     finally:
+        if meter is not None:
+            meter.stop()                        # kill idle arecord, restore LED triggers
         srv.server_close()
