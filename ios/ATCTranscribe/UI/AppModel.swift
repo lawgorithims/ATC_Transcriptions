@@ -414,7 +414,8 @@ final class AppModel: ObservableObject {
         // to draw without filing one (every ident resolves in the bundled nav DB). Persists like a
         // filed plan; harmless otherwise.
         if args.contains("--demo-flightplan") {
-            flightPlan = FlightPlan(departure: "KBOS", destination: "KDFW", route: ["BOS", "ROBUC", "BLECO"])
+            flightPlan = FlightPlan(departure: "KBOS", destination: "KORD",
+                                    route: ["ALB", "SYR", "BUF", "ERI", "DJB", "OBK"])
         }
         if args.contains("--open-route-map") { showRouteMap = true }   // screenshot/demo: open the map at launch
 
