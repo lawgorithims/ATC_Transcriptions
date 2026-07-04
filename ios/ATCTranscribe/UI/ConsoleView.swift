@@ -49,6 +49,9 @@ struct ConsoleView: View {
         .fullScreenCover(isPresented: $model.needsOnboarding) {
             OnboardingDownloadView().environmentObject(model).environmentObject(downloads)
         }
+        .fullScreenCover(isPresented: $model.showRouteMap) {
+            RouteMapSheet().environmentObject(model)
+        }
         .animation(.easeInOut(duration: 0.25), value: model.theme)
         .onAppear {
             // Bridge a finished download back to the model so it can load a model that wasn't
@@ -506,6 +509,7 @@ struct FlightPlanBar: View {
                         Label("AI context downloading", systemImage: "arrow.down.circle")
                             .font(.caption2).foregroundStyle(p.textDim)
                     }
+                    mapButton(p)
                     editButton(p)
                 }
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -528,6 +532,7 @@ struct FlightPlanBar: View {
                     Image(systemName: "briefcase.fill").font(.callout).foregroundStyle(p.textDim)
                     Text("No flight plan filed").font(.caption).foregroundStyle(p.textDim)
                     Spacer(minLength: 0)
+                    mapButton(p)
                     editButton(p)
                 }
             }
@@ -551,6 +556,19 @@ struct FlightPlanBar: View {
         .buttonStyle(.plain)
         .accessibilityIdentifier("flight-plan-edit")
         .accessibilityLabel("Edit flight plan")
+    }
+
+    /// Opens the full-screen route map — the filed route (magenta line + waypoints) with live traffic.
+    private func mapButton(_ p: Palette) -> some View {
+        Button {
+            Haptics.impact(.light)
+            model.showRouteMap = true
+        } label: {
+            Label("Map", systemImage: "map").font(.caption2.weight(.semibold)).foregroundStyle(p.accent)
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("flight-plan-map")
+        .accessibilityLabel("View route on map")
     }
 
     /// Colour per route-leg kind (see the user's spec: airports purple-pink, VOR green, GPS blue).

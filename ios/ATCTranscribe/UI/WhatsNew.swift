@@ -32,6 +32,14 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 33, version: "1.0", headline: "See your route and live traffic on a map",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "map",
+                    title: "Route map with live traffic",
+                    detail: "Tap Map on the flight-plan bar to see your filed route drawn as the classic magenta line through its waypoints — airports, VOR navaids, and RNAV/GPS fixes — with live ADS-B traffic and, when your Stratux link has a fix, your own position. Pinch to zoom and pan. The waypoint coordinates are built into the app, so it works with no signal in the cockpit."),
+            ]),
+        ReleaseNote(
             build: 31, version: "1.0", headline: "Stratux traffic always on — and everything's built in",
             highlights: [
                 WhatsNewHighlight(
