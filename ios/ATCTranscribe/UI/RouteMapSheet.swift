@@ -32,6 +32,7 @@ struct RouteMapSheet: View {
     @State private var showAirspace = true
     @State private var showNearby = true
     @State private var showRouteInfo = false
+    @State private var showChart = false
     @State private var visibleRings: [AirspaceRing] = []
     @State private var visibleNearby: [NavPoint] = []
     @State private var currentRegion: MKCoordinateRegion?
@@ -77,6 +78,7 @@ struct RouteMapSheet: View {
                 ToolbarItem(placement: .primaryAction) { layersMenu }
             }
             .sheet(isPresented: $showRouteInfo) { routeInfoSheet }
+            .fullScreenCover(isPresented: $showChart) { ChartSheet().environmentObject(model) }
         }
         .tint(p.accent)
         .task { await buildRoute() }
@@ -94,6 +96,10 @@ struct RouteMapSheet: View {
             Divider()
             Button { Haptics.impact(.light); showRouteInfo = true } label: {
                 Label("Route details", systemImage: "list.bullet.rectangle")
+            }
+            Divider()
+            Button { Haptics.impact(.light); showChart = true } label: {
+                Label("FAA sectional chart", systemImage: "map.circle")
             }
         } label: {
             Image(systemName: "slider.horizontal.3")

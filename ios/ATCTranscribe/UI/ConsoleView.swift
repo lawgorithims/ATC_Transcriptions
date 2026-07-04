@@ -52,6 +52,9 @@ struct ConsoleView: View {
         .fullScreenCover(isPresented: $model.showRouteMap) {
             RouteMapSheet().environmentObject(model)
         }
+        .fullScreenCover(isPresented: $model.showChart) {
+            ChartSheet().environmentObject(model)
+        }
         .animation(.easeInOut(duration: 0.25), value: model.theme)
         .onAppear {
             // Bridge a finished download back to the model so it can load a model that wasn't
