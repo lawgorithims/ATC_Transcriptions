@@ -32,7 +32,6 @@ struct RouteMapSheet: View {
             }
             .mapStyle(hybrid ? .hybrid(elevation: .flat)
                              : .standard(elevation: .flat, pointsOfInterest: .excludingAll))
-            .annotationTitles(.hidden)          // labels are drawn inside each annotation's content
             .mapControls { MapCompass(); MapScaleView() }
             .overlay(alignment: .center) {
                 if loading {
@@ -68,25 +67,23 @@ struct RouteMapSheet: View {
                 .stroke(Self.routeMagenta, style: StrokeStyle(lineWidth: 3, lineJoin: .round))
         }
         ForEach(route) { leg in
-            Annotation(leg.ident, coordinate: leg.coord.clCoordinate, anchor: .center) {
-                waypointMarker(leg)
+            Annotation("", coordinate: leg.coord.clCoordinate, anchor: .center) {
+                waypointMarker(leg)   // ident is drawn inside the marker
             }
         }
     }
 
     @MapContentBuilder private var trafficContent: some MapContent {
-        ForEach(model.aircraft) { ac in
-            if let c = ac.coordinate {
-                Annotation(ac.label ?? ac.hex, coordinate: c.clCoordinate, anchor: .center) {
-                    trafficMarker(ac)
-                }
+        ForEach(model.aircraft.filter { $0.coordinate != nil }) { ac in
+            Annotation("", coordinate: ac.coordinate!.clCoordinate, anchor: .center) {
+                trafficMarker(ac)   // callsign is drawn inside the marker
             }
         }
     }
 
     @MapContentBuilder private var ownshipContent: some MapContent {
         if let own = model.stratuxGPS?.coordinate {
-            Annotation("Ownship", coordinate: own.clCoordinate, anchor: .center) { ownshipMarker }
+            Annotation("", coordinate: own.clCoordinate, anchor: .center) { ownshipMarker }
         }
     }
 
