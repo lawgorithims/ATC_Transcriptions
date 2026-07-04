@@ -32,6 +32,18 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 34, version: "1.0", headline: "Airspace and nearby navaids on the route map",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "hexagon",
+                    title: "Class B, C, and D airspace outlines",
+                    detail: "The route map now draws controlled airspace in the classic sectional colours — solid blue for Class B, magenta for Class C, dashed blue for Class D — so you can see the airspace your route crosses. Zoom in and the outlines fill in around what's in view. It's all built into the app, so it works with no signal."),
+                WhatsNewHighlight(
+                    icon: "point.3.connected.trianglepath.dotted",
+                    title: "Nearby navaids, airports, and leg distances",
+                    detail: "As you zoom in, nearby VOR navaids and airports appear for context alongside your filed waypoints. Open the layers menu (top-right) to toggle airspace or nearby aids, switch to satellite, or open Route details for each leg's distance and true bearing plus the total."),
+            ]),
+        ReleaseNote(
             build: 33, version: "1.0", headline: "See your route and live traffic on a map",
             highlights: [
                 WhatsNewHighlight(
