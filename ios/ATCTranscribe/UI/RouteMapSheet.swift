@@ -355,8 +355,12 @@ struct RouteMapSheet: View {
     /// stays legible; both cap their counts to keep MapKit snappy.
     private func refreshOverlays(region: MKCoordinateRegion) {
         let bb = BBox(region, margin: 0.15)
-        let wantAir = showAirspace && region.span.latitudeDelta < 14
-        let wantNear = showNearby && region.span.latitudeDelta < 5.5
+        // Gate on the true angular scale, not just latitude: an east-west route is narrow in latitude
+        // yet zoomed far out, and would otherwise dump the whole corridor's aids into one cluttered blob.
+        let scale = max(region.span.latitudeDelta,
+                        region.span.longitudeDelta * cos(region.center.latitude * .pi / 180))
+        let wantAir = showAirspace && scale < 14
+        let wantNear = showNearby && scale < 5.5
         let idents = routeIdents
         Task {
             let (rings, near) = await Task.detached(priority: .userInitiated) {
