@@ -410,6 +410,13 @@ final class AppModel: ObservableObject {
         if args.contains("--correct") { correctionEnabled = true }
         if args.contains("--llm") { correctionEnabled = true; llmBackend = .local }
         if args.contains("--llm-foundation") { correctionEnabled = true; llmBackend = .foundation }
+        // Demo / screenshot affordance: seed a sample cross-country plan so the route map has a route
+        // to draw without filing one (every ident resolves in the bundled nav DB). Persists like a
+        // filed plan; harmless otherwise.
+        if args.contains("--demo-flightplan") {
+            flightPlan = FlightPlan(departure: "KBOS", destination: "KDFW", route: ["BOS", "ROBUC", "BLECO"])
+        }
+        if args.contains("--open-route-map") { showRouteMap = true }   // screenshot/demo: open the map at launch
 
         #if targetEnvironment(simulator)
         deviceLabel = "CPU (Simulator)"
