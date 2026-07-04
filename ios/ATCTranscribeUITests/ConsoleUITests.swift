@@ -232,17 +232,14 @@ final class ConsoleUITests: XCTestCase {
 
     // 8. Route map: open the flight-plan strip, tap Map, the full-screen map presents; Done returns.
     func test8_routeMap() {
-        let app = launch(onboardingDismissed: true)
+        // Force the flight-plan strip open (`atc.bar.plan` is a bool default → settable via the launch
+        // argument domain) so its Map button is present deterministically, whatever the persisted state.
+        let app = XCUIApplication()
+        app.launchArguments += ["-atc.onboardingDismissed", "YES", "-atc.bar.plan", "YES"]
+        app.launch()
         XCTAssertTrue(consoleReady(app))
-        // The Map button lives in the collapsible flight-plan strip — open it from the heading
-        // briefcase toggle if it isn't already showing (strip visibility is persisted across runs).
         let mapBtn = app.buttons["flight-plan-map"]
-        if !mapBtn.waitForExistence(timeout: 2) {
-            let bag = app.buttons["flight-bag-button"]
-            XCTAssertTrue(bag.waitForExistence(timeout: 5), "flight-plan heading toggle missing")
-            bag.tap()
-        }
-        XCTAssertTrue(mapBtn.waitForExistence(timeout: 5), "flight-plan Map button missing")
+        XCTAssertTrue(mapBtn.waitForExistence(timeout: 8), "flight-plan Map button missing (strip should be open)")
         mapBtn.tap()
         let done = app.buttons["route-map-done"]
         XCTAssertTrue(done.waitForExistence(timeout: 8), "route map did not present")
