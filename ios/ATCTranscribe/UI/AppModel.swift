@@ -417,6 +417,10 @@ final class AppModel: ObservableObject {
             flightPlan = FlightPlan(departure: "KBOS", destination: "KORD",
                                     route: ["ALB", "SYR", "BUF", "ERI", "DJB", "OBK"])
         }
+        if args.contains("--demo-terminal") {   // screenshot/demo: a short terminal-area plan so the map
+            flightPlan = FlightPlan(departure: "KBOS", destination: "KPVD",   // auto-frames zoomed-in over
+                                    route: ["BOS", "PVD"])                     // Boston Class B + Providence Class C
+        }
         if args.contains("--open-route-map") { showRouteMap = true }   // screenshot/demo: open the map at launch
 
         #if targetEnvironment(simulator)
