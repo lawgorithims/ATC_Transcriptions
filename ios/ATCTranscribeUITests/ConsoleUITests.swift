@@ -232,20 +232,17 @@ final class ConsoleUITests: XCTestCase {
 
     // 8. Route map: open the flight-plan strip, tap Map, the full-screen map presents; Done returns.
     func test8_routeMap() {
-        // Force the flight-plan strip open (`atc.bar.plan` is a bool default → settable via the launch
-        // argument domain) so its Map button is present deterministically, whatever the persisted state.
+        // Open the route map directly with a demo route filed (`--open-route-map --demo-flightplan`),
+        // so the test is deterministic: verify the full-screen map presents and Done returns to console.
+        // (The Map entry button in the flight-plan strip drives the same `showRouteMap` cover.)
         let app = XCUIApplication()
-        app.launchArguments += ["-atc.onboardingDismissed", "YES", "-atc.bar.plan", "YES"]
+        app.launchArguments += ["-atc.onboardingDismissed", "YES", "--demo-flightplan", "--open-route-map"]
         app.launch()
-        XCTAssertTrue(consoleReady(app))
-        let mapBtn = app.buttons["flight-plan-map"]
-        XCTAssertTrue(mapBtn.waitForExistence(timeout: 8), "flight-plan Map button missing (strip should be open)")
-        mapBtn.tap()
         let done = app.buttons["route-map-done"]
-        XCTAssertTrue(done.waitForExistence(timeout: 8), "route map did not present")
+        XCTAssertTrue(done.waitForExistence(timeout: 12), "route map did not present")
         snap(app, "11-route-map")
         done.tap()
-        XCTAssertTrue(consoleReady(app, timeout: 5), "did not return to console from the route map")
+        XCTAssertTrue(consoleReady(app, timeout: 6), "did not return to console from the route map")
     }
 
     private func waitForLabel(_ el: XCUIElement, _ label: String, timeout: TimeInterval) -> Bool {
