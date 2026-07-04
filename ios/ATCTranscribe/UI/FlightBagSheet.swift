@@ -96,7 +96,16 @@ struct FlightBagSheet: View {
             .background(p.bg)
             .navigationTitle("Flight bag")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button { model.showRouteMap = true; dismiss() } label: {
+                        Label("Map", systemImage: "map")
+                    }
+                    .accessibilityIdentifier("flight-bag-map")
+                    .accessibilityLabel("View route on map")
+                }
+                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+            }
         }
         .tint(p.accent)
         .preferredColorScheme(model.theme == .day ? .light : .dark)

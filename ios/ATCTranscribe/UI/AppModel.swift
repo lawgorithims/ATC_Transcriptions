@@ -165,6 +165,9 @@ final class AppModel: ObservableObject {
         }
     }
     @Published var showFlightBag = false
+    /// Drives the full-screen route map (`RouteMapSheet`) — the filed route + live traffic. Transient
+    /// (not persisted); opened from the flight-plan strip's Map button or the flight-bag editor.
+    @Published var showRouteMap = false
 
     // "What's new" popup: shown once after the app updates to a newer build (gated on CFBundleVersion
     // vs the persisted `atc.lastSeenBuild`). `whatsNewEntries` holds the release notes the sheet
@@ -407,6 +410,13 @@ final class AppModel: ObservableObject {
         if args.contains("--correct") { correctionEnabled = true }
         if args.contains("--llm") { correctionEnabled = true; llmBackend = .local }
         if args.contains("--llm-foundation") { correctionEnabled = true; llmBackend = .foundation }
+        // Demo / screenshot affordance: seed a sample cross-country plan so the route map has a route
+        // to draw without filing one (every ident resolves in the bundled nav DB). Persists like a
+        // filed plan; harmless otherwise.
+        if args.contains("--demo-flightplan") {
+            flightPlan = FlightPlan(departure: "KBOS", destination: "KDFW", route: ["BOS", "ROBUC", "BLECO"])
+        }
+        if args.contains("--open-route-map") { showRouteMap = true }   // screenshot/demo: open the map at launch
 
         #if targetEnvironment(simulator)
         deviceLabel = "CPU (Simulator)"
