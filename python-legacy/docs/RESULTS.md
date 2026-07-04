@@ -25,6 +25,36 @@ end: beam search on Whisper for short noisy ATC clips (measured 48.9% vs
 greedy 22.8% canon on small-us) — greedy + temperature fallback is optimal
 for the Whisper path.
 
+## Architecture bake-off — non-Whisper models on gold v0 (2026-07-04)
+
+Zero-shot / cross-domain runs (NOT the fair fight — different training data;
+the fair fight is the same-data fine-tune, queued):
+
+| model | arch | params | canonWER | CSA | sub/INS/DEL |
+|---|---|---|---|---|---|
+| whisper_lv3_stock | AED (zero-shot) | 1.5B | 19.6% | 82.4% | 8.6 / **7.0** / 4.0 |
+| whisper_turbo_us | AED (US FT) | 809M | 20.2% | 80.4% | 11.1 / 3.7 / 5.5 |
+| whisper_small_us | AED (US FT) | 244M | 22.8% | 74.5% | 12.8 / 4.9 / 5.0 |
+| parakeet_tdt06b_zs | transducer (zero-shot, int8) | 600M | 49.3% | 43.1% | 18.4 / 5.5 / **25.4** |
+| w2v2_ls960_atc_eur | SSL+CTC (EUR-ATC FT) | 317M | 55.5% | 17.6% | 26.7 / 2.5 / **26.2** |
+| w2v2_xlsr_atc_eur | SSL+CTC (EUR-ATC FT) | 300M | 74.0% | 0.0% | — |
+
+What this establishes:
+1. **Domain match dominates architecture.** wav2vec2-CTC fine-tuned on
+   EUROPEAN ATC (16.9% WER at home on UWB-ATCC) collapses to 55-74% on US
+   radio. Architecture arguments are second-order next to US training data.
+2. **Failure modes are structural, as the literature says.** AED (Whisper)
+   over-generates — insertions/hallucination (stock lv3 7.0% INS; US
+   fine-tuning halves it). Transducer/CTC under-generate — they go quiet on
+   hard audio (25%+ DEL, near-zero invention). For a safety display,
+   "no transcript" beats a confident wrong one — but only once substitutions
+   are fixed by domain training.
+3. **Whisper's zero-shot robustness is real** (680k-h weak supervision): every
+   non-Whisper model collapsed on US radio audio without US training.
+4. Next: the fair fight — fine-tune Parakeet-TDT / Zipformer AND
+   whisper-small on the SAME 15.4 h US set, score here incl. CSA with
+   decode-time hotword biasing on the transducer arm.
+
 ## Reading this table (gold v0, 2026-07-03)
 
 - These are the HONEST numbers on real US LiveATC audio. The repo's legacy
