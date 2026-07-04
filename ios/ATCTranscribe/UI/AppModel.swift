@@ -165,6 +165,9 @@ final class AppModel: ObservableObject {
         }
     }
     @Published var showFlightBag = false
+    /// Drives the full-screen route map (`RouteMapSheet`) — the filed route + live traffic. Transient
+    /// (not persisted); opened from the flight-plan strip's Map button or the flight-bag editor.
+    @Published var showRouteMap = false
 
     // "What's new" popup: shown once after the app updates to a newer build (gated on CFBundleVersion
     // vs the persisted `atc.lastSeenBuild`). `whatsNewEntries` holds the release notes the sheet
