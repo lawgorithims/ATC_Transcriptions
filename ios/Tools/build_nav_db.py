@@ -50,13 +50,14 @@ def parse_dms(s):
     return -v if s[-1] in "SW" else v
 
 
-def add(table, ident, lat, lon):
+def add(table, ident, lat, lon, t):
+    """t: kind code — 0=airport, 1=navaid (VOR/NDB/…), 2=enroute fix."""
     ident = (ident or "").strip().upper()
     if not ident or lat is None or lon is None:
         return
     if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
         return
-    pair = [round(lat, 5), round(lon, 5)]
+    pair = [round(lat, 5), round(lon, 5), t]
     lst = table.setdefault(ident, [])
     if pair not in lst:
         lst.append(pair)
@@ -83,7 +84,7 @@ def main():
         if not keep:
             continue
         try:
-            add(table, ident, float(r["latitude_deg"]), float(r["longitude_deg"]))
+            add(table, ident, float(r["latitude_deg"]), float(r["longitude_deg"]), 0)
             n_apt += 1
         except (ValueError, KeyError):
             pass
@@ -95,7 +96,7 @@ def main():
         if r["type"] not in NAVAID_TYPES:
             continue
         try:
-            add(table, r["ident"], float(r["latitude_deg"]), float(r["longitude_deg"]))
+            add(table, r["ident"], float(r["latitude_deg"]), float(r["longitude_deg"]), 1)
             n_nav += 1
         except (ValueError, KeyError):
             pass
@@ -112,7 +113,7 @@ def main():
         for raw in io.TextIOWrapper(fh, encoding="latin-1"):
             if not raw.startswith("FIX1"):
                 continue
-            add(table, raw[4:34], parse_dms(raw[66:80]), parse_dms(raw[80:94]))
+            add(table, raw[4:34], parse_dms(raw[66:80]), parse_dms(raw[80:94]), 2)
             n_fix += 1
 
     out = os.path.abspath(args.out)
