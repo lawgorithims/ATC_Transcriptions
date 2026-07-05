@@ -324,12 +324,24 @@ struct ChartMapView: UIViewRepresentable {
             mv.addAnnotations(dynamic)
         }
 
-        static let traffic: UIImage? = UIImage(systemName: "airplane")?
-            .withConfiguration(UIImage.SymbolConfiguration(pointSize: 15, weight: .semibold))
-            .withTintColor(.orange, renderingMode: .alwaysOriginal)
-        static let ownPlane: UIImage? = UIImage(systemName: "airplane")?
-            .withConfiguration(UIImage.SymbolConfiguration(pointSize: 20, weight: .bold))
-            .withTintColor(.systemCyan, renderingMode: .alwaysOriginal)
+        /// A glyph on a filled disc so it reads clearly on any chart background (a bare tinted symbol
+        /// washes out / renders dark over the busy raster).
+        private static func disc(_ symbol: String, glyph: UIColor, fill: UIColor, pt: CGFloat, d: CGFloat) -> UIImage {
+            let cfg = UIImage.SymbolConfiguration(pointSize: pt, weight: .black)
+            let img = (UIImage(systemName: symbol, withConfiguration: cfg) ?? UIImage())
+                .withTintColor(glyph, renderingMode: .alwaysOriginal)
+            let size = CGSize(width: d, height: d)
+            return UIGraphicsImageRenderer(size: size).image { _ in
+                fill.setFill()
+                UIBezierPath(ovalIn: CGRect(origin: .zero, size: size).insetBy(dx: 1, dy: 1)).fill()
+                UIColor.white.withAlphaComponent(0.9).setStroke()
+                let ring = UIBezierPath(ovalIn: CGRect(origin: .zero, size: size).insetBy(dx: 1, dy: 1)); ring.lineWidth = 1.5; ring.stroke()
+                img.draw(in: CGRect(x: (d - img.size.width) / 2, y: (d - img.size.height) / 2,
+                                    width: img.size.width, height: img.size.height))
+            }
+        }
+        static let traffic: UIImage = disc("airplane", glyph: .white, fill: .systemOrange, pt: 13, d: 26)
+        static let ownPlane: UIImage = disc("airplane", glyph: .white, fill: .systemBlue, pt: 16, d: 32)
     }
 }
 
