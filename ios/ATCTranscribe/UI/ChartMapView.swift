@@ -206,23 +206,24 @@ struct ChartMapView: UIViewRepresentable {
         mv.showsCompass = true
         mv.showsUserLocation = true                       // "your plane" from the device GPS
         context.coordinator.requestLocation()
-
-        if route.count >= 2 {
-            let coords = route.map { $0.coord.clCoordinate }
-            let line = MKPolyline(coordinates: coords, count: coords.count)
-            mv.addOverlay(line, level: .aboveLabels)       // route stays above the chart (chart inserted at 0)
-            mv.addAnnotations(route.map { WaypointAnnotation($0) })
-            mv.setVisibleMapRect(line.boundingMapRect,
-                                 edgePadding: .init(top: 90, left: 40, bottom: 96, right: 40), animated: false)
-        } else if let reader {
-            mv.setVisibleMapRect(reader.bounds, edgePadding: .init(top: 24, left: 24, bottom: 24, right: 24), animated: false)
-        }
+        // Provisional CONUS region until the route/chart resolves (avoids a default world/Europe flash);
+        // the route + chart arrive asynchronously and are added/framed in updateUIView.
+        mv.setRegion(MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: 39, longitude: -96),
+                                        span: MKCoordinateSpan(latitudeDelta: 42, longitudeDelta: 55)), animated: false)
         return mv
     }
 
     func updateUIView(_ mv: MKMapView, context: Context) {
         let c = context.coordinator
         if mv.mapType != layer.mapType { mv.mapType = layer.mapType }
+
+        // The route resolves after makeUIView; add its line + waypoints once it's available.
+        if !c.routeAdded, route.count >= 2 {
+            let coords = route.map { $0.coord.clCoordinate }
+            mv.addOverlay(MKPolyline(coordinates: coords, count: coords.count), level: .aboveLabels)
+            mv.addAnnotations(route.map { WaypointAnnotation($0) })
+            c.routeAdded = true
+        }
         if c.chartReader !== reader {                      // layer changed → swap the raster overlay
             if let old = c.chartOverlay { mv.removeOverlay(old); c.chartOverlay = nil }
             if let reader {
@@ -232,12 +233,26 @@ struct ChartMapView: UIViewRepresentable {
             }
             c.chartReader = reader
         }
+        // Frame once — to the route if filed, else to the chart's coverage.
+        if !c.didFrame {
+            if route.count >= 2 {
+                let coords = route.map { $0.coord.clCoordinate }
+                mv.setVisibleMapRect(MKPolyline(coordinates: coords, count: coords.count).boundingMapRect,
+                                     edgePadding: .init(top: 90, left: 40, bottom: 96, right: 40), animated: false)
+                c.didFrame = true
+            } else if let reader {
+                mv.setVisibleMapRect(reader.bounds, edgePadding: .init(top: 24, left: 24, bottom: 24, right: 24), animated: false)
+                c.didFrame = true
+            }
+        }
         c.syncDynamic(mv, aircraft: model.aircraft, ownship: model.stratuxGPS?.coordinate)
     }
 
     final class Coordinator: NSObject, MKMapViewDelegate, CLLocationManagerDelegate {
         var chartOverlay: MBTilesTileOverlay?
         var chartReader: MBTilesReader?
+        var routeAdded = false
+        var didFrame = false
         private var dynamic: [MKAnnotation] = []
         private let loc = CLLocationManager()
 
