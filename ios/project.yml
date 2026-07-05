@@ -94,6 +94,9 @@ targets:
         # to 192.168.x.x). NSAllowsLocalNetworking is scoped to LOCAL hosts, so non-local loads are
         # unaffected.
         NSLocalNetworkUsageDescription: "CommSight connects to a Stratux receiver on your local Wi-Fi to receive live cockpit audio, aircraft traffic, and GPS."
+        # Shows your aircraft's position on the chart map from the device GPS (in addition to a Stratux
+        # fix when connected). Optional — the chart works without it.
+        NSLocationWhenInUseUsageDescription: "CommSight shows your aircraft's position on the chart map using your device's GPS."
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
         UIBackgroundModes:
