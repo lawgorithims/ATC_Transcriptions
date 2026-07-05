@@ -1,0 +1,13 @@
+# Secrets — the HF token is read from $HF_TOKEN / ~/.hf_token, never committed.
+.hf_token
+*.token
+
+# Build artifacts (charts are built on a host, distributed via HuggingFace — not git).
+*.mbtiles
+*.tif
+*.vrt
+work/
+warp/
+mbtiles/
+hf_cache/
+aviationCharts/
