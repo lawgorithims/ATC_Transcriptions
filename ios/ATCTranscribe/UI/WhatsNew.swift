@@ -32,6 +32,22 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 35, version: "1.0", headline: "Real FAA sectional & IFR charts — offline",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "map.fill",
+                    title: "See the actual FAA charts under your route",
+                    detail: "The route map now has a chart layer. Open the layers menu → FAA sectional chart, then switch between the real VFR sectional, the IFR low-enroute chart, and standard/satellite. These are the official FAA charts — airspace, frequencies, navaids, terrain, airways — the same ones you'd fly with."),
+                WhatsNewHighlight(
+                    icon: "arrow.down.circle",
+                    title: "Only downloads the charts your route crosses — then works offline",
+                    detail: "CommSight fetches just the sectionals and IFR charts your filed route passes through, caches them, and renders them with no signal — so the chart is there in the cockpit. File a plan, open the chart, and the right charts load automatically. It's all self-hosted from FAA public-domain data."),
+                WhatsNewHighlight(
+                    icon: "location.north.circle.fill",
+                    title: "Your aircraft and waypoints on the chart",
+                    detail: "Your position (from the device GPS, or a connected Stratux) shows as a plane on the chart, with your filed route drawn through its waypoints and live ADS-B traffic around you."),
+            ]),
+        ReleaseNote(
             build: 34, version: "1.0", headline: "Airspace and nearby navaids on the route map",
             highlights: [
                 WhatsNewHighlight(
