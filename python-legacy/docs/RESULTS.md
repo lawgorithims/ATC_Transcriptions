@@ -39,6 +39,28 @@ the fair fight is the same-data fine-tune, queued):
 | w2v2_ls960_atc_eur | SSL+CTC (EUR-ATC FT) | 317M | 55.5% | 17.6% | 26.7 / 2.5 / **26.2** |
 | w2v2_xlsr_atc_eur | SSL+CTC (EUR-ATC FT) | 300M | 74.0% | 0.0% | — |
 
+**Zipformer fine-tune PoC (2026-07-05, M4/MPS, pure-PyTorch CTC — no k2):**
+`zipctc_us_ft` = zipformer-medium-CR-CTC (66M, LibriSpeech) fine-tuned 8
+effective epochs on the same 5,139-clip / 15.4h US pseudo-label set
+(gold-window held out), greedy CTC, no augmentation, no LM:
+
+| model | params | canonWER | CSA | falseCS |
+|---|---|---|---|---|
+| zipctc zero-shot | 66M | 71.1% | 13.7% | 9.8% |
+| **zipctc US-FT** | 66M | **35.8%** | 43.1% | **43.1%** |
+| whisper-small-us | 244M | 22.8% | 74.5% | 13.7% |
+
+Read: the encoder adapts hard (−35 pts from 15.4 h) and trains fine on Apple
+silicon, but at current data scale Whisper's 680k-h pretraining still wins
+decisively, and naive CTC greedy is BAD on the safety metric (43% false
+callsigns — mangled-but-extractable words). Conclusion: the transducer path's
+case rests on (a) T2 data scale (100 h+), (b) decode-time hotword biasing
+(which attacks exactly the falseCS failure), (c) a real icefall recipe
+(ScaledAdam, SpecAugment, transducer head) on a GPU box. Decision deferred to
+the T2 gate, per plan. Training-on-M4 recipe + gotchas: `zipctc.py` (session
+scratchpad; k2 Swoosh shim must use F.softplus — logaddexp's MPS kernel emits
+intermittent NaNs; Balancer/Whiten may stay enabled; bucket AUDIO not features).
+
 What this establishes:
 1. **Domain match dominates architecture.** wav2vec2-CTC fine-tuned on
    EUROPEAN ATC (16.9% WER at home on UWB-ATCC) collapses to 55-74% on US
