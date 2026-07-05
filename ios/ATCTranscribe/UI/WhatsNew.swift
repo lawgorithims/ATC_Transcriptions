@@ -32,6 +32,18 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 36, version: "1.0", headline: "Pan the chart anywhere — now covering the whole country",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "hand.draw",
+                    title: "Free-pan chart loading",
+                    detail: "You're no longer limited to your filed route — pan and zoom the chart map anywhere in the country and CommSight loads that area's sectional or IFR chart automatically, then keeps it for offline. It only fetches charts where you actually look, so it stays light on data."),
+                WhatsNewHighlight(
+                    icon: "checkmark.seal",
+                    title: "Complete nationwide coverage",
+                    detail: "Every conterminous-US sectional and IFR-low enroute chart is now available, including the Dallas–Fort Worth sectional and the last IFR gaps. Charts are cached per 28-day cycle and refresh automatically when a new cycle publishes, so you're never reading an expired chart."),
+            ]),
+        ReleaseNote(
             build: 35, version: "1.0", headline: "Real FAA sectional & IFR charts — offline",
             highlights: [
                 WhatsNewHighlight(
