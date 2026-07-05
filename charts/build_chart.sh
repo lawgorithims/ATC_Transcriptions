@@ -43,7 +43,10 @@ case "$type" in
     mb="${OUT}/${name}_SEC.mbtiles"
     if [ -z "${FROM_TIF:-}" ]; then
       zip="${WORK}/${name}.zip"; dir="${WORK}/${name}"
-      url="https://aeronav.faa.gov/visual/${CYCLE}/sectional-files/${name}.zip"
+      # FAA sectional zip names carry the chart title's hyphen where our clip/pack names use underscores
+      # (clip Dallas_Ft_Worth_SEC.shp ↔ download Dallas-Ft_Worth.zip). Map the known exceptions.
+      urlname="$name"; case "$name" in Dallas_Ft_Worth) urlname="Dallas-Ft_Worth" ;; esac
+      url="https://aeronav.faa.gov/visual/${CYCLE}/sectional-files/${urlname}.zip"
       [ -s "$zip" ] || { echo "↓ $url"; curl -fsS -A "$UA" -o "$zip" "$url"; }
       mkdir -p "$dir"; unzip -o -q "$zip" -d "$dir"
       src="$(ls "$dir"/*.tif | head -1)"
@@ -61,15 +64,20 @@ esac
 
 echo "▸ $name : $(basename "$src")  clip=$(basename "$clip")"
 
-# 1) Expand the paletted chart to RGBA (as a cheap VRT), so tiles come out full-colour + alpha.
-rgba="${WORK}/${name}.rgba.vrt"
-gdal_translate -q -of vrt -expand rgba "$src" "$rgba"
+# 1) Paletted charts (VFR sectionals) expand to RGBA so tiles come out full-colour + alpha; RGB charts
+#    (IFR enroute) have no colour table, so they instead get an alpha band added during the warp.
+if gdalinfo "$src" 2>/dev/null | grep -q "Color Table"; then
+  warpsrc="${WORK}/${name}.rgba.vrt"; dstalpha=""
+  gdal_translate -q -of vrt -expand rgba "$src" "$warpsrc"
+else
+  warpsrc="$src"; dstalpha="-dstalpha"
+fi
 
 # 2) Reproject to Web Mercator and crop to the chart neatline; outside-cutline pixels become
 #    transparent (alpha 0) so adjacent charts show through — the seamless-mosaic trick.
-gdalwarp -q -t_srs EPSG:3857 -r bilinear -co TILED=YES -co COMPRESS=DEFLATE \
+gdalwarp -q -t_srs EPSG:3857 -r bilinear -co TILED=YES -co COMPRESS=DEFLATE $dstalpha \
   -cutline "$clip" -crop_to_cutline -wo CUTLINE_ALL_TOUCHED=TRUE -multi -overwrite \
-  "$rgba" "$warp"
+  "$warpsrc" "$warp"
 echo "  warped → $warp ($(du -h "$warp" | cut -f1))"
 
 if [ "$mode" = "warp" ]; then echo "  (warp-only; mosaic step will consume $warp)"; exit 0; fi

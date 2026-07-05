@@ -46,6 +46,14 @@ final class MBTilesReader {
         }
     }
 
+    /// Integrity check used after a download — a truncated-but-openable SQLite has no tile rows.
+    var hasTiles: Bool {
+        var st: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "select 1 from tiles limit 1", -1, &st, nil) == SQLITE_OK else { return false }
+        defer { sqlite3_finalize(st) }
+        return sqlite3_step(st) == SQLITE_ROW
+    }
+
     func tileData(z: Int, x: Int, y: Int) -> Data? {
         let tmsY = (1 << z) - 1 - y
         var st: OpaquePointer?
@@ -86,7 +94,7 @@ final class MBTilesTileOverlay: MKTileOverlay {
 
 /// The manifest of every published chart pack (built by `charts/build_all_packs.sh`), fetched once
 /// from HuggingFace. Each entry carries its geographic bounds so the app can pick the packs a route
-/// crosses and download only those.
+/// crosses — or the packs under wherever you've panned — and download only those.
 struct ChartCatalog: Decodable {
     let cycle: String
     let sectional: [Entry]
@@ -108,12 +116,6 @@ struct ChartCatalog: Decodable {
             return MKMapRect(x: min(sw.x, ne.x), y: min(sw.y, ne.y), width: abs(ne.x - sw.x), height: abs(ne.y - sw.y))
         }
         var remote: URL { URL(string: "\(ChartCatalog.base)/\(path)")! }
-        var localURL: URL {
-            let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-                .appendingPathComponent("charts", isDirectory: true)
-            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-            return dir.appendingPathComponent("\(id).mbtiles")
-        }
     }
 
     static let base = "https://huggingface.co/datasets/SingularityUS/faa-charts/resolve/main"
@@ -121,7 +123,7 @@ struct ChartCatalog: Decodable {
 }
 
 /// A selectable base layer. `standard`/`satellite` are Apple's base map; the FAA layers are our
-/// self-hosted raster charts (route-aware packs downloaded from HuggingFace, then offline).
+/// self-hosted raster charts (packs downloaded on demand from HuggingFace, then offline).
 enum ChartLayer: String, CaseIterable, Identifiable {
     case sectional, ifrLow, standard, satellite
     var id: String { rawValue }
@@ -144,52 +146,173 @@ enum ChartLayer: String, CaseIterable, Identifiable {
         guard let i = a.firstIndex(of: "--chart-layer"), i + 1 < a.count else { return nil }
         switch a[i + 1] { case "ifr": return .ifrLow; case "sat": return .satellite; case "std": return .standard; case "vfr": return .sectional; default: return nil }
     }
+    /// Screenshot/demo: `--chart-center lat,lon` opens the chart framed there (tests free-pan loading
+    /// with no filed route).
+    static var launchCenter: CLLocationCoordinate2D? {
+        let a = ProcessInfo.processInfo.arguments
+        guard let i = a.firstIndex(of: "--chart-center"), i + 1 < a.count else { return nil }
+        let p = a[i + 1].split(separator: ",").compactMap { Double($0) }
+        guard p.count == 2 else { return nil }
+        return CLLocationCoordinate2D(latitude: p[0], longitude: p[1])
+    }
 }
 
-// MARK: - Store (catalog + route-aware download)
+/// Grow a map rect by `f`× its size on every side (used for the "keep loaded" halo around the view).
+private func inflated(_ r: MKMapRect, by f: Double) -> MKMapRect {
+    MKMapRect(x: r.minX - r.width * f, y: r.minY - r.height * f, width: r.width * (1 + 2 * f), height: r.height * (1 + 2 * f))
+}
 
-/// Fetches the catalog, works out which packs a route crosses for the chosen layer, downloads the
-/// missing ones (cached for offline), and hands out their `MBTilesReader`s. Readers are memoised, so
-/// revisiting a layer/route is instant.
+// MARK: - Store (catalog + route + free-pan download, bounded)
+
+/// Fetches the catalog and loads chart packs on demand: the packs a filed route crosses (up front,
+/// ungated, pinned) plus the packs under wherever the map is panned/zoomed (free-pan, gated so we
+/// never mass-download when zoomed out). Bounded: packs that drift far from the view and aren't on the
+/// route are evicted (their SQLite connection closes). Downloads are de-duped, integrity-checked, and
+/// cycle-stamped so a new 28-day chart cycle forces a fresh download. All state mutated on the main actor.
 @MainActor final class ChartStore: ObservableObject {
-    enum Phase: Equatable { case idle, loadingCatalog, downloading(Int, Int), ready, empty, failed(String) }
+    enum Phase: Equatable { case idle, loadingCatalog, downloading, ready, empty, zoomOut, failed(String) }
     @Published var phase: Phase = .idle
     @Published private(set) var readers: [MBTilesReader] = []
+
     private var catalog: ChartCatalog?
-    private var cache: [String: MBTilesReader] = [:]
+    private var cycle = ""
+    private var loaded: [String: (entry: ChartCatalog.Entry, reader: MBTilesReader)] = [:]  // current layer
+    private var pinned: Set<String> = []          // route-corridor packs — never evicted
+    private var inFlight: Set<String> = []
+    private var layer: ChartLayer = .sectional
 
-    func select(_ layer: ChartLayer, routeRect: MKMapRect?) async {
-        if !layer.isRaster { readers = []; phase = .ready; return }               // Apple base map
-        if catalog == nil {
-            phase = .loadingCatalog
-            do {
-                let (data, resp) = try await URLSession.shared.data(from: ChartCatalog.url)
-                guard (resp as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
-                catalog = try JSONDecoder().decode(ChartCatalog.self, from: data)
-            } catch { readers = []; phase = .failed(error.localizedDescription); return }
-        }
-        guard let routeRect else { readers = []; phase = .empty; return }          // no filed route → nothing to pick
-        // The corridor: the route's bounding rect grown a bit so charts just off the line still load.
-        let pad = MKMapRect(x: routeRect.minX - routeRect.width * 0.2 - 30_000,
-                            y: routeRect.minY - routeRect.height * 0.2 - 30_000,
-                            width: routeRect.width * 1.4 + 60_000, height: routeRect.height * 1.4 + 60_000)
-        let needed = layer.entries(catalog).filter { $0.mapRect.intersects(pad) }
-        if needed.isEmpty { readers = []; phase = .empty; return }
+    private let autoLoadSpanLimit = 7.0           // ° — beyond this (zoomed out) free-pan waits
+    private let keepHalo = 1.0                     // keep packs within this many view-widths of the view
 
-        var got: [MBTilesReader] = []
-        for (k, e) in needed.enumerated() {
-            phase = .downloading(k, needed.count)
-            if let r = cache[e.id] ?? MBTilesReader(path: e.localURL.path) { cache[e.id] = r; got.append(r); continue }
-            do {
-                let (tmp, resp) = try await URLSession.shared.download(from: e.remote)
-                guard (resp as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
-                try? FileManager.default.removeItem(at: e.localURL)
-                try FileManager.default.moveItem(at: tmp, to: e.localURL)
-                if let r = MBTilesReader(path: e.localURL.path) { cache[e.id] = r; got.append(r) }
-            } catch { /* skip this pack; keep going so a single failure doesn't sink the route */ }
+    private func publish() { readers = loaded.values.map { $0.reader } }
+
+    /// On-disk name carries the AIRAC cycle so a new cycle can't be served from a stale cached file.
+    private func localURL(_ e: ChartCatalog.Entry) -> URL {
+        let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("charts", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("\(e.id)-\(cycle).mbtiles")
+    }
+
+    private func ensureCatalog() async -> Bool {
+        if catalog != nil { return true }
+        if phase != .loadingCatalog { phase = .loadingCatalog }
+        do {
+            let (data, resp) = try await URLSession.shared.data(from: ChartCatalog.url)
+            guard (resp as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
+            let cat = try JSONDecoder().decode(ChartCatalog.self, from: data)
+            catalog = cat; cycle = cat.cycle
+            pruneOldCycleFiles()
+            return true
+        } catch {
+            phase = .failed(error.localizedDescription)
+            return false
         }
-        readers = got
-        phase = got.isEmpty ? .failed("Couldn't download charts for this route.") : .ready
+    }
+
+    /// Delete cached packs from previous cycles so the pilot never reads an expired chart off disk.
+    private func pruneOldCycleFiles() {
+        let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("charts", isDirectory: true)
+        guard let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else { return }
+        for f in files where f.pathExtension == "mbtiles" && !f.lastPathComponent.hasSuffix("-\(cycle).mbtiles") {
+            try? FileManager.default.removeItem(at: f)
+        }
+    }
+
+    /// Switch layer (or initial load): reset all per-layer state and pull the packs the route crosses.
+    func setLayer(_ newLayer: ChartLayer, routeRects: [MKMapRect]) async {
+        layer = newLayer
+        loaded.removeAll(); pinned.removeAll(); inFlight.removeAll(); publish()
+        guard newLayer.isRaster else { phase = .ready; return }
+        guard await ensureCatalog(), layer == newLayer else { return }
+        if !routeRects.isEmpty {
+            await load(rects: routeRects, gated: false, pin: true)   // route corridor, up front, pinned
+        } else {
+            phase = .empty
+        }
+    }
+
+    /// Free-pan: ensure the packs under the visible region are loaded (gated by zoom/scope so panning
+    /// around at a wide zoom doesn't mass-download), and evict packs that have drifted away.
+    func ensureVisible(_ rect: MKMapRect, layer visibleLayer: ChartLayer) async {
+        guard visibleLayer == layer, layer.isRaster, await ensureCatalog(), visibleLayer == layer else { return }
+        await load(rects: [rect], gated: true, pin: false)
+    }
+
+    private func load(rects: [MKMapRect], gated: Bool, pin: Bool) async {
+        guard let catalog, let primary = rects.first else { return }
+        let activeLayer = layer
+        if gated {
+            let span = MKCoordinateRegion(primary).span
+            if span.latitudeDelta > autoLoadSpanLimit || span.longitudeDelta > autoLoadSpanLimit {
+                evict(near: rects)
+                if loaded.isEmpty, inFlight.isEmpty, layer == activeLayer { phase = .zoomOut }
+                return
+            }
+        }
+        var todo = layer.entries(catalog).filter { e in
+            loaded[e.id] == nil && !inFlight.contains(e.id) && rects.contains { e.mapRect.intersects($0) }
+        }
+        // Load in batches of 6 so a single pan never mass-downloads; if truncated we self-drive the rest.
+        let truncated = gated && todo.count > 6
+        if truncated { todo = Array(todo.prefix(6)) }
+        guard !todo.isEmpty else {
+            evict(near: rects)
+            if inFlight.isEmpty, layer == activeLayer { phase = loaded.isEmpty ? (gated ? .zoomOut : .empty) : .ready }
+            return
+        }
+        todo.forEach { inFlight.insert($0.id) }
+        phase = .downloading
+        var anyFailed = false
+        for e in todo {
+            if layer != activeLayer { return }                 // a layer switch superseded us — abort
+            var reader = MBTilesReader(path: localURL(e).path)  // cached-on-disk hit (no re-download)
+            if reader == nil { reader = await downloadPack(e) }
+            inFlight.remove(e.id)
+            if let reader, layer == activeLayer, loaded[e.id] == nil {
+                loaded[e.id] = (e, reader)
+                if pin { pinned.insert(e.id) }
+                publish()
+            } else if reader == nil {
+                anyFailed = true
+            }
+        }
+        evict(near: rects)
+        // A stationary map fires no more regionDidChange, so drive the next batch ourselves until the
+        // region is fully served (dedup shrinks todo by 6 each pass → terminates).
+        if truncated, layer == activeLayer {
+            await load(rects: rects, gated: gated, pin: pin)
+            return
+        }
+        if inFlight.isEmpty, layer == activeLayer {
+            phase = !loaded.isEmpty ? .ready : (anyFailed ? .failed("Chart download failed") : (gated ? .zoomOut : .empty))
+        }
+    }
+
+    /// Bound memory: close packs that are neither pinned (on the route) nor near the current view.
+    private func evict(near rects: [MKMapRect]) {
+        let halos = rects.map { inflated($0, by: keepHalo) }
+        let stale = loaded.filter { pair in
+            !pinned.contains(pair.key) && !halos.contains(where: { pair.value.entry.mapRect.intersects($0) })
+        }.map { $0.key }
+        guard !stale.isEmpty else { return }
+        for id in stale { loaded[id] = nil }                    // readers deinit → sqlite3_close
+        publish()
+    }
+
+    private func downloadPack(_ e: ChartCatalog.Entry) async -> MBTilesReader? {
+        do {
+            let (tmp, resp) = try await URLSession.shared.download(from: e.remote)
+            guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+            let dst = localURL(e)
+            try? FileManager.default.removeItem(at: dst)
+            try FileManager.default.moveItem(at: tmp, to: dst)
+            guard let r = MBTilesReader(path: dst.path), r.hasTiles else {   // integrity: openable + has tiles
+                try? FileManager.default.removeItem(at: dst)
+                return nil
+            }
+            return r
+        } catch { return nil }
     }
 }
 
@@ -197,12 +320,13 @@ enum ChartLayer: String, CaseIterable, Identifiable {
 
 /// The chart map: the selected base layer (one or more seamless FAA raster packs, or Apple's map) with
 /// the filed route (magenta line + waypoints), your aircraft's live position (device GPS + Stratux),
-/// and ADS-B traffic. Uses `MKMapView` (SwiftUI's `Map` can't host tile overlays). The raster charts
-/// already show airspace/navaids/frequencies, so only the dynamic + route bits are overlaid.
+/// and ADS-B traffic. As you pan/zoom, `onVisibleRegion` asks the store to load the charts under the
+/// new area (free-pan). Uses `MKMapView` (SwiftUI's `Map` can't host tile overlays).
 struct ChartMapView: UIViewRepresentable {
     let layer: ChartLayer
     let readers: [MBTilesReader]
     let route: [ResolvedLeg]
+    let onVisibleRegion: (MKMapRect) -> Void
     @ObservedObject var model: AppModel
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -212,7 +336,7 @@ struct ChartMapView: UIViewRepresentable {
         mv.delegate = context.coordinator
         mv.pointOfInterestFilter = .excludingAll
         mv.showsCompass = true
-        mv.showsUserLocation = true                       // "your plane" from the device GPS
+        mv.showsUserLocation = true
         context.coordinator.requestLocation()
         mv.setRegion(MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: 39, longitude: -96),
                                         span: MKCoordinateSpan(latitudeDelta: 42, longitudeDelta: 55)), animated: false)
@@ -221,6 +345,7 @@ struct ChartMapView: UIViewRepresentable {
 
     func updateUIView(_ mv: MKMapView, context: Context) {
         let c = context.coordinator
+        c.onVisibleRegion = onVisibleRegion
         if mv.mapType != layer.mapType { mv.mapType = layer.mapType }
 
         if !c.routeAdded, route.count >= 2 {              // route resolves after makeUIView
@@ -232,29 +357,27 @@ struct ChartMapView: UIViewRepresentable {
             c.routeAdded = true
         }
 
-        let ids = Set(readers.map(ObjectIdentifier.init))
-        if ids != c.chartReaderIDs {                      // packs/layer changed → swap raster overlays
-            c.chartOverlays.forEach { mv.removeOverlay($0) }
-            c.chartOverlays = readers.map { MBTilesTileOverlay(reader: $0) }
-            for ov in c.chartOverlays {                   // keep charts beneath the route line
-                if let ro = c.routeOverlay { mv.insertOverlay(ov, below: ro) } else { mv.addOverlay(ov, level: .aboveLabels) }
-            }
-            c.chartReaderIDs = ids
+        // Incrementally reconcile the raster overlays to `readers` (they come and go as you pan).
+        let want = Set(readers.map(ObjectIdentifier.init))
+        for (rid, ov) in c.overlays where !want.contains(rid) { mv.removeOverlay(ov); c.overlays[rid] = nil }
+        for r in readers {
+            let rid = ObjectIdentifier(r)
+            guard c.overlays[rid] == nil else { continue }
+            let ov = MBTilesTileOverlay(reader: r)
+            if let ro = c.routeOverlay { mv.insertOverlay(ov, below: ro) } else { mv.addOverlay(ov, level: .aboveLabels) }
+            c.overlays[rid] = ov
         }
 
         if !c.didFrame {
             if route.count >= 2 {
                 let coords = route.map { $0.coord.clCoordinate }
                 var region = MKCoordinateRegion(MKPolyline(coordinates: coords, count: coords.count).boundingMapRect)
-                // Open at a chart-readable zoom: cap the span so a long cross-country route doesn't open
-                // wider than the raster charts' minimum zoom (which would leave a blank base map). Short
-                // routes still frame tightly; long ones open centered on the route and you pan/zoom.
                 region.span.latitudeDelta = min(region.span.latitudeDelta * 1.3 + 0.1, 4.5)
                 region.span.longitudeDelta = min(region.span.longitudeDelta * 1.3 + 0.1, 5.0)
                 mv.setRegion(region, animated: false)
                 c.didFrame = true
-            } else if let first = readers.first {
-                mv.setVisibleMapRect(first.bounds, edgePadding: .init(top: 24, left: 24, bottom: 24, right: 24), animated: false)
+            } else if let center = ChartLayer.launchCenter {
+                mv.setRegion(MKCoordinateRegion(center: center, span: MKCoordinateSpan(latitudeDelta: 1.4, longitudeDelta: 1.4)), animated: false)
                 c.didFrame = true
             }
         }
@@ -262,12 +385,15 @@ struct ChartMapView: UIViewRepresentable {
     }
 
     final class Coordinator: NSObject, MKMapViewDelegate, CLLocationManagerDelegate {
-        var chartOverlays: [MBTilesTileOverlay] = []
-        var chartReaderIDs: Set<ObjectIdentifier> = []
+        var overlays: [ObjectIdentifier: MBTilesTileOverlay] = [:]
         var routeOverlay: MKPolyline?
         var routeAdded = false
         var didFrame = false
+        var onVisibleRegion: ((MKMapRect) -> Void)?
+        private var regionDebounce: DispatchWorkItem?
         private var dynamic: [MKAnnotation] = []
+        private var lastTrafficKey: [String] = []
+        private var lastOwnship: CLLocationCoordinate2D?
         private let loc = CLLocationManager()
 
         func requestLocation() {
@@ -275,6 +401,17 @@ struct ChartMapView: UIViewRepresentable {
             if loc.authorizationStatus == .notDetermined { loc.requestWhenInUseAuthorization() }
         }
         func locationManagerDidChangeAuthorization(_ m: CLLocationManager) {}
+
+        /// Free-pan trigger: debounce so we act once the map settles, then ask the store to load the
+        /// packs under the new region.
+        func mapView(_ mv: MKMapView, regionDidChangeAnimated animated: Bool) {
+            regionDebounce?.cancel()
+            let rect = mv.visibleMapRect
+            let cb = onVisibleRegion
+            let work = DispatchWorkItem { cb?(rect) }
+            regionDebounce = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+        }
 
         func mapView(_ mv: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
             if let tile = overlay as? MKTileOverlay { return MKTileOverlayRenderer(tileOverlay: tile) }
@@ -317,7 +454,16 @@ struct ChartMapView: UIViewRepresentable {
             }
         }
 
+        /// Rebuild traffic/ownship only when the aircraft/ownship set actually changed — not on every
+        /// updateUIView (which also fires as chart packs load in during a pan), so markers don't flicker.
         func syncDynamic(_ mv: MKMapView, aircraft: [Aircraft], ownship: Coord?) {
+            let key = aircraft.compactMap { ac -> String? in
+                guard let c = ac.coordinate else { return nil }
+                return "\(ac.label ?? "")|\(c.lat),\(c.lon)|\(ac.trackDeg ?? 0)"
+            }
+            let own = ownship.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) }
+            if key == lastTrafficKey, own?.latitude == lastOwnship?.latitude, own?.longitude == lastOwnship?.longitude { return }
+            lastTrafficKey = key; lastOwnship = own
             mv.removeAnnotations(dynamic); dynamic.removeAll()
             for ac in aircraft {
                 guard let c = ac.coordinate else { continue }
@@ -328,8 +474,6 @@ struct ChartMapView: UIViewRepresentable {
             mv.addAnnotations(dynamic)
         }
 
-        /// A glyph on a filled, ringed disc so it reads clearly on any chart (a bare tinted symbol
-        /// renders dark / washes out over the busy raster).
         private static func disc(_ symbol: String, fill: UIColor, pt: CGFloat, d: CGFloat) -> UIImage {
             let cfg = UIImage.SymbolConfiguration(pointSize: pt, weight: .black)
             let img = (UIImage(systemName: symbol, withConfiguration: cfg) ?? UIImage())
@@ -377,11 +521,11 @@ final class OwnshipAnnotation: NSObject, MKAnnotation {
     @objc dynamic var coordinate = CLLocationCoordinate2D()
 }
 
-// MARK: - Presented sheet (layer switcher + route-aware download + chart)
+// MARK: - Presented sheet (layer switcher + route/free-pan download + chart)
 
 /// Entry point for the chart: a layer switcher (VFR sectional, IFR low, standard, satellite) and the
-/// chart map below. FAA layers download the packs the filed route crosses on first use (cached for
-/// offline). Reached from the route map's layers menu; also openable via `--open-chart`.
+/// chart map below. FAA layers load the packs your route crosses up front, and more as you pan/zoom —
+/// each cached for offline. Reached from the route map's layers menu; also openable via `--open-chart`.
 struct ChartSheet: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
@@ -389,24 +533,28 @@ struct ChartSheet: View {
     @State private var route: [ResolvedLeg] = []
     @State private var layer: ChartLayer = .sectional
 
-    private var routeRect: MKMapRect? {
+    /// Per-leg rects (a pack is selected if it intersects any) — tighter than the whole-route bounding
+    /// box on a diagonal route, and non-degenerate for a single-fix route.
+    private var routeRects: [MKMapRect] {
         let pts = route.map { MKMapPoint($0.coord.clCoordinate) }
-        guard let f = pts.first else { return nil }
-        var r = MKMapRect(origin: f, size: MKMapSize(width: 0, height: 0))
-        for p in pts.dropFirst() { r = r.union(MKMapRect(origin: p, size: MKMapSize(width: 0, height: 0))) }
-        return r
+        guard let f = pts.first else { return [] }
+        let eps: Double = 5_000        // map points — gives a single point some area so intersects() works
+        if pts.count == 1 { return [MKMapRect(x: f.x - eps, y: f.y - eps, width: 2 * eps, height: 2 * eps)] }
+        return (1..<pts.count).map { i in
+            let a = pts[i - 1], b = pts[i]
+            return MKMapRect(x: min(a.x, b.x) - eps, y: min(a.y, b.y) - eps,
+                             width: abs(a.x - b.x) + 2 * eps, height: abs(a.y - b.y) + 2 * eps)
+        }
     }
 
     var body: some View {
         NavigationStack {
             ZStack(alignment: .top) {
-                ChartMapView(layer: layer, readers: store.readers, route: route, model: model)
+                ChartMapView(layer: layer, readers: store.readers, route: route,
+                             onVisibleRegion: { rect in Task { await store.ensureVisible(rect, layer: layer) } },
+                             model: model)
                     .ignoresSafeArea(edges: .bottom)
-                VStack(spacing: 8) {
-                    switcher
-                    statusPill
-                }
-                .padding(.top, 8)
+                VStack(spacing: 8) { switcher; statusPill }.padding(.top, 8)
             }
             .navigationTitle("Chart")
             .navigationBarTitleDisplayMode(.inline)
@@ -420,9 +568,12 @@ struct ChartSheet: View {
             if let o = ChartLayer.launchOverride { layer = o }
             await Task.detached(priority: .userInitiated) { _ = NavDatabase.count }.value
             route = RouteResolver.resolve(model.flightPlan?.fullRoute ?? []).points
-            await store.select(layer, routeRect: routeRect)
+            await store.setLayer(layer, routeRects: routeRects)
         }
-        .onChange(of: layer) { _, new in Task { await store.select(new, routeRect: routeRect) } }
+        .onChange(of: layer) { _, new in
+            store.phase = new.isRaster ? .downloading : .ready   // honest during the switch; setLayer refines
+            Task { await store.setLayer(new, routeRects: routeRects) }
+        }
     }
 
     private var switcher: some View {
@@ -440,15 +591,15 @@ struct ChartSheet: View {
         switch store.phase {
         case .loadingCatalog:
             pill { ProgressView(); Text("Loading chart index…") }
-        case .downloading(let k, let n):
-            pill { ProgressView(); Text("Downloading charts (\(k + 1)/\(n))…") }
+        case .downloading:
+            pill { ProgressView(); Text("Loading charts for this area…") }
+        case .zoomOut where layer.isRaster:
+            pill { Image(systemName: "plus.magnifyingglass"); Text("Zoom in to load the chart here") }
         case .empty where layer.isRaster:
-            pill { Image(systemName: route.isEmpty ? "point.topleft.down.to.point.bottomright.curvepath" : "map")
-                   Text(route.isEmpty ? "File a flight plan to load its charts" : "No \(layer.title) covers this route yet") }
-        case .failed(let m):
-            pill { Image(systemName: "wifi.exclamationmark"); Text("Chart download failed").font(.caption.bold()) }
-                .onTapGesture { Task { await store.select(layer, routeRect: routeRect) } }
-                .help(m)
+            pill { Image(systemName: "map"); Text(route.isEmpty ? "Pan and zoom in to load charts" : "No \(layer.title) here") }
+        case .failed:
+            pill { Image(systemName: "wifi.exclamationmark"); Text("Chart download failed — tap to retry") }
+                .onTapGesture { Task { await store.setLayer(layer, routeRects: routeRects) } }
         default:
             EmptyView()
         }
