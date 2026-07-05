@@ -245,8 +245,13 @@ struct ChartMapView: UIViewRepresentable {
         if !c.didFrame {
             if route.count >= 2 {
                 let coords = route.map { $0.coord.clCoordinate }
-                mv.setVisibleMapRect(MKPolyline(coordinates: coords, count: coords.count).boundingMapRect,
-                                     edgePadding: .init(top: 90, left: 40, bottom: 96, right: 40), animated: false)
+                var region = MKCoordinateRegion(MKPolyline(coordinates: coords, count: coords.count).boundingMapRect)
+                // Open at a chart-readable zoom: cap the span so a long cross-country route doesn't open
+                // wider than the raster charts' minimum zoom (which would leave a blank base map). Short
+                // routes still frame tightly; long ones open centered on the route and you pan/zoom.
+                region.span.latitudeDelta = min(region.span.latitudeDelta * 1.3 + 0.1, 4.5)
+                region.span.longitudeDelta = min(region.span.longitudeDelta * 1.3 + 0.1, 5.0)
+                mv.setRegion(region, animated: false)
                 c.didFrame = true
             } else if let first = readers.first {
                 mv.setVisibleMapRect(first.bounds, edgePadding: .init(top: 24, left: 24, bottom: 24, right: 24), animated: false)
