@@ -111,6 +111,26 @@ wrong-but-real aircraft; the "missed" growth is the share only decode-time
 biasing (or better acoustics) can recover. Caveats: assumes the true
 callsign is in the list (ADS-B coverage), and real airspace adds distractors.
 
+## CallsignSnap stage — IMPLEMENTED and measured (2026-07-05)
+
+`callsign_snap.py` (production reference, 9/9 unit tests) + `dataset/snap_score.py`.
+Two channels by design: TEXT rewrites the callsign span only on a confident
+unique snap (unverified stays as heard — display honesty); ENTITY verdicts
+gate aircraft attribution (unverified = abstain — safety). On gold v0 with
+the session-inventory candidate list:
+
+| model | canonWER | textCSA | textFalse | entityCSA | entityFalse | abstain |
+|---|---|---|---|---|---|---|
+| whisper-small-us | 22.8→22.7% | 74.5→78.4% | 13.7→9.8% | 78.4% | **2.0%** | 19.6% |
+| whisper-turbo-us | 20.2→20.1% | 80.4→82.4% | 7.8→5.9% | 82.4% | **2.0%** | 15.7% |
+| zipctc-us-ft | 35.8→35.2% | 43.1→**70.6%** | 43.1→15.7% | 70.6% | **2.0%** | 27.5% |
+
+Every model's attribution channel lands at 2.0% false (1 clip of 51 —
+snapped onto a wrong-but-real aircraft) with wrong assertions converted to
+abstentions. Next: Swift port into the corrector pipeline
+(`ADSBService` list + filed flight plan as candidates), behind a protocol so
+decode-time biasing can replace it later.
+
 ## Reading this table (gold v0, 2026-07-03)
 
 - These are the HONEST numbers on real US LiveATC audio. The repo's legacy
