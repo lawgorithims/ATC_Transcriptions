@@ -140,6 +140,11 @@ actor LivePipeline {
     /// the network fallback must never run per-transmission.
     private let airportStore = AirportContextStore()
     private var airportCtxCache: (ident: String, data: AirportContextData?)?
+    /// Last transmission per aircraft (callsignKey → display text): the instruction↔readback
+    /// pairing that feeds the prompt's expected-readback slot. Bounded FIFO — ATC conversations
+    /// are short-lived, and 24 aircraft comfortably covers a busy frequency.
+    private var conversationMemory: [String: String] = [:]
+    private var conversationOrder: [String] = []
     private var gateEnabled = true
 
     /// Shared session speaker clustering — ONE instance feeds both the streaming speaker-aware
@@ -289,10 +294,13 @@ actor LivePipeline {
         if let refiner {
             let baseText = inlineCorrected.isEmpty ? text : inlineCorrected
             var retrieved = context.retrieveKnowledge(for: baseText)
+            // The grounding renders through the prompt's WorldFrame slot (uniform template) —
+            // do NOT also append it to `block`, or the model sees it twice.
             retrieved.snapGrounding = grounding
-            let groundingBlock = grounding.promptBlock
-            if !groundingBlock.isEmpty {
-                retrieved.block += (retrieved.block.isEmpty ? "" : "\n") + groundingBlock
+            // Instruction↔readback pairing: the prior transmission in this aircraft's
+            // conversation is the strongest prior for what a garbled echo was trying to say.
+            if let key = record.callsignKey, let prior = conversationMemory[key] {
+                retrieved.expectedReadback = prior
             }
             let decision = gate.assess(text: baseText, retrieved: retrieved, asr: asr,
                                        inlineEdits: inlineEdits,
@@ -305,6 +313,17 @@ actor LivePipeline {
             } else {
                 record.refinementState = .skippedConfident
             }
+        }
+        // Remember this transmission as the aircraft's latest turn (the next transmission
+        // keyed to the same callsign gets it as the expected-readback prior).
+        if let key = record.callsignKey {
+            if conversationMemory[key] == nil {
+                conversationOrder.append(key)
+                if conversationOrder.count > 24 {
+                    conversationMemory.removeValue(forKey: conversationOrder.removeFirst())
+                }
+            }
+            conversationMemory[key] = record.display
         }
         return record
     }

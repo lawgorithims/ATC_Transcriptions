@@ -404,8 +404,23 @@ func buildLLMCorrector(config: CorrectionConfig,
         return nil
     case .local:
         guard let engine = makeLocalLLMEngine() else { return nil }
-        return LocalLLMCorrector(engine: engine, knowledge: knowledge, feedKey: feedKey)
+        return wrapWithRemoteCascade(LocalLLMCorrector(engine: engine, knowledge: knowledge, feedKey: feedKey),
+                                     knowledge: knowledge, feedKey: feedKey)
     case .foundation:
         return makeFoundationModelsCorrector(knowledge: knowledge, feedKey: feedKey)
+            .map { wrapWithRemoteCascade($0, knowledge: knowledge, feedKey: feedKey) }
     }
+}
+
+/// When a remote fixer endpoint is configured (Settings key `atc.remoteFixerURL`), wrap the
+/// on-device corrector in the two-pass cascade: local pass first, larger internet model second,
+/// hard-capped by the pilot-usefulness latency budget. No endpoint → the local corrector runs
+/// exactly as before (zero overhead).
+func wrapWithRemoteCascade(_ local: LLMCorrector,
+                           knowledge: ATCKnowledgeBase,
+                           feedKey: String?) -> LLMCorrector {
+    guard let remote = RemoteLLMCorrector.fromSettings(knowledge: knowledge, feedKey: feedKey) else {
+        return local
+    }
+    return CascadeCorrector(primary: local, secondary: remote)
 }
