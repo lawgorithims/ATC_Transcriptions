@@ -20,9 +20,12 @@ struct LocalLLMCorrector: LLMCorrector {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return .unchanged(text, backend: backend) }
 
-        let prompt = ATCCorrectionPrompt.chatMLPrompt(transcript: text,
-                                                      retrieved: retrieved.block,
-                                                      history: history)
+        let prompt = ATCCorrectionPrompt.chatMLPrompt(frame: WorldFrame(
+            knowledge: retrieved.block,
+            grounding: retrieved.snapGrounding,
+            expectedReadback: retrieved.expectedReadback,
+            history: history,
+            transcript: text))
         do {
             // NOTE: grammar is intentionally nil. llama.cpp's GBNF grammar sampler throws a
             // C++ std::runtime_error on a grammar-stack mismatch, which is UNCATCHABLE from

@@ -18,6 +18,9 @@ struct RetrievedContext: Sendable {
     /// grounding). Rides along to the refiner so the prompt can cite it and the validator can
     /// veto edits that contradict it (`groundedRunways`). Nil when the snaps didn't run.
     var snapGrounding: SnapGrounding? = nil
+    /// The prior transmission in this aircraft's conversation (instruction↔readback pairing —
+    /// ATC's built-in error-correcting code). Feeds the prompt's expected-readback slot.
+    var expectedReadback: String? = nil
 }
 
 /// The "RAG" step: given a raw transcript plus the active facility, lexically retrieve the

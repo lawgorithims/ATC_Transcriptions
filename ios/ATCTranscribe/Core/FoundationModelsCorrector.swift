@@ -53,9 +53,12 @@ struct FoundationModelsCorrector: LLMCorrector {
             return .unchanged(text, backend: backend)
         }
 
-        let prompt = ATCCorrectionPrompt.userMessage(transcript: text,
-                                                     retrieved: retrieved.block,
-                                                     history: history)
+        let prompt = ATCCorrectionPrompt.userMessage(frame: WorldFrame(
+            knowledge: retrieved.block,
+            grounding: retrieved.snapGrounding,
+            expectedReadback: retrieved.expectedReadback,
+            history: history,
+            transcript: text))
         do {
             // A fresh session per transmission: each correction is independent (no rolling chat
             // history that would bias the next). The model itself is loaded once by the system.

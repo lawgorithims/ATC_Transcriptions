@@ -912,6 +912,7 @@ final class AppModel: ObservableObject {
         case .foundation:
             return await Task.detached(priority: .utility) {
                 makeFoundationModelsCorrector(knowledge: knowledge, feedKey: feedKey)
+                    .map { wrapWithRemoteCascade($0, knowledge: knowledge, feedKey: feedKey) }
             }.value
         case .local:
             if cachedLLMEngine == nil || cachedLLMBackend != .local {
@@ -919,7 +920,9 @@ final class AppModel: ObservableObject {
                 cachedLLMBackend = .local
             }
             guard let engine = cachedLLMEngine else { return nil }   // GGUF not present yet — retry next build
-            return LocalLLMCorrector(engine: engine, knowledge: knowledge, feedKey: feedKey)
+            return wrapWithRemoteCascade(
+                LocalLLMCorrector(engine: engine, knowledge: knowledge, feedKey: feedKey),
+                knowledge: knowledge, feedKey: feedKey)
         }
     }
 
