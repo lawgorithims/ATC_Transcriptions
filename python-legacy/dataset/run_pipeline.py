@@ -214,11 +214,22 @@ def run(cfg: dict) -> dict:
         producer = threading.Thread(target=_producer, args=(block_q,), daemon=True)
         producer.start()
         accepted = processed = 0
+        # Airport grounding for the slot label-gate (label_gate.py), resolved once per
+        # facility through the provider chain (curated configs -> OurAirports cache).
+        # A failed lookup degrades to None -> the gate runs ontology-only checks.
+        from airport_data import default_source
+        airport_ctx_cache: dict = {}
+        ctx_source = default_source(download=False)
         while True:
             item = block_q.get()
             if item is None:
                 break
             job = item.job
+            if job.airport_code not in airport_ctx_cache:
+                try:
+                    airport_ctx_cache[job.airport_code] = ctx_source.airport(job.airport_code)
+                except Exception:
+                    airport_ctx_cache[job.airport_code] = None
             segments = bulk_capture.segment_block(
                 item.block_path, seg_dir, airport=job.airport_code, feed=job.feed_key,
                 min_block_speech_s=min_block_speech_s,
@@ -236,6 +247,7 @@ def run(cfg: dict) -> dict:
                     corrector=job.corrector,
                     context_prompt=None,  # teacher prompt-free (verbose airport prompt leaked into labels)
                     thresholds=thresholds,
+                    airport_ctx=airport_ctx_cache.get(job.airport_code),
                 )
                 row = writer.write(seg, decision)
                 processed += 1

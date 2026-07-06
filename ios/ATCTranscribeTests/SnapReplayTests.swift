@@ -65,7 +65,8 @@ final class SnapReplayTests: XCTestCase {
         context.setTraffic(block: "traffic", vocab: ["DAL232", "JBU604"],
                            expiry: Date().addingTimeInterval(60), epoch: 1)
 
-        let maybeRecord = await pipeline.process(segment(goldAudio()))
+        let audio = try goldAudio()
+        let maybeRecord = await pipeline.process(segment(audio))
         let record = try XCTUnwrap(maybeRecord)
         XCTAssertTrue(record.display.contains("delta 2 3 2"),
                       "callsign must snap to the on-frequency aircraft: \(record.display)")
@@ -84,7 +85,8 @@ final class SnapReplayTests: XCTestCase {
         context.setTraffic(block: "traffic", vocab: ["DAL232"],
                            expiry: Date().addingTimeInterval(60), epoch: 1)
 
-        let maybeRecord = await pipeline.process(segment(goldAudio()))
+        let audio = try goldAudio()
+        let maybeRecord = await pipeline.process(segment(audio))
         let record = try XCTUnwrap(maybeRecord)
         XCTAssertTrue(record.display.contains("united 456") || record.display.contains("united 4 5 6"),
                       "unverified callsign stays as heard: \(record.display)")
@@ -101,7 +103,8 @@ final class SnapReplayTests: XCTestCase {
         let hyp = "delta 231 heavy kennedy tower runway 2 2 right cleared to land"
         let (pipeline, _) = try makePipeline(script: [hyp])
 
-        let maybeRecord = await pipeline.process(segment(goldAudio()))
+        let audio = try goldAudio()
+        let maybeRecord = await pipeline.process(segment(audio))
         let record = try XCTUnwrap(maybeRecord)
         XCTAssertTrue(record.display.contains("delta 231") || record.display.contains("delta 2 3 1"),
                       "no candidate list → no rewrite: \(record.display)")
