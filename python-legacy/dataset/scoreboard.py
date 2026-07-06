@@ -44,7 +44,12 @@ _HERE = Path(__file__).resolve().parent.parent
 if str(_HERE) not in sys.path:  # allow `python -m dataset.scoreboard` and direct import
     sys.path.insert(0, str(_HERE))
 
-from atc_normalization import normalize_atc_text as _basic_norm
+try:
+    # atc_normalization.py is gitignored (lives on the project machines only);
+    # fall back to the tracked equivalent so a fresh checkout can still score.
+    from atc_normalization import normalize_atc_text as _basic_norm
+except ImportError:  # pragma: no cover
+    from dataset.normalize import normalize_transcript as _basic_norm
 from atc_normalize import normalize as _canon_norm
 from atc_diarize import extract_callsign
 
