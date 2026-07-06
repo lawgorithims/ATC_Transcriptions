@@ -1,0 +1,274 @@
+{
+ "callsign": [
+  {
+   "in": "delta 232 heavy cleared to land",
+   "out": "delta 232 heavy cleared to land",
+   "verdict": "verified_exact",
+   "original": "delta 2 3 2",
+   "snapped": "delta 2 3 2",
+   "applied": false
+  },
+  {
+   "in": "delta 233 heavy cleared to land",
+   "out": "delta 2 3 2 heavy cleared to land",
+   "verdict": "snapped",
+   "original": "delta 2 3 3",
+   "snapped": "delta 2 3 2",
+   "applied": true
+  },
+  {
+   "in": "delta two thirty three cleared to land",
+   "out": "delta 2 3 2 cleared to land",
+   "verdict": "snapped",
+   "original": "delta 2 3 3",
+   "snapped": "delta 2 3 2",
+   "applied": true
+  },
+  {
+   "in": "dela 232 contact departure",
+   "out": "dela 232 contact departure",
+   "verdict": "no_callsign",
+   "original": null,
+   "snapped": null,
+   "applied": false
+  },
+  {
+   "in": "frontier 4316 cross runway 26 left",
+   "out": "frontier 4316 cross runway 26 left",
+   "verdict": "unverified",
+   "original": "frontier 4 3 1 6",
+   "snapped": null,
+   "applied": false
+  },
+  {
+   "in": "wind two seven zero at one five",
+   "out": "wind two seven zero at one five",
+   "verdict": "no_callsign",
+   "original": null,
+   "snapped": null,
+   "applied": false
+  },
+  {
+   "in": "november 345 alpha bravo squawk 1200",
+   "out": "november 345 alpha bravo squawk 1200",
+   "verdict": "verified_exact",
+   "original": "november 3 4 5 alpha bravo",
+   "snapped": "november 3 4 5 alpha bravo",
+   "applied": false
+  },
+  {
+   "in": "delta 277 heavy",
+   "out": "delta 277 heavy",
+   "verdict": "unverified",
+   "original": "delta 2 7 7",
+   "snapped": null,
+   "applied": false
+  },
+  {
+   "in": "united four fifty four flight two eight zero heading two eight zero united four fifty four",
+   "out": "united four fifty four flight two eight zero heading two eight zero united four fifty four",
+   "verdict": "verified_exact",
+   "original": "united 4 5 4",
+   "snapped": "united 4 5 4",
+   "applied": false
+  },
+  {
+   "in": "american ten forty five contact kennedy tower one one niner point one",
+   "out": "american ten forty five contact kennedy tower one one niner point one",
+   "verdict": "verified_exact",
+   "original": "american 1 0 4 5",
+   "snapped": "american 1 0 4 5",
+   "applied": false
+  }
+ ],
+ "slots": [
+  {
+   "in": "cleared to land runway one seven right",
+   "out": "cleared to land runway 1 7 right",
+   "edits": [
+    {
+     "slot": "runway",
+     "verdict": "verified",
+     "original": "17 right",
+     "snapped": null,
+     "applied": false
+    }
+   ]
+  },
+  {
+   "in": "cleared to land runway one eight right",
+   "out": "cleared to land runway 1 7 right",
+   "edits": [
+    {
+     "slot": "runway",
+     "verdict": "snapped",
+     "original": "18 right",
+     "snapped": "17 right",
+     "applied": true
+    }
+   ]
+  },
+  {
+   "in": "hold short runway three five right",
+   "out": "hold short runway 3 5 right",
+   "edits": [
+    {
+     "slot": "runway",
+     "verdict": "unverified",
+     "original": "35 right",
+     "snapped": null,
+     "applied": false
+    }
+   ]
+  },
+  {
+   "in": "taxi to runway one six",
+   "out": "taxi to runway 1 6",
+   "edits": [
+    {
+     "slot": "runway",
+     "verdict": "unverified",
+     "original": "16",
+     "snapped": null,
+     "applied": false
+    }
+   ]
+  },
+  {
+   "in": "cleared to land runway two two",
+   "out": "cleared to land runway 2 2",
+   "edits": [
+    {
+     "slot": "runway",
+     "verdict": "verified",
+     "original": "22",
+     "snapped": null,
+     "applied": false
+    }
+   ]
+  },
+  {
+   "in": "contact tower one two six point five five",
+   "out": "contact tower 1 2 6 point 5 5",
+   "edits": [
+    {
+     "slot": "frequency",
+     "verdict": "verified",
+     "original": "126.55",
+     "snapped": null,
+     "applied": false
+    }
+   ]
+  },
+  {
+   "in": "contact tower one two seven point five five",
+   "out": "contact tower 1 2 6 point 5 5",
+   "edits": [
+    {
+     "slot": "frequency",
+     "verdict": "snapped",
+     "original": "127.55",
+     "snapped": "126.55",
+     "applied": true
+    }
+   ]
+  },
+  {
+   "in": "that was one two seven point five five earlier",
+   "out": "that was 1 2 7 point 5 5 earlier",
+   "edits": []
+  },
+  {
+   "in": "contact ground one four one point two",
+   "out": "contact ground 1 4 1 point 2",
+   "edits": [
+    {
+     "slot": "frequency",
+     "verdict": "invalid",
+     "original": "141.2",
+     "snapped": null,
+     "applied": false
+    }
+   ]
+  },
+  {
+   "in": "contact ground one two one point eight",
+   "out": "contact ground 1 2 1 point 8",
+   "edits": [
+    {
+     "slot": "frequency",
+     "verdict": "verified",
+     "original": "121.8",
+     "snapped": null,
+     "applied": false
+    }
+   ]
+  },
+  {
+   "in": "contact tower one two six five five",
+   "out": "contact tower 1 2 6 5 5",
+   "edits": [
+    {
+     "slot": "frequency",
+     "verdict": "verified",
+     "original": "126.55",
+     "snapped": null,
+     "applied": false
+    }
+   ]
+  },
+  {
+   "in": "runway one eight right cleared to land then contact tower one two seven five five",
+   "out": "runway 1 7 right cleared to land then contact tower 1 2 6 point 5 5",
+   "edits": [
+    {
+     "slot": "runway",
+     "verdict": "snapped",
+     "original": "18 right",
+     "snapped": "17 right",
+     "applied": true
+    },
+    {
+     "slot": "frequency",
+     "verdict": "snapped",
+     "original": "127.55",
+     "snapped": "126.55",
+     "applied": true
+    }
+   ]
+  }
+ ],
+ "cs_candidates": [
+  "delta 232",
+  "delta 1601",
+  "united 454",
+  "american 1045",
+  "southwest 2914",
+  "november 345 alpha bravo",
+  "envoy 3999"
+ ],
+ "slot_ctx": {
+  "ident": "KTST",
+  "runways": [
+   "15",
+   "17R",
+   "17C",
+   "35L",
+   "22"
+  ],
+  "frequencies": {
+   "TWR": [
+    126.55
+   ],
+   "GND": [
+    121.8
+   ],
+   "APP": [
+    119.3
+   ],
+   "OPS": [
+    32.29
+   ]
+  }
+ }
+}
