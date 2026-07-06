@@ -236,6 +236,24 @@
      "applied": true
     }
    ]
+  },
+  {
+   "in": "center american 1786 with you at 320",
+   "out": "center american 1 7 8 6 with you at 3 2 0",
+   "edits": []
+  },
+  {
+   "in": "american 1786 contact tower one two six point five five",
+   "out": "american 1 7 8 6 contact tower 1 2 6 point 5 5",
+   "edits": [
+    {
+     "slot": "frequency",
+     "verdict": "verified",
+     "original": "126.55",
+     "snapped": null,
+     "applied": false
+    }
+   ]
   }
  ],
  "cs_candidates": [

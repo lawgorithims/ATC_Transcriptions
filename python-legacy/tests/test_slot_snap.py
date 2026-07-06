@@ -100,6 +100,21 @@ def test_freq_without_point_snap():
     assert edits[0].verdict == "snapped" and "1 2 6 point 5 5" in text, (edits, text)
 
 
+def test_callsign_flight_number_never_read_as_frequency():
+    # "center american 1786" is a callsign, not frequency 178.6 (measured
+    # false-positive class on the collected corpus)
+    text, edits = snap_slots("center american 1786 with you at 320", CTX)
+    assert not any(e.slot == "frequency" for e in edits), edits
+    assert "american 1 7 8 6" in text, text
+
+
+def test_real_frequency_after_callsign_still_checked():
+    # callsign guard must not shadow a genuine frequency later in the text
+    text, edits = snap_slots("american 1786 contact tower one two six point five five", CTX)
+    freq = [e for e in edits if e.slot == "frequency"]
+    assert len(freq) == 1 and freq[0].verdict == "verified", edits
+
+
 def test_no_context_passthrough():
     src = "cleared to land runway one eight right"
     text, edits = snap_slots(src, None)

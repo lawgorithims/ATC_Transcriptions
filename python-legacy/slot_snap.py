@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 from atc_normalize import normalize as _canon
+from atc_diarize import extract_callsign
 from airport_data import AirportContext
 
 RUNWAY_RX = re.compile(r"\brunway((?: \d){1,2})( left| right| center)?\b")
@@ -124,6 +125,20 @@ def _snap_frequency(heard_mhz: float, ctx: AirportContext) -> Tuple[str, Optiona
     return "unverified", None
 
 
+def _callsign_char_range(s: str) -> Optional[Tuple[int, int]]:
+    """Char range of the extracted callsign span in ``s`` (token-aligned), or None.
+
+    Guards the frequency patterns against airline FLIGHT NUMBERS: "center american
+    1786 with you" must never be read as frequency 178.6 (measured on the rescued
+    corpus: this false-positive class dominated label-gate rejections).
+    """
+    span = extract_callsign(s)
+    if not span:
+        return None
+    idx = (" " + s + " ").find(" " + span + " ")
+    return (idx, idx + len(span)) if idx >= 0 else None
+
+
 def _render_freq(mhz: float) -> str:
     whole, frac = f"{mhz:.3f}".split(".")
     frac = frac.rstrip("0") or "0"
@@ -157,6 +172,10 @@ def snap_slots(text: str, ctx: Optional[AirportContext]) -> Tuple[str, List[Slot
         # require an ATC anchor word shortly before the number
         prefix_toks = out[: m.start()].split()[-4:]
         if not FREQ_ANCHORS.intersection(prefix_toks):
+            return m.group(0)
+        # never read a callsign's flight number as a frequency ("center american 1786")
+        cs = _callsign_char_range(m.string)
+        if cs and not (m.end() <= cs[0] or m.start() >= cs[1]):
             return m.group(0)
         heard_str = m.group(1).replace(" ", "") + "." + m.group(2).replace(" ", "")
         heard = float(heard_str)
