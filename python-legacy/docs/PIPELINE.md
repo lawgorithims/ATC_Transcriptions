@@ -94,6 +94,16 @@ runway veto, adds `ConfidenceGate` signal 5, and gates aircraft attribution
 in `LivePipeline` (unverified callsigns display as heard, never attribute;
 offline/stale-traffic behavior unchanged).
 
+## Labeler gate (data engine)
+
+`dataset/label_gate.py` applies the same grounding to PSEUDO-LABELS before
+they become training data (`FilterThresholds.slot_gate`, per-feed context in
+`run_pipeline`): REJECT on runway-not-at-airport / physically impossible
+values (audio still feeds the SSL corpus), flag snappable typos. REJECT-only
+on the label text — gate fixes are in canonical digit space, which must not
+mix into natural-text labels. Measured on the rescued corpus: 2.8% rejected,
+all genuine (see RESULTS.md).
+
 ## Known deficiencies (queued)
 
 * ~~iOS offline nav DB has no runway or frequency data; only 2 curated

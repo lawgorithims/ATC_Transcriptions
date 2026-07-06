@@ -152,6 +152,32 @@ arbitrary real-life airports (14/14 unit tests incl. suffix-safety and
 anchor-guarded frequencies), not corrections on this gold set. 26 unit tests
 green overall; see `docs/PIPELINE.md` for diagrams + stage policies.
 
+## Labeler gate + adversarial review round (2026-07-06)
+
+**pm-as-labeler-gate** (`dataset/label_gate.py`, wired into `pseudo_label`
+behind `FilterThresholds.slot_gate`): grounds candidate pseudo-labels in the
+feed airport's real runways/frequencies + the static ATC ontology.
+Retro-measured over the full rescued corpus (7,309 accepted labels):
+**7,102 pass (97.2%) · 82 flagged auto-fixable · 207 rejected (2.8%)** —
+runway-not-at-airport 95, impossible frequency 106 (truncated "134 62" for
+134.625-class mishears), impossible runway/heading 14. The measurement
+itself debugged the stage across three rounds (372→311→207) by exposing
+false-positive classes: airline flight numbers after facility words
+("center american 1786" ≠ 178.6 MHz), GA tail numbers ("tower cessna
+twelve sixty five"), and nav-band frequencies being flagged as impossible.
+
+**Adversarial review** (41-agent workflow over all session code): 36
+findings raised, 28 confirmed, all critical/major fixed same-day — headline
+catches: unparseable runway designators (H1/N/S — ~12k in OurAirports)
+entering the snap pool and DELETING runway numbers via snap-to-empty;
+"runway 4 right traffic" inventing an L/R suffix; integer-MHz digit
+collapse (120.0→"12") breaking the edit≤1 policy; he_ident read from the
+wrong OurAirports CSV column in the Swift network fallback; offline mode
+flooding the gate with vacuous "unverified callsign" signals. Deferred
+with tasks: extract_callsign greedy digit-run, airport-change poller race.
+Verification after fixes: 20/20 + 7/7 + 9/9 + 11/11 Python, 205 iOS tests
+0 failures, gold replay end-to-end green.
+
 ## Reading this table (gold v0, 2026-07-03)
 
 - These are the HONEST numbers on real US LiveATC audio. The repo's legacy
