@@ -66,6 +66,34 @@ def test_center_style_no_slots_passes():
     assert r.ok and not r.reasons, r
 
 
+def test_callsign_fix_snaps_natural_text():
+    from dataset.label_gate import fix_callsign
+    r = fix_callsign("delta 233 heavy cleared to land runway 17 right",
+                     ["delta 232", "united 454"])
+    assert r.fixed and "delta 232 heavy" in r.label, r
+    assert "2 3 2" not in r.label, "labels must stay natural text: " + r.label
+
+
+def test_callsign_fix_abstains_out_of_snapshot():
+    from dataset.label_gate import fix_callsign
+    r = fix_callsign("frontier 4316 cross runway 26", ["delta 232"])
+    assert not r.fixed and r.ok and r.label.startswith("frontier 4316"), r
+
+
+def test_callsign_fix_verified_untouched():
+    from dataset.label_gate import fix_callsign
+    r = fix_callsign("delta 232 contact tower", ["delta 232"])
+    assert not r.fixed and r.label == "delta 232 contact tower", r
+
+
+def test_spoken_candidates_conversion():
+    from dataset.traffic_snapshot import spoken_candidates
+    got = spoken_candidates(["DAL232", "N345AB", "XXX99", "JBU604"])
+    assert "delta 232" in got and "jetblue 604" in got, got
+    assert "november 3 4 5 alpha bravo" in got, got
+    assert not any("xxx" in g for g in got), got
+
+
 if __name__ == "__main__":
     tests = [(k, v) for k, v in sorted(globals().items()) if k.startswith("test_")]
     for name, fn in tests:
