@@ -48,6 +48,17 @@ final class SnapGroundingTests: XCTestCase {
         XCTAssertTrue(out.changed, "no grounding → veto must not fire")
     }
 
+    func testDirectionFlipRejectedLikeADigitChange() {
+        // "turn left"→"turn right" passes the near-miss ratio and per-word vocab checks —
+        // only the semantic-flip guard can stop it (found by the offline LLM benchmark).
+        let v = makeValidator(grounded: nil)
+        let out = v.validate(raw: "turn left heading two seven zero",
+                             edits: [CorrectionEdit(from: "turn left", to: "turn right",
+                                                    reason: "t", backend: "llm")],
+                             backend: "llm")
+        XCTAssertFalse(out.changed, "left→right must be blocked like a digit change")
+    }
+
     func testRunwayKeyParsing() {
         XCTAssertEqual(CorrectionValidator.runwayKeys(in: "cleared runway one seven right then runway 4"),
                        ["17|R", "4|"])

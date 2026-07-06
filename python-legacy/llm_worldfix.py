@@ -97,6 +97,15 @@ def _digits(s: str) -> str:
     return "".join(c for c in s if c.isdigit())
 
 
+# left/right/center etc. are protected like digits — an edit may never add, remove,
+# or swap them (semantic-flip guard; mirror of CorrectionValidator.protectedSemantics)
+_PROTECTED = {"left", "right", "center", "climb", "descend", "north", "south", "east", "west"}
+
+
+def _direction_words(s: str) -> List[str]:
+    return [w for w in re.findall(r"[a-z]+", s.lower()) if w in _PROTECTED]
+
+
 def _runway_keys(text: str) -> set:
     out = set()
     for m in RUNWAY_RX.finditer(_canon(text)):
@@ -118,6 +127,8 @@ def apply_validated(raw: str, edits: List[dict], allowed: set,
         if not frm or not to or _norm(frm) == _norm(to):
             continue
         if _digits(frm) != _digits(to):                       # numbers preserved
+            continue
+        if _direction_words(frm) != _direction_words(to):    # no left/right flips
             continue
         to_key = _norm(to).replace(" ", "")
         near = difflib.SequenceMatcher(None, _norm(frm), _norm(to)).ratio() >= 0.55

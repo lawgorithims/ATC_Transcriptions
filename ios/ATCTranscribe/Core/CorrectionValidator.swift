@@ -47,6 +47,7 @@ struct CorrectionValidator {
             let to = edit.to.trimmingCharacters(in: .whitespaces)
             guard !from.isEmpty, !to.isEmpty, norm(from) != norm(to) else { continue }
             guard digits(from) == digits(to) else { continue }          // (1) numbers preserved
+            guard directionWords(from) == directionWords(to) else { continue }  // (1b) no left/right flips
             guard isAllowed(to: to, from: from) else { continue }       // (2) anti-hallucination
             guard !introducesUnknownRunway(to: to, from: from) else { continue }  // (2b) grounding veto
             guard let replaced = replaceFirst(in: tokens, from: from, to: to) else { continue }  // (3) applicable
@@ -177,6 +178,18 @@ struct CorrectionValidator {
         String(s.lowercased().filter { ("a"..."z").contains($0) || ("0"..."9").contains($0) })
     }
     private func digits(_ s: String) -> String { String(s.filter { $0.isNumber }) }
+
+    /// Direction/semantic-flip guard: left/right/center (and climb/descend, east/west, north/
+    /// south) are protected like digits — an edit may never add, remove, or swap them. Found by
+    /// the offline LLM benchmark (2026-07-06): the 0.5B model proposed "turn left"→"left…right"
+    /// class flips and the per-word phraseology vocabulary let them through.
+    private static let protectedSemantics: Set<String> = [
+        "left", "right", "center", "climb", "descend", "north", "south", "east", "west",
+    ]
+    private func directionWords(_ s: String) -> [String] {
+        s.lowercased().split(whereSeparator: { !$0.isLetter })
+            .map(String.init).filter { Self.protectedSemantics.contains($0) }
+    }
 }
 
 extension CorrectionValidator {
