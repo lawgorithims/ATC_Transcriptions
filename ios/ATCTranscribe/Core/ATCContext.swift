@@ -122,6 +122,24 @@ final class ATCContext {
         return prompt
     }
 
+    /// The active facility's ICAO ident (drives the `AirportContextStore` lookup for SlotSnap).
+    var airportIdent: String? { config?.airportCode }
+
+    /// Fresh in-range callsigns in SPOKEN telephony form — the CallsignSnap candidate list.
+    /// Same source and freshness gate as the BB1 prompt bias (airline callsigns only, for the
+    /// same measured reasons), but uncapped: matching against more real aircraft only makes the
+    /// snap safer (ambiguity → abstain). Empty when traffic is stale — the stage then abstains
+    /// from ATTRIBUTION but never edits, so LiveATC/demo replays degrade gracefully.
+    func snapCallsignCandidates() -> [String] {
+        guard !trafficVocab.isEmpty, Date() < trafficExpiry else { return [] }
+        return trafficVocab.compactMap { code in
+            let up = code.uppercased().filter { $0.isLetter || $0.isNumber }
+            guard up.count > 3, knowledge.airlineTelephony[String(up.prefix(3))] != nil else { return nil }
+            let spoken = Self.spokenCallsign(code, knowledge: knowledge)
+            return spoken.isEmpty ? nil : spoken
+        }
+    }
+
     private static let digitWords: [Character: String] = [
         "0": "zero", "1": "one", "2": "two", "3": "three", "4": "four",
         "5": "five", "6": "six", "7": "seven", "8": "eight", "9": "nine",

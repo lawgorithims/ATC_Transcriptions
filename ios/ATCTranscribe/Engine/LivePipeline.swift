@@ -135,6 +135,11 @@ actor LivePipeline {
     /// Confidence gate: decides whether a transmission is worth the LLM. When `gateEnabled` is
     /// false the LLM runs on every (≥1-word) transmission (the gate is bypassed).
     private var gate = ConfidenceGate()
+    /// Airport grounding for SlotSnap, resolved through the provider chain (curated → bundled →
+    /// internet) and cached per facility — the lookup is a dictionary hit after first load, and
+    /// the network fallback must never run per-transmission.
+    private let airportStore = AirportContextStore()
+    private var airportCtxCache: (ident: String, data: AirportContextData?)?
     private var gateEnabled = true
 
     /// Shared session speaker clustering — ONE instance feeds both the streaming speaker-aware
@@ -204,7 +209,29 @@ actor LivePipeline {
         if correction.changed, correction.corrected.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return nil
         }
-        let inlineCorrected = correction.changed ? correction.corrected : ""
+        var inlineCorrected = correction.changed ? correction.corrected : ""
+        var inlineEdits = correction.changed ? correction.edits : []
+
+        // Deterministic snap stages (see python-legacy/docs/PIPELINE.md): ground the transcript
+        // in the live traffic list (CallsignSnap) and the facility's real runways + published
+        // frequencies (SlotSnap, via the curated→bundled→internet provider chain). Text changes
+        // only on a confident unique snap; the verdicts drive aircraft attribution, the
+        // confidence gate, and the LLM grounding block.
+        let snapInput = inlineCorrected.isEmpty ? text : inlineCorrected
+        let csCandidates = context.snapCallsignCandidates()
+        let (csText, csResult) = CallsignSnap.snapTranscript(
+            snapInput, candidates: csCandidates,
+            telephony: CallsignSnap.telephonyWords(context.knowledge))
+        let airportCtx = await airportContext(for: context.airportIdent)
+        let (slotText, slotEdits) = SlotSnap.apply(csText, context: airportCtx)
+        let grounding = SnapGrounding(callsign: csResult, slots: slotEdits,
+                                      airportIdent: airportCtx?.ident,
+                                      airportRunways: airportCtx?.runways ?? [])
+        if csResult.applied || slotEdits.contains(where: { $0.applied }) {
+            inlineCorrected = slotText
+            inlineEdits += grounding.correctionEdits
+        }
+
         // QW2: seed the rolling decoder-prompt history with the CORRECTED form (not raw Whisper output),
         // AFTER the drop-check — so a mishear that the corrector fixed (or a hallucination it dropped)
         // can't prime the same error into the next transmission. The corrector above saw only PRIOR
@@ -221,25 +248,37 @@ actor LivePipeline {
             realTimeFactor: round3(rtf),
             prompt: prompt,
             corrected: inlineCorrected,
-            corrections: correction.changed ? correction.edits : [],
+            corrections: inlineEdits,
             timestamp: Self.timeFormatter.string(from: Date()))
         record.speaker = speaker
         // Extract the canonical callsign this transmission addresses (the key that groups the
-        // aircraft's conversation), and confirm it against the live ADS-B feed when a fresh snapshot
-        // is present.
+        // aircraft's conversation). ATTRIBUTION is gated by the snap verdict when a live candidate
+        // list existed: an unverified callsign still displays as heard, but is not attributed to
+        // an aircraft (the falseCS → 2% channel). With no list (offline/stale traffic) the
+        // pre-snap behavior is preserved — extraction attributes ungated.
         if let cs = CallsignExtractor.extract(record.display, knowledge: context.knowledge) {
             record.callsign = cs.display
-            record.callsignKey = cs.icaoKey
+            if csCandidates.isEmpty || grounding.callsignAttributable {
+                record.callsignKey = cs.icaoKey
+            }
         }
 
         // Slow tier: hand the best-so-far text to the background LLM, OFF the hot path. The RAG
         // context is retrieved HERE, on the actor, so the refiner never touches mutable state. The
-        // confidence gate first decides whether this transmission is even worth the LLM.
+        // confidence gate first decides whether this transmission is even worth the LLM — snap
+        // verdicts count as gate signals, and the grounding block rides into the LLM prompt +
+        // the validator's runway veto (the PR #5 "LLM-layer augmentation").
         if let refiner {
             let baseText = inlineCorrected.isEmpty ? text : inlineCorrected
-            let retrieved = context.retrieveKnowledge(for: baseText)
+            var retrieved = context.retrieveKnowledge(for: baseText)
+            retrieved.snapGrounding = grounding
+            let groundingBlock = grounding.promptBlock
+            if !groundingBlock.isEmpty {
+                retrieved.block += (retrieved.block.isEmpty ? "" : "\n") + groundingBlock
+            }
             let decision = gate.assess(text: baseText, retrieved: retrieved, asr: asr,
-                                       inlineEdits: correction.changed ? correction.edits : [])
+                                       inlineEdits: inlineEdits,
+                                       snapReasons: grounding.gateReasons)
             record.gateReason = decision.reason
             if !gateEnabled || decision.shouldRefine {
                 record.refinementState = .pending
@@ -250,6 +289,16 @@ actor LivePipeline {
             }
         }
         return record
+    }
+
+    /// The active facility's grounding data, memoized per ident (nil ident → nil context; the
+    /// snap stages then run verdict-free and never edit).
+    private func airportContext(for ident: String?) async -> AirportContextData? {
+        guard let ident, !ident.isEmpty else { return nil }
+        if let cached = airportCtxCache, cached.ident == ident { return cached.data }
+        let data = await airportStore.airport(ident)
+        airportCtxCache = (ident, data)
+        return data
     }
 
     /// Drive a live source: chunks → VAD → `process`, delivering each record via `onRecord` and

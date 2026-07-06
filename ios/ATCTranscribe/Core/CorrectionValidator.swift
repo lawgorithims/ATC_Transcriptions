@@ -29,6 +29,10 @@ struct CorrectionValidator {
     var phonetic: [String: String] = [:]
     var minEditRatio = 0.55
     var maxEdits = 8
+    /// The facility's real runway designators, as "num|suffix" keys ("17|C", "22|") — the snap
+    /// stages' grounding veto (PR #5 Deliverable 3): an LLM edit may never INTRODUCE a runway
+    /// that does not exist at the airport. Nil disables the veto (no context available).
+    var groundedRunways: Set<String>? = nil
 
     /// Apply the safe subset of `edits` to `raw`, returning a transparent `Correction`.
     func validate(raw: String, edits: [CorrectionEdit], backend: String) -> Correction {
@@ -44,6 +48,7 @@ struct CorrectionValidator {
             guard !from.isEmpty, !to.isEmpty, norm(from) != norm(to) else { continue }
             guard digits(from) == digits(to) else { continue }          // (1) numbers preserved
             guard isAllowed(to: to, from: from) else { continue }       // (2) anti-hallucination
+            guard !introducesUnknownRunway(to: to, from: from) else { continue }  // (2b) grounding veto
             guard let replaced = replaceFirst(in: tokens, from: from, to: to) else { continue }  // (3) applicable
             tokens = replaced
             applied.append(CorrectionEdit(from: from, to: to,
@@ -80,6 +85,42 @@ struct CorrectionValidator {
         if !words.isEmpty, words.allSatisfy({ allowed.contains($0) }) { return true }
         // Otherwise only accept a plausible mishear fix (close to what was transcribed).
         return SequenceMatcher(norm(from), norm(to)).ratio() >= minEditRatio
+    }
+
+    /// The grounding veto: reject an edit whose `to` mentions a runway designator that does not
+    /// exist at the facility — unless `from` already mentioned the same designator (then the edit
+    /// isn't INTRODUCING it, just rephrasing around it). Conservative by construction: with no
+    /// grounding (`groundedRunways == nil`) it never fires.
+    private func introducesUnknownRunway(to: String, from: String) -> Bool {
+        guard let grounded = groundedRunways else { return false }
+        let introduced = Self.runwayKeys(in: to).subtracting(Self.runwayKeys(in: from))
+        return !introduced.isEmpty && !introduced.isSubset(of: grounded)
+    }
+
+    /// Runway designators mentioned in free text, as "num|suffix" keys, matched on the canonical
+    /// per-digit form ("runway 1 7 right" / "runway 17R" / "runway one seven right" all → "17|R").
+    static func runwayKeys(in text: String) -> Set<String> {
+        let canon = ATCNormalize.normalize(text) as NSString
+        let rx = try! NSRegularExpression(pattern: #"\brunway((?: \d){1,2})( left| right| center)?\b"#)
+        var out: Set<String> = []
+        for m in rx.matches(in: canon as String, range: NSRange(location: 0, length: canon.length)) {
+            var num = canon.substring(with: m.range(at: 1)).replacingOccurrences(of: " ", with: "")
+            while num.count > 1, num.hasPrefix("0") { num.removeFirst() }
+            let suffixRange = m.range(at: 2)
+            let word = suffixRange.location == NSNotFound ? ""
+                : canon.substring(with: suffixRange).trimmingCharacters(in: .whitespaces)
+            let suffix = ["left": "L", "right": "R", "center": "C"][word] ?? ""
+            out.insert(num + "|" + suffix)
+        }
+        return out
+    }
+
+    /// Build "num|suffix" keys from an airport's designator list (the grounding side of the veto).
+    static func runwayKeys(designators: [String]) -> Set<String> {
+        Set(designators.map { d -> String in
+            let p = SlotSnap.parseDesignator(d)
+            return p.num + "|" + p.suffix
+        }.filter { !$0.hasPrefix("|") })
     }
 
     /// A callsign/airway-shaped identifier leads with a letter and contains a digit ("n345ab", "q105").

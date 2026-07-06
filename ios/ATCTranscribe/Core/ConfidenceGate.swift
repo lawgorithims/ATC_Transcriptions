@@ -36,11 +36,16 @@ struct ConfidenceGate: Sendable {
     func assess(text: String,
                 retrieved: RetrievedContext,
                 asr: ASRConfidence?,
-                inlineEdits: [CorrectionEdit]) -> GateDecision {
+                inlineEdits: [CorrectionEdit],
+                snapReasons: [String] = []) -> GateDecision {
         let th = Thresholds.forSensitivity(sensitivity)
         let tokens = text.split(whereSeparator: { $0.isWhitespace }).map(String.init)
 
         var reasons: [String] = []
+        // 0. Snap-stage grounding signals (signal 5 in the PR #5 plan): an unverified callsign
+        //    or an invalid/unverified slot is direct evidence something was misheard — and it is
+        //    genuinely additive here because `noSpeechProb` is stubbed in this WhisperKit build.
+        reasons.append(contentsOf: snapReasons)
 
         // 1. ASR confidence (only for non-trivial transmissions).
         if let asr, tokens.count >= minRefineWords {

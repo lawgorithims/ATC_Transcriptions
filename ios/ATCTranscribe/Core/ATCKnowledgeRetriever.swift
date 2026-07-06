@@ -14,6 +14,10 @@ struct RetrievedContext: Sendable {
     /// PROMPT for context but are DENIED as applied edit targets by `CorrectionValidator` — so a
     /// readable spoken callsign is never rewritten into an ADS-B code form. Empty when no live traffic.
     var trafficLabels: [String] = []
+    /// Snap-stage outcome for THIS transmission (CallsignSnap/SlotSnap verdicts + airport
+    /// grounding). Rides along to the refiner so the prompt can cite it and the validator can
+    /// veto edits that contradict it (`groundedRunways`). Nil when the snaps didn't run.
+    var snapGrounding: SnapGrounding? = nil
 }
 
 /// The "RAG" step: given a raw transcript plus the active facility, lexically retrieve the
