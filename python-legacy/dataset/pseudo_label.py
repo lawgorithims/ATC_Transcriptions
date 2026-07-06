@@ -82,6 +82,7 @@ def evaluate_segment(
     thresholds: FilterThresholds,
     context_for_role=None,
     airport_ctx=None,
+    callsign_candidates=None,
 ) -> LabelDecision:
     """Decode a segment with both models and decide whether to keep it as a label.
 
@@ -168,6 +169,17 @@ def evaluate_segment(
         # applying fixes in the label's own format is a queued improvement.
         if not gate.ok:
             return reject("slot_gate_" + gate.reasons[0].split(":")[0])
+
+    # ADS-B world grounding: snap the callsign onto the aircraft that were
+    # actually around the airport while the block recorded (recording-time
+    # traffic snapshot). Fix-only — natural text preserved, never rejects.
+    if callsign_candidates:
+        from dataset import label_gate
+
+        cs_fix = label_gate.fix_callsign(label, callsign_candidates)
+        if cs_fix.fixed:
+            label = cs_fix.label
+            metrics["callsign_snap"] = cs_fix.reasons
 
     turn = atc_diarize.classify_turn(label, context_for_role)
     metrics["corrector_delta"] = round(corrector_delta, 4)

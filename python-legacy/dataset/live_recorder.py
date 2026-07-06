@@ -66,7 +66,14 @@ def record_feed_chunks(
         dest = date_dir / f"{feed_key}-{stamp}.wav"
 
         log(f"recording {feed_key} chunk {i + 1}/{n_chunks} ({chunk_minutes:.0f} min)")
-        record_live(stream_url, chunk_minutes * 60.0, dest, on_status=on_status)
+        # ADS-B traffic snapshot: capture who is actually around the airport WHILE
+        # the block records (live-only data) — it grounds the labeler's callsign
+        # snapping later (label_gate.fix_callsign). Fail-soft: no coords/network
+        # → empty snapshot, and this changes nothing about recording.
+        from dataset.traffic_snapshot import TrafficSnapshotter
+
+        with TrafficSnapshotter(airport) as traffic:
+            record_live(stream_url, chunk_minutes * 60.0, dest, on_status=on_status)
 
         rec = DownloadRecord(
             airport=airport, feed=feed_key, mount=feed_key,
@@ -88,6 +95,9 @@ def record_feed_chunks(
         else:
             rec.status = "ok"
             log(f"  kept ({sy.speech_s:.1f}s speech)")
+            snap = traffic.write_snapshot(dest)
+            if snap is not None:
+                log(f"  traffic snapshot: {len(traffic.codes)} aircraft")
 
         _append_manifest(manifest_path, rec)
         records.append(rec)

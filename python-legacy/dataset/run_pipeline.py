@@ -165,7 +165,14 @@ def run(cfg: dict) -> dict:
 
                 cf = CloudflareSession(headless=True).__enter__()
 
-            for job in jobs:
+            # Shuffle the feed order each pass: sequential real-time recording with a
+            # fixed order systematically overweights the first airports in the config
+            # (and every supervisor restart begins at the top again).
+            import random
+
+            ordered = list(jobs)
+            random.shuffle(ordered)
+            for job in ordered:
                 def _on_block(rec, _job=job):
                     block_q.put(_BlockItem(_job, Path(rec.path)))
 
@@ -225,6 +232,11 @@ def run(cfg: dict) -> dict:
             if item is None:
                 break
             job = item.job
+            # Recording-time ADS-B snapshot for this block (may be absent): the
+            # spoken candidates that ground the labeler's callsign snapping.
+            from dataset.traffic_snapshot import load_snapshot
+
+            block_traffic = load_snapshot(item.block_path)
             if job.airport_code not in airport_ctx_cache:
                 try:
                     airport_ctx_cache[job.airport_code] = ctx_source.airport(job.airport_code)
@@ -248,6 +260,7 @@ def run(cfg: dict) -> dict:
                     context_prompt=None,  # teacher prompt-free (verbose airport prompt leaked into labels)
                     thresholds=thresholds,
                     airport_ctx=airport_ctx_cache.get(job.airport_code),
+                    callsign_candidates=block_traffic,
                 )
                 row = writer.write(seg, decision)
                 processed += 1

@@ -151,8 +151,14 @@ def ingest(args) -> int:
             if not ref_part:
                 continue
             parts.append(ref_part)
+            # the highlighter UI carries no callsign field — extract it from the
+            # turn's own words (the role-highlighted span contains the spoken callsign)
+            callsign = (t.get("callsign") or "").strip() or None
+            if callsign is None:
+                from atc_diarize import extract_callsign
+                callsign = extract_callsign(ref_part.replace("<unk>", " "))
             turns.append({"text": ref_part, "role": t.get("role", "unk"),
-                          "callsign": (t.get("callsign") or "").strip() or None})
+                          "callsign": callsign})
         if not parts:
             skipped += 1
             continue
@@ -204,39 +210,75 @@ _TEMPLATE = """<!DOCTYPE html>
  .bar{position:sticky;top:0;background:#F5F7F8;padding:10px 0;display:flex;gap:12px;align-items:center;z-index:2;border-bottom:1px solid #DCE3E8}
  audio{width:100%;margin-top:6px;height:34px}
  label{user-select:none}
- .turn{border-left:3px solid #DCE3E8;padding-left:10px;margin-top:10px}
- .turn:only-of-type{border-left:none;padding-left:0}
- .tn{font-family:monospace;font-size:11px;color:#5B6B78}
+ .ta{border:1px solid #DCE3E8;border-radius:4px;padding:10px;margin-top:8px;font-family:monospace;
+     font-size:14.5px;line-height:1.9;min-height:44px;background:#fff;white-space:pre-wrap}
+ .ta:focus{outline:2px solid #1D5B8C33}
+ .hl-ctl{background:#CFE3F4;border-radius:2px;box-shadow:0 0 0 1px #CFE3F4}
+ .hl-acft{background:#D6EBD9;border-radius:2px;box-shadow:0 0 0 1px #D6EBD9}
+ .hl-unclear{text-decoration:underline wavy #B07C1F;background-color:#F6E8B8}
+ .hl-ctl.hl-unclear{background:linear-gradient(#F6E8B8,#F6E8B8) 0 100%/100% 6px no-repeat,#CFE3F4}
+ .hl-acft.hl-unclear{background:linear-gradient(#F6E8B8,#F6E8B8) 0 100%/100% 6px no-repeat,#D6EBD9}
+ .tools{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+ .tool{border:1px solid #DCE3E8}
+ .tool.active{outline:2.5px solid #1A2530;outline-offset:1px;font-weight:700}
+ .tool.t-ctl{background:#CFE3F4} .tool.t-acft{background:#D6EBD9} .tool.t-unclear{background:#F6E8B8}
+ .legend{font-size:12px;color:#5B6B78}
+ kbd{font-family:monospace;background:#E8EDF0;border-radius:3px;padding:0 4px;font-size:11px}
 </style></head><body>
 <h1>Gold v1 verification</h1>
-<p class="sub">Listen, fix the transcript to exactly what was said (numbers as digits, runways like "22r"),
-set the speaker role + callsign (as spoken, e.g. "delta 232"), then Good / Unusable.
-<b>Multiple speakers in one clip?</b> Place the cursor where the next speaker starts and press
-<b>Split turn</b> — each turn gets its own role and callsign.
-<b>Can't make words out?</b> Select them and press <b>Mark unclear</b> (or press it with nothing
-selected to insert an [unclear] token) — never guess. Progress autosaves locally;
-Export when done and send the file back.</p>
-<div class="bar"><span id="progress"></span><button class="primary" onclick="exportJson()">Export corrections</button></div>
+<p class="sub">Listen, fix the transcript to exactly what was said (numbers as digits, runways like "22r").
+<b>Assign speakers by highlighting:</b> pick a highlighter below, then sweep it across the words each
+speaker said (selections snap to whole words; multiple aircraft = paint each one's words with
+Aircraft — callsigns are read from the highlighted text automatically).
+<b>Unclear speech:</b> paint transcribed-but-doubtful words with the Unclear highlighter, or press
+<b>⟨insert [unclear]⟩</b> at the cursor for audible speech you can't transcribe at all — never guess.
+Eraser removes highlights. Then <b>Good</b> / <b>Unusable</b>. Autosaves locally; Export when done.</p>
+<div class="bar">
+  <div class="tools">
+    <button class="tool" data-tool="edit" title="normal text editing"><kbd>0</kbd> edit</button>
+    <button class="tool t-ctl" data-tool="ctl"><kbd>1</kbd> controller</button>
+    <button class="tool t-acft" data-tool="acft"><kbd>2</kbd> aircraft</button>
+    <button class="tool t-unclear" data-tool="unclear"><kbd>3</kbd> unclear</button>
+    <button class="tool" data-tool="erase"><kbd>4</kbd> eraser</button>
+    <button class="tool" data-tool="token" title="insert an [unclear] token at the cursor">⟨insert [unclear]⟩</button>
+  </div>
+  <span id="progress"></span>
+  <button class="primary" onclick="exportJson()">Export corrections</button>
+</div>
+<p class="legend">Unpainted text is fine when only one speaker is present — it exports as
+role&nbsp;"unclear/unknown"; paint it if you know who spoke. Wavy underline = unclear words.</p>
 <div id="cards"></div>
 <script>
 const DATA = __DATA__;
 const KEY = "goldv1." + DATA.length;
 let state = JSON.parse(localStorage.getItem(KEY) || "{}");
-// migrate v1.0 entries ({corrected, role, callsign}) to the turns shape — earlier
-// review progress survives the UI upgrade.
+let tool = "edit";
+
+// ---- migrate earlier formats so review progress survives UI upgrades ----
+// v1.2 shape: { status, text, runs: [{s, e, role|null, unclear:bool}] }
 for (const id in state) {
   const s = state[id];
-  if (!s.turns) {
-    s.turns = [{ text: s.corrected ?? null, role: s.role ?? null, callsign: s.callsign ?? null }];
-    delete s.corrected; delete s.role; delete s.callsign;
+  if (s.runs) continue;
+  if (s.turns) {                          // v1.1 split-turns shape
+    let text = "", runs = [];
+    s.turns.forEach(t => {
+      if (text) text += " ";
+      const start = text.length;
+      text += (t.text ?? "");
+      if (t.role === "ctl" || t.role === "acft")
+        runs.push({ s: start, e: text.length, role: t.role, unclear: false });
+    });
+    state[id] = { status: s.status, text, runs };
+  } else if ("corrected" in s || "status" in s) {   // v1.0 shape
+    state[id] = { status: s.status, text: s.corrected ?? null, runs: [] };
   }
 }
+
 function save(){ localStorage.setItem(KEY, JSON.stringify(state)); renderProgress(); }
 function get(c){
-  if (!state[c.id]) state[c.id] = { turns: [{ text: c.draft, role: c.role_prefill, callsign: c.callsign_prefill }] };
+  if (!state[c.id]) state[c.id] = { text: null, runs: [] };
   const s = state[c.id];
-  s.turns = s.turns.map(t => ({ text: t.text ?? c.draft, role: t.role ?? c.role_prefill,
-                                callsign: t.callsign ?? c.callsign_prefill }));
+  if (s.text == null) s.text = c.draft;
   return s;
 }
 function renderProgress(){
@@ -244,24 +286,121 @@ function renderProgress(){
   document.getElementById("progress").textContent = done + " / " + DATA.length + " reviewed";
 }
 function esc(x){ const d = document.createElement("div"); d.textContent = x ?? ""; return d.innerHTML; }
-function turnRow(c, s, ti){
-  const t = s.turns[ti];
-  return `
-  <div class="turn">
-    <textarea data-ti="${ti}">${esc(t.text)}</textarea>
-    <div class="row">
-      <span class="tn">turn ${ti+1}/${s.turns.length}</span>
-      role:
-      <label><input type="radio" name="role-${c.n}-${ti}" value="ctl" ${t.role==="ctl"?"checked":""}> controller</label>
-      <label><input type="radio" name="role-${c.n}-${ti}" value="acft" ${t.role==="acft"?"checked":""}> aircraft</label>
-      <label><input type="radio" name="role-${c.n}-${ti}" value="unk" ${t.role==="unk"?"checked":""}> unclear</label>
-      callsign: <input type="text" data-cs="${ti}" value="${esc(t.callsign)}">
-      <button data-act="split" data-ti="${ti}" title="cursor marks where the next speaker starts">Split turn</button>
-      <button data-act="unclear" data-ti="${ti}" title="wrap selection; empty selection inserts a token">Mark unclear</button>
-      ${s.turns.length > 1 ? `<button data-act="del" data-ti="${ti}" title="remove this turn">&#10005;</button>` : ""}
-    </div>
-  </div>`;
+
+// ---- runs <-> DOM ----
+// render text + runs as flat spans (one span per run; classes carry role + unclear)
+function runHTML(s){
+  const bounds = new Set([0, s.text.length]);
+  s.runs.forEach(r => { bounds.add(r.s); bounds.add(r.e); });
+  const cuts = [...bounds].sort((a, b) => a - b);
+  let html = "";
+  for (let i = 0; i + 1 < cuts.length; i++) {
+    const a = cuts[i], b = cuts[i + 1];
+    if (a >= b) continue;
+    const seg = s.text.slice(a, b);
+    const role = s.runs.find(r => r.s <= a && r.e >= b && r.role)?.role;
+    const unclear = s.runs.some(r => r.s <= a && r.e >= b && r.unclear);
+    const cls = (role ? "hl-" + role : "") + (unclear ? " hl-unclear" : "");
+    html += cls.trim() ? `<span class="${cls.trim()}">${esc(seg)}</span>` : esc(seg);
+  }
+  return html || esc(s.text);
 }
+// serialize the (possibly user-edited) DOM back to {text, runs}
+function domToRuns(div){
+  let text = "";
+  const runs = [];
+  (function walk(node, role, unclear){
+    for (const child of node.childNodes) {
+      if (child.nodeType === Node.TEXT_NODE) { text += child.textContent; continue; }
+      let r = role, u = unclear;
+      if (child.classList) {
+        if (child.classList.contains("hl-ctl")) r = "ctl";
+        if (child.classList.contains("hl-acft")) r = "acft";
+        if (child.classList.contains("hl-unclear")) u = true;
+      }
+      const start = text.length;
+      walk(child, r, u);
+      if ((r || u) && text.length > start) runs.push({ s: start, e: text.length, role: r, unclear: u });
+    }
+  })(div, null, false);
+  return { text, runs: mergeRuns(runs, text.length) };
+}
+function mergeRuns(runs, n){
+  // flatten to char props, rebuild minimal run list (handles any overlap/nesting)
+  const role = new Array(n).fill(null), unc = new Array(n).fill(false);
+  runs.forEach(r => { for (let i = Math.max(0, r.s); i < Math.min(n, r.e); i++) {
+    if (r.role) role[i] = r.role;
+    if (r.unclear) unc[i] = true;
+  }});
+  const out = [];
+  let i = 0;
+  while (i < n) {
+    if (!role[i] && !unc[i]) { i++; continue; }
+    let j = i;
+    while (j < n && role[j] === role[i] && unc[j] === unc[i]) j++;
+    out.push({ s: i, e: j, role: role[i], unclear: unc[i] });
+    i = j;
+  }
+  return out;
+}
+// selection -> [start, end) offsets in the div's text, snapped to word boundaries
+function selectionOffsets(div){
+  const sel = window.getSelection();
+  if (!sel.rangeCount) return null;
+  const range = sel.getRangeAt(0);
+  if (!div.contains(range.startContainer) || !div.contains(range.endContainer)) return null;
+  function offsetOf(container, offset){
+    const walker = document.createTreeWalker(div, NodeFilter.SHOW_TEXT);
+    let total = 0, node;
+    while ((node = walker.nextNode())) {
+      if (node === container) return total + offset;
+      total += node.textContent.length;
+    }
+    return total;   // container is the div itself / element node: clamp to end
+  }
+  let a = offsetOf(range.startContainer, range.startOffset);
+  let b = offsetOf(range.endContainer, range.endOffset);
+  if (a > b) [a, b] = [b, a];
+  const text = div.textContent;
+  while (a > 0 && /\S/.test(text[a - 1]) && /\S/.test(text[a])) a--;          // snap left
+  while (b < text.length && b > 0 && /\S/.test(text[b - 1]) && /\S/.test(text[b])) b++;  // snap right
+  return a === b ? { caret: a } : { a, b };
+}
+function applyTool(c, div){
+  const s = get(c);
+  const off = selectionOffsets(div);
+  if (!off) return;
+  const cur = domToRuns(div);         // trust the DOM (it may hold fresh text edits)
+  s.text = cur.text; s.runs = cur.runs;
+  if (tool === "token") {
+    const at = off.caret ?? off.a;
+    const ins = (at > 0 && s.text[at-1] !== " " ? " " : "") + "[unclear]" + (s.text[at] !== " " ? " " : "");
+    // shift runs past the insertion point
+    s.runs.forEach(r => { if (r.s >= at) r.s += ins.length; if (r.e > at) r.e += ins.length; });
+    s.text = s.text.slice(0, at) + ins + s.text.slice(at);
+  } else if (off.caret == null) {
+    const patch = tool === "erase" ? { role: null, unclear: false }
+               : tool === "unclear" ? { unclear: true }
+               : { role: tool };
+    const add = [];
+    if ("role" in patch) add.push({ s: off.a, e: off.b, role: patch.role, unclear: false, roleOnly: true });
+    // char-level apply via mergeRuns: expand current runs, overlay the patch
+    const n = Math.max(s.text.length, off.b);
+    const role = new Array(n).fill(null), unc = new Array(n).fill(false);
+    s.runs.forEach(r => { for (let i = r.s; i < Math.min(n, r.e); i++) { if (r.role) role[i] = r.role; if (r.unclear) unc[i] = true; }});
+    for (let i = off.a; i < off.b; i++) {
+      if (tool === "erase") { role[i] = null; unc[i] = false; }
+      else if (tool === "unclear") unc[i] = true;
+      else role[i] = tool;
+    }
+    s.runs = mergeRuns([{s:0,e:0}].concat(
+      Array.from({length: n}, (_, i) => ({ s: i, e: i + 1, role: role[i], unclear: unc[i] }))
+        .filter(r => r.role || r.unclear)), n);
+  } else return;   // highlight tools need a selection
+  div.innerHTML = runHTML(s);
+  save();
+}
+
 function card(c){
   const s = get(c);
   const div = document.createElement("div");
@@ -269,64 +408,96 @@ function card(c){
   div.innerHTML = `
     <div class="hdr"><b>#${c.n}</b><span>${c.airport} · ${c.feed}</span><span>${c.id}</span><span>[${c.accept_state}]</span></div>
     <audio controls preload="none" src="${c.clip}"></audio>
-    ${s.turns.map((_, ti) => turnRow(c, s, ti)).join("")}
+    <div class="ta" contenteditable="true" spellcheck="false"></div>
     <div class="row">
       <button class="good" data-act="good">Good</button>
       <button class="bad" data-act="bad">Unusable</button>
     </div>`;
-  div.querySelectorAll("textarea").forEach(ta => ta.addEventListener("input", e => {
-    s.turns[+e.target.dataset.ti].text = e.target.value; save();
-  }));
-  div.querySelectorAll("input[data-cs]").forEach(inp => inp.addEventListener("input", e => {
-    s.turns[+e.target.dataset.cs].callsign = e.target.value; save();
-  }));
-  div.querySelectorAll('input[type=radio]').forEach(r => r.addEventListener("change", e => {
-    const ti = +e.target.name.split("-")[2];
-    s.turns[ti].role = e.target.value; save();
-  }));
+  const ta = div.querySelector(".ta");
+  ta.innerHTML = runHTML(s);
+  ta.addEventListener("input", () => {
+    const cur = domToRuns(ta);
+    s.text = cur.text; s.runs = cur.runs; save();
+  });
+  ta.addEventListener("mouseup", () => { if (tool !== "edit") applyTool(c, ta); });
   div.addEventListener("click", e => {
     const act = e.target.dataset && e.target.dataset.act;
-    if (!act) return;
-    if (act === "good" || act === "bad") { s.status = act; save(); refresh(c, div); return; }
-    const ti = +e.target.dataset.ti;
-    const ta = div.querySelector(`textarea[data-ti="${ti}"]`);
-    if (act === "split") {
-      const pos = ta.selectionStart ?? 0;
-      const before = ta.value.slice(0, pos).trim(), after = ta.value.slice(pos).trim();
-      if (!after) return;   // nothing after the cursor — nothing to split off
-      s.turns[ti].text = before;
-      // new turn defaults to the OTHER side of the exchange (turn-taking prior)
-      s.turns.splice(ti + 1, 0, { text: after,
-        role: s.turns[ti].role === "ctl" ? "acft" : "ctl", callsign: "" });
-      save(); refresh(c, div);
-    } else if (act === "del") {
-      s.turns.splice(ti, 1); save(); refresh(c, div);
-    } else if (act === "unclear") {
-      const a = ta.selectionStart ?? 0, b = ta.selectionEnd ?? 0;
-      ta.value = b > a
-        ? ta.value.slice(0, a) + "[unclear]" + ta.value.slice(a, b) + "[/unclear]" + ta.value.slice(b)
-        : ta.value.slice(0, a) + " [unclear] " + ta.value.slice(a);
-      s.turns[ti].text = ta.value; save();
+    if (act === "good" || act === "bad") {
+      const cur = domToRuns(ta);
+      s.text = cur.text; s.runs = cur.runs; s.status = act;
+      save();
+      div.className = "card" + (act === "good" ? " done" : " bad");
     }
   });
   return div;
 }
-function refresh(c, oldDiv){ oldDiv.replaceWith(card(c)); renderProgress(); }
+
+// ---- export: turns derived from role runs; unclear runs wrap as [unclear]...[/unclear] ----
+function exportRow(c){
+  const s = get(c);
+  const n = s.text.length;
+  const role = new Array(n).fill(null), unc = new Array(n).fill(false);
+  s.runs.forEach(r => { for (let i = r.s; i < Math.min(n, r.e); i++) { if (r.role) role[i] = r.role; if (r.unclear) unc[i] = true; }});
+  const turns = [];
+  let i = 0;
+  while (i < n) {
+    let j = i;
+    while (j < n && role[j] === role[i]) j++;
+    let seg = "";
+    let k = i;
+    while (k < j) {
+      if (unc[k]) { let m = k; while (m < j && unc[m]) m++; seg += "[unclear]" + s.text.slice(k, m) + "[/unclear]"; k = m; }
+      else { let m = k; while (m < j && !unc[m]) m++; seg += s.text.slice(k, m); k = m; }
+    }
+    seg = seg.trim();
+    if (seg) turns.push({ text: seg, role: role[i] ?? "unk", callsign: "" });
+    i = j;
+  }
+  return { n: c.n, id: c.id, airport: c.airport, feed: c.feed, draft: c.draft,
+           turns, corrected: turns.map(t => t.text).join(" "),
+           status: s.status ?? "unreviewed" };
+}
 function exportJson(){
-  const out = DATA.map(c => { const s = get(c); return {
-    n: c.n, id: c.id, airport: c.airport, feed: c.feed, draft: c.draft,
-    turns: s.turns,
-    corrected: s.turns.map(t => t.text).join(" "),
-    status: s.status ?? "unreviewed" };});
+  const out = DATA.map(exportRow);
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([JSON.stringify(out, null, 1)], {type: "application/json"}));
   a.download = "corrections_v1.json"; a.click();
 }
+
+// ---- toolbar + hotkeys ----
+function setTool(t){
+  tool = t;
+  document.querySelectorAll(".tool").forEach(b =>
+    b.classList.toggle("active", b.dataset.tool === t));
+}
+document.querySelectorAll(".tool").forEach(b => b.addEventListener("click", () => {
+  if (b.dataset.tool === "token") {
+    // one-shot action on the current selection's card
+    const sel = window.getSelection();
+    const ta = sel.anchorNode && (sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement)?.closest(".ta");
+    if (ta) { const prev = tool; tool = "token"; applyTool(DATA[cardIndex(ta)], ta); tool = prev; }
+    return;
+  }
+  setTool(b.dataset.tool);
+}));
+function cardIndex(ta){
+  const cards = [...document.querySelectorAll(".card")];
+  return cards.findIndex(cd => cd.contains(ta));
+}
+document.addEventListener("keydown", e => {
+  if (e.target.closest(".ta") && tool === "edit") {
+    if (e.key === "Escape") setTool("edit");
+    return;   // typing mode — don't hijack digits
+  }
+  const map = { "0": "edit", "1": "ctl", "2": "acft", "3": "unclear", "4": "erase", "Escape": "edit" };
+  if (map[e.key]) setTool(map[e.key]);
+});
 function renderAll(){
   const root = document.getElementById("cards"); root.innerHTML = "";
   DATA.forEach(c => root.appendChild(card(c)));
   renderProgress();
 }
+setTool("edit");
 renderAll();
 </script></body></html>
 """

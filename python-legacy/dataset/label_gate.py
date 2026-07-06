@@ -77,6 +77,39 @@ def assess_label(label: str, airport_ctx: Optional[AirportContext]) -> GateResul
                       fixed=out_text != label, reasons=reasons)
 
 
+def fix_callsign(label: str, candidates_natural: List[str]) -> GateResult:
+    """Snap the label's callsign onto the block's ADS-B traffic snapshot.
+
+    ``candidates_natural`` are spoken-natural strings from
+    ``traffic_snapshot.spoken_candidates`` ("delta 232"). The snap policy is
+    CallsignSnap's (unique, edit<=2 telephony / <=1 digits, tie=abstain), but
+    the REPLACEMENT text is the candidate's natural form — never the canonical
+    digit-split form — so training labels keep their format. Conservative by
+    contract: an unmatched callsign is NOT evidence of error (ADS-B coverage
+    gaps, no transponder), so this never rejects — it only fixes confident
+    near-misses.
+    """
+    from atc_diarize import extract_callsign
+    from callsign_snap import match_callsign
+
+    span = extract_callsign(label)
+    if not span or not candidates_natural:
+        return GateResult(ok=True, label=label)
+    canon_to_natural = {canon(c): c for c in candidates_natural}
+    heard = canon(span)
+    match = match_callsign(heard, list(canon_to_natural))
+    if match is None or match == heard:
+        return GateResult(ok=True, label=label)
+    tokens = label.split()
+    stoks = span.split()
+    for i in range(len(tokens) - len(stoks) + 1):
+        if [t.lower() for t in tokens[i:i + len(stoks)]] == stoks:
+            fixed = " ".join(tokens[:i] + canon_to_natural[match].split() + tokens[i + len(stoks):])
+            return GateResult(ok=True, label=fixed, fixed=True,
+                              reasons=[f"callsign_snapped:{span}->{canon_to_natural[match]}"])
+    return GateResult(ok=True, label=label)
+
+
 # ---------------------------------------------------------------------------
 # retro-measurement CLI over collected trainsets
 # ---------------------------------------------------------------------------
