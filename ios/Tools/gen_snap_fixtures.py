@@ -57,6 +57,8 @@ SLOT_TEXTS = [
     "runway one eight right cleared to land then contact tower one two seven five five",
     "center american 1786 with you at 320",
     "american 1786 contact tower one two six point five five",
+    "runway two two right traffic approved",
+    "tower cessna twelve sixty five ready for departure",
 ]
 
 

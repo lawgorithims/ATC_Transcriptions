@@ -254,6 +254,24 @@
      "applied": false
     }
    ]
+  },
+  {
+   "in": "runway two two right traffic approved",
+   "out": "runway 2 2 right traffic approved",
+   "edits": [
+    {
+     "slot": "runway",
+     "verdict": "verified",
+     "original": "22",
+     "snapped": null,
+     "applied": false
+    }
+   ]
+  },
+  {
+   "in": "tower cessna twelve sixty five ready for departure",
+   "out": "tower cessna 1 2 6 5 ready for departure",
+   "edits": []
   }
  ],
  "cs_candidates": [

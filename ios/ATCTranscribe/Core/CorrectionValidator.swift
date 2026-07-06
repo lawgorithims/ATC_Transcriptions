@@ -101,7 +101,8 @@ struct CorrectionValidator {
     /// per-digit form ("runway 1 7 right" / "runway 17R" / "runway one seven right" all → "17|R").
     static func runwayKeys(in text: String) -> Set<String> {
         let canon = ATCNormalize.normalize(text) as NSString
-        let rx = try! NSRegularExpression(pattern: #"\brunway((?: \d){1,2})( left| right| center)?\b"#)
+        let rx = try! NSRegularExpression(
+            pattern: #"\brunway((?: \d){1,2})( (?:left|right|center)(?! (?:traffic|turn|downwind|base|closed)))?\b"#)
         var out: Set<String> = []
         for m in rx.matches(in: canon as String, range: NSRange(location: 0, length: canon.length)) {
             var num = canon.substring(with: m.range(at: 1)).replacingOccurrences(of: " ", with: "")

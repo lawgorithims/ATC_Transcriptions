@@ -95,9 +95,12 @@ actor NetworkAirportContextSource: AirportContextSource {
     private func loadIfNeeded() async {
         guard runways == nil else { return }
         guard let rw = await csv("runways"), let fq = await csv("airport-frequencies") else { return }
+        // runways.csv schema: id,airport_ref,airport_ident,length_ft,width_ft,surface,
+        // lighted,closed,le_ident,le_lat,le_lon,le_elev,le_hdg,le_dthr,he_ident,...
+        // -> le_ident col 8, he_ident col 14 (review finding: col 9 is le_latitude).
         var rwTable: [String: [String]] = [:]
-        for row in rw where row.count > 9 && row[7] != "1" {          // closed column
-            for end in [row[8], row[9]] where !end.isEmpty {
+        for row in rw where row.count > 14 && row[7] != "1" {         // closed column
+            for end in [row[8], row[14]] where !end.isEmpty {
                 if rwTable[row[2], default: []].contains(end) == false { rwTable[row[2], default: []].append(end) }
             }
         }

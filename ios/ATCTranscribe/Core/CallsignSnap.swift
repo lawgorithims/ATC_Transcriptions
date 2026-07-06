@@ -19,9 +19,11 @@ enum CallsignSnap {
     }
 
     /// Spoken aviation digit words + grouping cardinals (mirror of `atc_diarize._DIGIT_WORDS`).
+    /// "fourty" is an ATCNormalize-only alias absent from the Python reference set — removed
+    /// for byte-parity of extraction spans.
     static let digitWords: Set<String> = Set(ATCNormalize.units.keys)
         .union(ATCNormalize.teens.keys).union(ATCNormalize.tens.keys)
-        .union(["hundred", "thousand"])
+        .union(["hundred", "thousand"]).subtracting(["fourty"])
 
     /// ICAO phonetic letters (mirror of `atc_diarize._PHONETIC_WORDS`).
     static let phoneticWords: Set<String> = [
@@ -44,11 +46,13 @@ enum CallsignSnap {
         return names
     }
 
-    /// Lowercase + strip punctuation to spaced tokens (mirror of `_normalize_for_match`).
+    /// Lowercase + strip to ASCII a-z/0-9 spaced tokens (mirror of `_normalize_for_match`,
+    /// whose regex keeps only `[a-z0-9\s]` — non-ASCII Whisper output must tokenize the same
+    /// way on both sides).
     static func normalizeForMatch(_ text: String) -> String {
         var s = ""
         for ch in text.lowercased() {
-            s.append((ch.isLetter || ch.isNumber || ch == " ") ? ch : " ")
+            s.append((("a"..."z").contains(ch) || ("0"..."9").contains(ch) || ch == " ") ? ch : " ")
         }
         return s.split(separator: " ").joined(separator: " ")
     }

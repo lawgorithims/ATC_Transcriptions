@@ -162,8 +162,10 @@ def evaluate_segment(
 
         gate = label_gate.assess_label(label, airport_ctx)
         metrics["slot_gate"] = {"fixed": gate.fixed, "reasons": gate.reasons}
-        if gate.fixed:
-            label = gate.label
+        # REJECT-only here: gate.label is in atc_normalize canonical digit space,
+        # which must not be mixed into natural-text training labels (review
+        # finding, 2026-07-06). `fixed` labels pass with their original text;
+        # applying fixes in the label's own format is a queued improvement.
         if not gate.ok:
             return reject("slot_gate_" + gate.reasons[0].split(":")[0])
 
