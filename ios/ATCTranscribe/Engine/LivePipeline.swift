@@ -121,7 +121,7 @@ private func round3(_ x: Double) -> Double { (x * 1000).rounded() / 1000 }
 /// port of `LiveATCPipeline._transcribe_segment` + the capture→VAD→transcribe loop.
 /// Source-agnostic: drive it with any `AudioSource` (file replay, mic, LiveATC stream).
 actor LivePipeline {
-    private let transcriber: ATCTranscriber
+    private let transcriber: any Transcribing
     private let context: ATCContext
     private var preprocessor: AudioPreprocessor?
     private var corrector: Corrector
@@ -155,7 +155,7 @@ actor LivePipeline {
         let f = DateFormatter(); f.dateFormat = "HH:mm:ss"; f.locale = Locale(identifier: "en_US_POSIX"); return f
     }()
 
-    init(transcriber: ATCTranscriber,
+    init(transcriber: any Transcribing,
          context: ATCContext,
          preprocessor: AudioPreprocessor? = nil,
          corrector: Corrector = NullCorrector(),
