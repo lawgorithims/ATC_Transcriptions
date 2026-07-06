@@ -107,19 +107,65 @@ def build(args) -> int:
     return 0
 
 
+import re as _re
+
+_UNCLEAR_SPAN = _re.compile(r"\[unclear\](.*?)\[/unclear\]", _re.S)
+_UNCLEAR_TOKEN = _re.compile(r"\[unclear\]")
+
+
+def _strip_unclear(text: str) -> tuple:
+    """Replace [unclear]...[/unclear] spans and bare [unclear] tokens with <unk>.
+
+    Returns (ref_text, had_unclear). The original words stay in the corrections
+    file for future use; the gold ref carries <unk> so scorers can exclude or
+    special-case these rows (scoreboard skips them from corpus WER by default —
+    models should not be graded against audio a human could not resolve).
+    """
+    had = bool(_UNCLEAR_SPAN.search(text) or _UNCLEAR_TOKEN.search(text))
+    text = _UNCLEAR_SPAN.sub(" <unk> ", text)
+    text = _UNCLEAR_TOKEN.sub(" <unk> ", text)
+    return " ".join(text.split()), had
+
+
 def ingest(args) -> int:
     cands = {c["id"]: c for c in json.loads(Path(args.candidates).read_text(encoding="utf-8"))}
     corrections = json.loads(Path(args.corrections).read_text(encoding="utf-8"))
-    rows, skipped = [], 0
+    rows, skipped, n_unclear, n_multiturn = [], 0, 0, 0
     for c in corrections:
         if c.get("status") != "good":
             skipped += 1
             continue
         cand = cands.get(c["id"], {})
+        # v1.1 export carries per-speaker turns; legacy exports carry `corrected`.
+        raw_turns = c.get("turns") or [{
+            "text": c.get("corrected", ""),
+            "role": c.get("role", "unk"),
+            "callsign": c.get("callsign", ""),
+        }]
+        turns, parts, had_any = [], [], False
+        for t in raw_turns:
+            stripped, had = _strip_unclear(t.get("text", ""))
+            had_any = had_any or had
+            ref_part = normalize.normalize_transcript(stripped.replace("<unk>", " UNKTOKEN "))
+            ref_part = ref_part.replace("unktoken", "<unk>")
+            if not ref_part:
+                continue
+            parts.append(ref_part)
+            turns.append({"text": ref_part, "role": t.get("role", "unk"),
+                          "callsign": (t.get("callsign") or "").strip() or None})
+        if not parts:
+            skipped += 1
+            continue
+        if len(turns) > 1:
+            n_multiturn += 1
+        if had_any:
+            n_unclear += 1
         rows.append({
             "clip": cand.get("clip"), "id": c["id"], "airport": c.get("airport"),
-            "feed": c.get("feed"), "ref": normalize.normalize_transcript(c["corrected"]),
-            "role": c.get("role", "unk"), "callsign": (c.get("callsign") or "").strip() or None,
+            "feed": c.get("feed"), "ref": " ".join(parts),
+            "turns": turns, "unclear": had_any,
+            # first-turn convenience fields (back-compat with v0-shaped consumers)
+            "role": turns[0]["role"], "callsign": turns[0]["callsign"],
         })
     merged = []
     if args.merge:
@@ -128,8 +174,9 @@ def ingest(args) -> int:
     with out.open("w", encoding="utf-8") as f:
         for r in merged + rows:
             f.write(json.dumps(r) + "\n")
-    print(f"gold rows: {len(rows)} new verified + {len(merged)} merged "
-          f"({skipped} marked bad/skipped) -> {out}")
+    print(f"gold rows: {len(rows)} new verified ({n_multiturn} multi-speaker, "
+          f"{n_unclear} with unclear spans) + {len(merged)} merged "
+          f"({skipped} bad/empty skipped) -> {out}")
     return 0
 
 
@@ -157,60 +204,119 @@ _TEMPLATE = """<!DOCTYPE html>
  .bar{position:sticky;top:0;background:#F5F7F8;padding:10px 0;display:flex;gap:12px;align-items:center;z-index:2;border-bottom:1px solid #DCE3E8}
  audio{width:100%;margin-top:6px;height:34px}
  label{user-select:none}
+ .turn{border-left:3px solid #DCE3E8;padding-left:10px;margin-top:10px}
+ .turn:only-of-type{border-left:none;padding-left:0}
+ .tn{font-family:monospace;font-size:11px;color:#5B6B78}
 </style></head><body>
 <h1>Gold v1 verification</h1>
 <p class="sub">Listen, fix the transcript to exactly what was said (numbers as digits, runways like "22r"),
-set the speaker role and the callsign (as spoken, e.g. "delta 232"), then Good / Unusable.
-Progress autosaves locally; Export when done and send the file back.</p>
+set the speaker role + callsign (as spoken, e.g. "delta 232"), then Good / Unusable.
+<b>Multiple speakers in one clip?</b> Place the cursor where the next speaker starts and press
+<b>Split turn</b> — each turn gets its own role and callsign.
+<b>Can't make words out?</b> Select them and press <b>Mark unclear</b> (or press it with nothing
+selected to insert an [unclear] token) — never guess. Progress autosaves locally;
+Export when done and send the file back.</p>
 <div class="bar"><span id="progress"></span><button class="primary" onclick="exportJson()">Export corrections</button></div>
 <div id="cards"></div>
 <script>
 const DATA = __DATA__;
 const KEY = "goldv1." + DATA.length;
 let state = JSON.parse(localStorage.getItem(KEY) || "{}");
+// migrate v1.0 entries ({corrected, role, callsign}) to the turns shape — earlier
+// review progress survives the UI upgrade.
+for (const id in state) {
+  const s = state[id];
+  if (!s.turns) {
+    s.turns = [{ text: s.corrected ?? null, role: s.role ?? null, callsign: s.callsign ?? null }];
+    delete s.corrected; delete s.role; delete s.callsign;
+  }
+}
 function save(){ localStorage.setItem(KEY, JSON.stringify(state)); renderProgress(); }
-function get(id){ if(!state[id]) state[id] = {}; return state[id]; }
+function get(c){
+  if (!state[c.id]) state[c.id] = { turns: [{ text: c.draft, role: c.role_prefill, callsign: c.callsign_prefill }] };
+  const s = state[c.id];
+  s.turns = s.turns.map(t => ({ text: t.text ?? c.draft, role: t.role ?? c.role_prefill,
+                                callsign: t.callsign ?? c.callsign_prefill }));
+  return s;
+}
 function renderProgress(){
   const done = DATA.filter(c => (state[c.id]||{}).status).length;
   document.getElementById("progress").textContent = done + " / " + DATA.length + " reviewed";
 }
+function esc(x){ const d = document.createElement("div"); d.textContent = x ?? ""; return d.innerHTML; }
+function turnRow(c, s, ti){
+  const t = s.turns[ti];
+  return `
+  <div class="turn">
+    <textarea data-ti="${ti}">${esc(t.text)}</textarea>
+    <div class="row">
+      <span class="tn">turn ${ti+1}/${s.turns.length}</span>
+      role:
+      <label><input type="radio" name="role-${c.n}-${ti}" value="ctl" ${t.role==="ctl"?"checked":""}> controller</label>
+      <label><input type="radio" name="role-${c.n}-${ti}" value="acft" ${t.role==="acft"?"checked":""}> aircraft</label>
+      <label><input type="radio" name="role-${c.n}-${ti}" value="unk" ${t.role==="unk"?"checked":""}> unclear</label>
+      callsign: <input type="text" data-cs="${ti}" value="${esc(t.callsign)}">
+      <button data-act="split" data-ti="${ti}" title="cursor marks where the next speaker starts">Split turn</button>
+      <button data-act="unclear" data-ti="${ti}" title="wrap selection; empty selection inserts a token">Mark unclear</button>
+      ${s.turns.length > 1 ? `<button data-act="del" data-ti="${ti}" title="remove this turn">&#10005;</button>` : ""}
+    </div>
+  </div>`;
+}
 function card(c){
-  const s = get(c.id);
+  const s = get(c);
   const div = document.createElement("div");
   div.className = "card" + (s.status === "good" ? " done" : s.status === "bad" ? " bad" : "");
   div.innerHTML = `
     <div class="hdr"><b>#${c.n}</b><span>${c.airport} · ${c.feed}</span><span>${c.id}</span><span>[${c.accept_state}]</span></div>
     <audio controls preload="none" src="${c.clip}"></audio>
-    <textarea data-id="${c.id}">${s.corrected ?? c.draft}</textarea>
+    ${s.turns.map((_, ti) => turnRow(c, s, ti)).join("")}
     <div class="row">
-      role:
-      <label><input type="radio" name="role-${c.n}" value="ctl" ${ (s.role??c.role_prefill)==="ctl"?"checked":"" }> controller</label>
-      <label><input type="radio" name="role-${c.n}" value="acft" ${ (s.role??c.role_prefill)==="acft"?"checked":"" }> aircraft</label>
-      <label><input type="radio" name="role-${c.n}" value="unk" ${ (s.role??c.role_prefill)==="unk"?"checked":"" }> unclear</label>
-      callsign: <input type="text" data-cs="${c.id}" value="${s.callsign ?? c.callsign_prefill}">
-      <button class="good" onclick="mark('${c.id}','good',${c.n})">Good</button>
-      <button class="bad" onclick="mark('${c.id}','bad',${c.n})">Unusable</button>
+      <button class="good" data-act="good">Good</button>
+      <button class="bad" data-act="bad">Unusable</button>
     </div>`;
-  div.querySelector("textarea").addEventListener("input", e => { get(c.id).corrected = e.target.value; save(); });
-  div.querySelector("[data-cs]").addEventListener("input", e => { get(c.id).callsign = e.target.value; save(); });
-  div.querySelectorAll(`input[name="role-${c.n}"]`).forEach(r =>
-    r.addEventListener("change", e => { get(c.id).role = e.target.value; save(); }));
+  div.querySelectorAll("textarea").forEach(ta => ta.addEventListener("input", e => {
+    s.turns[+e.target.dataset.ti].text = e.target.value; save();
+  }));
+  div.querySelectorAll("input[data-cs]").forEach(inp => inp.addEventListener("input", e => {
+    s.turns[+e.target.dataset.cs].callsign = e.target.value; save();
+  }));
+  div.querySelectorAll('input[type=radio]').forEach(r => r.addEventListener("change", e => {
+    const ti = +e.target.name.split("-")[2];
+    s.turns[ti].role = e.target.value; save();
+  }));
+  div.addEventListener("click", e => {
+    const act = e.target.dataset && e.target.dataset.act;
+    if (!act) return;
+    if (act === "good" || act === "bad") { s.status = act; save(); refresh(c, div); return; }
+    const ti = +e.target.dataset.ti;
+    const ta = div.querySelector(`textarea[data-ti="${ti}"]`);
+    if (act === "split") {
+      const pos = ta.selectionStart ?? 0;
+      const before = ta.value.slice(0, pos).trim(), after = ta.value.slice(pos).trim();
+      if (!after) return;   // nothing after the cursor — nothing to split off
+      s.turns[ti].text = before;
+      // new turn defaults to the OTHER side of the exchange (turn-taking prior)
+      s.turns.splice(ti + 1, 0, { text: after,
+        role: s.turns[ti].role === "ctl" ? "acft" : "ctl", callsign: "" });
+      save(); refresh(c, div);
+    } else if (act === "del") {
+      s.turns.splice(ti, 1); save(); refresh(c, div);
+    } else if (act === "unclear") {
+      const a = ta.selectionStart ?? 0, b = ta.selectionEnd ?? 0;
+      ta.value = b > a
+        ? ta.value.slice(0, a) + "[unclear]" + ta.value.slice(a, b) + "[/unclear]" + ta.value.slice(b)
+        : ta.value.slice(0, a) + " [unclear] " + ta.value.slice(a);
+      s.turns[ti].text = ta.value; save();
+    }
+  });
   return div;
 }
-function mark(id, status, n){
-  const s = get(id);
-  s.status = status;
-  s.corrected = document.querySelector(`textarea[data-id="${id}"]`).value;
-  s.callsign = document.querySelector(`input[data-cs="${id}"]`).value;
-  const checked = document.querySelector(`input[name="role-${n}"]:checked`);
-  if (checked) s.role = checked.value;
-  save(); renderAll();
-}
+function refresh(c, oldDiv){ oldDiv.replaceWith(card(c)); renderProgress(); }
 function exportJson(){
-  const out = DATA.map(c => { const s = state[c.id] || {}; return {
-    n: c.n, id: c.id, airport: c.airport, feed: c.feed,
-    draft: c.draft, corrected: s.corrected ?? c.draft,
-    role: s.role ?? c.role_prefill, callsign: s.callsign ?? c.callsign_prefill,
+  const out = DATA.map(c => { const s = get(c); return {
+    n: c.n, id: c.id, airport: c.airport, feed: c.feed, draft: c.draft,
+    turns: s.turns,
+    corrected: s.turns.map(t => t.text).join(" "),
     status: s.status ?? "unreviewed" };});
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([JSON.stringify(out, null, 1)], {type: "application/json"}));
@@ -242,6 +348,12 @@ def main(argv=None) -> int:
     i.add_argument("--out", required=True)
     i.add_argument("--merge", default=None)
     i.set_defaults(fn=ingest)
+    r = sub.add_parser("render", help="re-render review.html from existing candidates.json")
+    r.add_argument("--candidates", required=True)
+    r.add_argument("--out", required=True)
+    r.set_defaults(fn=lambda a: (Path(a.out).write_text(
+        _render_review(json.loads(Path(a.candidates).read_text(encoding="utf-8"))),
+        encoding="utf-8"), print(f"rendered {a.out}"))[-1] or 0)
     args = ap.parse_args(argv)
     return args.fn(args)
 

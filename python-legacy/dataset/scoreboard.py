@@ -131,13 +131,25 @@ def score_pairs(name: str, refs: List[str], hyps: List[str]) -> ModelScore:
 # Input loaders
 # ---------------------------------------------------------------------------
 
-def load_gold(path: Path) -> Dict[str, dict]:
-    """gold_testset.jsonl rows keyed by segment id ({id, clip, ref, airport, feed, ...})."""
+def load_gold(path: Path, include_unclear: bool = False) -> Dict[str, dict]:
+    """gold_testset.jsonl rows keyed by segment id ({id, clip, ref, airport, feed, ...}).
+
+    Rows flagged ``unclear`` (the verifier marked spans a human could not resolve;
+    ref carries ``<unk>`` tokens) are EXCLUDED from scoring by default — models
+    must not be graded against unintelligible audio. Pass ``include_unclear=True``
+    to keep them (e.g. for coverage counts).
+    """
     rows = {}
+    n_unclear = 0
     for line in path.read_text(encoding="utf-8").splitlines():
         if line.strip():
             r = json.loads(line)
+            if r.get("unclear") and not include_unclear:
+                n_unclear += 1
+                continue
             rows[r["id"]] = r
+    if n_unclear:
+        print(f"load_gold: {n_unclear} unclear-flagged rows excluded from scoring")
     return rows
 
 
