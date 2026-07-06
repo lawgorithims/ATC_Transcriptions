@@ -219,12 +219,18 @@ actor LivePipeline {
         // confidence gate, and the LLM grounding block.
         let snapInput = inlineCorrected.isEmpty ? text : inlineCorrected
         let csCandidates = context.snapCallsignCandidates()
+        let telephony = CallsignSnap.telephonyWords(context.knowledge)
         let (csText, csResult) = CallsignSnap.snapTranscript(
-            snapInput, candidates: csCandidates,
-            telephony: CallsignSnap.telephonyWords(context.knowledge))
+            snapInput, candidates: csCandidates, telephony: telephony)
         let airportCtx = await airportContext(for: context.airportIdent)
-        let (slotText, slotEdits) = SlotSnap.apply(csText, context: airportCtx)
-        let grounding = SnapGrounding(callsign: csResult, slots: slotEdits,
+        let (slotText, slotEdits) = SlotSnap.apply(csText, context: airportCtx,
+                                                   telephony: telephony)
+        // With NO candidate list every extracted callsign is trivially "unverified" —
+        // that is absence of evidence, not suspicion, so it must not reach the gate or
+        // the grounding block (review finding: offline mode would run the LLM on every
+        // transmission and shrink its context budget for nothing).
+        let grounding = SnapGrounding(callsign: csCandidates.isEmpty ? nil : csResult,
+                                      slots: slotEdits,
                                       airportIdent: airportCtx?.ident,
                                       airportRunways: airportCtx?.runways ?? [])
         if csResult.applied || slotEdits.contains(where: { $0.applied }) {
@@ -258,7 +264,19 @@ actor LivePipeline {
         // pre-snap behavior is preserved — extraction attributes ungated.
         if let cs = CallsignExtractor.extract(record.display, knowledge: context.knowledge) {
             record.callsign = cs.display
-            if csCandidates.isEmpty || grounding.callsignAttributable {
+            // Gate attribution only where the verdict is meaningful: a candidate list
+            // existed AND the heard callsign is airline-shaped (the list only ever
+            // contains airline traffic, so GA tails keep legacy ungated attribution —
+            // review finding: gating them would make GA unattributable whenever any
+            // airline was in range). When gated, the extractor's key must carry the
+            // same digits the snap verified (the two extractors can disagree).
+            let heardFirstWord = csResult.original?.split(separator: " ").first.map(String.init)
+            let heardAirline = heardFirstWord.map { telephony.contains($0) && $0 != "november" } ?? false
+            let gated = !csCandidates.isEmpty && heardAirline
+            let snappedDigits = (grounding.callsign?.snapped ?? "").filter(\.isNumber)
+            let extractedDigits = cs.icaoKey.filter(\.isNumber)
+            if !gated || (grounding.callsignAttributable
+                          && (snappedDigits.isEmpty || snappedDigits == extractedDigits)) {
                 record.callsignKey = cs.icaoKey
             }
         }

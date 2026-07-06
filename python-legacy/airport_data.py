@@ -67,7 +67,11 @@ class OurAirportsSource:
             if not self._download_ok:
                 raise FileNotFoundError(p)
             self.cache_dir.mkdir(parents=True, exist_ok=True)
-            urllib.request.urlretrieve(OURAIRPORTS_URL.format(name=name), p)
+            # download to a temp name then rename — an interrupted download must
+            # never leave a truncated file that later loads pass as a valid cache
+            tmp = p.with_suffix(".csv.part")
+            urllib.request.urlretrieve(OURAIRPORTS_URL.format(name=name), tmp)
+            tmp.replace(p)
         return p
 
     def _load(self) -> None:
@@ -169,7 +173,12 @@ class CompositeSource:
     def airport(self, ident: str) -> Optional[AirportContext]:
         result: Optional[AirportContext] = None
         for s in self.sources:
-            ctx = s.airport(ident)
+            try:
+                ctx = s.airport(ident)
+            except Exception:
+                # one broken source (e.g. missing OurAirports cache with
+                # download=False) must not lose the answers of the others
+                continue
             if ctx is None:
                 continue
             if result is None:
@@ -181,6 +190,8 @@ class CompositeSource:
                     result.frequencies = ctx.frequencies
                 if not result.name:
                     result.name = ctx.name
+                if result.lat == 0.0 and result.lon == 0.0:
+                    result.lat, result.lon = ctx.lat, ctx.lon
         return result
 
     def nearby(self, lat, lon, radius_nm=30.0, **kw):

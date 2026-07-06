@@ -28,8 +28,10 @@ enum SlotSnap {
                                            "clearance", "atis"]
     static let airband = 118.0...136.975
 
+    // The suffix must not be a direction word belonging to the NEXT phrase ("runway 4,
+    // right traffic" / "right turn") — capturing it would invent an L/R designator.
     private static let runwayRx = try! NSRegularExpression(
-        pattern: #"\brunway((?: \d){1,2})( left| right| center)?\b"#)
+        pattern: #"\brunway((?: \d){1,2})( (?:left|right|center)(?! (?:traffic|turn|downwind|base|closed)))?\b"#)
     private static let freqRx = try! NSRegularExpression(
         pattern: #"\b(\d \d \d) point (\d(?: \d){0,2})\b"#)
     // radio speech often omits "point": "contact tower one two six five five"
@@ -67,7 +69,15 @@ enum SlotSnap {
             out = substitute(rx, in: out) { groups, prefix, full, matchRange in
                 let prefixToks = prefix.split(separator: " ").suffix(4).map(String.init)
                 guard !freqAnchors.isDisjoint(with: prefixToks) else { return nil }
-                // never read a callsign's flight number as a frequency
+                // the POINT-LESS pattern requires the anchor IMMEDIATELY before the
+                // digits ("contact tower 126 55" yes; "tower cessna 1265" no)
+                let matched = full.substring(with: matchRange)
+                if !matched.contains("point"),
+                   prefixToks.last.map({ freqAnchors.contains($0) }) != true {
+                    return nil
+                }
+                // never read a callsign's digits as a frequency (airline flight
+                // numbers AND GA tails — both measured failure classes)
                 if let cs = callsignRange(in: full as String, telephony: telephony),
                    NSIntersectionRange(cs, matchRange).length > 0 {
                     return nil
@@ -119,9 +129,9 @@ enum SlotSnap {
     // MARK: frequency
 
     static func freqDigits(_ mhz: Double) -> String {
-        var s = String(format: "%.3f", mhz).replacingOccurrences(of: ".", with: "")
-        while s.count > 1, s.hasSuffix("0") { s.removeLast() }
-        return s
+        // Fixed width (6 digits, no stripping) — stripping collapsed integer-MHz
+        // values across the decimal (120.0 -> "12") and broke the edit<=1 policy.
+        String(format: "%.3f", mhz).replacingOccurrences(of: ".", with: "")
     }
 
     static func onRaster(_ mhz: Double) -> Bool {
@@ -157,10 +167,31 @@ enum SlotSnap {
 
     // MARK: regex plumbing
 
+    /// GA type/model words that anchor a spoken callsign — used ONLY to protect the digits
+    /// from the frequency patterns, never for snapping (mirror of `GA_CALLSIGN_WORDS`).
+    static let gaCallsignWords: Set<String> = [
+        "cessna", "piper", "skyhawk", "skylane", "cherokee", "warrior", "archer",
+        "bonanza", "baron", "citation", "mooney", "beech", "beechcraft", "cirrus",
+        "diamond", "grumman", "lancair", "malibu", "saratoga", "seminole", "seneca",
+        "husky", "cub", "champ", "stinson", "maule", "aztec", "navajo", "caravan",
+        "kingair", "king", "experimental", "helicopter", "gyroplane",
+    ]
+
     /// Char range of the extracted callsign span in the pass-input text, or nil. Canonical
     /// text is ASCII, so character offsets == NSRange UTF-16 offsets.
     private static func callsignRange(in text: String, telephony: Set<String>) -> NSRange? {
-        guard let span = CallsignSnap.extractCallsign(text, telephony: telephony) else { return nil }
+        var span = CallsignSnap.extractCallsign(text, telephony: telephony)
+        if span == nil {
+            let tokens = text.split(separator: " ").map(String.init)
+            for i in 0..<max(0, tokens.count - 1)
+            where gaCallsignWords.contains(tokens[i]) && tokens[i + 1].allSatisfy(\.isNumber) {
+                var j = i + 1
+                while j < tokens.count, tokens[j].allSatisfy(\.isNumber), !tokens[j].isEmpty { j += 1 }
+                span = tokens[i..<j].joined(separator: " ")
+                break
+            }
+        }
+        guard let span else { return nil }
         let padded = " " + text + " "
         guard let r = padded.range(of: " " + span + " ") else { return nil }
         let start = padded.distance(from: padded.startIndex, to: r.lowerBound)

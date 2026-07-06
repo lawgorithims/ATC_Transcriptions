@@ -56,7 +56,9 @@ def _v_freq(v: str) -> bool:
     if not m:
         return False
     mhz = float("".join(m.groups()[:3]) + "." + _digits(m.group(4)))
-    return 118.0 <= mhz <= 136.975
+    # nav band included: localizer/VOR frequencies (108-117.95) are legitimately
+    # spoken in clearances and must not count as impossible values
+    return 108.0 <= mhz <= 136.975
 
 
 def _v_runway(v: str) -> bool:
@@ -74,7 +76,7 @@ def _v_altimeter(v: str) -> bool:
 SLOTS: Dict[str, Tuple[re.Pattern, callable]] = {
     "squawk": (re.compile(r"\bsquawk((?: \d){4})\b"), _v_squawk),
     "heading": (re.compile(r"\bheading((?: \d){3})\b"), _v_heading),
-    "frequency": (re.compile(r"\b(\d \d \d point \d(?: \d)?)\b"), _v_freq),
+    "frequency": (re.compile(r"\b(\d \d \d point \d(?: \d){0,2})\b"), _v_freq),
     "runway": (re.compile(r"\brunway((?: \d){1,2}(?: (?:left|right|center))?)\b"), _v_runway),
     "altimeter": (re.compile(r"\baltimeter((?: \d){4})\b"), _v_altimeter),
 }

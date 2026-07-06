@@ -100,6 +100,45 @@ def test_freq_without_point_snap():
     assert edits[0].verdict == "snapped" and "1 2 6 point 5 5" in text, (edits, text)
 
 
+def test_suffix_from_next_phrase_not_captured():
+    # "runway 22, right traffic" — 'right' belongs to the pattern, not the runway
+    text, edits = snap_slots("runway two two right traffic approved", CTX)
+    assert edits[0].verdict == "verified" and edits[0].original == "22", edits
+    assert "2 2 right traffic" in text, text
+
+
+def test_ga_tail_never_read_as_frequency():
+    text, edits = snap_slots("tower cessna twelve sixty five ready for departure", CTX)
+    assert not any(e.slot == "frequency" for e in edits), edits
+
+
+def test_integer_mhz_no_digit_collapse():
+    # 120.0 must not collapse to '12' and license a 2-digit snap onto 132.0-style
+    # candidates; with no near candidate it stays unverified (on-raster, in-band)
+    from airport_data import AirportContext
+    ctx = AirportContext(ident="KTS2", runways=[], frequencies={"TWR": [132.0]})
+    text, edits = snap_slots("contact tower one two zero point zero", ctx)
+    assert edits and edits[0].verdict == "unverified", edits
+    assert "1 2 0 point 0" in text, text
+
+
+def test_helipad_designators_never_enter_pool():
+    from airport_data import AirportContext
+    # airport with ONLY unparseable designators -> no candidates -> abstain
+    # (the critical bug snapped heard runways onto the EMPTY designator, deleting
+    # the number from the transcript)
+    ctx = AirportContext(ident="KTS3", runways=["H1"], frequencies={})
+    text, edits = snap_slots("cleared to land runway three", ctx)
+    assert edits[0].verdict == "unverified" and not edits[0].applied, edits
+    assert "runway 3" in text, text
+    # mixed airport: H1 must not perturb the pool — '3' -> '36' is the legitimate
+    # unique edit-1 (dropped digit) snap, never a snap-to-nothing
+    ctx2 = AirportContext(ident="KTS4", runways=["H1", "18", "36"], frequencies={})
+    text2, edits2 = snap_slots("cleared to land runway three", ctx2)
+    assert edits2[0].verdict == "snapped" and edits2[0].snapped == "36", edits2
+    assert "runway 3 6" in text2, text2
+
+
 def test_callsign_flight_number_never_read_as_frequency():
     # "center american 1786" is a callsign, not frequency 178.6 (measured
     # false-positive class on the collected corpus)

@@ -35,7 +35,12 @@ from atc_normalize import normalize as _canon
 from atc_diarize import extract_callsign
 from airport_data import AirportContext
 
-RUNWAY_RX = re.compile(r"\brunway((?: \d){1,2})( left| right| center)?\b")
+# The suffix must not be a direction word belonging to the NEXT phrase ("runway 4,
+# right traffic" / "right turn" / "right downwind") — capturing it would invent an
+# L/R designator the controller never said (review finding, 2026-07-06).
+RUNWAY_RX = re.compile(
+    r"\brunway((?: \d){1,2})"
+    r"( (?:left|right|center)(?! (?:traffic|turn|downwind|base|closed)))?\b")
 FREQ_RX = re.compile(r"\b(\d \d \d) point (\d(?: \d){0,2})\b")
 # radio speech often omits "point": "contact tower one two six five five"
 FREQ_NOPOINT_RX = re.compile(r"\b(1 \d \d) (\d(?: \d)?)\b(?! point)(?! \d)")
@@ -80,7 +85,11 @@ def _parse_designator(d: str) -> Tuple[str, str]:
 
 def _snap_runway(num: str, suffix: str, ctx: AirportContext) -> Tuple[str, Optional[str]]:
     """-> (verdict, snapped 'NN[ suffix-word]' in spoken canon form or None)."""
-    cands = [_parse_designator(r) for r in ctx.runways]
+    # Unparseable designators (helipads "H1", water/directional "N"/"18W" — ~12k
+    # instances in OurAirports) must NOT enter the pool: an empty num is edit-1
+    # from any single digit and a "snap" onto it deletes the runway number from
+    # the transcript (review finding, 2026-07-06; the Swift mirror always filtered).
+    cands = [p for p in (_parse_designator(r) for r in ctx.runways) if p[0]]
     if suffix:
         pool = [n for n, s in cands if s == suffix]
         if num in pool:
@@ -103,7 +112,10 @@ def _snap_runway(num: str, suffix: str, ctx: AirportContext) -> Tuple[str, Optio
 # ---------------------------------------------------------------------------
 
 def _freq_digits(mhz: float) -> str:
-    return f"{mhz:.3f}".replace(".", "").rstrip("0") or "0"
+    # Fixed width (6 digits, no stripping): rstrip collapsed integer-MHz values
+    # across the decimal (120.0 -> "12") and licensed 2-spoken-digit "snaps"
+    # while missing genuine near-misses (review finding, 2026-07-06).
+    return f"{mhz:.3f}".replace(".", "")
 
 
 def _on_raster(mhz: float) -> bool:
@@ -125,16 +137,37 @@ def _snap_frequency(heard_mhz: float, ctx: AirportContext) -> Tuple[str, Optiona
     return "unverified", None
 
 
+# GA type/model words that anchor a spoken callsign ("cessna twelve sixty five").
+# Used ONLY to protect the digits from the frequency patterns — never for snapping.
+GA_CALLSIGN_WORDS = {
+    "cessna", "piper", "skyhawk", "skylane", "cherokee", "warrior", "archer",
+    "bonanza", "baron", "citation", "mooney", "beech", "beechcraft", "cirrus",
+    "diamond", "grumman", "lancair", "malibu", "saratoga", "seminole", "seneca",
+    "husky", "cub", "champ", "stinson", "maule", "aztec", "navajo", "caravan",
+    "kingair", "king", "experimental", "helicopter", "gyroplane",
+}
+
+
 def _callsign_char_range(s: str) -> Optional[Tuple[int, int]]:
     """Char range of the extracted callsign span in ``s`` (token-aligned), or None.
 
-    Guards the frequency patterns against airline FLIGHT NUMBERS: "center american
-    1786 with you" must never be read as frequency 178.6 (measured on the rescued
-    corpus: this false-positive class dominated label-gate rejections).
+    Guards the frequency patterns against callsign digits: "center american 1786
+    with you" must never be read as frequency 178.6, and neither may a GA tail
+    ("tower cessna twelve sixty five") — both measured failure classes.
     """
     span = extract_callsign(s)
     if not span:
-        return None
+        # GA-type anchor + digit run (extract_callsign only knows telephony/november)
+        tokens = s.split()
+        for i, tok in enumerate(tokens[:-1]):
+            if tok in GA_CALLSIGN_WORDS and tokens[i + 1].isdigit():
+                j = i + 1
+                while j < len(tokens) and tokens[j].isdigit():
+                    j += 1
+                span = " ".join(tokens[i:j])
+                break
+        if not span:
+            return None
     idx = (" " + s + " ").find(" " + span + " ")
     return (idx, idx + len(span)) if idx >= 0 else None
 
@@ -169,11 +202,17 @@ def snap_slots(text: str, ctx: Optional[AirportContext]) -> Tuple[str, List[Slot
         return m.group(0)
 
     def freq_sub(m: re.Match) -> str:
-        # require an ATC anchor word shortly before the number
+        # require an ATC anchor word shortly before the number; the POINT-LESS
+        # pattern additionally requires the anchor IMMEDIATELY before the digits
+        # ("contact tower 126 55" yes; "tower cessna 1265" no) — defense in depth
+        # for callsign shapes the guard below doesn't know.
         prefix_toks = out[: m.start()].split()[-4:]
         if not FREQ_ANCHORS.intersection(prefix_toks):
             return m.group(0)
-        # never read a callsign's flight number as a frequency ("center american 1786")
+        if "point" not in m.group(0) and (not prefix_toks or prefix_toks[-1] not in FREQ_ANCHORS):
+            return m.group(0)
+        # never read a callsign's digits as a frequency ("center american 1786",
+        # "tower cessna twelve sixty five")
         cs = _callsign_char_range(m.string)
         if cs and not (m.end() <= cs[0] or m.start() >= cs[1]):
             return m.group(0)
