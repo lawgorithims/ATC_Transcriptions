@@ -77,6 +77,40 @@ What this establishes:
    whisper-small on the SAME 15.4 h US set, score here incl. CSA with
    decode-time hotword biasing on the transducer arm.
 
+## Error attribution + snap-layer simulation (2026-07-05, `dataset/error_analysis.py`)
+
+Where the errors actually come from (gold v0, canonicalized):
+
+| | whisper-small-us | zipctc-us-ft |
+|---|---|---|
+| callsign failures | 7 wrong-NUMBER, 0 wrong-airline, 6 missed (of 51) | 21 wrong-NUMBER, 1 wrong-airline, 7 missed |
+| callsign-span token errors | 7% | 15% |
+| bare-digit token errors | 8% | 17% |
+| phonetic-alphabet errors | 22% | 26% |
+| phraseology errors | 13% | 24% |
+| "other" (filler/fix names/rare words) | **29%** | **54%** |
+
+Findings: (1) both models get the AIRLINE WORD right and garble the DIGITS —
+callsign failure is a digit-sequence problem; (2) whisper's WER is dominated
+by non-safety-critical "other" words; the zipformer degrades everywhere but
+especially general vocabulary (1/45th the pretraining).
+
+**Snap-layer simulation** — deterministic post-ASR stage that snaps the
+extracted callsign to the nearest entry in a live candidate list (proxy: the
+50-callsign gold inventory ≈ an ADS-B in-range list), abstaining on ambiguity:
+
+| model | CSA raw→snapped | falseCS raw→snapped | missed raw→snapped |
+|---|---|---|---|
+| whisper-small-us | 75% → 78% | 14% → **2%** | 12% → 20% |
+| zipctc-us-ft | 43% → **71%** | 43% → **2%** | 14% → 27% |
+
+A cheap deterministic layer nearly eliminates false callsigns for BOTH
+architectures (wrong→abstain is the safe direction) and recovers +28 CSA for
+the CTC model (digits are near-misses). Residual ~2% = snapped to a
+wrong-but-real aircraft; the "missed" growth is the share only decode-time
+biasing (or better acoustics) can recover. Caveats: assumes the true
+callsign is in the list (ADS-B coverage), and real airspace adds distractors.
+
 ## Reading this table (gold v0, 2026-07-03)
 
 - These are the HONEST numbers on real US LiveATC audio. The repo's legacy
