@@ -172,8 +172,13 @@ It runs in **two latency tiers** so a slow LLM can never stall transcription:
    │  RepetitionCollapse   "runway three runway three" → "runway three"         │
    │  DeterministicCorrector  numbers ("niner"→9) · char near-miss              │
    │       (vocab) "maverik"→Maverick · phonetic "golf"→Gulf                    │
+   │  CallsignSnap  snap-or-abstain vs fresh ADS-B traffic (falseCS 13.7→2%)    │
+   │  SlotSnap      runway/frequency verified against the airport's REAL        │
+   │       runways + published frequencies (AirportContextStore: curated       │
+   │       config → bundled 29k-airport table → OurAirports internet fallback) │
    └──────────────────────────────────────────────────────────────────────────┘
         │  record emitted NOW (UI shows it immediately, marked "AI fixer running…")
+        │  snap verdicts: gate signals · aircraft-attribution gating · LLM grounding
         ▼  SLOW background tier — LLMRefiner, .background QoS, bounded queue
    ┌──────────────────────────────────────────────────────────────────────────┐
    │  1. RAG retrieval (ATCKnowledgeRetriever) — the callsigns mentioned, this  │
@@ -200,6 +205,21 @@ oldest pending refinement is dropped (`skipped`) rather than backing up — the 
 spare CPU and never slows the feed.
 
 **Confidence gate (when to run the AI fixer).** Before the slow tier, a cheap deterministic
+**Snap stages + LLM grounding (parity-ported from `python-legacy/`, see
+`python-legacy/docs/PIPELINE.md` for diagrams, policies, and measured results).** `CallsignSnap`
+(Core/) rewrites a misheard callsign only when it uniquely matches an aircraft actually on
+frequency, and abstains otherwise; unverified callsigns still display as heard but are never
+attributed to an aircraft. `SlotSnap` (Core/) verifies runway and frequency mentions against
+`AirportContextStore` (Core/) — curated `airport_configs/`, then the bundled nationwide
+`nav/airport_ctx.json` (29k airports worldwide, built by `Tools/build_airport_ctx.py` from the
+same OurAirports upstream as the nav database), then an on-demand OurAirports internet fallback —
+so it works at ANY real-life airport, including LiveATC/demo feeds where device sensors are
+irrelevant. The snap verdicts also **augment the LLM tier**: a compact verified/unverified block
+is appended to the RAG context (the model is told what it must not alter), `CorrectionValidator`
+gains a grounding veto (the LLM can never introduce a runway that doesn't exist at the facility),
+and unverified verdicts fire the gate below. Behavior parity with the Python reference is enforced
+by `SnapParityTests` over `snap_fixtures.json` (regenerate with `Tools/gen_snap_fixtures.py`).
+
 `ConfidenceGate` decides whether a transmission is even worth the LLM. It does *not* ask "are all
 words known?" (that over-triggers on normal English chatter) — it runs the LLM only when a
 **suspicion** signal fires: low Whisper `avgLogprob` or high `compressionRatio`, a lexical near-miss
