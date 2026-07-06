@@ -127,10 +127,21 @@ def to_train_metadata(
     copy of each transcript so a future fine-tune can learn to emit the speaker
     label. The tagged transcripts are written next to the originals as ``*.role.txt``
     and referenced instead — kept separate so the clean ASR variant is untouched.
+
+    Blocks listed in ``excluded_blocks_gold.txt`` at the storage root (written by
+    ``dataset/gold_builder.py``) are SKIPPED: gold-verification source blocks must
+    never become training data.
     """
     rows = read_manifest(manifest_path)
+    excl_path = Path(manifest_path).resolve().parent.parent / "excluded_blocks_gold.txt"
+    excluded = (set(excl_path.read_text(encoding="utf-8").splitlines())
+                if excl_path.exists() else set())
+    n_excluded = 0
     out_rows = []
     for r in rows:
+        if r.get("src_block") in excluded:
+            n_excluded += 1
+            continue
         transcript_path = r["transcript_path"]
         if tagged_roles:
             role = r.get("role") or "unknown"
@@ -147,6 +158,8 @@ def to_train_metadata(
         })
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     Path(out_path).write_text(json.dumps(out_rows, indent=2), encoding="utf-8")
+    if n_excluded:
+        print(f"to_train_metadata: {n_excluded} rows in gold-excluded blocks skipped")
     return len(out_rows)
 
 
