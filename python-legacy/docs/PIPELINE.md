@@ -94,6 +94,55 @@ runway veto, adds `ConfidenceGate` signal 5, and gates aircraft attribution
 in `LivePipeline` (unverified callsigns display as heard, never attribute;
 offline/stale-traffic behavior unchanged).
 
+## LLM prompt architecture (world-model corrector, 2026-07-06)
+
+The correction prompt (`ios/.../Core/ATCCorrectionPrompt.swift`) is engineered
+as **static world-RULES prefix + dynamic world-STATE suffix**, because the
+llama.cpp path reuses the KV cache for any byte-identical prefix — the frozen
+part is paid for once, and only the small suffix re-evaluates per
+transmission. That is what holds the 2–3 s pilot-usefulness budget.
+
+**Static prefix (cached):** system role carrying the deterministic ATC world
+model — the FAA-7110.65 command shapes ("climb and maintain …", "contact
+FACILITY FREQ", "squawk DDDD (0-7)", "cleared to land runway RR[L/C/R]" …),
+the READBACK structure (a pilot transmission echoes the instruction's values,
+callsign last), the grounding contract (Verified = never alter; unverified =
+strong evidence only), digit rules (all digits preserved; readback *wording*
+may be repaired but instruction digits are NEVER copied over the transcript),
+and an **edits-only** JSON contract (halves output tokens = most of a small
+model's latency). Plus 5 few-shots: repeat, grammar-slot snap, WORLD-grounded
+facility fix, readback-guided fix, verified no-op.
+
+**Dynamic `WorldFrame` suffix — uniform slots, fixed order, empty omitted:**
+
+```
+WORLD:
+<retrieved facility knowledge>            (runways/fixes/taxiways/callsigns/phraseology)
+<snap grounding>                          (Verified… / Heard but NOT verified… / Runways at…)
+Expected readback — prior transmission…   (per-callsign conversation memory, bounded 24)
+Recent transmissions: …
+TRANSCRIPT: <text>
+```
+
+The expected-readback slot is ATC's built-in error-correcting code: the
+aircraft's previous transmission (instruction↔readback pairing keyed by
+`callsignKey`). Deliberately absent when the transmission opens a
+conversation — e.g. an instruction addressed to the listening pilot, who
+hasn't spoken yet.
+
+**Cascade (optional second pass):** `CascadeCorrector` runs the local model
+always, then — if `atc.remoteFixerURL` is configured — sends the SAME world
+frame to a larger internet model, racing only the *remaining* budget
+(2.5 s cap, `minSecondaryBudget` 0.6 s, abandoned on timeout). Remote edits
+pass the identical validator guardrails (digits, anti-hallucination, runway
+veto), so the network can never regress below the local result. Disabled by
+default; the server contract is POST `{system, user}` → `{"edits": […]}`.
+
+Queued: readback-MISMATCH detection as a pilot-facing flag (needs an output
+schema field — the current contract deliberately cannot express it), and
+measuring the prompt's gold-set effect once the LLM tier is benchmarkable
+offline.
+
 ## Labeler gate (data engine)
 
 `dataset/label_gate.py` applies the same grounding to PSEUDO-LABELS before
