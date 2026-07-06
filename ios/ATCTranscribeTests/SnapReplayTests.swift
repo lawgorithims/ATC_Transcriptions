@@ -65,7 +65,8 @@ final class SnapReplayTests: XCTestCase {
         context.setTraffic(block: "traffic", vocab: ["DAL232", "JBU604"],
                            expiry: Date().addingTimeInterval(60), epoch: 1)
 
-        let record = try XCTUnwrap(await pipeline.process(segment(goldAudio())))
+        let maybeRecord = await pipeline.process(segment(goldAudio()))
+        let record = try XCTUnwrap(maybeRecord)
         XCTAssertTrue(record.display.contains("delta 2 3 2"),
                       "callsign must snap to the on-frequency aircraft: \(record.display)")
         XCTAssertFalse(record.display.contains("2 3 1"), record.display)
@@ -83,13 +84,14 @@ final class SnapReplayTests: XCTestCase {
         context.setTraffic(block: "traffic", vocab: ["DAL232"],
                            expiry: Date().addingTimeInterval(60), epoch: 1)
 
-        let record = try XCTUnwrap(await pipeline.process(segment(goldAudio())))
+        let maybeRecord = await pipeline.process(segment(goldAudio()))
+        let record = try XCTUnwrap(maybeRecord)
         XCTAssertTrue(record.display.contains("united 456") || record.display.contains("united 4 5 6"),
                       "unverified callsign stays as heard: \(record.display)")
         XCTAssertNil(record.callsignKey, "unverified callsign must NOT attribute")
         XCTAssertNotNil(record.callsign, "…but still displays for the pilot")
-        XCTAssertTrue(record.gateReason?.contains("unverified callsign") == true,
-                      "gate must fire on the snap signal: \(record.gateReason ?? "nil")")
+        XCTAssertTrue(record.gateReason.contains("unverified callsign"),
+                      "gate must fire on the snap signal: \(record.gateReason)")
         XCTAssertEqual(record.refinementState, .pending)
     }
 
@@ -99,7 +101,8 @@ final class SnapReplayTests: XCTestCase {
         let hyp = "delta 231 heavy kennedy tower runway 2 2 right cleared to land"
         let (pipeline, _) = try makePipeline(script: [hyp])
 
-        let record = try XCTUnwrap(await pipeline.process(segment(goldAudio())))
+        let maybeRecord = await pipeline.process(segment(goldAudio()))
+        let record = try XCTUnwrap(maybeRecord)
         XCTAssertTrue(record.display.contains("delta 231") || record.display.contains("delta 2 3 1"),
                       "no candidate list → no rewrite: \(record.display)")
         XCTAssertNotNil(record.callsignKey, "offline attribution behavior must be unchanged")
