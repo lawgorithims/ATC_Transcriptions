@@ -16,24 +16,26 @@ final class SnapGroundingTests: XCTestCase {
         return v
     }
 
-    // NOTE: all veto edits below preserve literal digits ("22" ↔ "22") so the validator's
-    // numbers-preserved rule can't be the thing that drops them — the veto is the only variable.
+    // NOTE: veto edits preserve digits AND direction words (the flip guard runs first), so
+    // the only introducible runway key is "the word runway appearing before existing digits"
+    // ("gate 22" → "runway 22") — the veto is the only variable in these tests.
 
     func testVetoRejectsUnknownRunway() {
         let v = makeValidator(grounded: kdfwRunways)
-        // introduces designator 22L; KDFW has no runway 22 of any suffix.
-        let out = v.validate(raw: "cleared to land runway 22",
-                             edits: [CorrectionEdit(from: "land runway 22", to: "land runway 22 left",
+        // introduces designator 22 (bare); KDFW has no runway 22 of any suffix.
+        let out = v.validate(raw: "hold position at gate 22",
+                             edits: [CorrectionEdit(from: "gate 22", to: "runway 22",
                                                     reason: "t", backend: "llm")],
                              backend: "llm")
-        XCTAssertFalse(out.changed, "edit introducing runway 22 left at KDFW must be vetoed")
+        XCTAssertFalse(out.changed, "edit introducing runway 22 at KDFW must be vetoed")
     }
 
     func testVetoAllowsRealRunwayAndRephrasing() {
         let v = makeValidator(grounded: kdfwRunways)
         // introduces designator 17C, which exists at KDFW — the veto must not fire.
-        let out = v.validate(raw: "cleared to land runway 17",
-                             edits: [CorrectionEdit(from: "land runway 17", to: "land runway 17 center",
+        let out = v.validate(raw: "hold short of 17 center",
+                             edits: [CorrectionEdit(from: "short of 17 center",
+                                                    to: "short of runway 17 center",
                                                     reason: "t", backend: "llm")],
                              backend: "llm")
         XCTAssertTrue(out.changed, "verified-runway rewording must pass the veto")
@@ -41,8 +43,8 @@ final class SnapGroundingTests: XCTestCase {
 
     func testVetoDisabledWithoutGrounding() {
         let v = makeValidator(grounded: nil)
-        let out = v.validate(raw: "cleared to land runway 22",
-                             edits: [CorrectionEdit(from: "land runway 22", to: "land runway 22 left",
+        let out = v.validate(raw: "hold position at gate 22",
+                             edits: [CorrectionEdit(from: "gate 22", to: "runway 22",
                                                     reason: "t", backend: "llm")],
                              backend: "llm")
         XCTAssertTrue(out.changed, "no grounding → veto must not fire")

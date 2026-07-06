@@ -186,9 +186,19 @@ struct CorrectionValidator {
     private static let protectedSemantics: Set<String> = [
         "left", "right", "center", "climb", "descend", "north", "south", "east", "west",
     ]
+    /// Protected semantic tokens in order of appearance. A runway-designator suffix counts as
+    /// its direction word ("28R" ≡ "two eight right"), so legitimate spoken→designator
+    /// rewrites still pass while a genuine flip/insert/delete never does.
     private func directionWords(_ s: String) -> [String] {
-        s.lowercased().split(whereSeparator: { !$0.isLetter })
-            .map(String.init).filter { Self.protectedSemantics.contains($0) }
+        s.lowercased().split(whereSeparator: { $0.isWhitespace || $0 == "," || $0 == "." })
+            .compactMap { tok -> String? in
+                let t = tok.filter { $0.isLetter || $0.isNumber }
+                if t.count >= 2, let last = t.last, "lrc".contains(last),
+                   t.dropLast().allSatisfy(\.isNumber) {
+                    return ["l": "left", "r": "right", "c": "center"][String(last)]
+                }
+                return Self.protectedSemantics.contains(t) ? t : nil
+            }
     }
 }
 
