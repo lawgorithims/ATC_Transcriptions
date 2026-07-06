@@ -103,7 +103,16 @@ _PROTECTED = {"left", "right", "center", "climb", "descend", "north", "south", "
 
 
 def _direction_words(s: str) -> List[str]:
-    return [w for w in re.findall(r"[a-z]+", s.lower()) if w in _PROTECTED]
+    """Protected semantic tokens in order; a runway-designator suffix counts as its
+    direction word ("28r" ≡ "right") so spoken→designator rewrites still pass."""
+    out = []
+    for tok in re.findall(r"[a-z0-9]+", s.lower()):
+        m = re.fullmatch(r"\d+([lrc])", tok)
+        if m:
+            out.append({"l": "left", "r": "right", "c": "center"}[m.group(1)])
+        elif tok in _PROTECTED:
+            out.append(tok)
+    return out
 
 
 def _runway_keys(text: str) -> set:
