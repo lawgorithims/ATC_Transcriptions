@@ -37,12 +37,16 @@ enum SlotSnap {
         pattern: #"\b(1 \d \d) (\d(?: \d)?)\b(?! point)(?! \d)"#)
 
     /// Apply the stage. Returns (canonical-space text, edits). No context → canonicalize only.
-    static func apply(_ text: String, context: AirportContextData?) -> (text: String, edits: [Edit]) {
+    /// `telephony` guards the frequency patterns against callsign flight numbers ("center
+    /// american 1786" is a callsign, not frequency 178.6 — the dominant false-positive class
+    /// measured on the collected corpus).
+    static func apply(_ text: String, context: AirportContextData?,
+                      telephony: Set<String> = CallsignSnap.telephonyWords(nil)) -> (text: String, edits: [Edit]) {
         var out = ATCNormalize.normalize(text)
         guard let context else { return (out, []) }
         var edits: [Edit] = []
 
-        out = substitute(runwayRx, in: out) { groups, _ in
+        out = substitute(runwayRx, in: out) { groups, _, _, _ in
             let num = groups[0].replacingOccurrences(of: " ", with: "").drop(while: { $0 == "0" })
             let numStr = num.isEmpty ? "0" : String(num)
             let suffixWord = groups[1].trimmingCharacters(in: .whitespaces)   // "" | left | right | center
@@ -60,9 +64,14 @@ enum SlotSnap {
         }
 
         for rx in [freqRx, freqNoPointRx] {
-            out = substitute(rx, in: out) { groups, prefix in
+            out = substitute(rx, in: out) { groups, prefix, full, matchRange in
                 let prefixToks = prefix.split(separator: " ").suffix(4).map(String.init)
                 guard !freqAnchors.isDisjoint(with: prefixToks) else { return nil }
+                // never read a callsign's flight number as a frequency
+                if let cs = callsignRange(in: full as String, telephony: telephony),
+                   NSIntersectionRange(cs, matchRange).length > 0 {
+                    return nil
+                }
                 let heardStr = groups[0].replacingOccurrences(of: " ", with: "") + "."
                     + groups[1].replacingOccurrences(of: " ", with: "")
                 guard let heard = Double(heardStr) else { return nil }
@@ -148,12 +157,22 @@ enum SlotSnap {
 
     // MARK: regex plumbing
 
+    /// Char range of the extracted callsign span in the pass-input text, or nil. Canonical
+    /// text is ASCII, so character offsets == NSRange UTF-16 offsets.
+    private static func callsignRange(in text: String, telephony: Set<String>) -> NSRange? {
+        guard let span = CallsignSnap.extractCallsign(text, telephony: telephony) else { return nil }
+        let padded = " " + text + " "
+        guard let r = padded.range(of: " " + span + " ") else { return nil }
+        let start = padded.distance(from: padded.startIndex, to: r.lowerBound)
+        return NSRange(location: start, length: span.count)
+    }
+
     /// re.sub with a callback: `body` gets the capture groups (empty string for a missed
-    /// optional group) and the text BEFORE the match in the pass-input string (for anchor
-    /// checks); returning nil keeps the match unchanged. Non-overlapping, left-to-right, single
-    /// pass — identical semantics to Python `re.sub`.
+    /// optional group), the text BEFORE the match, the full pass-input string, and the match
+    /// range (for span-overlap guards); returning nil keeps the match unchanged.
+    /// Non-overlapping, left-to-right, single pass — identical semantics to Python `re.sub`.
     private static func substitute(_ rx: NSRegularExpression, in text: String,
-                                   _ body: ([String], String) -> String?) -> String {
+                                   _ body: ([String], String, NSString, NSRange) -> String?) -> String {
         let ns = text as NSString
         var result = ""
         var cursor = 0
@@ -163,7 +182,7 @@ enum SlotSnap {
                 let r = m.range(at: gi)
                 groups.append(r.location == NSNotFound ? "" : ns.substring(with: r))
             }
-            let replacement = body(groups, ns.substring(to: m.range.location))
+            let replacement = body(groups, ns.substring(to: m.range.location), ns, m.range)
             result += ns.substring(with: NSRange(location: cursor, length: m.range.location - cursor))
             result += replacement ?? ns.substring(with: m.range)
             cursor = m.range.location + m.range.length
