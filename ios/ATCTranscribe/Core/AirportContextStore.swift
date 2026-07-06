@@ -28,8 +28,9 @@ struct BundledAirportContextSource: AirportContextSource {
 
     /// Synchronous seam for tests and non-async callers.
     static func lookup(_ ident: String) -> AirportContextData? {
-        guard let entry = table[ident.trimmingCharacters(in: .whitespaces).uppercased()] else { return nil }
-        return AirportContextData(ident: ident.uppercased(), runways: entry.runways, frequencies: entry.frequencies)
+        let key = ident.trimmingCharacters(in: .whitespaces).uppercased()
+        guard let entry = table[key] else { return nil }
+        return AirportContextData(ident: key, runways: entry.runways, frequencies: entry.frequencies)
     }
 
     static var count: Int { table.count }   // test seam / lazy-load probe
