@@ -131,6 +131,27 @@ abstentions. Next: Swift port into the corrector pipeline
 (`ADSBService` list + filed flight plan as candidates), behind a protocol so
 decode-time biasing can replace it later.
 
+## SlotSnap stage + provider chain (2026-07-06, `slot_snap.py` + `airport_data.py`)
+
+Runway/frequency grounding via the provider chain (curated configs →
+OurAirports internet fallback; 17/17 gold facilities resolved, ARTCCs get
+empty-context no-ops). Full chain (CallsignSnap → SlotSnap) on gold v0:
+
+| model | canonWER | CSA | falseCS | slot verdicts |
+|---|---|---|---|---|
+| whisper-small-us | 22.8→22.7% | 74.5→78.4% | 13.7→9.8% | 25 rwy-verified, 4 rwy-unverified, 3 freq-verified, 7 freq-invalid |
+| zipctc-us-ft | 35.8→35.2% | 43.1→70.6% | 43.1→15.7% | 20 rwy-verified, 4 rwy-unverified, 2 freq-verified, 5 freq-invalid |
+
+Key finding: **zero runway snaps fired** — gold's 5-6 wrong runways are
+wrong-but-REAL designators at those airports (heard 22, truth 31; both
+exist), which existence-grounding can verify but not fix. The fix needs
+ACTIVITY context (runway encoded in the approach feed name, ATIS, recent-
+transmission consistency) — queued. SlotSnap's measured v1 value = verdicts
+(trust signals for the gate/UI + LLM veto) and typo-class protection at
+arbitrary real-life airports (14/14 unit tests incl. suffix-safety and
+anchor-guarded frequencies), not corrections on this gold set. 26 unit tests
+green overall; see `docs/PIPELINE.md` for diagrams + stage policies.
+
 ## Reading this table (gold v0, 2026-07-03)
 
 - These are the HONEST numbers on real US LiveATC audio. The repo's legacy

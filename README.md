@@ -21,6 +21,15 @@ never slows transcription, behind output guardrails and a **confidence gate** th
 it when a transmission looks suspicious. The full rationale is in
 [`ios/README.md` → Correction pipeline](ios/README.md#correction-pipeline).
 
+The deterministic tier now includes two **context-grounded snap stages** (Python reference,
+Swift port pending): `CallsignSnap` (snap-or-abstain against live ADS-B traffic + the filed
+flight plan; false callsign attributions 13.7% → 2.0% on the gold set) and `SlotSnap`
+(runway/frequency verification against the airport's real runways and published frequencies).
+Grounding data flows through a provider chain — flight plan → curated/offline map data → live
+position → **OurAirports internet fallback** (the only source in LiveATC/demo mode). Diagrams,
+stage policies, and measured findings: [`python-legacy/docs/PIPELINE.md`](python-legacy/docs/PIPELINE.md);
+standing metrics: [`python-legacy/docs/RESULTS.md`](python-legacy/docs/RESULTS.md).
+
 ## Repository layout
 
 ```
