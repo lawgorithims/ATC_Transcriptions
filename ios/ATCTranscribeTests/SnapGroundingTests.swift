@@ -11,7 +11,12 @@ final class SnapGroundingTests: XCTestCase {
     // MARK: validator runway veto
 
     private func makeValidator(grounded: [String]?) -> CorrectionValidator {
-        var v = CorrectionValidator(allowed: ["runway", "cleared", "land"], phonetic: [:])
+        // every word of the veto tests' `to` strings is allowed, so the anti-hallucination
+        // check can never be the reason an edit drops — the veto is the only variable
+        var v = CorrectionValidator(
+            allowed: ["runway", "cleared", "land", "gate", "hold", "short", "of",
+                      "22", "17", "center"],
+            phonetic: [:])
         if let grounded { v.groundedRunways = CorrectionValidator.runwayKeys(designators: grounded) }
         return v
     }
