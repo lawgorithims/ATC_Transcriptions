@@ -82,12 +82,23 @@ Rules of the chain:
    **activity context** (runway encoded in the approach feed name, ATIS,
    cross-transmission consistency). Queued as future work.
 
+## Swift mirror status (2026-07-06)
+
+Shipped on `feature/snap-swift`: `Core/CallsignSnap.swift`, `Core/SlotSnap.swift`
+(byte-parity with this reference via `ios/Tools/gen_snap_fixtures.py` →
+`SnapParityTests`), `Core/AirportContextStore.swift` (curated → bundled
+`nav/airport_ctx.json`, 29k airports worldwide → OurAirports internet
+fallback), and the LLM-layer augmentation: `SnapGrounding` rides
+`RetrievedContext` into the ChatML prompt, arms the `CorrectionValidator`
+runway veto, adds `ConfidenceGate` signal 5, and gates aircraft attribution
+in `LivePipeline` (unverified callsigns display as heard, never attribute;
+offline/stale-traffic behavior unchanged).
+
 ## Known deficiencies (queued)
 
-* iOS offline nav DB (`nav_coords.json`) has **no runway or frequency data**;
-  only 2 curated airport configs ship (KDFW, KJFK). → extend
-  `build_nav_db.py` + add a Swift `AirportDataSource` with the OurAirports
-  internet fallback (reuse the `ADSBService` fetcher pattern).
+* ~~iOS offline nav DB has no runway or frequency data; only 2 curated
+  airport configs ship~~ → FIXED: `nav/airport_ctx.json` +
+  `AirportContextStore` provider chain with internet fallback.
 * No source for **ARTCC (center) frequencies**; navaid frequencies and
   SID/STAR procedures are not modeled anywhere.
 * Abbreviated frequency speech ("ground point seven five" = 121.75) is not

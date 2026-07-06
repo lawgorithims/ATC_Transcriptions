@@ -70,10 +70,13 @@ struct FoundationModelsCorrector: LLMCorrector {
             }
             let allowed = CorrectionValidator.allowedTerms(retrieved: retrieved, knowledge: knowledge,
                                                            freqType: frequencyType(forFeedKey: feedKey))
-            let validator = CorrectionValidator(
+            var validator = CorrectionValidator(
                 allowed: allowed,
                 deniedTargets: CorrectionValidator.deniedTargets(from: retrieved.trafficLabels),
                 phonetic: knowledge.phoneticWordToLetter)
+            if let grounding = retrieved.snapGrounding, !grounding.airportRunways.isEmpty {
+                validator.groundedRunways = CorrectionValidator.runwayKeys(designators: grounding.airportRunways)
+            }
             return validator.validate(raw: text, edits: edits, backend: backend)
         } catch {
             // Model unavailable / slow / guardrail / unparseable — never break the feed.
