@@ -40,6 +40,9 @@ class FilterThresholds:
     max_words: int = 60
     max_corrector_delta: float = 0.30  # large corrector rewrite = red flag
     require_english: bool = True       # only enforced when language is detectable
+    slot_gate: bool = True             # label_gate: reject runway-not-at-airport /
+                                       # impossible values, auto-fix snappable slot typos
+                                       # (needs airport_ctx passed to evaluate_segment)
 
 
 @dataclass
@@ -78,6 +81,7 @@ def evaluate_segment(
     context_prompt: Optional[str],
     thresholds: FilterThresholds,
     context_for_role=None,
+    airport_ctx=None,
 ) -> LabelDecision:
     """Decode a segment with both models and decide whether to keep it as a label.
 
@@ -147,6 +151,21 @@ def evaluate_segment(
     label = normalize.normalize_transcript(final_text)
     if not label:
         return reject("empty_after_normalize")
+
+    # pm-as-labeler-gate (PR #5 plan C): consensus can agree on a plausible-but-wrong
+    # transmission; the gate applies knowledge the models lack — the feed airport's real
+    # runways/frequencies + the static ATC ontology. Snappable slot typos are FIXED in
+    # place (cleaner label, kept); unfixable contradictions reject the label (the audio
+    # still lands in the SSL corpus).
+    if thresholds.slot_gate:
+        from dataset import label_gate
+
+        gate = label_gate.assess_label(label, airport_ctx)
+        metrics["slot_gate"] = {"fixed": gate.fixed, "reasons": gate.reasons}
+        if gate.fixed:
+            label = gate.label
+        if not gate.ok:
+            return reject("slot_gate_" + gate.reasons[0].split(":")[0])
 
     turn = atc_diarize.classify_turn(label, context_for_role)
     metrics["corrector_delta"] = round(corrector_delta, 4)
