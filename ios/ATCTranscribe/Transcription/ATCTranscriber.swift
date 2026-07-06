@@ -33,9 +33,17 @@ struct TranscriptionOutput: Sendable {
 ///    if a segment is *still* degenerate after fallback we DROP it (return ""), matching
 ///    the Python's "nothing usable for this segment — skip it".
 ///
+/// The thin transcription seam (the plan's "Transcriber protocol"): `LivePipeline` depends on
+/// this, not on WhisperKit, so replay/integration tests can script hypotheses through the REAL
+/// pipeline and a non-Whisper engine (e.g. a transducer via sherpa-onnx) can slot in later
+/// without touching the pipeline.
+protocol Transcribing: Sendable {
+    func transcribe(_ audio: [Float], context: String?) async throws -> TranscriptionOutput
+}
+
 /// Audio is expected already preprocessed (mono 16 kHz float32 in [-1, 1]); the
 /// radio-cleanup stage (`AudioPreprocessor`, ported separately) runs upstream.
-actor ATCTranscriber {
+actor ATCTranscriber: Transcribing {
     /// Whisper shares a 448-token decoder window between prompt and generated text; cap
     /// the prompt well below it so generation always has room. (= Python `MAX_PROMPT_TOKENS`)
     static let maxPromptTokens = 220
