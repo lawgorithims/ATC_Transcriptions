@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationModels)
+import FoundationModels
+#endif
 
 /// Native macOS probe (command-line tool). Runs the WER self-checks, an on-ANE
 /// proof-of-life through the engine, and the full live pipeline (file-replay → VAD →
@@ -34,6 +37,79 @@ for c in werCases where abs(WER.rate(reference: c.ref, hypothesis: c.hyp) - c.wa
 print("WER self-checks: OK (\(werCases.count) cases)")
 
 let env = ProcessInfo.processInfo.environment
+
+// --- OPTIONAL: Apple Foundation Models correction benchmark over prepared world frames ---
+// ATC_FM_EVAL_IN=<frames.json from `python -m dataset.llm_eval --emit-frames`>
+// ATC_FM_EVAL_OUT=<results.jsonl> → runs the REAL FoundationModelsCorrector (guided
+// generation + validator guardrails) per frame and exits 0. Exit 2 = Apple Intelligence
+// unavailable/disabled on this machine (enable in System Settings, then re-run).
+if let fmIn = env["ATC_FM_EVAL_IN"], let fmOut = env["ATC_FM_EVAL_OUT"] {
+    struct Frame: Decodable {
+        let id: String
+        let transcript: String
+        let knowledge: String
+        let readback: String?
+        let history: [String]
+        let airport: String
+        let runways: [String]
+        let vocab: [String]
+    }
+    guard #available(macOS 26.0, *) else { die("FM eval needs macOS 26+") }
+    #if canImport(FoundationModels)
+    guard case .available = SystemLanguageModel.default.availability else {
+        FileHandle.standardError.write(Data("Apple Intelligence unavailable: \(SystemLanguageModel.default.availability)\n".utf8))
+        exit(2)
+    }
+    #endif
+    guard let data = FileManager.default.contents(atPath: fmIn),
+          let frames = try? JSONDecoder().decode([Frame].self, from: data) else {
+        die("cannot read frames: \(fmIn)")
+    }
+    // Inline knowledge (no app bundle in a CLI); per-frame `vocab` carries the airport terms.
+    let fmKB = ATCKnowledgeBase(
+        airlineTelephony: ["DAL": "Delta", "SKW": "SkyWest", "AAL": "American",
+                           "UAL": "United", "JBU": "JetBlue", "SWA": "Southwest"],
+        spokenNamesByAirport: [:], spokenBaseByAirport: [:],
+        phrasesByType: [:], spellingByType: [:], phonetic: [:], digits: [:])
+    guard let fmCorrector = makeFoundationModelsCorrector(knowledge: fmKB, feedKey: nil) else {
+        FileHandle.standardError.write(Data("FoundationModels corrector unavailable\n".utf8))
+        exit(2)
+    }
+    print("FM eval: \(frames.count) frames")
+    var fmChanged = 0
+    var lines: [String] = []
+    let fmT0 = Date()
+    for (i, f) in frames.enumerated() {
+        let retrieved = RetrievedContext(
+            block: f.knowledge, vocab: f.vocab, languageSuspect: false,
+            trafficLabels: [],
+            snapGrounding: SnapGrounding(callsign: nil, slots: [],
+                                         airportIdent: f.airport, airportRunways: f.runways),
+            expectedReadback: f.readback)
+        let t1 = Date()
+        let out = await fmCorrector.correct(text: f.transcript, history: f.history,
+                                            retrieved: retrieved)
+        let ms = Int(Date().timeIntervalSince(t1) * 1000)
+        if out.changed { fmChanged += 1 }
+        let edits = out.changed
+            ? out.edits.map { ["from": $0.from, "to": $0.to, "reason": $0.reason] } : []
+        let row: [String: Any] = ["id": f.id,
+                                  "hyp": out.changed ? out.corrected : f.transcript,
+                                  "ms": ms, "edits": edits]
+        if let d = try? JSONSerialization.data(withJSONObject: row),
+           let s = String(data: d, encoding: .utf8) {
+            lines.append(s)
+        }
+        if (i + 1) % 10 == 0 {
+            print("  \(i + 1)/\(frames.count) (\(Int(Date().timeIntervalSince(fmT0)))s, changed=\(fmChanged))")
+        }
+    }
+    try? (lines.joined(separator: "\n") + "\n")
+        .write(toFile: fmOut, atomically: true, encoding: .utf8)
+    print("FM eval done: \(fmChanged)/\(frames.count) changed, "
+          + "\(Int(Date().timeIntervalSince(fmT0)))s -> \(fmOut)")
+    exit(0)
+}
 
 // --- OPTIONAL: local CPU context-fixer LLM (llama.cpp), independent of the Whisper model ---
 // Loads the GGUF on the CPU and runs canned noisy transcripts through the full LocalLLMCorrector

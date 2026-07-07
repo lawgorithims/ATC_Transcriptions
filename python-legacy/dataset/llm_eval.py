@@ -111,6 +111,9 @@ def main(argv=None) -> int:
     ap.add_argument("--arm", choices=["world", "minimal"], default="world")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--out", type=Path, default=None)
+    ap.add_argument("--emit-frames", type=Path, default=None,
+                    help="write per-clip world frames as JSON for the Swift/Apple-FM "
+                         "probe (ATCKitProbe fm-eval) instead of running the local LLM")
     args = ap.parse_args(argv)
 
     gold = load_gold(args.gold)
@@ -141,6 +144,36 @@ def main(argv=None) -> int:
             except Exception:
                 ctx_cache[a] = None
             fixes_cache[a] = config_fixes(a)
+
+    if args.emit_frames:
+        # Frames for the Apple-FM probe: the deterministic snap chain runs HERE
+        # (Python is the chain's reference), the probe runs only the FM corrector.
+        # Grounding verified/unverified lines ride inside `knowledge`; the runway
+        # list is passed separately so the Swift validator's veto is armed.
+        frames, block_prior = [], {}
+        for r in rows:
+            ctx = ctx_cache[r["airport"]]
+            t1, cs = snap_transcript(r["hyp"], cs_candidates)
+            base, slot_edits = snap_slots(t1, ctx)
+            gb = grounding_block(cs, slot_edits, ctx)
+            # drop the runways line (the Swift side renders it from `runways`)
+            gb_lines = [l for l in gb.split("\n") if not l.startswith("Runways at")]
+            know = knowledge_block(ctx, fixes_cache[r["airport"]])
+            if gb_lines:
+                know = (know + "\n" if know else "") + "\n".join(gb_lines)
+            prior = block_prior.get(r["block"], [])
+            frames.append({
+                "id": r["id"], "transcript": base, "knowledge": know,
+                "readback": prior[-1] if prior else None,
+                "history": prior[-2:],
+                "airport": r["airport"],
+                "runways": (ctx.runways if ctx else []),
+                "vocab": sorted(allowed_terms(ctx, fixes_cache[r["airport"]])),
+            })
+            block_prior.setdefault(r["block"], []).append(base)
+        args.emit_frames.write_text(json.dumps(frames, indent=1), encoding="utf-8")
+        print(f"wrote {len(frames)} frames -> {args.emit_frames}")
+        return 0
 
     backend = W.QwenBackend()
     print(f"{len(rows)} clips | arm={args.arm}", flush=True)
