@@ -73,6 +73,15 @@ def test_center_style_no_slots_passes():
     assert r.ok and not r.reasons, r
 
 
+def test_inverted_readback_heading_not_misparsed():
+    # live false rejection (Frontier 4652): "330 heading, 8000" — the altitude
+    # after the word 'heading' must not be parsed as a heading value
+    r = assess_label(
+        "frontier 4652 turn left heading 320 maintain 8000 runway 17 center "
+        "17 center 330 heading 8000 frontier 4652", CTX)
+    assert r.ok, r.reasons
+
+
 def test_callsign_fix_snaps_natural_text():
     from dataset.label_gate import fix_callsign
     r = fix_callsign("delta 233 heavy cleared to land runway 17 right",
