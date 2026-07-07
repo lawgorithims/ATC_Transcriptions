@@ -1,0 +1,38 @@
+{
+  "airport_code": "KIAD",
+  "airport_name": "Washington Dulles International Airport",
+  "runways": [
+    "01C",
+    "01L",
+    "01R",
+    "12",
+    "19C",
+    "19L",
+    "19R",
+    "30"
+  ],
+  "frequencies": {
+    "ground_west": "121.625",
+    "tower_1l19r": "134.425"
+  },
+  "streams": {
+    "ground_west": {
+      "label": "KIAD Ground West",
+      "url": "https://d.liveatc.net/kiad1_gnd_west_121625",
+      "liveatc_page": "https://www.liveatc.net/hlisten.php?mount=kiad1_gnd_west_121625",
+      "archive_mount": "kiad1_gnd_west_121625",
+      "frequency_mhz": "121.625"
+    },
+    "tower_1l19r": {
+      "label": "KIAD Tower 1L/19R",
+      "url": "https://d.liveatc.net/kiad1_twr_1l19r_134425",
+      "liveatc_page": "https://www.liveatc.net/hlisten.php?mount=kiad1_twr_1l19r_134425",
+      "archive_mount": "kiad1_twr_1l19r_134425",
+      "frequency_mhz": "134.425",
+      "runways_hint": [
+        "01L",
+        "19R"
+      ]
+    }
+  }
+}

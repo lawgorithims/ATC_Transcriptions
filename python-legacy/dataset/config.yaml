@@ -124,6 +124,10 @@ feeds:
   - airport_config: airport_configs/ktrk.json
     feed_keys:
       - zoa_sector_44
+  - airport_config: airport_configs/kiad.json
+    feed_keys:
+      - ground_west
+      - tower_1l19r
 
 # Acceptance gates for a TRAINING pseudo-label (tune on the eval set).
 thresholds:
