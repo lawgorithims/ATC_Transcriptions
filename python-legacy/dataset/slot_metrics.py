@@ -74,14 +74,16 @@ def _v_altimeter(v: str) -> bool:
 # name -> (regex over canonical text, validity fn). Regexes anchor on the
 # directive keyword so free digits in chatter don't false-trigger.
 SLOTS: Dict[str, Tuple[re.Pattern, callable]] = {
-    "squawk": (re.compile(r"\bsquawk((?: \d){4})\b"), _v_squawk),
+    "squawk": (re.compile(r"\bsquawk((?: \d){4})(?! \d)\b"), _v_squawk),
     # (?<!\d ) — readbacks often list values BEFORE the word ("330 heading, 8000");
     # without the lookbehind the extractor grabs the NEXT number (the altitude)
-    # and flags "heading 800" (live label-gate false positive, 2026-07-07)
-    "heading": (re.compile(r"(?<!\d )\bheading((?: \d){3})\b"), _v_heading),
+    # and flags "heading 800" (live label-gate false positive, 2026-07-07).
+    # (?! \d) — and the digits after must not CONTINUE ("heading 8 0 0 0" is an
+    # altitude, not heading 800): both guards together cover both word orders.
+    "heading": (re.compile(r"(?<!\d )\bheading((?: \d){3})(?! \d)\b"), _v_heading),
     "frequency": (re.compile(r"\b(\d \d \d point \d(?: \d){0,2})\b"), _v_freq),
     "runway": (re.compile(r"\brunway((?: \d){1,2}(?: (?:left|right|center))?)\b"), _v_runway),
-    "altimeter": (re.compile(r"\baltimeter((?: \d){4})\b"), _v_altimeter),
+    "altimeter": (re.compile(r"\baltimeter((?: \d){4})(?! \d)\b"), _v_altimeter),
 }
 
 
