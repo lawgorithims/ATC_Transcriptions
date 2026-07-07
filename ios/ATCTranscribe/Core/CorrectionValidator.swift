@@ -46,8 +46,10 @@ struct CorrectionValidator {
             let from = edit.from.trimmingCharacters(in: .whitespaces)
             let to = edit.to.trimmingCharacters(in: .whitespaces)
             guard !from.isEmpty, !to.isEmpty, norm(from) != norm(to) else { continue }
-            guard digits(from) == digits(to) else { continue }          // (1) numbers preserved
+            guard digits(from) == digits(to) else { continue }          // (1) numeral digits preserved
+            guard spokenDigits(from) == spokenDigits(to) else { continue }  // (1a) spoken digit words too
             guard directionWords(from) == directionWords(to) else { continue }  // (1b) no left/right flips
+            guard clearanceVerbs(from) == clearanceVerbs(to) else { continue }  // (1c) no land↔hold swaps
             guard isAllowed(to: to, from: from) else { continue }       // (2) anti-hallucination
             guard !introducesUnknownRunway(to: to, from: from) else { continue }  // (2b) grounding veto
             guard let replaced = replaceFirst(in: tokens, from: from, to: to) else { continue }  // (3) applicable
@@ -199,6 +201,37 @@ struct CorrectionValidator {
                 }
                 return Self.protectedSemantics.contains(t) ? t : nil
             }
+    }
+
+    /// Spoken aviation digit words are protected exactly like numeral digits — an edit may never
+    /// swap "niner"→"tree" (which flips a heading/altitude/squawk/callsign digit while the numeral
+    /// guard, which sees no digit characters, stays silent). Red-hat finding, 2026-07-07.
+    static let spokenDigitWords: [String: String] = [
+        "zero": "0", "one": "1", "two": "2", "three": "3", "tree": "3", "four": "4",
+        "fower": "4", "five": "5", "fife": "5", "six": "6", "seven": "7", "eight": "8",
+        "nine": "9", "niner": "9", "oh": "0",
+    ]
+    private func spokenDigits(_ s: String) -> [String] {
+        s.lowercased().split(whereSeparator: { !$0.isLetter })
+            .compactMap { Self.spokenDigitWords[String($0)] }
+    }
+
+    /// Clearance / instruction verbs are a protected semantic class: an edit may never add, remove,
+    /// or swap one across classes ("cleared to LAND"→"cleared to HOLD", "HOLD short"→"CROSS",
+    /// "CONTINUE"→"go around" are meaning-reversals a malicious remote fixer could otherwise slip
+    /// through, since these words are individually present in the allowed phraseology vocabulary).
+    /// Red-hat finding, 2026-07-07. Multi-word verbs are normalized to a single token first.
+    static let clearanceVerbSet: Set<String> = [
+        "land", "takeoff", "cross", "hold", "holdshort", "continue", "goaround",
+        "lineupandwait", "cleared", "taxi", "giveway", "godirect", "maintain",
+    ]
+    private func clearanceVerbs(_ s: String) -> [String] {
+        var t = " " + norm(s) + " "
+        for (phrase, tok) in [("hold short", " holdshort "), ("go around", " goaround "),
+                              ("line up and wait", " lineupandwait "), ("give way", " giveway ")] {
+            t = t.replacingOccurrences(of: " " + phrase + " ", with: tok)
+        }
+        return t.split(separator: " ").map(String.init).filter { Self.clearanceVerbSet.contains($0) }
     }
 }
 

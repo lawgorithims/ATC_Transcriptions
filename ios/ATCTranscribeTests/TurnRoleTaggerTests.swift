@@ -31,8 +31,8 @@ final class TurnRoleTaggerTests: XCTestCase {
     }
 
     func testAmbiguousIsUnknown() {
-        // no cue on either side
-        XCTAssertEqual(TurnRoleTagger.classify("and that is all the traffic i have for you",
+        // no controller or pilot cue on either side (avoid "traffic", which is a controller cue)
+        XCTAssertEqual(TurnRoleTagger.classify("and that is all i have for you now",
                                                knowledge: nil).role, .unknown)
     }
 

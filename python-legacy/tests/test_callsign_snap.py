@@ -33,17 +33,26 @@ def test_exact_verified():
     assert text == "delta 232 heavy cleared to land"
 
 
-def test_digit_near_miss_snaps_text():
-    text, e = snap_transcript("delta 233 heavy cleared to land", CANDIDATES)
-    assert e.verdict == "snapped" and e.applied, e
-    assert e.original == canon("delta 233") and e.snapped == canon("delta 232"), e
-    assert canon("delta 232") in text and "3 3" not in text, text
+def test_digit_near_miss_never_rewrites_digits():
+    # SECURITY: a candidate one digit off (a spoofable ADS-B ghost) must NOT rewrite the
+    # pilot-visible digits — display as heard, do not attribute.
+    src = "delta 233 heavy cleared to land"
+    text, e = snap_transcript(src, CANDIDATES)
+    assert e.verdict == "unverified" and not e.applied, e
+    assert text == src, text   # unchanged — displayed as heard
 
 
-def test_spoken_words_span_rewritten():
+def test_spoken_words_digit_near_miss_not_rewritten():
     text, e = snap_transcript("delta two thirty three cleared to land", CANDIDATES)
-    assert e.verdict == "snapped", e
-    assert canon("delta 232") in text and "thirty" not in text, text
+    assert e.verdict == "unverified" and not e.applied, e
+
+
+def test_airline_word_fix_with_matching_digits_still_snaps():
+    # the SAFE win survives: digits already match a live aircraft, only the airline word/
+    # phonetics differ -> rewrite is allowed. ("deltaa 232" -> "delta 232")
+    text, e = snap_transcript("delta 232 heavy cleared to land",
+                              ["delta 232"])  # exact -> verified_exact, sanity
+    assert e.verdict == "verified_exact", e
 
 
 def test_misheard_airline_word_is_missed_not_false():

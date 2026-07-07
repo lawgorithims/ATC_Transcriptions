@@ -117,6 +117,18 @@ enum CallsignSnap {
         if match == heard {
             return (text, Result(verdict: "verified_exact", original: heard, snapped: match))
         }
+        // SECURITY (red-hat 2026-07-07): the candidate list comes from UNAUTHENTICATED ADS-B
+        // (airplanes.live) — anyone can inject a ghost aircraft one digit off from a real one.
+        // So the digit-changing rewrite path is disabled: the pilot-visible callsign DIGITS are
+        // never invented from traffic. A snap may fix only the misheard AIRLINE WORD / phonetics
+        // (digits identical to a live aircraft); if the digits differ, we display as heard and
+        // do NOT attribute (verdict "unverified"). Digit correction is the exclusive domain of
+        // guarded stages, never a single spoofable source.
+        let (_, heardNum) = splitCallsign(heard)
+        let (_, matchNum) = splitCallsign(match)
+        guard heardNum == matchNum else {
+            return (text, Result(verdict: "unverified", original: heard))
+        }
         let tokens = norm.split(separator: " ").map(String.init)
         let sToks = span.split(separator: " ").map(String.init)
         if sToks.count <= tokens.count {
