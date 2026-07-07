@@ -57,24 +57,25 @@ final class SnapReplayTests: XCTestCase {
         return (pipeline, context)
     }
 
-    /// A misheard digit in the callsign snaps onto the aircraft actually on frequency, the
-    /// runway mention is verified against KJFK's real runways, and the record attributes.
-    func testReplaySnapsCallsignAndVerifiesRunway() async throws {
+    /// SECURITY: a heard callsign whose DIGITS differ from the only in-range (spoofable) aircraft
+    /// is NEVER rewritten to the aircraft's digits — it displays as heard and is not attributed.
+    /// The runway mention is still verified against KJFK's real runways.
+    func testReplayNeverInventsCallsignDigitsFromTraffic() async throws {
         let hyp = "delta 231 heavy kennedy tower runway 2 2 right cleared to land"
         let (pipeline, context) = try makePipeline(script: [hyp])
-        context.setTraffic(block: "traffic", vocab: ["DAL232", "JBU604"],
+        context.setTraffic(block: "traffic", vocab: ["DAL232", "JBU604"],   // ghost one digit off
                            expiry: Date().addingTimeInterval(60), epoch: 1)
 
         let audio = try goldAudio()
         let maybeRecord = await pipeline.process(segment(audio))
         let record = try XCTUnwrap(maybeRecord)
-        XCTAssertTrue(record.display.contains("delta 2 3 2"),
-                      "callsign must snap to the on-frequency aircraft: \(record.display)")
-        XCTAssertFalse(record.display.contains("2 3 1"), record.display)
-        XCTAssertTrue(record.corrections.contains { $0.backend == "snap" },
-                      "snap edit must be visible in the transparent edit list")
-        XCTAssertNotNil(record.callsignKey, "verified callsign must attribute")
-        // runway 22R exists at KJFK — verified, so no runway edit and no gate alarm about it
+        XCTAssertTrue(record.display.contains("2 3 1"),
+                      "heard digits must be displayed as heard, not the ghost's: \(record.display)")
+        XCTAssertFalse(record.display.contains("delta 2 3 2"),
+                       "must NOT rewrite to the spoofable aircraft's digits: \(record.display)")
+        XCTAssertNil(record.callsignKey, "a digit-differing ghost must not attribute")
+        XCTAssertFalse(record.corrections.contains { $0.reason.contains("callsign") })
+        // runway 22R exists at KJFK — verified, so no runway edit
         XCTAssertFalse(record.corrections.contains { $0.reason.contains("runway") })
     }
 
