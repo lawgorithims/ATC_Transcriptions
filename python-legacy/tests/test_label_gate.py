@@ -96,6 +96,15 @@ def test_callsign_fix_abstains_out_of_snapshot():
     assert not r.fixed and r.ok and r.label.startswith("frontier 4316"), r
 
 
+def test_callsign_fix_never_changes_digit_count():
+    # live corruption: greedy extractor grabbed the '3' of the NEXT phrase
+    # ("united 733. 3-car ...") and the snap deleted it from the label text.
+    from dataset.label_gate import fix_callsign
+    r = fix_callsign("united 733 3 car 35 64 at whiskey cross runway 4l",
+                     ["united 733"])
+    assert not r.fixed and "733 3 car" in r.label, r
+
+
 def test_callsign_fix_verified_untouched():
     from dataset.label_gate import fix_callsign
     r = fix_callsign("delta 232 contact tower", ["delta 232"])

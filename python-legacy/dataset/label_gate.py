@@ -100,6 +100,14 @@ def fix_callsign(label: str, candidates_natural: List[str]) -> GateResult:
     match = match_callsign(heard, list(canon_to_natural))
     if match is None or match == heard:
         return GateResult(ok=True, label=label)
+    # TRAINING labels get the stricter policy: only same-length digit
+    # SUBSTITUTIONS (370->372). Length-changing matches sit in the greedy
+    # digit-run ambiguity zone — live audit: "united 733 3"->"united 733"
+    # deleted the '3' of the NEXT phrase ("3-car") from the label text.
+    heard_digits = "".join(ch for ch in heard if ch.isdigit())
+    match_digits = "".join(ch for ch in match if ch.isdigit())
+    if len(heard_digits) != len(match_digits):
+        return GateResult(ok=True, label=label)
     tokens = label.split()
     stoks = span.split()
     for i in range(len(tokens) - len(stoks) + 1):
