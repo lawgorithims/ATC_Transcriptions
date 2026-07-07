@@ -152,6 +152,43 @@ arbitrary real-life airports (14/14 unit tests incl. suffix-safety and
 anchor-guarded frequencies), not corrections on this gold set. 26 unit tests
 green overall; see `docs/PIPELINE.md` for diagrams + stage policies.
 
+## LLM correction tier measured on gold (2026-07-06, `dataset/llm_eval.py`)
+
+Qwen2.5-0.5B-Instruct (fp32 — optimistic vs the on-device q4 GGUF) with the
+world-model prompt, WORLD frame primed per clip from the airport ident via
+the real provider chain, snap chain first, same-block conversation pairing
+(readback slot fired on 32/102 clips), mirrored validator guardrails:
+
+| arm | canonWER | CSA | falseCS | clips changed |
+|---|---|---|---|---|
+| snaps-only (deterministic) | **22.7%** | 78.4% | 9.8% | — |
+| + LLM, world frame | 23.1% | 78.4% | 9.8% | 10 |
+| + LLM, transcript-only | 23.1% | 78.4% | 9.8% | 12 |
+
+**Verdict: at 0.5B the LLM tier is net-negative on WER (+0.4) and neutral on
+the safety metrics** — the deterministic snaps already own callsign/slot
+accuracy, and the residual error mass (unstructured "other" words) is beyond
+a tiny model. The world frame does NOT fix that, but it visibly changes the
+failure CLASS: minimal-arm edits invent facts ("ray"→"tower",
+"cafe"→"anchorage", "follow company"→"follow crj"); world-arm edits are
+tamer deletions/cosmetics. Grounding suppresses hallucination; capability is
+the binding constraint.
+
+**Byproduct worth more than the headline:** the benchmark caught the 0.5B
+model flipping "left"→"right" AND the shipped validator accepting it
+(direction words appear in the per-word phraseology vocabulary). Direction/
+semantic words (left/right/center/climb/descend/N-S-E-W) are now protected
+like digits, with designator-suffix equivalence ("two eight right" → "28R"
+still allowed) — in the Swift validator and the harness (218 iOS tests
+green). Footnote: the world-arm jsonl above predates the guard; 2 of its 13
+edits would now be blocked, so the post-guard world score is ≥ the table.
+
+Where this leaves the tier: keep it gated (the ConfidenceGate already limits
+exposure) and treat 0.5B as a no-op-at-best; the world frame's real target
+is the CASCADE second pass (a larger remote model with the same frame —
+harness ready, endpoint pending) and Apple-FM on device. Re-benchmark per
+model with `python -m dataset.llm_eval --arm world|minimal`.
+
 ## Labeler gate + adversarial review round (2026-07-06)
 
 **pm-as-labeler-gate** (`dataset/label_gate.py`, wired into `pseudo_label`
