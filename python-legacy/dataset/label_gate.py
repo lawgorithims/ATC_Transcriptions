@@ -58,7 +58,11 @@ def assess_label(label: str, airport_ctx: Optional[AirportContext]) -> GateResul
         if any(e.applied for e in edits):
             out_text = snapped_text
         for e in edits:
-            if e.slot == "runway" and e.verdict == "unverified":
+            # "unverified" is only evidence of error when the facility HAS
+            # runways to check against: centers (empty lists) legitimately
+            # clear approaches at satellite airports — live FP, 2026-07-07
+            # ("Medevac 326 ... Runway 23 approach for Columbia" on ZKC).
+            if e.slot == "runway" and e.verdict == "unverified" and airport_ctx.runways:
                 reasons.append(f"runway_not_at_airport:{e.original}")
             elif e.slot == "frequency" and e.verdict == "invalid":
                 reasons.append(f"impossible_frequency:{e.original}")
