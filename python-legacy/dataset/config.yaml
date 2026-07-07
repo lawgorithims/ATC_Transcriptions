@@ -64,6 +64,7 @@ feeds:
       # NOTE: lone_star_approach_17l_final is reserved for EVAL -> not listed here.
   - airport_config: airport_configs/kjfk.json
     feed_keys:
+      - ground
       - tower_primary
       - tower_1191
       - tower_2
@@ -73,12 +74,14 @@ feeds:
       - tower_primary
   - airport_config: airport_configs/katl.json
     feed_keys:
+      - ground
       - tower_primary
   - airport_config: airport_configs/ksfo.json
     feed_keys:
       - tower_primary
   - airport_config: airport_configs/klax.json
     feed_keys:
+      - feed3
       - final_approach
   - airport_config: airport_configs/kewr.json
     feed_keys:
@@ -112,6 +115,15 @@ feeds:
   - airport_config: airport_configs/ksdf.json
     feed_keys:
       - tower_primary
+  - airport_config: airport_configs/rjtt.json
+    feed_keys:
+      - tower_approach
+  - airport_config: airport_configs/phnl.json
+    feed_keys:
+      - approach
+  - airport_config: airport_configs/ktrk.json
+    feed_keys:
+      - zoa_sector_44
 
 # Acceptance gates for a TRAINING pseudo-label (tune on the eval set).
 thresholds:
