@@ -197,6 +197,18 @@ struct TranscriptRow: View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 8) {
+                    if record.role != .unknown {
+                        let isCtl = record.role == .controller
+                        Label(isCtl ? "ATC" : "Pilot",
+                              systemImage: isCtl ? "antenna.radiowaves.left.and.right" : "airplane")
+                            .labelStyle(.titleAndIcon)
+                            .font(.caption2.weight(.bold))
+                            .padding(.horizontal, 6).padding(.vertical, 1)
+                            .background((isCtl ? p.accent : p.good).opacity(0.18))
+                            .foregroundStyle(isCtl ? p.accent : p.good)
+                            .clipShape(Capsule())
+                            .accessibilityIdentifier("role-chip")
+                    }
                     if let spk = record.speaker {
                         Text("S\(spk + 1)")
                             .font(.caption2.weight(.bold))

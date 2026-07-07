@@ -44,6 +44,9 @@ struct TranscriptRecord: Sendable, Identifiable {
     /// derived at RENDER time by testing this against the current ADS-B snapshot, so it tracks the
     /// feed (rather than freezing whatever was true at the instant the line was decoded).
     var callsignKey: String? = nil
+    /// Content-based role of this transmission (controller / pilot / unknown), from
+    /// `TurnRoleTagger`. Drives the per-line role chip in the transcript UI.
+    var role: TurnRole = .unknown
 
     /// What the UI shows: the LLM-refined text if present, else the inline-corrected text, else
     /// the raw transcript.
@@ -267,6 +270,8 @@ actor LivePipeline {
         // list existed: an unverified callsign still displays as heard, but is not attributed to
         // an aircraft (the falseCS → 2% channel). With no list (offline/stale traffic) the
         // pre-snap behavior is preserved — extraction attributes ungated.
+        // Content-based controller/pilot role for the transcript's per-line chip (cheap, text-only).
+        record.role = TurnRoleTagger.classify(record.display, knowledge: context.knowledge).role
         if let cs = CallsignExtractor.extract(record.display, knowledge: context.knowledge) {
             record.callsign = cs.display
             // Gate attribution only where the verdict is meaningful: a candidate list

@@ -139,6 +139,25 @@ struct SettingsSheet: View {
                             Text("Runs the AI fixer only on transmissions that look suspicious (low speech-model confidence, a callsign/runway near-miss, non-English, or repetition) and skips clearly-clean ones — saving CPU and battery. Conservative runs it more often (safest); Aggressive skips more. Skipped transmissions still show the raw + vocabulary-corrected text.")
                                 .font(.caption2).foregroundStyle(p.textDim)
                                 .opacity(model.correctionEnabled ? 1 : 0.5)
+
+                            Rectangle().fill(p.border).frame(height: 1)
+                            Text("Cloud fixer (advanced)").font(.caption).foregroundStyle(p.text)
+                            TextField("https://your-server/fix", text: $model.remoteFixerURL)
+                                .font(.caption2).foregroundStyle(p.text)
+                                .textFieldStyle(.roundedBorder)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                .keyboardType(.URL)
+                                .disabled(!model.correctionEnabled || model.llmBackend == .off)
+                            if !model.remoteFixerURL.trimmingCharacters(in: .whitespaces).isEmpty {
+                                Label(model.remoteFixerURLValid ? "Cloud second-pass enabled" : "Not a valid http(s) URL — ignored",
+                                      systemImage: model.remoteFixerURLValid ? "checkmark.circle" : "exclamationmark.triangle")
+                                    .font(.caption2)
+                                    .foregroundStyle(model.remoteFixerURLValid ? p.accent : p.textDim)
+                            }
+                            Text("Optional. When set, the on-device fixer runs first, then a larger model at this URL gets a second pass within the same 2–3 second budget (abandoned if slow). It sees the same grounded ATC context and passes the identical safety guardrails — it can never change a number, runway, or direction the on-device model preserved. Leave blank to stay fully on-device.")
+                                .font(.caption2).foregroundStyle(p.textDim)
+                                .opacity(model.correctionEnabled ? 1 : 0.5)
                         }
                     }
                     Card(title: "About") {

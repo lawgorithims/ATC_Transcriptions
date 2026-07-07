@@ -118,11 +118,45 @@ final class AppModel: ObservableObject {
         didSet { UserDefaults.standard.set(correctionEnabled, forKey: "atc.correctionEnabled"); rebuildCorrector(); rebuildLLM() }
     }
     @Published var llmBackend: LLMBackend =
-        (UserDefaults.standard.string(forKey: "atc.llmBackend").flatMap(LLMBackend.init(rawValue:)) ?? .local) {
+        AppModel.defaultLLMBackend() {
         didSet {
             UserDefaults.standard.set(llmBackend.rawValue, forKey: "atc.llmBackend")
             if llmBackend != oldValue { rebuildLLM() }
         }
+    }
+
+    /// The AI-fixer backend to start with. An explicit user choice always wins; otherwise, on a
+    /// device where Apple Intelligence is actually available, default to it (a ~3B on-device model
+    /// vs the 0.5B llama.cpp fallback — the offline gold benchmark showed the 0.5B tier is
+    /// net-neutral, so the larger model is the better default where it exists). Falls back to the
+    /// on-device llama.cpp path everywhere else. The pipeline still degrades to vocabulary-only at
+    /// runtime if the chosen backend turns out unavailable, so this is a safe preference, not a
+    /// hard requirement.
+    static func defaultLLMBackend() -> LLMBackend {
+        if let saved = UserDefaults.standard.string(forKey: "atc.llmBackend").flatMap(LLMBackend.init(rawValue:)) {
+            return saved
+        }
+        if foundationModelsAvailable() { return .foundation }
+        return .local
+    }
+
+    /// Optional user-set URL of a larger remote "context fixer" model. When present, the on-device
+    /// AI fixer runs first and this endpoint gets a second pass within the remaining latency budget
+    /// (CascadeCorrector); empty = purely on-device. Read by `RemoteLLMCorrector.fromSettings`.
+    @Published var remoteFixerURL = UserDefaults.standard.string(forKey: "atc.remoteFixerURL") ?? "" {
+        didSet {
+            let trimmed = remoteFixerURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            UserDefaults.standard.set(trimmed, forKey: "atc.remoteFixerURL")
+            if didFinishInit, trimmed != oldValue.trimmingCharacters(in: .whitespacesAndNewlines) { rebuildLLM() }
+        }
+    }
+
+    /// True iff the remote URL is non-empty and parses as an http(s) endpoint (mirrors the guard in
+    /// `RemoteLLMCorrector.fromSettings`) — drives the Settings validity hint.
+    var remoteFixerURLValid: Bool {
+        let t = remoteFixerURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty, let u = URL(string: t) else { return false }
+        return u.scheme == "https" || u.scheme == "http"
     }
 
     // Confidence gate: only run the AI fixer when a transmission looks suspicious. `skipWhenConfident`
