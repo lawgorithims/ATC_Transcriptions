@@ -69,9 +69,9 @@ final class SnapReplayTests: XCTestCase {
         let audio = try goldAudio()
         let maybeRecord = await pipeline.process(segment(audio))
         let record = try XCTUnwrap(maybeRecord)
-        XCTAssertTrue(record.display.contains("2 3 1"),
+        XCTAssertTrue(record.display.contains("231"),
                       "heard digits must be displayed as heard, not the ghost's: \(record.display)")
-        XCTAssertFalse(record.display.contains("delta 2 3 2"),
+        XCTAssertFalse(record.display.contains("232"),
                        "must NOT rewrite to the spoofable aircraft's digits: \(record.display)")
         XCTAssertNil(record.callsignKey, "a digit-differing ghost must not attribute")
         XCTAssertFalse(record.corrections.contains { $0.reason.contains("callsign") })
