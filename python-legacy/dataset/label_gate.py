@@ -77,7 +77,8 @@ def assess_label(label: str, airport_ctx: Optional[AirportContext]) -> GateResul
                       fixed=out_text != label, reasons=reasons)
 
 
-def fix_callsign(label: str, candidates_natural: List[str]) -> GateResult:
+def fix_callsign(label: str, candidates_natural: List[str],
+                 corroboration: str = "") -> GateResult:
     """Snap the label's callsign onto the block's ADS-B traffic snapshot.
 
     ``candidates_natural`` are spoken-natural strings from
@@ -108,6 +109,16 @@ def fix_callsign(label: str, candidates_natural: List[str]) -> GateResult:
     match_digits = "".join(ch for ch in match if ch.isdigit())
     if len(heard_digits) != len(match_digits):
         return GateResult(ok=True, label=label)
+    # SECURITY (aligned with the app-side red-hat posture, 2026-07-07): ADS-B is
+    # an unauthenticated source, so changing label DIGITS additionally requires
+    # the SECOND model's independent corroboration — the candidate's digit-token
+    # sequence must appear in the partner decode. Two independent sources
+    # (aircraft physically present + partner heard those digits) or no change.
+    if heard_digits != match_digits:
+        digit_seq = " ".join(match_digits)
+        corro = " " + canon(corroboration) + " " if corroboration else ""
+        if f" {digit_seq} " not in corro:
+            return GateResult(ok=True, label=label)
     tokens = label.split()
     stoks = span.split()
     for i in range(len(tokens) - len(stoks) + 1):

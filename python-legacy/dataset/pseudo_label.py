@@ -176,7 +176,9 @@ def evaluate_segment(
     if callsign_candidates:
         from dataset import label_gate
 
-        cs_fix = label_gate.fix_callsign(label, callsign_candidates)
+        # partner decode = the independent corroboration for digit changes
+        cs_fix = label_gate.fix_callsign(label, callsign_candidates,
+                                         corroboration=res_b.text)
         if cs_fix.fixed:
             label = cs_fix.label
             metrics["callsign_snap"] = cs_fix.reasons
