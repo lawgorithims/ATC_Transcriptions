@@ -1,0 +1,19 @@
+{
+  "airport_code": "KTRK",
+  "airport_name": "Truckee Tahoe Airport / Oakland Center sector 44",
+  "runways": [
+    "02",
+    "11",
+    "20",
+    "29"
+  ],
+  "frequencies": {},
+  "streams": {
+    "zoa_sector_44": {
+      "label": "KTRK / ZOA Sector 44",
+      "url": "https://d.liveatc.net/ktrk_zoa44",
+      "liveatc_page": "https://www.liveatc.net/hlisten.php?mount=ktrk_zoa44",
+      "archive_mount": "ktrk_zoa44"
+    }
+  }
+}

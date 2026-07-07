@@ -1,0 +1,23 @@
+{
+  "airport_code": "RJTT",
+  "airport_name": "Tokyo Haneda International Airport",
+  "runways": [
+    "04",
+    "05",
+    "16L",
+    "16R",
+    "22",
+    "23",
+    "34L",
+    "34R"
+  ],
+  "frequencies": {},
+  "streams": {
+    "tower_approach": {
+      "label": "RJTT Tokyo Haneda (feed 2)",
+      "url": "https://d.liveatc.net/rjtt2",
+      "liveatc_page": "https://www.liveatc.net/hlisten.php?mount=rjtt2",
+      "archive_mount": "rjtt2"
+    }
+  }
+}

@@ -3,7 +3,16 @@
   "airport_name": "Hartsfield-Jackson Atlanta International Airport",
   "tracon": "Atlanta Approach (A80)",
   "runways": [
-    "8L", "8R", "9L", "9R", "10", "26L", "26R", "27L", "27R", "28"
+    "8L",
+    "8R",
+    "9L",
+    "9R",
+    "10",
+    "26L",
+    "26R",
+    "27L",
+    "27R",
+    "28"
   ],
   "frequencies": {
     "tower": "119.1",
@@ -16,6 +25,12 @@
       "liveatc_page": "https://www.liveatc.net/hlisten.php?mount=katl_twr&icao=katl",
       "frequency_mhz": "119.1",
       "archive_mount": "katl_twr"
+    },
+    "ground": {
+      "label": "KATL Ground",
+      "url": "https://d.liveatc.net/katl_gnd",
+      "liveatc_page": "https://www.liveatc.net/hlisten.php?mount=katl_gnd",
+      "archive_mount": "katl_gnd"
     }
   }
 }

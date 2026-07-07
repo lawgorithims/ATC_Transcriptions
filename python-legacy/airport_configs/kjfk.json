@@ -2,10 +2,40 @@
   "airport_code": "KJFK",
   "airport_name": "John F. Kennedy International Airport",
   "runways": [
-    "4L", "4R", "13L", "13R", "22L", "22R", "31L", "31R"
+    "4L",
+    "4R",
+    "13L",
+    "13R",
+    "22L",
+    "22R",
+    "31L",
+    "31R"
   ],
   "taxiways": [
-    "A", "B", "C", "D", "E", "F", "G", "H", "J", "K", "L", "M", "N", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z"
+    "A",
+    "B",
+    "C",
+    "D",
+    "E",
+    "F",
+    "G",
+    "H",
+    "J",
+    "K",
+    "L",
+    "M",
+    "N",
+    "P",
+    "Q",
+    "R",
+    "S",
+    "T",
+    "U",
+    "V",
+    "W",
+    "X",
+    "Y",
+    "Z"
   ],
   "frequencies": {
     "tower": "119.1",
@@ -14,10 +44,19 @@
     "departure": "125.65"
   },
   "fixes": [
-    "CANUK", "JFK", "LENDY", "ROBUC", "SHIPP", "WHITE"
+    "CANUK",
+    "JFK",
+    "LENDY",
+    "ROBUC",
+    "SHIPP",
+    "WHITE"
   ],
   "waypoints": [
-    "CANUK", "LENDY", "ROBUC", "SHIPP", "WHITE"
+    "CANUK",
+    "LENDY",
+    "ROBUC",
+    "SHIPP",
+    "WHITE"
   ],
   "streams": {
     "tower_primary": {
@@ -40,7 +79,12 @@
       "url": "https://d.liveatc.net/kjfk9_s",
       "liveatc_page": "https://www.liveatc.net/hlisten.php?mount=kjfk9_s&icao=kjfk",
       "archive_mount": "kjfk9_s"
+    },
+    "ground": {
+      "label": "KJFK Ground",
+      "url": "https://d.liveatc.net/kjfk_gnd",
+      "liveatc_page": "https://www.liveatc.net/hlisten.php?mount=kjfk_gnd",
+      "archive_mount": "kjfk_gnd"
     }
   }
 }
-

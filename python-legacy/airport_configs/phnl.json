@@ -1,0 +1,23 @@
+{
+  "airport_code": "PHNL",
+  "airport_name": "Daniel K. Inouye International Airport (Honolulu)",
+  "runways": [
+    "04L",
+    "04R",
+    "08L",
+    "08R",
+    "22L",
+    "22R",
+    "26L",
+    "26R"
+  ],
+  "frequencies": {},
+  "streams": {
+    "approach": {
+      "label": "PHNL Honolulu Approach",
+      "url": "https://d.liveatc.net/phnl1_app",
+      "liveatc_page": "https://www.liveatc.net/hlisten.php?mount=phnl1_app",
+      "archive_mount": "phnl1_app"
+    }
+  }
+}
