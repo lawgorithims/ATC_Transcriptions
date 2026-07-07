@@ -130,11 +130,16 @@ def _strip_unclear(text: str) -> tuple:
 def ingest(args) -> int:
     cands = {c["id"]: c for c in json.loads(Path(args.candidates).read_text(encoding="utf-8"))}
     corrections = json.loads(Path(args.corrections).read_text(encoding="utf-8"))
-    rows, skipped, n_unclear, n_multiturn = [], 0, 0, 0
+    rows, skipped, n_unclear, n_multiturn, n_corrected = [], 0, 0, 0, 0
     for c in corrections:
-        if c.get("status") != "good":
+        # "good" = draft was right; "corrected" = good after the verifier's edits.
+        # Both are usable gold; the distinction is kept (verified field) because
+        # the corrected share measures the draft/teacher error rate on real speech.
+        if c.get("status") not in ("good", "corrected"):
             skipped += 1
             continue
+        if c["status"] == "corrected":
+            n_corrected += 1
         cand = cands.get(c["id"], {})
         # v1.1 export carries per-speaker turns; legacy exports carry `corrected`.
         raw_turns = c.get("turns") or [{
@@ -169,7 +174,7 @@ def ingest(args) -> int:
         rows.append({
             "clip": cand.get("clip"), "id": c["id"], "airport": c.get("airport"),
             "feed": c.get("feed"), "ref": " ".join(parts),
-            "turns": turns, "unclear": had_any,
+            "turns": turns, "unclear": had_any, "verified": c["status"],
             # first-turn convenience fields (back-compat with v0-shaped consumers)
             "role": turns[0]["role"], "callsign": turns[0]["callsign"],
         })
@@ -180,9 +185,9 @@ def ingest(args) -> int:
     with out.open("w", encoding="utf-8") as f:
         for r in merged + rows:
             f.write(json.dumps(r) + "\n")
-    print(f"gold rows: {len(rows)} new verified ({n_multiturn} multi-speaker, "
-          f"{n_unclear} with unclear spans) + {len(merged)} merged "
-          f"({skipped} bad/empty skipped) -> {out}")
+    print(f"gold rows: {len(rows)} new verified ({n_corrected} corrected, "
+          f"{n_multiturn} multi-speaker, {n_unclear} with unclear spans) "
+          f"+ {len(merged)} merged ({skipped} bad/empty skipped) -> {out}")
     return 0
 
 
@@ -198,6 +203,8 @@ _TEMPLATE = """<!DOCTYPE html>
  h1{font-size:20px} .sub{color:#5B6B78;font-size:13px}
  .card{background:#fff;border:1px solid #DCE3E8;border-radius:6px;padding:14px 16px;margin:14px 0}
  .card.done{border-left:4px solid #2E7D4F} .card.bad{border-left:4px solid #B3403A;opacity:.75}
+ .card.fixed{border-left:4px solid #B07C1F}
+ button.fixedbtn{background:#B07C1F;color:#fff;border-color:#B07C1F}
  .hdr{display:flex;gap:12px;align-items:baseline;font-size:12px;color:#5B6B78;font-family:monospace}
  textarea{width:100%;box-sizing:border-box;font-family:monospace;font-size:14px;min-height:52px;margin-top:8px;
           border:1px solid #DCE3E8;border-radius:4px;padding:8px}
@@ -232,7 +239,11 @@ speaker said (selections snap to whole words; multiple aircraft = paint each one
 Aircraft — callsigns are read from the highlighted text automatically).
 <b>Unclear speech:</b> paint transcribed-but-doubtful words with the Unclear highlighter, or press
 <b>⟨insert [unclear]⟩</b> at the cursor for audible speech you can't transcribe at all — never guess.
-Eraser removes highlights. Then <b>Good</b> / <b>Unusable</b>. Autosaves locally; Export when done.</p>
+Eraser removes highlights. Verdict: <b>Good</b> (draft was right), <b>Corrected</b> (good after your
+edits), <b>Unusable</b>. <b>One-shot labeling without switching tools:</b> select words, then
+<kbd>Alt+1</kbd> controller / <kbd>Alt+2</kbd> aircraft / <kbd>Alt+3</kbd> unclear / <kbd>Alt+4</kbd>
+erase (Ctrl+Alt also works; plain Ctrl+digit is reserved by the browser for tab switching).
+Autosaves locally; Export when done.</p>
 <div class="bar">
   <div class="tools">
     <button class="tool" data-tool="edit" title="normal text editing"><kbd>0</kbd> edit</button>
@@ -372,12 +383,14 @@ function applyTool(c, div){
   if (!off) return;
   const cur = domToRuns(div);         // trust the DOM (it may hold fresh text edits)
   s.text = cur.text; s.runs = cur.runs;
+  let caretAfter = null;
   if (tool === "token") {
     const at = off.caret ?? off.a;
     const ins = (at > 0 && s.text[at-1] !== " " ? " " : "") + "[unclear]" + (s.text[at] !== " " ? " " : "");
     // shift runs past the insertion point
     s.runs.forEach(r => { if (r.s >= at) r.s += ins.length; if (r.e > at) r.e += ins.length; });
     s.text = s.text.slice(0, at) + ins + s.text.slice(at);
+    caretAfter = at + ins.length;
   } else if (off.caret == null) {
     const patch = tool === "erase" ? { role: null, unclear: false }
                : tool === "unclear" ? { unclear: true }
@@ -396,21 +409,40 @@ function applyTool(c, div){
     s.runs = mergeRuns([{s:0,e:0}].concat(
       Array.from({length: n}, (_, i) => ({ s: i, e: i + 1, role: role[i], unclear: unc[i] }))
         .filter(r => r.role || r.unclear)), n);
+    caretAfter = off.b;
   } else return;   // highlight tools need a selection
   div.innerHTML = runHTML(s);
+  if (caretAfter != null) setCaret(div, Math.min(caretAfter, s.text.length));
   save();
 }
+// one-shot: apply a tool to the current selection without changing the sticky tool
+function applyToolOnce(t){
+  const sel = window.getSelection();
+  const anchor = sel.anchorNode && (sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement);
+  const ta = anchor && anchor.closest && anchor.closest(".ta");
+  if (!ta) return false;
+  const idx = cardIndex(ta);
+  if (idx < 0) return false;
+  const prev = tool; tool = t;
+  applyTool(DATA[idx], ta);
+  tool = prev;
+  return true;
+}
 
+function statusClass(st){
+  return st === "good" ? " done" : st === "corrected" ? " fixed" : st === "bad" ? " bad" : "";
+}
 function card(c){
   const s = get(c);
   const div = document.createElement("div");
-  div.className = "card" + (s.status === "good" ? " done" : s.status === "bad" ? " bad" : "");
+  div.className = "card" + statusClass(s.status);
   div.innerHTML = `
     <div class="hdr"><b>#${c.n}</b><span>${c.airport} · ${c.feed}</span><span>${c.id}</span><span>[${c.accept_state}]</span></div>
     <audio controls preload="none" src="${c.clip}"></audio>
     <div class="ta" contenteditable="true" spellcheck="false"></div>
     <div class="row">
       <button class="good" data-act="good">Good</button>
+      <button class="fixedbtn" data-act="corrected">Corrected</button>
       <button class="bad" data-act="bad">Unusable</button>
     </div>`;
   const ta = div.querySelector(".ta");
@@ -422,14 +454,31 @@ function card(c){
   ta.addEventListener("mouseup", () => { if (tool !== "edit") applyTool(c, ta); });
   div.addEventListener("click", e => {
     const act = e.target.dataset && e.target.dataset.act;
-    if (act === "good" || act === "bad") {
+    if (act === "good" || act === "corrected" || act === "bad") {
       const cur = domToRuns(ta);
       s.text = cur.text; s.runs = cur.runs; s.status = act;
       save();
-      div.className = "card" + (act === "good" ? " done" : " bad");
+      div.className = "card" + statusClass(act);
     }
   });
   return div;
+}
+// place the caret at a text offset inside a .ta (used to restore the cursor after
+// a paint/token operation rewrites innerHTML — otherwise it falls back to the start)
+function setCaret(div, pos){
+  const walker = document.createTreeWalker(div, NodeFilter.SHOW_TEXT);
+  let total = 0, node;
+  while ((node = walker.nextNode())) {
+    const len = node.textContent.length;
+    if (total + len >= pos) {
+      const r = document.createRange();
+      r.setStart(node, Math.max(0, pos - total)); r.collapse(true);
+      const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r);
+      div.focus();
+      return;
+    }
+    total += len;
+  }
 }
 
 // ---- export: turns derived from role runs; unclear runs wrap as [unclear]...[/unclear] ----
@@ -485,6 +534,13 @@ function cardIndex(ta){
   return cards.findIndex(cd => cd.contains(ta));
 }
 document.addEventListener("keydown", e => {
+  // one-shot labeling of the current selection: Alt+1..4 (Ctrl+Alt also fine).
+  // Plain Ctrl+digit is reserved by browsers for tab switching and cannot be used.
+  if (e.altKey) {
+    const oneShot = { "1": "ctl", "2": "acft", "3": "unclear", "4": "erase" };
+    const t = oneShot[e.key] ?? oneShot[e.code?.replace("Digit", "")];
+    if (t && applyToolOnce(t)) { e.preventDefault(); return; }
+  }
   if (e.target.closest(".ta") && tool === "edit") {
     if (e.key === "Escape") setTool("edit");
     return;   // typing mode — don't hijack digits
