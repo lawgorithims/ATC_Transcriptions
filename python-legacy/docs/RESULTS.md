@@ -189,6 +189,37 @@ is the CASCADE second pass (a larger remote model with the same frame —
 harness ready, endpoint pending) and Apple-FM on device. Re-benchmark per
 model with `python -m dataset.llm_eval --arm world|minimal`.
 
+## Red-hat security review + digit-lock (2026-07-07)
+
+A 6-lens adversarial review (spoofed ADS-B, malicious remote endpoint,
+poisoned airport data, prompt injection, DoS, trust boundaries) found 14
+reachable defects, 3 critical, on the Build-37 correction surface. Two root
+causes fixed: (1) CallsignSnap invented callsign digits from UNAUTHENTICATED
+airplanes.live traffic — one spoofed ghost one digit off could rewrite the
+pilot-visible callsign; (2) the LLM validator let a remote/LLM swap clearance
+verbs (land↔hold) and spoken digit words (niner↔tree) past the numeral-only
+guard.
+
+The callsign fix disables digit-changing text rewrites entirely; measured
+tradeoff on gold (two channels — `snap_score.py`):
+
+| model | textCSA | textFalse | **entity-false** | abstain |
+|---|---|---|---|---|
+| small, pre-lock | 74.5→78.4% | 13.7→9.8% | 2.0% | 19.6% |
+| small, **post-lock** | 74.5→74.5% | 13.7→13.7% | **0.0%** | 25.5% |
+| turbo, post-lock | 80.4→80.4% | 7.8→7.8% | **0.0%** | 19.6% |
+
+Reading: the digit-lock GIVES UP the small display-text improvement (3
+digit-rewrites that raised textCSA — those cases now show the misheard digit
+as heard, honestly) but the safety-relevant ATTRIBUTION channel ("which
+aircraft") goes to **0.0% false** — better than before AND now spoof-proof:
+uncertain callsigns abstain rather than snap to a single unauthenticated
+source. The airline-word fix (safe: digits already match a live aircraft) is
+retained. Refinement option (not yet built): permit a digit fix when a SECOND
+signal corroborates it (filed callsign, or a prior verified_exact for the same
+aircraft this session) — recovers the display win without trusting a lone
+ghost.
+
 ## Labeler gate + adversarial review round (2026-07-06)
 
 **pm-as-labeler-gate** (`dataset/label_gate.py`, wired into `pseudo_label`
