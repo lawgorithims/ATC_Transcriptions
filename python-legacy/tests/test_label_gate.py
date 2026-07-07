@@ -68,6 +68,14 @@ def test_value_before_heading_word_not_misread():
     assert r.ok, r.reasons
 
 
+def test_center_with_no_runways_never_rejects_runway_mentions():
+    # centers clear approaches at satellite airports; an empty runway list
+    # means "cannot verify", never "wrong" (live FP: ZKC / Columbia rwy 23)
+    center = AirportContext(ident="ZKC", runways=[], frequencies={})
+    r = assess_label("medevac 326 kilo whiskey cleared runway 23 approach", center)
+    assert r.ok, r.reasons
+
+
 def test_center_style_no_slots_passes():
     r = assess_label("descend and maintain flight level 3 5 0", None)
     assert r.ok and not r.reasons, r
