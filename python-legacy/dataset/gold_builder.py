@@ -225,6 +225,9 @@ _TEMPLATE = """<!DOCTYPE html>
  .hl-unclear{text-decoration:underline wavy #B07C1F;background-color:#F6E8B8}
  .hl-ctl.hl-unclear{background:linear-gradient(#F6E8B8,#F6E8B8) 0 100%/100% 6px no-repeat,#CFE3F4}
  .hl-acft.hl-unclear{background:linear-gradient(#F6E8B8,#F6E8B8) 0 100%/100% 6px no-repeat,#D6EBD9}
+ .speeds{display:flex;gap:4px;align-items:center;margin-top:4px;font-size:11px;color:#5B6B78}
+ .speeds button{padding:1px 8px;font-size:11.5px;font-family:monospace}
+ .speeds button.on{background:#1A2530;color:#fff;border-color:#1A2530}
  .tools{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
  .tool{border:1px solid #DCE3E8}
  .tool.active{outline:2.5px solid #1A2530;outline-offset:1px;font-weight:700}
@@ -439,12 +442,32 @@ function card(c){
   div.innerHTML = `
     <div class="hdr"><b>#${c.n}</b><span>${c.airport} · ${c.feed}</span><span>${c.id}</span><span>[${c.accept_state}]</span></div>
     <audio controls preload="none" src="${c.clip}"></audio>
+    <div class="speeds">speed:
+      <button data-sp="0.5">0.5×</button><button data-sp="0.75">0.75×</button><button data-sp="1" class="on">1×</button><button data-sp="1.5">1.5×</button>
+    </div>
     <div class="ta" contenteditable="true" spellcheck="false"></div>
     <div class="row">
       <button class="good" data-act="good">Good</button>
       <button class="fixedbtn" data-act="corrected">Corrected</button>
       <button class="bad" data-act="bad">Unusable</button>
     </div>`;
+  // slow-motion playback: per-card speed chips; the chosen speed becomes the
+  // default for every card played afterwards (pitch is preserved by the browser)
+  const audio = div.querySelector("audio");
+  let mySpeed = null;
+  function applySpeed(sp){
+    audio.preservesPitch = true;
+    audio.playbackRate = sp;
+    div.querySelectorAll(".speeds button").forEach(b =>
+      b.classList.toggle("on", +b.dataset.sp === sp));
+  }
+  div.querySelectorAll(".speeds button").forEach(b => b.addEventListener("click", () => {
+    mySpeed = +b.dataset.sp;
+    window.lastSpeed = mySpeed;
+    applySpeed(mySpeed);
+  }));
+  audio.addEventListener("play", () => applySpeed(mySpeed ?? window.lastSpeed ?? 1));
+
   const ta = div.querySelector(".ta");
   ta.innerHTML = runHTML(s);
   ta.addEventListener("input", () => {
