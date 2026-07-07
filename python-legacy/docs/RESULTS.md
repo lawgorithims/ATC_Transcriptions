@@ -1,14 +1,16 @@
+<!-- scoreboard:begin -->
 # US Gold Scoreboard
 
 Gold set: `C:\Users\bsusl\atc_training_data\verification_sample\gold_testset.jsonl` (102 human-verified clips). canonWER is the operative metric (format-canonicalized both sides); CSA/falseCS measured on rows with an extractable reference callsign.
-
-Gold v1 (in progress, 2026-07-07): `atc_training_data\gold_testset_v1.jsonl` = v0's 102 rows + 25 newly verified from batch 1 (150 candidates built 2026-07-06, `atc_training_data\gold_v1_batch1\`; review 32/150, latest checkpoint `corrections_v3.json`). v1 rows add per-speaker turns + role/callsign tags + `<unk>` unclear spans. Workflow + local-only data policy: `dataset/README.md` → "Gold evaluation set". Gold data is never committed (LiveATC-derived).
 
 | model | n | normWER | canonWER | canonCER | CSA | falseCS | CS rows |
 |---|---|---|---|---|---|---|---|
 | small_v1 | 102 | 32.2% | **22.8%** | 18.8% | 74.5% | 13.7% | 51 |
 | turbo_ft | 102 | 28.9% | **20.2%** | 16.8% | 80.4% | 7.8% | 51 |
 | lv3_stock | 102 | 29.7% | **19.6%** | 16.0% | 82.4% | 11.8% | 51 |
+<!-- scoreboard:end -->
+
+Gold v1 (in progress, 2026-07-07): `atc_training_data\gold_testset_v1.jsonl` = v0's 102 rows + 25 newly verified from batch 1 (150 candidates built 2026-07-06, `atc_training_data\gold_v1_batch1\`; review 32/150, latest checkpoint `corrections_v3.json`). v1 rows add per-speaker turns + role/callsign tags + `<unk>` unclear spans. Workflow + local-only data policy: `dataset/README.md` → "Gold evaluation set". Gold data is never committed (LiveATC-derived).
 
 ## June-30 US fine-tune record (norm WER, from rescued H100 logs)
 
@@ -272,3 +274,5 @@ Verification after fixes: 20/20 + 7/7 + 9/9 + 11/11 Python, 205 iOS tests
 
 Reproduce: `python -m dataset.scoreboard --gold <gold_testset.jsonl> --hyps
 name=<gold_hyps.jsonl> ... --out docs/RESULTS.md` (from `python-legacy/`).
+`--out` replaces only the `<!-- scoreboard:begin/end -->` region at the top of
+this file; every hand-written section below it survives a re-run.

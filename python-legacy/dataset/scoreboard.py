@@ -29,6 +29,12 @@ Usage (from python-legacy/):
     # live: transcribe the gold clips with a local/HF model checkpoint
     python -m dataset.scoreboard --gold <gold_testset.jsonl> --clips-root <dir> \
         --model models/whisper-atc-turbo --out docs/RESULTS.md
+
+``--out`` is hand-written-content safe: when the target already exists it must
+contain a ``<!-- scoreboard:begin -->`` / ``<!-- scoreboard:end -->`` pair and
+only that region is replaced (docs/RESULTS.md carries analysis sections below
+the table that must survive a re-run). A fresh target gets the whole report,
+wrapped in the markers. An existing file without markers is refused.
 """
 
 from __future__ import annotations
@@ -215,6 +221,35 @@ def render_markdown(scores: List[ModelScore], gold_path: Path, extra_note: str =
     return "\n".join(lines)
 
 
+_MARK_BEGIN = "<!-- scoreboard:begin -->"
+_MARK_END = "<!-- scoreboard:end -->"
+
+
+def write_report(out: Path, md: str) -> None:
+    """Write the generated report without destroying hand-written analysis.
+
+    Fresh target: write the whole report wrapped in the marker pair. Existing
+    target: replace only the text between the markers (everything outside them
+    is preserved verbatim). Existing target without markers: refuse — it may be
+    a hand-written document this run would silently destroy.
+    """
+    md = md.rstrip("\n") + "\n"
+    block = f"{_MARK_BEGIN}\n{md}{_MARK_END}"
+    if not out.exists():
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(block + "\n", encoding="utf-8")
+        return
+    text = out.read_text(encoding="utf-8")
+    b, e = text.find(_MARK_BEGIN), text.find(_MARK_END)
+    if b < 0 or e < b:
+        raise SystemExit(
+            f"refusing to overwrite {out}: it exists but has no "
+            f"{_MARK_BEGIN} / {_MARK_END} region. Add the marker pair around "
+            "the scoreboard section, or point --out at a fresh file."
+        )
+    out.write_text(text[:b] + block + text[e + len(_MARK_END):], encoding="utf-8")
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     import argparse
 
@@ -227,7 +262,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--clips-root", type=Path, default=None,
                     help="root for resolving gold 'clip' paths (required with --model)")
     ap.add_argument("--device", default="auto")
-    ap.add_argument("--out", type=Path, default=None, help="write markdown table here")
+    ap.add_argument("--out", type=Path, default=None,
+                    help="write the markdown report here (replaces only the "
+                         "scoreboard:begin/end marker region of an existing file)")
     ap.add_argument("--json-out", type=Path, default=None, help="write raw scores here")
     args = ap.parse_args(argv)
 
@@ -247,8 +284,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     md = render_markdown(scores, args.gold)
     print(md)
     if args.out:
-        args.out.parent.mkdir(parents=True, exist_ok=True)
-        args.out.write_text(md, encoding="utf-8")
+        write_report(args.out, md)
     if args.json_out:
         args.json_out.parent.mkdir(parents=True, exist_ok=True)
         args.json_out.write_text(
