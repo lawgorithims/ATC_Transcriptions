@@ -163,6 +163,10 @@ targets:
       # Core/LocalLLMCorrector references ModelStore (downloaded-model path lookup), which lives
       # in this Foundation-only file; the rest of Download/ (SwiftUI/WhisperKit UI) is app-only.
       - path: ATCTranscribe/Download/ModelCatalog.swift
+      # Core/AirportContextStore + Models/RouteResolver reference the nav data layer; these
+      # Aircraft/ files are Foundation-only (the rest of Aircraft/ is app-only networking/UI).
+      - path: ATCTranscribe/Aircraft/NavDatabase.swift
+      - path: ATCTranscribe/Aircraft/AirportCoordinates.swift
       - path: ATCKitProbe
     dependencies:
       - package: argmax-oss-swift
