@@ -97,3 +97,15 @@ python-legacy/models/whisper-atc-turbo/*.safetensors
 python-legacy/models/whisper-atc-turbo/checkpoint-*/
 python-legacy/models/whisper-atc-turbo/checkpoint-*/**
 python-legacy/models/whisper-atc-turbo/training_args.bin
+
+# Gold-set data: review exports, candidate batches, and ingested gold sets all
+# contain LiveATC-derived transcripts — LOCAL ONLY, same licensing rule as audio
+# (python-legacy/dataset/README.md). The tooling (gold_builder.py, scoreboard.py)
+# is tracked; the data's canonical home is the local training-data store
+# (atc_training_data/). Export/candidate patterns are root-anchored (browser
+# exports land at the repo root; tests legitimately use these names in tmp dirs).
+# gold_testset*.jsonl stays unanchored: ingest is run from python-legacy/, so its
+# output can land anywhere in the tree and must never be committed.
+/corrections_v*.json
+/candidates.json
+gold_testset*.jsonl

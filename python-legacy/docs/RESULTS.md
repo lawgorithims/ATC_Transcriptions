@@ -2,6 +2,8 @@
 
 Gold set: `C:\Users\bsusl\atc_training_data\verification_sample\gold_testset.jsonl` (102 human-verified clips). canonWER is the operative metric (format-canonicalized both sides); CSA/falseCS measured on rows with an extractable reference callsign.
 
+Gold v1 (in progress, 2026-07-07): `atc_training_data\gold_testset_v1.jsonl` = v0's 102 rows + 25 newly verified from batch 1 (150 candidates built 2026-07-06, `atc_training_data\gold_v1_batch1\`; review 32/150, latest checkpoint `corrections_v3.json`). v1 rows add per-speaker turns + role/callsign tags + `<unk>` unclear spans. Workflow + local-only data policy: `dataset/README.md` → "Gold evaluation set". Gold data is never committed (LiveATC-derived).
+
 | model | n | normWER | canonWER | canonCER | CSA | falseCS | CS rows |
 |---|---|---|---|---|---|---|---|
 | small_v1 | 102 | 32.2% | **22.8%** | 18.8% | 74.5% | 13.7% | 51 |

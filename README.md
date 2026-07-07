@@ -59,3 +59,17 @@ Two fine-tuned checkpoints (weights hosted on Hugging Face, not in git): a defau
 and a more accurate **large-v3-turbo**. See [`python-legacy/README.md`](python-legacy/README.md)
 for the Python side and [`ios/README.md`](ios/README.md) for the CoreML-converted variants the
 app loads.
+
+## Evaluation
+
+Model and pipeline quality is tracked against a **human-verified gold set** of real US ATC
+transmissions (canonWER + callsign-safety metrics); the standing numbers live in
+[`python-legacy/docs/RESULTS.md`](python-legacy/docs/RESULTS.md). The repo tracks the
+tooling — batch builder + browser review page + ingest
+([`dataset/gold_builder.py`](python-legacy/dataset/gold_builder.py)) and the scorers
+([`dataset/scoreboard.py`](python-legacy/dataset/scoreboard.py) and friends) — while the
+gold **data** (review exports, candidate batches, ingested test sets) is LiveATC-derived
+and therefore **local-only, never committed**, per the licensing note in
+[`python-legacy/dataset/README.md`](python-legacy/dataset/README.md). That README's
+"Gold evaluation set" section documents the build → human-review → ingest workflow and
+the current gold v0/v1 status.

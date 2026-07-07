@@ -41,6 +41,61 @@ archive_downloader  ->  bulk_capture  ->  scored_transcribe + pseudo_label  ->  
 | `tts_synth.py` | OPTIONAL: synthetic US phraseology + radio degradation (Phase 4). |
 | `../atc_diarize.py` | Role attribution (controller vs pilot) + callsign, content-based. |
 
+## Gold evaluation set (human-verified)
+
+The consensus eval set above is model-biased (see Notes). The **gold set** is the
+unbiased standing eval: real collector segments, hand-verified by a human against the
+audio. Every pipeline stage is gated on not regressing gold canonWER
+(see [`../docs/RESULTS.md`](../docs/RESULTS.md) and [`../docs/PIPELINE.md`](../docs/PIPELINE.md)).
+
+| Tool | Role |
+|--------|------|
+| `gold_builder.py` | `build`: sample a review batch from scored segments regardless of accept/reject verdict (only no-speech and out-of-duration segments are pre-filtered), so gold is not limited to what the models already agree on; renders `review.html`. `ingest`: turn exported corrections into gold rows. Source blocks are appended to `excluded_blocks_gold.txt` so gold can never leak into training. |
+| `scoreboard.py` | The standing scoreboard: canonWER / CSA / falseCS per model vs gold. |
+| `error_analysis.py` | Error attribution: where models fail on gold, what a post-ASR layer could fix. |
+| `slot_metrics.py`, `snap_score.py`, `slot_snap_score.py` | Safety-slot accuracy + snap-stage (CallsignSnap/SlotSnap) scoring on gold. |
+| `llm_eval.py` | Measures the LLM correction tier's effect on gold. |
+
+Workflow — build on the collector box, review in any browser, ingest locally:
+
+```bash
+python -m dataset.gold_builder build --storage-root ~/atc-data --out ~/gold_v1_batch1 --n 150
+# open <out>/review.html: verify each clip (fix text, paint roles/unclear spans), Export
+python -m dataset.gold_builder ingest --corrections corrections_v3.json \
+    --candidates <out>/candidates.json --out gold_testset_v1.jsonl \
+    --merge verification_sample/gold_testset.jsonl   # carry the previous gold set (v0) forward
+```
+
+The review page autosaves to browser localStorage; **Export** downloads a
+corrections JSON checkpoint (the page always names it `corrections_v1.json` —
+rename to `corrections_vN.json` per checkpoint yourself). Each export is a full
+snapshot of the review session, so a later export **supersedes** earlier ones —
+always ingest from the latest, never merge exports. Only `good`/`corrected`
+rows become gold (`bad`/`unreviewed` are skipped), so a mid-review checkpoint
+ingests cleanly.
+
+### ⚠️ Gold data is local-only (same licensing rule as the audio)
+
+Corrections exports, `candidates.json`, and ingested `gold_testset_*.jsonl` all
+contain LiveATC-derived transcripts — per the licensing note at the top they are
+**never committed** (the repo `.gitignore` blocks them). The tooling is tracked;
+the data's canonical home is the local training-data store (`atc_training_data/`).
+
+**Status (2026-07-07):**
+
+- **Gold v0** — 102 verified clips
+  (`atc_training_data/verification_sample/gold_testset.jsonl`); the set behind the
+  standing scoreboard in `docs/RESULTS.md`.
+- **Gold v1 batch 1** — 150 candidates built 2026-07-06 into
+  `atc_training_data/gold_v1_batch1/` (clips + `candidates.json` + `review.html`).
+  Review in progress: 32/150 verified (8 good, 17 corrected, 7 unusable — status `bad`); latest
+  checkpoint `corrections_v3.json`. Ingested as
+  `atc_training_data/gold_testset_v1.jsonl` = v0's 102 rows + 25 new verified
+  (127 total). Unlike v0, v1 rows carry per-speaker `turns`, role/callsign tags,
+  and `[unclear]`→`<unk>` spans, which unlock CSA on verified tags and the
+  Phase-5 role metrics. Target (per `docs/RESULTS.md`): 600–800 tagged
+  transmissions.
+
 ## Start collecting ASAP (one command)
 
 On the GPU box, inside `tmux`:
