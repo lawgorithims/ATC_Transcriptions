@@ -22,22 +22,31 @@ struct WorldFrame: Sendable {
     /// The transcript to correct.
     var transcript: String
 
-    /// Render the dynamic block. Slot order is the API contract — never reorder.
+    /// Render the dynamic block. Slot order is the API contract — never reorder. All interpolated
+    /// content (transcript, knowledge, history, readback — any of which is attacker-influenceable
+    /// via injected radio or semi-controlled fields) is stripped of ChatML role delimiters so it
+    /// can't forge a turn boundary and hijack the system role (red-hat 2026-07-07).
     func rendered() -> String {
         var lines = ["WORLD:"]
-        if !knowledge.isEmpty { lines.append(knowledge) }
+        if !knowledge.isEmpty { lines.append(Self.sanitize(knowledge)) }
         if let g = grounding {
             let block = g.promptBlock
-            if !block.isEmpty { lines.append(block) }
+            if !block.isEmpty { lines.append(Self.sanitize(block)) }
         }
         if let rb = expectedReadback, !rb.isEmpty {
-            lines.append("Expected readback — prior transmission for this aircraft: \"\(rb)\"")
+            lines.append("Expected readback — prior transmission for this aircraft: \"\(Self.sanitize(rb))\"")
         }
         if !history.isEmpty {
-            lines.append("Recent transmissions: " + history.joined(separator: " "))
+            lines.append("Recent transmissions: " + Self.sanitize(history.joined(separator: " ")))
         }
-        lines.append("TRANSCRIPT: " + transcript)
+        lines.append("TRANSCRIPT: " + Self.sanitize(transcript))
         return lines.joined(separator: "\n")
+    }
+
+    /// Neutralize ChatML control tokens in untrusted content (`<|im_start|>` etc.).
+    static func sanitize(_ s: String) -> String {
+        s.replacingOccurrences(of: "<|", with: "<\u{200B}|")
+         .replacingOccurrences(of: "|>", with: "|\u{200B}>")
     }
 }
 

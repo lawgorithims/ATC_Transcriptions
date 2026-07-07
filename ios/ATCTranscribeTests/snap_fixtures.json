@@ -10,19 +10,19 @@
   },
   {
    "in": "delta 233 heavy cleared to land",
-   "out": "delta 2 3 2 heavy cleared to land",
-   "verdict": "snapped",
+   "out": "delta 233 heavy cleared to land",
+   "verdict": "unverified",
    "original": "delta 2 3 3",
-   "snapped": "delta 2 3 2",
-   "applied": true
+   "snapped": null,
+   "applied": false
   },
   {
    "in": "delta two thirty three cleared to land",
-   "out": "delta 2 3 2 cleared to land",
-   "verdict": "snapped",
+   "out": "delta two thirty three cleared to land",
+   "verdict": "unverified",
    "original": "delta 2 3 3",
-   "snapped": "delta 2 3 2",
-   "applied": true
+   "snapped": null,
+   "applied": false
   },
   {
    "in": "dela 232 contact departure",

@@ -120,6 +120,13 @@ def snap_transcript(
         return text, SnapEdit(
             verdict="verified_exact", original=heard, snapped=match)
 
+    # SECURITY (red-hat 2026-07-07): candidates come from UNAUTHENTICATED ADS-B, so the
+    # digit-changing rewrite is disabled — pilot-visible callsign DIGITS are never invented
+    # from a single spoofable source. A snap fixes only the misheard airline word/phonetics
+    # (digits identical); differing digits -> display as heard, no attribution.
+    if _split_cs(heard)[1] != _split_cs(match)[1]:
+        return text, SnapEdit(verdict="unverified", original=heard)
+
     tokens = norm.split()
     stoks = span.split()
     for i in range(len(tokens) - len(stoks) + 1):
