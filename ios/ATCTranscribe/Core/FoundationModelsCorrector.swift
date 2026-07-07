@@ -96,9 +96,19 @@ func makeFoundationModelsCorrector(knowledge: ATCKnowledgeBase, feedKey: String?
     return nil
 }
 
+/// True iff Apple Intelligence is actually usable right now (framework present, OS new enough,
+/// model downloaded and enabled). Used to pick the smart default AI-fixer backend.
+func foundationModelsAvailable() -> Bool {
+    if #available(iOS 26.0, macOS 26.0, *) {
+        if case .available = SystemLanguageModel.default.availability { return true }
+    }
+    return false
+}
+
 #else
 
 /// Framework absent in this SDK — the Foundation Models backend is unavailable.
 func makeFoundationModelsCorrector(knowledge: ATCKnowledgeBase, feedKey: String?) -> LLMCorrector? { nil }
+func foundationModelsAvailable() -> Bool { false }
 
 #endif
