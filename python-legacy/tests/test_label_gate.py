@@ -61,6 +61,13 @@ def test_no_context_runs_ontology_only():
     assert not bad.ok, "static ontology applies even without an airport"
 
 
+def test_value_before_heading_word_not_misread():
+    # readback lists the value BEFORE the word: "330 heading, 8000" must not be
+    # parsed as heading 800 (live false positive)
+    r = assess_label("turn left heading 320 maintain 8000 330 heading 8000 frontier 4652", None)
+    assert r.ok, r.reasons
+
+
 def test_center_style_no_slots_passes():
     r = assess_label("descend and maintain flight level 3 5 0", None)
     assert r.ok and not r.reasons, r
