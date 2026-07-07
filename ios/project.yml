@@ -167,6 +167,7 @@ targets:
       # Aircraft/ files are Foundation-only (the rest of Aircraft/ is app-only networking/UI).
       - path: ATCTranscribe/Aircraft/NavDatabase.swift
       - path: ATCTranscribe/Aircraft/AirportCoordinates.swift
+      - path: ATCTranscribe/Aircraft/Aircraft.swift
       - path: ATCKitProbe
     dependencies:
       - package: argmax-oss-swift
