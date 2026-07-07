@@ -84,10 +84,24 @@ def test_inverted_readback_heading_not_misparsed():
 
 def test_callsign_fix_snaps_natural_text():
     from dataset.label_gate import fix_callsign
+    # digit change requires partner corroboration (two independent sources)
     r = fix_callsign("delta 233 heavy cleared to land runway 17 right",
-                     ["delta 232", "united 454"])
+                     ["delta 232", "united 454"],
+                     corroboration="Delta 232 heavy cleared to land 17R")
     assert r.fixed and "delta 232 heavy" in r.label, r
     assert "2 3 2" not in r.label, "labels must stay natural text: " + r.label
+
+
+def test_callsign_digit_fix_requires_corroboration():
+    from dataset.label_gate import fix_callsign
+    # same snap WITHOUT partner corroboration -> abstain (spoofable ADS-B
+    # alone must never change training-label digits; red-hat 2026-07-07)
+    r = fix_callsign("delta 233 heavy cleared to land runway 17 right",
+                     ["delta 232", "united 454"])
+    assert not r.fixed and "delta 233" in r.label, r
+    r2 = fix_callsign("delta 233 heavy cleared to land",
+                      ["delta 232"], corroboration="delta 231 maybe")
+    assert not r2.fixed, "wrong-digit corroboration must not count"
 
 
 def test_callsign_fix_abstains_out_of_snapshot():
