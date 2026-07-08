@@ -54,6 +54,22 @@ def test_impossible_frequency_rejects():
     assert not r.ok, r
 
 
+def test_handoff_shorthand_frequency_not_rejected():
+    # "124.67" is 124.675 spoken with the trailing 5 dropped — a real channel a
+    # controller hands off to, not in KTST's tiny table. Must not be vetoed.
+    for freq in ("1 2 4 point 6 7", "1 1 9 point 9 7", "1 2 5 point 3 2"):
+        r = assess_label(f"contact center {freq}", CTX)
+        assert r.ok, (freq, r.reasons)
+
+
+def test_mangled_frequency_still_rejected():
+    # 118.41 is off-raster in both the literal and shorthand reading -> impossible.
+    r = assess_label("contact tower 1 1 8 point 4 1", CTX)
+    assert not r.ok, r
+    assert any(x.startswith("invalid_frequency") or x.startswith("impossible_frequency")
+               for x in r.reasons), r.reasons
+
+
 def test_no_context_runs_ontology_only():
     good = assess_label("cleared to land runway 27 left", None)
     assert good.ok, "runway grounding needs context; without it the label passes"
