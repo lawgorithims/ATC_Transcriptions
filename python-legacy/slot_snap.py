@@ -119,8 +119,18 @@ def _freq_digits(mhz: float) -> str:
 
 
 def _on_raster(mhz: float) -> bool:
-    k = round((mhz - 118.0) / 0.025)
-    return abs(118.0 + k * 0.025 - mhz) < 1e-6
+    # A frequency is a real channel if it sits on the 25 kHz grid, OR if it is the
+    # universal 2-decimal shorthand for an .xx5 channel — controllers drop the
+    # trailing 5 ("124.67" = 124.675, "119.97" = 119.975, "125.32" = 125.325).
+    # Without the shorthand arm, every handoff frequency absent from the LOCAL
+    # airport's published table is falsely vetoed as impossible, silently
+    # discarding clean controller-handoff labels (live FP #4, 2026-07-08, on
+    # center/approach feeds). Genuinely mangled values (118.41) still fail both.
+    for cand in (mhz, mhz + 0.005):
+        k = round((cand - 118.0) / 0.025)
+        if abs(118.0 + k * 0.025 - cand) < 1e-6:
+            return True
+    return False
 
 
 def _snap_frequency(heard_mhz: float, ctx: AirportContext) -> Tuple[str, Optional[float]]:
