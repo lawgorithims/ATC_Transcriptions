@@ -363,11 +363,15 @@ def cmd_audit(args) -> int:
                 pass
 
     rows = _read_jsonl(manifest)
-    # oversample the uncertain band the plan calls out (cer 0.02-0.10 is easy;
-    # the risk mass sits just under the 0.10 accept gate)
-    rows.sort(key=lambda x: -(x.get("cer") or 0))
+    if args.order == "random":
+        # unbiased contamination estimate over the whole accept lane
+        random.seed(20260707)
+        random.shuffle(rows)
+    else:
+        # oversample where the risk mass sits: just under the CER accept gate
+        rows.sort(key=lambda x: -(x.get("cer") or 0))
     rows = [x for x in rows if x["id"] not in done][: args.limit or 100]
-    print(f"auditing {len(rows)} accepted labels (highest-CER first)")
+    print(f"auditing {len(rows)} accepted labels (order={args.order})")
 
     suspects = 0
     with out.open("a", encoding="utf-8") as fh:
@@ -475,6 +479,7 @@ def main(argv=None) -> int:
             p.add_argument("--limit", type=int, default=0)
         if name == "audit":
             p.add_argument("--limit", type=int, default=100)
+            p.add_argument("--order", choices=("cer", "random"), default="cer")
         if name == "spotcheck":
             p.add_argument("--rescued", type=int, default=30)
             p.add_argument("--accepted", type=int, default=20)
