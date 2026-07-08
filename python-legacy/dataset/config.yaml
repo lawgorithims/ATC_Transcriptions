@@ -154,3 +154,17 @@ eval:
     - airport_config: airport_configs/kdfw.json
       feed_keys:
         - lone_star_approach_17l_final   # NOT a training feed -> disjoint
+
+# --- OpenAI rescue tier + accepted-label auditor (dataset/rescue.py) ---
+# Voice C = gpt-4o-mini-transcribe (Phase 0: 28.2% canonWER on gold, PASS;
+# flagship gpt-4o-transcribe KILLED at 54.0% — truncates hard radio).
+# C is a JUDGE, never a label writer. Key: ~/.openai_key (untracked).
+rescue:
+  enabled: false            # flips only after pilot gates pass (plan addendum)
+  model: gpt-4o-mini-transcribe
+  max_cer: 0.15             # rescue iff min(CER(C,A), CER(C,B)) <= this
+  floor_avg_logprob: -1.2   # pre-screen floor (null disables)
+  max_no_speech_prob: 0.30  # pre-screen (this gate never ran on low_consensus)
+  daily_cost_cap_usd: 2.0
+  audit_flag_cer: 0.30      # auditor: consensus_cer(C, label) above -> suspect
+  max_mix_fraction: 0.20    # rescued share cap at training-mix combine time
