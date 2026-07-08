@@ -57,10 +57,19 @@ C re-decodes ACCEPTED labels; `consensus_cer(C, label) > 0.30` flags a suspect
   junk labels ("love you man"), and one safety-critical semantic flip: an
   accepted label reading "cleared to take off" where C hears "line up and wait".
 
-**Next**: full-lane audit (all accepted rows) is running; at the T1 retrain
-(+25h accepted) run the decisive A/B — accepted-only vs accepted-minus-flagged
-— on gold canonWER + CSA. That directly tests the June "label noise is the
-binding constraint" hypothesis for ~$0.50 of API spend per audit cycle.
+**Full-lane result (complete, 2026-07-08)**: all **1,348** accepted labels
+audited — **522 flagged (38.7%)** at the 0.30 threshold; **163 severe (12.1%)**
+at cer(C,label) > 0.6, which are near-certain label errors. Median
+cer(C,label) across the lane is 0.24. Flag list lives at
+`m4:~/atc-data/us_pseudo_rescued/audit_accepted.jsonl` (mirrored in the local
+evidence bundle).
+
+**Next**: at the T1 retrain (+25h accepted) run the tiered A/B on gold
+canonWER + CSA: (a) exclude severe flags only (−12% data), (b) exclude all
+flags (−39% data), vs accepted-only baseline. That directly tests the June
+"label noise is the binding constraint" hypothesis for ~$0.50 of API spend
+per audit cycle; (a) is the expected sweet spot since (b) trades a lot of
+data for purity.
 
 ## Phase 2 — blinded human spot-check (pending)
 
