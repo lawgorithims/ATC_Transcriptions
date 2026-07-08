@@ -421,23 +421,36 @@ def cmd_spotcheck(args) -> int:
     out_dir = storage / "rescue_spotcheck"
     (out_dir / "clips").mkdir(parents=True, exist_ok=True)
 
-    def sample(manifest: Path, n: int, tier: str):
-        rows = _read_jsonl(manifest)
+    def sample(rows, n: int, tier: str):
         random.shuffle(rows)
         out = []
-        for row in rows[:n]:
-            src = Path(row["audio_path"])
-            if not src.exists():
+        for row in rows:
+            if len(out) >= n:
+                break
+            if "audio_path" in row:                      # manifest row
+                src, label = Path(row["audio_path"]), Path(
+                    row["transcript_path"]).read_text(encoding="utf-8").strip()
+            else:                                        # dry-run verdict row
+                src = _find_clip(storage, row["id"], row["id"].rsplit("__", 1)[0])
+                label = row.get("label") or ""
+            if src is None or not src.exists():
                 continue
             dst = out_dir / "clips" / f"{row['id']}.wav"
             shutil.copyfile(src, dst)
             out.append({"id": row["id"], "tier": tier,
-                        "clip": f"clips/{row['id']}.wav",
-                        "label": Path(row["transcript_path"]).read_text(encoding="utf-8").strip()})
+                        "clip": f"clips/{row['id']}.wav", "label": label})
         return out
 
-    items = (sample(storage / "us_pseudo_rescued" / "manifest.jsonl", args.rescued, "rescued")
-             + sample(storage / "us_pseudo" / "manifest.jsonl", args.accepted, "accepted"))
+    # rescued tier: real-run manifest if present, else banked dry-run verdicts
+    resc_rows = _read_jsonl(storage / "us_pseudo_rescued" / "manifest.jsonl") \
+        if (storage / "us_pseudo_rescued" / "manifest.jsonl").exists() else []
+    if not resc_rows:
+        resc_rows = [x for x in _read_jsonl(storage / "us_pseudo_rescued" / "dryrun_verdicts.jsonl")
+                     if x.get("would_rescue")] \
+            if (storage / "us_pseudo_rescued" / "dryrun_verdicts.jsonl").exists() else []
+    items = (sample(resc_rows, args.rescued, "rescued")
+             + sample(_read_jsonl(storage / "us_pseudo" / "manifest.jsonl"),
+                      args.accepted, "accepted"))
     random.shuffle(items)
     blind = [{k: v for k, v in it.items() if k != "tier"} for it in items]
     (out_dir / "blind.jsonl").write_text(
