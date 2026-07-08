@@ -187,6 +187,17 @@ def _spent_today(out_root: Path) -> float:
                if row.get("rescue_date") == today)
 
 
+def _read_jsonl(path: Path) -> List[dict]:
+    """Tolerant reader: the collector may be appending (partial trailing line)."""
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return rows
+
+
 def _band(cer) -> str:
     if cer is None:
         return "?"
@@ -217,7 +228,7 @@ def cmd_run(args) -> int:
     attempted = {row["id"] for row in _ledger_rows(out_root) if "id" in row}
     dryrun_path = out_root / "dryrun_verdicts.jsonl"
 
-    rows = [json.loads(l) for l in src_scores.read_text(encoding="utf-8").splitlines()]
+    rows = _read_jsonl(src_scores)
     cands = [x for x in rows if x.get("reason") == "low_consensus"
              and x["id"] not in attempted]
     if args.limit:
@@ -351,7 +362,7 @@ def cmd_audit(args) -> int:
             except Exception:
                 pass
 
-    rows = [json.loads(l) for l in manifest.read_text(encoding="utf-8").splitlines()]
+    rows = _read_jsonl(manifest)
     # oversample the uncertain band the plan calls out (cer 0.02-0.10 is easy;
     # the risk mass sits just under the 0.10 accept gate)
     rows.sort(key=lambda x: -(x.get("cer") or 0))
@@ -411,7 +422,7 @@ def cmd_spotcheck(args) -> int:
     (out_dir / "clips").mkdir(parents=True, exist_ok=True)
 
     def sample(manifest: Path, n: int, tier: str):
-        rows = [json.loads(l) for l in manifest.read_text(encoding="utf-8").splitlines()]
+        rows = _read_jsonl(manifest)
         random.shuffle(rows)
         out = []
         for row in rows[:n]:
