@@ -5,6 +5,7 @@ import SwiftUI
 /// auto-scrolled down — or newest at top); a jump-to-newest button snaps to the latest line.
 struct TranscriptCard: View {
     @EnvironmentObject var model: AppModel
+    @Environment(\.floatingSurface) private var floating   // true when hosted in a FloatingWidgetContainer
     /// True while the user is pinned to the newest end (so we follow new transmissions); false once
     /// they scroll into history (auto-scroll pauses, the jump-to-newest button appears).
     @State private var atNewest = true
@@ -124,9 +125,10 @@ struct TranscriptCard: View {
             }
         }
         .frame(maxHeight: .infinity)
-        .background(p.surface)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(p.border, lineWidth: 1))
+        // When floating over the map, the container owns the (opacity-adjustable) background.
+        .background(floating ? Color.clear : p.surface)
+        .clipShape(RoundedRectangle(cornerRadius: floating ? 0 : 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(p.border, lineWidth: floating ? 0 : 1))
     }
 
     /// A 1pt scroll anchor at one end of the list. The marker at the *newest* end (top when

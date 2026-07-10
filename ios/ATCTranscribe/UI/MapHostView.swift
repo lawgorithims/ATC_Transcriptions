@@ -1,0 +1,62 @@
+import SwiftUI
+import MapKit
+
+/// The always-present home-screen map background. Lifts the map-owning half of `RouteMapSheet`: it draws
+/// the filed route + FAA/Apple base layer + airspace/nearby/traffic via `ChartMapView`, resolves the
+/// route with `RouteResolver`, and routes taps to `model.mapProbe` (which drives the object side panel /
+/// sheet — a sibling in `ConsoleView`'s ZStack). Layer + overlay choices come from persisted `AppModel`
+/// state so the top-bar layers menu and this map stay in sync.
+///
+/// Battery: the live map is shown only when enabled + foregrounded + not thermally stressed; otherwise a
+/// plain background stands in so MapKit stops rendering and never starves on-device transcription.
+struct MapHostView: View {
+    @EnvironmentObject var model: AppModel
+    @Environment(\.scenePhase) private var scenePhase
+
+    @StateObject private var store = ChartStore(library: ChartLibrary.shared)
+    @State private var route: [ResolvedLeg] = []
+
+    /// Show the live map only when it's worth the power — paused only when truly backgrounded or the
+    /// device is hot (a transient `.inactive`, e.g. a permission alert, must NOT blank the map).
+    private var live: Bool { model.mapBackgroundEnabled && scenePhase != .background && !model.thermalSerious }
+
+    var body: some View {
+        Group {
+            if live {
+                ChartMapView(layer: model.chartLayer, readers: store.readers, route: route,
+                             showAirspace: model.showAirspace, showNearby: model.showNearby,
+                             initialCenter: model.stratuxGPS?.coordinate,
+                             onVisibleRegion: { rect in Task { await store.ensureVisible(rect, layer: model.chartLayer) } },
+                             onTapObjects: { objs in
+                                 guard !objs.isEmpty else { return }
+                                 Haptics.impact(.light)
+                                 model.mapProbe = MapProbeResult(id: UUID().uuidString, objects: objs)
+                             },
+                             focus: model.mapFocus,
+                             model: model)
+            } else {
+                model.palette.bg
+                    .overlay {
+                        VStack(spacing: 6) {
+                            Image(systemName: model.mapBackgroundEnabled ? "thermometer.high" : "map")
+                                .font(.title2).foregroundStyle(model.palette.textDim)
+                            Text(model.mapBackgroundEnabled ? "Map paused to cool down" : "Map background off")
+                                .font(.caption).foregroundStyle(model.palette.textDim)
+                        }
+                    }
+            }
+        }
+        .ignoresSafeArea()
+        .task { await buildRoute() }
+        .onChange(of: model.flightPlan) { _, _ in Task { await buildRoute() } }      // edits redraw the route
+        .onChange(of: model.chartLayer) { _, new in
+            Task { await store.setLayer(new, routeRects: ChartGeo.routeRects(route)) }
+        }
+    }
+
+    private func buildRoute() async {
+        await Task.detached(priority: .userInitiated) { _ = NavDatabase.count; _ = NavDatabase.airspaceCount }.value
+        route = RouteResolver.resolve(model.flightPlan?.fullRoute ?? []).points
+        await store.setLayer(model.chartLayer, routeRects: ChartGeo.routeRects(route))
+    }
+}

@@ -216,6 +216,63 @@ final class AppModel: ObservableObject {
         didSet { UserDefaults.standard.set(chartLayer.rawValue, forKey: Self.chartLayerKey) }
     }
 
+    // MARK: Home-screen map + floating widgets
+
+    /// The map object the user tapped on the home map (nil = nothing selected). Drives the object side
+    /// panel (regular width) / bottom sheet (compact). Transient.
+    @Published var mapProbe: MapProbeResult?
+    /// Recenter the home map here (a search result). Transient.
+    @Published var mapFocus: Coord?
+    /// Drives the map search sheet (top-bar magnifying glass). Transient.
+    @Published var showMapSearch = false
+
+    /// A search result / programmatic selection: center the map on it and open its info panel.
+    func selectMapObject(_ o: IdentifiedObject) {
+        mapFocus = o.coord
+        mapProbe = MapProbeResult(id: "sel-\(o.id)", objects: [o])
+    }
+
+    /// Map overlay toggles shared by the always-on home map and the top-bar layers menu. Persisted.
+    @Published var showAirspace = (UserDefaults.standard.object(forKey: "atc.map.airspace") as? Bool) ?? true {
+        didSet { UserDefaults.standard.set(showAirspace, forKey: "atc.map.airspace") }
+    }
+    @Published var showNearby = (UserDefaults.standard.object(forKey: "atc.map.nearby") as? Bool) ?? true {
+        didSet { UserDefaults.standard.set(showNearby, forKey: "atc.map.nearby") }
+    }
+    @Published var showWxRadar = UserDefaults.standard.bool(forKey: "atc.map.wxRadar") {   // stub overlay for now
+        didSet { UserDefaults.standard.set(showWxRadar, forKey: "atc.map.wxRadar") }
+    }
+    /// Master switch for the live map background — off shows a plain background instead, saving battery on
+    /// hot/old devices. Persisted (default on).
+    @Published var mapBackgroundEnabled = (UserDefaults.standard.object(forKey: "atc.map.background") as? Bool) ?? true {
+        didSet { UserDefaults.standard.set(mapBackgroundEnabled, forKey: "atc.map.background") }
+    }
+    /// True when the device is thermally stressed — the home map pauses so it never starves transcription.
+    /// Updated from `ProcessInfo.thermalStateDidChangeNotification` (observer installed in `init`).
+    @Published var thermalSerious = ProcessInfo.processInfo.thermalState.rawValue >= ProcessInfo.ThermalState.serious.rawValue
+
+    /// The floating-widget layout (positions, sizes, opacity, visibility, pins). Persisted JSON.
+    @Published var widgetLayout: WidgetLayout = AppModel.initialWidgetLayout() {
+        didSet { widgetLayout.save() }
+    }
+
+    /// First run under the redesign migrates the old `atc.sidebarWidgets` list into a layout; else defaults.
+    nonisolated static func initialWidgetLayout() -> WidgetLayout {
+        if let saved = WidgetLayout.load() { return saved }
+        if let ids = UserDefaults.standard.array(forKey: "atc.sidebarWidgets") as? [String] {
+            return .migrating(fromSidebarIDs: ids)
+        }
+        return .defaults()
+    }
+
+    func updateWidget(_ kind: FloatingWidgetKind, _ mutate: (inout WidgetFrame) -> Void) { widgetLayout.update(kind, mutate) }
+    func bringWidgetToFront(_ kind: FloatingWidgetKind) { widgetLayout.bringToFront(kind) }
+    func showFloatingWidget(_ kind: FloatingWidgetKind) {
+        widgetLayout.update(kind) { $0.visible = true }
+        widgetLayout.bringToFront(kind)
+    }
+    func resetWidgetLayout() { widgetLayout = .defaults() }
+
     // "What's new" popup: shown once after the app updates to a newer build (gated on CFBundleVersion
     // vs the persisted `atc.lastSeenBuild`). `whatsNewEntries` holds the release notes the sheet
     // renders; Settings → About re-shows the full log without touching this gate.
@@ -523,6 +580,11 @@ final class AppModel: ObservableObject {
         // else fires an edge on a plain foreground launch (`scenePhaseActive` starts true, making the
         // first `.active` scene-phase change a no-op). Harmless when everything is off.
         syncTraffic()
+        // Pause the live home map under thermal pressure so it never starves on-device transcription.
+        NotificationCenter.default.addObserver(forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            let hot = ProcessInfo.processInfo.thermalState.rawValue >= ProcessInfo.ThermalState.serious.rawValue
+            Task { @MainActor in self?.thermalSerious = hot }
+        }
         evaluateWhatsNew()     // decide whether to greet this launch with the "What's new" popup
     }
 
