@@ -22,7 +22,7 @@ enum TurnRoleTagger {
     /// Phrases that strongly indicate the CONTROLLER is speaking (instructions/clearances).
     static let controllerCues: [String] = [
         "cleared to land", "cleared for takeoff", "cleared for the option",
-        "cleared", "contact", "fly heading", "turn left", "turn right",
+        "cleared", "contact", "fly heading", "heading", "turn left", "turn right",
         "climb and maintain", "descend and maintain", "climb", "descend", "maintain",
         "radar contact", "traffic", "wind", "expect", "reduce speed", "increase speed",
         "say again", "ident", "squawk", "go around", "line up and wait",
@@ -41,6 +41,9 @@ enum TurnRoleTagger {
     ]
 
     /// Classify one transmission. `knowledge` supplies telephony words for callsign extraction.
+    /// STRUCTURAL first (callsign position), lexical second — mirror of the updated Python
+    /// `classify_turn`. A trailing callsign is a pilot readback (echoed controller cues ignored);
+    /// a leading callsign is the controller iff it also instructs, else a pilot check-in.
     static func classify(_ text: String, knowledge: ATCKnowledgeBase?) -> TurnRoleLabel {
         let norm = CallsignSnap.normalizeForMatch(text)
         guard !norm.isEmpty else { return TurnRoleLabel() }
@@ -48,19 +51,36 @@ enum TurnRoleTagger {
         let tokens = norm.split(separator: " ").map(String.init)
         let telephony = CallsignSnap.telephonyWords(knowledge)
         let callsign = CallsignSnap.extractCallsign(norm, telephony: telephony)
-        let trailing = callsignIsTrailing(tokens: tokens, callsign: callsign)
+        let position = callsignPosition(tokens: tokens, callsign: callsign)
+        let scoreC = countCues(norm, controllerCues)
+        let scoreP = countCues(norm, pilotCues)
 
-        var scoreC = countCues(norm, controllerCues)
-        var scoreP = countCues(norm, pilotCues)
-        if trailing { scoreP += 1 }   // a transmission ENDING in the callsign is a readback tag
+        func conf(_ v: Double) -> Double { (min(1.0, v) * 100).rounded() / 100 }
 
-        if scoreC == 0 && scoreP == 0 { return TurnRoleLabel() }
-        if scoreC == scoreP { return TurnRoleLabel() }   // ambiguous — stay honest
-
-        let role: TurnRole = scoreC > scoreP ? .controller : .pilot
-        let margin = abs(scoreC - scoreP)
-        let confidence = (min(1.0, 0.5 + 0.25 * Double(margin)) * 100).rounded() / 100
-        return TurnRoleLabel(role: role, confidence: confidence)
+        // 1) Trailing callsign = readback / ident -> pilot (echoed controller cues ignored).
+        if position == .back {
+            return TurnRoleLabel(role: .pilot, confidence: scoreP > 0 ? 0.8 : 0.65)
+        }
+        // 2) Leading callsign: controller if it instructs, else a pilot check-in / request.
+        if position == .front {
+            if scoreC > 0 && scoreC >= scoreP {
+                return TurnRoleLabel(role: .controller,
+                                     confidence: conf(0.6 + 0.2 * Double(scoreC - scoreP)))
+            }
+            return TurnRoleLabel(role: .pilot, confidence: 0.65)
+        }
+        // 3) No positional signal -> lexical cue counts decide.
+        if scoreP > scoreC {
+            return TurnRoleLabel(role: .pilot, confidence: conf(0.5 + 0.25 * Double(scoreP - scoreC)))
+        }
+        if scoreC > scoreP {
+            return TurnRoleLabel(role: .controller, confidence: conf(0.5 + 0.25 * Double(scoreC - scoreP)))
+        }
+        // 4) Tie / no cues: a lone callsign leans pilot (ident/ack); otherwise unknown.
+        if callsign != nil {
+            return TurnRoleLabel(role: .pilot, confidence: 0.5)
+        }
+        return TurnRoleLabel()
     }
 
     /// Count DISTINCT matched cue phrases, dropping any that is a substring of a longer matched
@@ -71,13 +91,24 @@ enum TurnRoleTagger {
         return hits.filter { h in !hits.contains { o in o != h && o.contains(h) } }.count
     }
 
-    /// True iff the full callsign span sits at the END of the transmission (a readback tag).
-    /// Only "back" is a signal; "front" is ambiguous (both roles lead with a callsign) — mirror
-    /// of `_callsign_position`.
-    static func callsignIsTrailing(tokens: [String], callsign: String?) -> Bool {
-        guard let callsign else { return false }
+    enum CallsignPosition { case front, back, mid, none }
+
+    /// Weight-class words spoken AFTER a callsign ("delta two thirty two heavy") — they trail the
+    /// callsign span, so allow them when testing for a trailing/readback callsign. Mirror of
+    /// `_WEIGHT_SUFFIX`.
+    static let weightSuffix: Set<String> = ["heavy", "super"]
+
+    /// Where the full callsign span sits — mirror of `_callsign_position`. Checks BACK before
+    /// FRONT (order matters for parity); a trailing weight-class word still counts as BACK.
+    /// "back" = readback tag; "front" = leading callsign; "mid"/"none" = no positional signal.
+    static func callsignPosition(tokens: [String], callsign: String?) -> CallsignPosition {
+        guard let callsign else { return .none }
         let cs = callsign.split(separator: " ").map(String.init)
-        guard !cs.isEmpty, cs.count <= tokens.count else { return false }
-        return Array(tokens.suffix(cs.count)) == cs
+        guard !cs.isEmpty, cs.count <= tokens.count else { return .none }
+        var tail = tokens
+        while let last = tail.last, weightSuffix.contains(last) { tail.removeLast() }
+        if cs.count <= tail.count, Array(tail.suffix(cs.count)) == cs { return .back }
+        if Array(tokens.prefix(cs.count)) == cs { return .front }
+        return .mid
     }
 }

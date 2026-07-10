@@ -6,33 +6,33 @@
  },
  {
   "in": "cleared to land delta 232 heavy",
-  "role": "controller",
-  "confidence": 0.75
+  "role": "pilot",
+  "confidence": 0.65
  },
  {
   "in": "united 415 roger descending to 3000",
   "role": "pilot",
-  "confidence": 0.75
+  "confidence": 0.65
  },
  {
   "in": "with you at 5000 american 88",
   "role": "pilot",
-  "confidence": 1.0
+  "confidence": 0.8
  },
  {
   "in": "november 345 alpha bravo request taxi",
   "role": "pilot",
-  "confidence": 0.75
+  "confidence": 0.65
  },
  {
   "in": "turn left heading 270 southwest 2914",
-  "role": "unknown",
-  "confidence": 0.0
+  "role": "pilot",
+  "confidence": 0.65
  },
  {
   "in": "southwest 2914 left heading 270",
-  "role": "unknown",
-  "confidence": 0.0
+  "role": "controller",
+  "confidence": 0.8
  },
  {
   "in": "wind 270 at 15 runway 22 cleared to land",
@@ -42,7 +42,7 @@
  {
   "in": "unable delta 232",
   "role": "pilot",
-  "confidence": 1.0
+  "confidence": 0.8
  },
  {
   "in": "good morning kennedy tower jetblue 604 with you",
@@ -57,7 +57,7 @@
  {
   "in": "we would like higher when able frontier 4316",
   "role": "pilot",
-  "confidence": 1.0
+  "confidence": 0.8
  },
  {
   "in": "traffic in sight",
@@ -73,6 +73,21 @@
   "in": "climbing to one zero thousand",
   "role": "unknown",
   "confidence": 0.0
+ },
+ {
+  "in": "delta two thirty two heavy cleared to land runway two two",
+  "role": "controller",
+  "confidence": 1.0
+ },
+ {
+  "in": "cleared to land runway two two delta two thirty two heavy",
+  "role": "pilot",
+  "confidence": 0.65
+ },
+ {
+  "in": "southwest eight eighty eight",
+  "role": "pilot",
+  "confidence": 0.65
  },
  {
   "in": "",
