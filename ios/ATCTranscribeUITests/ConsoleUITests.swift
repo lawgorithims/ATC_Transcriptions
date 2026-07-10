@@ -225,6 +225,8 @@ final class ConsoleUITests: XCTestCase {
     }
 
     // 7. Standby: touch-and-hold the power button opens the low-power standby screen; Resume returns.
+    // Device-agnostic on purpose — the Resume banner is hoisted to `homeArea` in ConsoleView so it
+    // renders on BOTH the compact (iPhone) and regular-width (iPad) layouts. Must pass on both sims.
     func test7_standby() {
         let app = launch(onboardingDismissed: true)
         let power = app.buttons["start-stop-button"]

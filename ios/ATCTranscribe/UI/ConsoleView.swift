@@ -101,15 +101,26 @@ struct ConsoleView: View {
 
     /// Below the top bar: floating widgets over the map (regular width), or a bottom transcript card with
     /// the map showing above it (compact). The area is transparent, so taps on the open map reach it.
+    ///
+    /// Standby dims + disables this whole area (the top bar above it stays usable) and floats the Resume
+    /// banner over it — on BOTH layouts. The overlay lives here, not on `transcriptArea`, because the
+    /// transcript card only exists on the compact path; hanging standby off it meant entering standby on
+    /// iPad (regular width) set `model.standby` but showed no Resume screen at all.
     @ViewBuilder private var homeArea: some View {
-        if hSize == .regular {
-            FloatingCanvas(palette: model.palette).environmentObject(model)
-        } else {
-            VStack(spacing: 0) {
-                Spacer(minLength: 0)
-                transcriptArea.frame(height: 340).padding(10)
+        Group {
+            if hSize == .regular {
+                FloatingCanvas(palette: model.palette).environmentObject(model)
+            } else {
+                VStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    transcriptArea.frame(height: 340).padding(10)
+                }
             }
         }
+        .opacity(model.standby ? 0.4 : 1)
+        .disabled(model.standby)
+        .overlay { if model.standby { StandbyBanner().environmentObject(model) } }
+        .animation(.easeInOut(duration: 0.2), value: model.standby)
     }
 
     /// Only surface the tapped-object bottom sheet on compact width; on regular it's a floating side panel.
@@ -135,14 +146,10 @@ struct ConsoleView: View {
         .transition(Self.barTransition)
     }
 
-    /// Standby dims + disables ONLY the transcript box (the rest of the console stays usable) and
-    /// floats the Resume banner over it.
+    /// The live transcript card at the bottom of the compact (iPhone) layout. Standby dimming and the
+    /// Resume banner are applied one level up in `homeArea` so they cover the iPad layout too.
     private var transcriptArea: some View {
         TranscriptCard()
-            .opacity(model.standby ? 0.4 : 1)
-            .disabled(model.standby)
-            .overlay { if model.standby { StandbyBanner().environmentObject(model) } }
-            .animation(.easeInOut(duration: 0.2), value: model.standby)
     }
 }
 
