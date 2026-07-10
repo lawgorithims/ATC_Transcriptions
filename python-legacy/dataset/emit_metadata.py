@@ -142,6 +142,15 @@ def to_train_metadata(
             if _line.strip():
                 _s = json.loads(_line)
                 speakers[_s["id"]] = _s
+    # Role overrides (backfill): re-tagged historical roles from dataset/backfill_roles.py,
+    # so atc_diarize tagger improvements reach existing rows without rewriting the manifest.
+    role_ovr_path = Path(manifest_path).parent / "role_overrides.jsonl"
+    role_ovr = {}
+    if role_ovr_path.exists():
+        for _line in role_ovr_path.read_text(encoding="utf-8").splitlines():
+            if _line.strip():
+                _o = json.loads(_line)
+                role_ovr[_o["id"]] = _o
     excl_path = Path(manifest_path).resolve().parent.parent / "excluded_blocks_gold.txt"
     excluded = (set(excl_path.read_text(encoding="utf-8").splitlines())
                 if excl_path.exists() else set())
@@ -152,8 +161,9 @@ def to_train_metadata(
             n_excluded += 1
             continue
         transcript_path = r["transcript_path"]
+        ro = role_ovr.get(r["id"])  # backfilled (current-tagger) role, else manifest role
         if tagged_roles:
-            role = r.get("role") or "unknown"
+            role = (ro or r).get("role") or "unknown"
             tag = {"controller": "<ctrl>", "pilot": "<pilot>"}.get(role, "<spk>")
             src = Path(transcript_path)
             text = src.read_text(encoding="utf-8").strip()
@@ -165,12 +175,12 @@ def to_train_metadata(
             "id": r["id"],
             "audio_path": r["audio_path"],
             "transcript_path": transcript_path,
-            # Tier-1 content attribution (passthrough from the manifest row) + Tier-2
-            # acoustic speaker cluster (from the optional speaker_clusters.jsonl sidecar).
-            # Consumers that only need audio/transcript ignore these extra keys.
-            "role": r.get("role"),
+            # Tier-1 content attribution — role/role_confidence from the CURRENT tagger via the
+            # optional role_overrides.jsonl backfill, else the manifest snapshot — plus Tier-2
+            # acoustic speaker cluster (speaker_clusters.jsonl). Consumers may ignore these keys.
+            "role": (ro or r).get("role"),
             "callsign": r.get("callsign"),
-            "role_confidence": r.get("role_confidence"),
+            "role_confidence": (ro or r).get("role_confidence"),
             "speaker_id": sp.get("speaker_id"),
             "speaker_role_affinity": sp.get("speaker_role_affinity"),
         })
