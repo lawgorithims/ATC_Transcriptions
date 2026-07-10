@@ -183,6 +183,8 @@ def to_train_metadata(
             "role_confidence": (ro or r).get("role_confidence"),
             "speaker_id": sp.get("speaker_id"),
             "speaker_role_affinity": sp.get("speaker_role_affinity"),
+            "role_fused": sp.get("role_fused"),        # Rung 2: content role, else acoustic-cluster role
+            "speaker_label": sp.get("speaker_label"),  # per-line display: "ATC" or the aircraft callsign
         })
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     Path(out_path).write_text(json.dumps(out_rows, indent=2), encoding="utf-8")

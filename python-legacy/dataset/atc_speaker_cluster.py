@@ -123,6 +123,20 @@ def run(data_root, gap_min, threshold, device, feeds, out_path, verbose=True):
     if verbose and precomputed:
         print(f"reusing {len(precomputed)} harvest-time embeddings from embeddings.jsonl")
 
+    # Rung 2 fusion input: the CURRENT content role per segment = role_overrides.jsonl
+    # (Rung 1 backfill) if present, else the manifest role. Used to (a) score each cluster's
+    # affinity from CONFIDENT roles and (b) fill content-unknown turns from that affinity.
+    role_ovr = {}
+    ro_path = os.path.join(data_root, "us_pseudo", "role_overrides.jsonl")
+    if os.path.exists(ro_path):
+        for _l in open(ro_path):
+            if _l.strip():
+                _o = json.loads(_l)
+                role_ovr[_o["id"]] = _o.get("role")
+
+    def content_role(r):
+        return role_ovr.get(r["id"], r.get("role"))
+
     embed = None  # lazy — only load ECAPA if some clip isn't already embedded
     out_rows = []
     for key, frows in sorted(by_feed.items()):
@@ -154,19 +168,37 @@ def run(data_root, gap_min, threshold, device, feeds, out_path, verbose=True):
             n_clusters += len(members)
             scope = f"{key}#sess{si}"
             for l, mem in members.items():
-                roles = Counter(r.get("role") for r in mem)
-                affinity = roles.most_common(1)[0][0]
-                # a controller cluster = dominant role controller AND >=3 members
+                # Cluster affinity from CONFIDENT content roles only (ignore unknown), so a
+                # cluster of 3 controller + 5 unknown still reads as a controller voice.
+                confident = Counter(cr for r in mem
+                                    if (cr := content_role(r)) in ("controller", "pilot"))
+                affinity = confident.most_common(1)[0][0] if confident else "unknown"
                 if affinity == "controller" and len(mem) >= 3:
                     ctrl_clusters += 1
                 for r in mem:
+                    cr = content_role(r)
+                    # Rung 2 fusion: keep a confident content role; fill an unknown from the
+                    # cluster's acoustic affinity (only when the cluster itself is confident).
+                    role_fused = cr if cr in ("controller", "pilot") else affinity
+                    # Per-line speaker label for display (website/app): ATC, else the aircraft
+                    # callsign when the pilot's callsign was recovered, else a generic tag.
+                    if role_fused == "controller":
+                        speaker_label = "ATC"
+                    elif role_fused == "pilot":
+                        speaker_label = r.get("callsign") or "PILOT"
+                    else:
+                        speaker_label = "UNKNOWN"
                     out_rows.append({
                         "id": r["id"],
                         "speaker_id": f"{scope}#spk{l}",
                         "speaker_cluster_scope": scope,
                         "speaker_role_affinity": affinity,
                         "speaker_cluster_size": len(mem),
-                        "role": r.get("role"),
+                        "role": cr,
+                        "role_fused": role_fused,
+                        "speaker_label": speaker_label,
+                        "fused_from": ("content" if cr in ("controller", "pilot")
+                                       else "acoustic" if role_fused != "unknown" else "none"),
                         "callsign": r.get("callsign"),
                     })
         if verbose:
