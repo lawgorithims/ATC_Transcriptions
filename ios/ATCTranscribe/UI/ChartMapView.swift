@@ -404,9 +404,10 @@ struct ChartMapView: UIViewRepresentable {
         var onTapObjects: (([IdentifiedObject]) -> Void)?
         private var regionDebounce: DispatchWorkItem?
         private var dynamic: [MKAnnotation] = []
-        private var airspace: [MKPolygon] = []
+        private var airspaceByKey: [String: MKPolygon] = [:]        // keyed so a settle diffs, never redraws all
         private var airspaceClass: [ObjectIdentifier: String] = [:]
-        private var nearby: [NearbyAnnotation] = []
+        private var nearbyByKey: [String: NearbyAnnotation] = [:]   // keyed by NavPoint.id for the same reason
+        private var contextGen = 0                                  // drops stale async refreshes (rapid panning)
         private var lastTrafficKey: [String] = []
         private var lastOwnship: CLLocationCoordinate2D?
         private let loc = CLLocationManager()
@@ -516,17 +517,21 @@ struct ChartMapView: UIViewRepresentable {
             let wantNear = showNearby && scale < 5.5
             let bb = BBox(region: region, margin: 0.15)
             let idents = routeIdents
+            contextGen &+= 1
+            let gen = contextGen
             Task { [weak self, weak mv] in
                 let out = await Task.detached(priority: .userInitiated) {
-                    () -> (rings: [(coords: [CLLocationCoordinate2D], cls: String)], near: [NavPoint]) in
-                    var rings: [(coords: [CLLocationCoordinate2D], cls: String)] = []
+                    () -> (rings: [(key: String, coords: [CLLocationCoordinate2D], cls: String)], near: [NavPoint]) in
+                    var rings: [(key: String, coords: [CLLocationCoordinate2D], cls: String)] = []
                     if wantAir {
                         let order: [String: Int] = ["B": 0, "C": 1, "D": 2]
                         let asp = NavDatabase.airspaces(intersecting: bb)
                             .sorted { (order[$0.cls] ?? 9, $0.name) < (order[$1.cls] ?? 9, $1.name) }
                         building: for a in asp {
-                            for ring in a.rings {
-                                rings.append((ring.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) }, a.cls))
+                            for (j, ring) in a.rings.enumerated() {
+                                rings.append((key: "\(a.id)-\(j)",
+                                              coords: ring.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) },
+                                              cls: a.cls))
                                 if rings.count >= 260 { break building }
                             }
                         }
@@ -536,29 +541,39 @@ struct ChartMapView: UIViewRepresentable {
                         : []
                     return (rings, near)
                 }.value
-                guard let self, let mv else { return }
+                guard let self, let mv, gen == self.contextGen else { return }   // a newer refresh superseded us
                 self.applyAirspace(out.rings, to: mv)
                 self.applyNearby(out.near, to: mv)
             }
         }
 
-        /// Replace the airspace polygons wholesale (only runs on a settled region). Inserted below the
-        /// route line so the magenta route stays on top; class is tracked in a side map for the renderer.
-        private func applyAirspace(_ rings: [(coords: [CLLocationCoordinate2D], cls: String)], to mv: MKMapView) {
-            for p in airspace { mv.removeOverlay(p); airspaceClass[ObjectIdentifier(p)] = nil }
-            airspace.removeAll()
-            for r in rings {
+        /// Diff the airspace polygons against what's already drawn — keep in-view ones untouched (no
+        /// flicker on pan), remove those that left, add those that entered. Inserted below the route line
+        /// so the magenta route stays on top; class is tracked in a side map for the renderer.
+        private func applyAirspace(_ rings: [(key: String, coords: [CLLocationCoordinate2D], cls: String)], to mv: MKMapView) {
+            let wanted = Set(rings.map(\.key))
+            for (key, poly) in airspaceByKey where !wanted.contains(key) {
+                mv.removeOverlay(poly); airspaceClass[ObjectIdentifier(poly)] = nil; airspaceByKey[key] = nil
+            }
+            for r in rings where airspaceByKey[r.key] == nil {
                 let p = MKPolygon(coordinates: r.coords, count: r.coords.count)
                 airspaceClass[ObjectIdentifier(p)] = r.cls
-                airspace.append(p)
+                airspaceByKey[r.key] = p
                 if let ro = routeOverlay { mv.insertOverlay(p, below: ro) } else { mv.addOverlay(p, level: .aboveLabels) }
             }
         }
 
+        /// Same incremental diff for nearby navaids/airports — annotations that stay in view are never
+        /// removed/re-added, so they don't blink as you scroll.
         private func applyNearby(_ near: [NavPoint], to mv: MKMapView) {
-            mv.removeAnnotations(nearby)
-            nearby = near.map { NearbyAnnotation($0) }
-            mv.addAnnotations(nearby)
+            let wanted = Set(near.map(\.id))
+            let gone = nearbyByKey.filter { !wanted.contains($0.key) }
+            if !gone.isEmpty { mv.removeAnnotations(Array(gone.values)); gone.keys.forEach { nearbyByKey[$0] = nil } }
+            var added: [NearbyAnnotation] = []
+            for np in near where nearbyByKey[np.id] == nil {
+                let a = NearbyAnnotation(np); nearbyByKey[np.id] = a; added.append(a)
+            }
+            if !added.isEmpty { mv.addAnnotations(added) }
         }
 
         // Sectional-style airspace colours: Class C solid magenta; Class B/D blue (D dashed, drawn thinner).
