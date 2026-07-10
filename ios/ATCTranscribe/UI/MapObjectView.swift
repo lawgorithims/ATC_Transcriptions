@@ -100,15 +100,13 @@ struct MapObjectView: View {
         .scrollContentBackground(.hidden)
     }
 
-    /// Published FAA terminal procedures for an airport (bundled d-TPP index), grouped by kind; each row
-    /// opens its plate PDF.
+    /// Coded procedures (CIFP) for an airport, grouped by kind; tapping one draws it on the map as a
+    /// georeferenced overlay. One row per procedure identifier (transitions collapsed).
     @ViewBuilder private func proceduresSection(_ ident: String) -> some View {
-        let procs = Procedures.forAirport(ident)
-        let groups: [(AirportProcedure.Category, String)] = [
-            (.approach, "Approaches"), (.departure, "Departures"), (.arrival, "Arrivals"), (.diagram, "Airport diagram"),
-        ]
-        ForEach(groups, id: \.0) { cat, heading in
-            let items = procs.filter { $0.category == cat }
+        let procs = CIFP.procedures(airport: ident)
+        let groups: [(String, String)] = [("IAP", "Approaches"), ("SID", "Departures"), ("STAR", "Arrivals")]
+        ForEach(groups, id: \.0) { kind, heading in
+            let items = distinct(procs.filter { $0.kind == kind })
             if !items.isEmpty {
                 Section("\(heading) (\(items.count))") {
                     ForEach(items) { proc in procedureRow(proc) }
@@ -117,19 +115,26 @@ struct MapObjectView: View {
         }
     }
 
-    @ViewBuilder private func procedureRow(_ proc: AirportProcedure) -> some View {
+    private func procedureRow(_ proc: CIFPProcedure) -> some View {
         let p = model.palette
-        if let url = proc.plateURL {
-            Link(destination: url) {
-                HStack(spacing: 8) {
-                    Text(proc.name).font(.callout).foregroundStyle(p.text)
-                    Spacer(minLength: 4)
-                    Image(systemName: "doc.text.magnifyingglass").font(.caption).foregroundStyle(p.accent)
-                }
+        return Button {
+            Haptics.impact(.medium)
+            model.previewedProcedure = proc     // draw it on the map
+            onClose()                           // dismiss the sheet/panel so the overlay is visible
+        } label: {
+            HStack(spacing: 8) {
+                Text(proc.name).font(.callout).foregroundStyle(p.text)
+                Spacer(minLength: 4)
+                Image(systemName: "point.topleft.down.to.point.bottomright.curvepath")
+                    .font(.caption).foregroundStyle(p.accent)
             }
-        } else {
-            Text(proc.name).font(.callout).foregroundStyle(p.text)
         }
+    }
+
+    /// One entry per procedure identifier (the FAA lists each enroute transition as its own record).
+    private func distinct(_ procs: [CIFPProcedure]) -> [CIFPProcedure] {
+        var seen = Set<String>()
+        return procs.filter { seen.insert($0.ident).inserted }
     }
 
     private func displayName(_ o: IdentifiedObject) -> String? {
