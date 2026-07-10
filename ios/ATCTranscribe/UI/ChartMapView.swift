@@ -164,18 +164,18 @@ private func inflated(_ r: MKMapRect, by f: Double) -> MKMapRect {
 
 // MARK: - Store (catalog + route + free-pan download, bounded)
 
-/// Fetches the catalog and loads chart packs on demand: the packs a filed route crosses (up front,
+/// Per-sheet display store: opens the MapKit tile readers for the packs a route crosses (up front,
 /// ungated, pinned) plus the packs under wherever the map is panned/zoomed (free-pan, gated so we
-/// never mass-download when zoomed out). Bounded: packs that drift far from the view and aren't on the
-/// route are evicted (their SQLite connection closes). Downloads are de-duped, integrity-checked, and
-/// cycle-stamped so a new 28-day chart cycle forces a fresh download. All state mutated on the main actor.
+/// never mass-download when zoomed out), and evicts readers that drift far from the view and aren't on
+/// the route (their SQLite connection closes) to bound memory. The catalog fetch, the on-disk pack
+/// cache, and downloading live in the shared `ChartLibrary` (warmed/prefetched before the map opens),
+/// so this store mostly opens already-on-disk packs with no network. All state mutated on the main actor.
 @MainActor final class ChartStore: ObservableObject {
     enum Phase: Equatable { case idle, loadingCatalog, downloading, ready, empty, zoomOut, failed(String) }
     @Published var phase: Phase = .idle
     @Published private(set) var readers: [MBTilesReader] = []
 
-    private var catalog: ChartCatalog?
-    private var cycle = ""
+    private let library: ChartLibrary
     private var loaded: [String: (entry: ChartCatalog.Entry, reader: MBTilesReader)] = [:]  // current layer
     private var pinned: Set<String> = []          // route-corridor packs — never evicted
     private var inFlight: Set<String> = []
@@ -184,39 +184,17 @@ private func inflated(_ r: MKMapRect, by f: Double) -> MKMapRect {
     private let autoLoadSpanLimit = 7.0           // ° — beyond this (zoomed out) free-pan waits
     private let keepHalo = 1.0                     // keep packs within this many view-widths of the view
 
+    init(library: ChartLibrary) { self.library = library }
+
     private func publish() { readers = loaded.values.map { $0.reader } }
 
-    /// On-disk name carries the AIRAC cycle so a new cycle can't be served from a stale cached file.
-    private func localURL(_ e: ChartCatalog.Entry) -> URL {
-        let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("charts", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        return dir.appendingPathComponent("\(e.id)-\(cycle).mbtiles")
-    }
-
+    /// Warm the shared catalog — usually already warm from launch, so this is a fast no-op path.
     private func ensureCatalog() async -> Bool {
-        if catalog != nil { return true }
+        if library.catalog != nil { return true }
         if phase != .loadingCatalog { phase = .loadingCatalog }
-        do {
-            let (data, resp) = try await URLSession.shared.data(from: ChartCatalog.url)
-            guard (resp as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
-            let cat = try JSONDecoder().decode(ChartCatalog.self, from: data)
-            catalog = cat; cycle = cat.cycle
-            pruneOldCycleFiles()
-            return true
-        } catch {
-            phase = .failed(error.localizedDescription)
-            return false
-        }
-    }
-
-    /// Delete cached packs from previous cycles so the pilot never reads an expired chart off disk.
-    private func pruneOldCycleFiles() {
-        let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("charts", isDirectory: true)
-        guard let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else { return }
-        for f in files where f.pathExtension == "mbtiles" && !f.lastPathComponent.hasSuffix("-\(cycle).mbtiles") {
-            try? FileManager.default.removeItem(at: f)
-        }
+        if await library.warm() { return true }
+        phase = .failed("Chart index unavailable")
+        return false
     }
 
     /// Switch layer (or initial load): reset all per-layer state and pull the packs the route crosses.
@@ -240,7 +218,7 @@ private func inflated(_ r: MKMapRect, by f: Double) -> MKMapRect {
     }
 
     private func load(rects: [MKMapRect], gated: Bool, pin: Bool) async {
-        guard let catalog, let primary = rects.first else { return }
+        guard let catalog = library.catalog, let primary = rects.first else { return }
         let activeLayer = layer
         if gated {
             let span = MKCoordinateRegion(primary).span
@@ -266,8 +244,8 @@ private func inflated(_ r: MKMapRect, by f: Double) -> MKMapRect {
         var anyFailed = false
         for e in todo {
             if layer != activeLayer { return }                 // a layer switch superseded us — abort
-            var reader = MBTilesReader(path: localURL(e).path)  // cached-on-disk hit (no re-download)
-            if reader == nil { reader = await downloadPack(e) }
+            var reader = MBTilesReader(path: library.localURL(e).path)   // cached-on-disk hit (prefetched → instant)
+            if reader == nil, let url = await library.ensureOnDisk(e) { reader = MBTilesReader(path: url.path) }
             inFlight.remove(e.id)
             if let reader, layer == activeLayer, loaded[e.id] == nil {
                 loaded[e.id] = (e, reader)
@@ -299,33 +277,23 @@ private func inflated(_ r: MKMapRect, by f: Double) -> MKMapRect {
         for id in stale { loaded[id] = nil }                    // readers deinit → sqlite3_close
         publish()
     }
-
-    private func downloadPack(_ e: ChartCatalog.Entry) async -> MBTilesReader? {
-        do {
-            let (tmp, resp) = try await URLSession.shared.download(from: e.remote)
-            guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return nil }
-            let dst = localURL(e)
-            try? FileManager.default.removeItem(at: dst)
-            try FileManager.default.moveItem(at: tmp, to: dst)
-            guard let r = MBTilesReader(path: dst.path), r.hasTiles else {   // integrity: openable + has tiles
-                try? FileManager.default.removeItem(at: dst)
-                return nil
-            }
-            return r
-        } catch { return nil }
-    }
 }
 
 // MARK: - MKMapView chart view
 
-/// The chart map: the selected base layer (one or more seamless FAA raster packs, or Apple's map) with
-/// the filed route (magenta line + waypoints), your aircraft's live position (device GPS + Stratux),
-/// and ADS-B traffic. As you pan/zoom, `onVisibleRegion` asks the store to load the charts under the
-/// new area (free-pan). Uses `MKMapView` (SwiftUI's `Map` can't host tile overlays).
+/// The unified flight-plan map: the selected base layer (one or more seamless FAA raster packs, or
+/// Apple's map) with the filed route (magenta line + waypoints), Class B/C/D airspace outlines and
+/// nearby navaids/airports (bundled nav DB), your aircraft's live position (device GPS + Stratux), and
+/// ADS-B traffic. As you pan/zoom, `onVisibleRegion` asks the store to load the charts under the new
+/// area (free-pan) and the context layers refresh to what's in view. Uses `MKMapView` (SwiftUI's `Map`
+/// can't host tile overlays).
 struct ChartMapView: UIViewRepresentable {
     let layer: ChartLayer
     let readers: [MBTilesReader]
     let route: [ResolvedLeg]
+    let showAirspace: Bool
+    let showNearby: Bool
+    let initialCenter: Coord?        // frame here when there's no filed route (device / Stratux position)
     let onVisibleRegion: (MKMapRect) -> Void
     @ObservedObject var model: AppModel
 
@@ -355,16 +323,18 @@ struct ChartMapView: UIViewRepresentable {
             c.routeOverlay = line
             mv.addAnnotations(route.map { WaypointAnnotation($0) })
             c.routeAdded = true
+            c.routeIdents = Set(route.map { $0.ident })   // so nearby context skips filed waypoints
         }
 
-        // Incrementally reconcile the raster overlays to `readers` (they come and go as you pan).
+        // Incrementally reconcile the raster overlays to `readers` (they come and go as you pan). Tiles
+        // sit at the bottom of the label level so airspace outlines + the route line draw over the chart.
         let want = Set(readers.map(ObjectIdentifier.init))
         for (rid, ov) in c.overlays where !want.contains(rid) { mv.removeOverlay(ov); c.overlays[rid] = nil }
         for r in readers {
             let rid = ObjectIdentifier(r)
             guard c.overlays[rid] == nil else { continue }
             let ov = MBTilesTileOverlay(reader: r)
-            if let ro = c.routeOverlay { mv.insertOverlay(ov, below: ro) } else { mv.addOverlay(ov, level: .aboveLabels) }
+            mv.insertOverlay(ov, at: 0, level: .aboveLabels)
             c.overlays[rid] = ov
         }
 
@@ -376,11 +346,19 @@ struct ChartMapView: UIViewRepresentable {
                 region.span.longitudeDelta = min(region.span.longitudeDelta * 1.3 + 0.1, 5.0)
                 mv.setRegion(region, animated: false)
                 c.didFrame = true
-            } else if let center = ChartLayer.launchCenter {
+            } else if let center = ChartLayer.launchCenter ?? initialCenter?.clCoordinate {
                 mv.setRegion(MKCoordinateRegion(center: center, span: MKCoordinateSpan(latitudeDelta: 1.4, longitudeDelta: 1.4)), animated: false)
                 c.didFrame = true
             }
         }
+
+        // Context layers refresh when a toggle changes (region changes refresh via the delegate); the
+        // first pass forces one so airspace/nearby appear without waiting for a pan.
+        if c.showAirspace != showAirspace || c.showNearby != showNearby || !c.didContext {
+            c.showAirspace = showAirspace; c.showNearby = showNearby; c.didContext = true
+            c.refreshContext(mv)
+        }
+
         c.syncDynamic(mv, aircraft: model.aircraft, ownship: model.stratuxGPS?.coordinate)
     }
 
@@ -388,10 +366,17 @@ struct ChartMapView: UIViewRepresentable {
         var overlays: [ObjectIdentifier: MBTilesTileOverlay] = [:]
         var routeOverlay: MKPolyline?
         var routeAdded = false
+        var routeIdents: Set<String> = []
         var didFrame = false
+        var didContext = false
+        var showAirspace = true
+        var showNearby = true
         var onVisibleRegion: ((MKMapRect) -> Void)?
         private var regionDebounce: DispatchWorkItem?
         private var dynamic: [MKAnnotation] = []
+        private var airspace: [MKPolygon] = []
+        private var airspaceClass: [ObjectIdentifier: String] = [:]
+        private var nearby: [NearbyAnnotation] = []
         private var lastTrafficKey: [String] = []
         private var lastOwnship: CLLocationCoordinate2D?
         private let loc = CLLocationManager()
@@ -402,19 +387,102 @@ struct ChartMapView: UIViewRepresentable {
         }
         func locationManagerDidChangeAuthorization(_ m: CLLocationManager) {}
 
+        /// With no filed route to frame, center on the device GPS fix once it arrives (Stratux, when
+        /// connected, frames immediately via `initialCenter`).
+        func mapView(_ mv: MKMapView, didUpdate userLocation: MKUserLocation) {
+            guard !didFrame, routeOverlay == nil, let c = userLocation.location?.coordinate else { return }
+            mv.setRegion(MKCoordinateRegion(center: c, span: MKCoordinateSpan(latitudeDelta: 1.4, longitudeDelta: 1.4)), animated: false)
+            didFrame = true
+        }
+
         /// Free-pan trigger: debounce so we act once the map settles, then ask the store to load the
-        /// packs under the new region.
+        /// packs under the new region and refresh the in-view context layers.
         func mapView(_ mv: MKMapView, regionDidChangeAnimated animated: Bool) {
             regionDebounce?.cancel()
             let rect = mv.visibleMapRect
             let cb = onVisibleRegion
-            let work = DispatchWorkItem { cb?(rect) }
+            let work = DispatchWorkItem { [weak self, weak mv] in
+                cb?(rect)
+                if let self, let mv { self.refreshContext(mv) }
+            }
             regionDebounce = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
         }
 
+        /// Recompute the in-view context layers (Class B/C/D airspace outlines + nearby navaids/airports)
+        /// off-main for the settled region. Gated on angular scale so a zoomed-out view stays legible, and
+        /// count-capped to keep MapKit snappy. Mirrors `RouteMapSheet`'s former overlay refresh.
+        func refreshContext(_ mv: MKMapView) {
+            let region = mv.region
+            let scale = max(region.span.latitudeDelta,
+                            region.span.longitudeDelta * cos(region.center.latitude * .pi / 180))
+            let wantAir = showAirspace && scale < 14
+            let wantNear = showNearby && scale < 5.5
+            let bb = BBox(region: region, margin: 0.15)
+            let idents = routeIdents
+            Task { [weak self, weak mv] in
+                let out = await Task.detached(priority: .userInitiated) {
+                    () -> (rings: [(coords: [CLLocationCoordinate2D], cls: String)], near: [NavPoint]) in
+                    var rings: [(coords: [CLLocationCoordinate2D], cls: String)] = []
+                    if wantAir {
+                        let order: [String: Int] = ["B": 0, "C": 1, "D": 2]
+                        let asp = NavDatabase.airspaces(intersecting: bb)
+                            .sorted { (order[$0.cls] ?? 9, $0.name) < (order[$1.cls] ?? 9, $1.name) }
+                        building: for a in asp {
+                            for ring in a.rings {
+                                rings.append((ring.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) }, a.cls))
+                                if rings.count >= 260 { break building }
+                            }
+                        }
+                    }
+                    let near: [NavPoint] = wantNear
+                        ? NavDatabase.nearby(bb, limit: 160).filter { !idents.contains($0.ident) }
+                        : []
+                    return (rings, near)
+                }.value
+                guard let self, let mv else { return }
+                self.applyAirspace(out.rings, to: mv)
+                self.applyNearby(out.near, to: mv)
+            }
+        }
+
+        /// Replace the airspace polygons wholesale (only runs on a settled region). Inserted below the
+        /// route line so the magenta route stays on top; class is tracked in a side map for the renderer.
+        private func applyAirspace(_ rings: [(coords: [CLLocationCoordinate2D], cls: String)], to mv: MKMapView) {
+            for p in airspace { mv.removeOverlay(p); airspaceClass[ObjectIdentifier(p)] = nil }
+            airspace.removeAll()
+            for r in rings {
+                let p = MKPolygon(coordinates: r.coords, count: r.coords.count)
+                airspaceClass[ObjectIdentifier(p)] = r.cls
+                airspace.append(p)
+                if let ro = routeOverlay { mv.insertOverlay(p, below: ro) } else { mv.addOverlay(p, level: .aboveLabels) }
+            }
+        }
+
+        private func applyNearby(_ near: [NavPoint], to mv: MKMapView) {
+            mv.removeAnnotations(nearby)
+            nearby = near.map { NearbyAnnotation($0) }
+            mv.addAnnotations(nearby)
+        }
+
+        // Sectional-style airspace colours: Class C solid magenta; Class B/D blue (D dashed, drawn thinner).
+        static func airspaceColor(_ cls: String) -> UIColor {
+            cls == "C" ? UIColor(red: 0.76, green: 0.09, blue: 0.36, alpha: 1)
+                       : UIColor(red: 0.18, green: 0.44, blue: 0.93, alpha: 1)
+        }
+
         func mapView(_ mv: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
             if let tile = overlay as? MKTileOverlay { return MKTileOverlayRenderer(tileOverlay: tile) }
+            if let poly = overlay as? MKPolygon {
+                let cls = airspaceClass[ObjectIdentifier(poly)] ?? "D"
+                let color = Self.airspaceColor(cls)
+                let r = MKPolygonRenderer(polygon: poly)
+                r.strokeColor = color
+                r.lineWidth = cls == "D" ? 1.2 : 1.5
+                if cls == "D" { r.lineDashPattern = [4, 3] }
+                r.fillColor = color.withAlphaComponent(0.05)
+                return r
+            }
             if let line = overlay as? MKPolyline {
                 let r = MKPolylineRenderer(polyline: line)
                 r.strokeColor = UIColor(red: 0.92, green: 0.10, blue: 0.55, alpha: 1)
@@ -440,6 +508,12 @@ struct ChartMapView: UIViewRepresentable {
                     ?? MKMarkerAnnotationView(annotation: annotation, reuseIdentifier: "wp")
                 v.annotation = annotation; v.markerTintColor = w.tint; v.glyphText = w.glyph
                 v.displayPriority = .required; v.titleVisibility = .adaptive; v.animatesWhenAdded = false
+                return v
+            case let n as NearbyAnnotation:
+                let v = mv.dequeueReusableAnnotationView(withIdentifier: "near") as? NearbyMarkerView
+                    ?? NearbyMarkerView(annotation: annotation, reuseIdentifier: "near")
+                v.annotation = annotation
+                v.configure(ident: n.ident, isAirport: n.isAirport)
                 return v
             case let t as TrafficAnnotation:
                 let v = mv.dequeueReusableAnnotationView(withIdentifier: "tfc") ?? MKAnnotationView(annotation: annotation, reuseIdentifier: "tfc")
@@ -521,95 +595,78 @@ final class OwnshipAnnotation: NSObject, MKAnnotation {
     @objc dynamic var coordinate = CLLocationCoordinate2D()
 }
 
-// MARK: - Presented sheet (layer switcher + route/free-pan download + chart)
+/// A bundled navaid / airport plotted for map context (not on the filed route).
+final class NearbyAnnotation: NSObject, MKAnnotation {
+    let coordinate: CLLocationCoordinate2D
+    let ident: String
+    let isAirport: Bool
+    init(_ np: NavPoint) {
+        coordinate = CLLocationCoordinate2D(latitude: np.coord.lat, longitude: np.coord.lon)
+        ident = np.ident
+        isAirport = np.kind == .airport
+    }
+}
 
-/// Entry point for the chart: a layer switcher (VFR sectional, IFR low, standard, satellite) and the
-/// chart map below. FAA layers load the packs your route crosses up front, and more as you pan/zoom —
-/// each cached for offline. Reached from the route map's layers menu; also openable via `--open-chart`.
-struct ChartSheet: View {
-    @EnvironmentObject var model: AppModel
-    @Environment(\.dismiss) private var dismiss
-    @StateObject private var store = ChartStore()
-    @State private var route: [ResolvedLeg] = []
-    @State private var layer: ChartLayer = .sectional
+/// Context navaid/airport marker — deliberately smaller & dimmer than a filed waypoint or traffic, and a
+/// distinct glyph (teal hexagon = navaid, magenta ring = airport) so it doesn't read as either. Decorative
+/// (non-selectable) and low display priority so it yields to route waypoints and traffic.
+final class NearbyMarkerView: MKAnnotationView {
+    private let shape = UIImageView()
+    private let label = UILabel()
 
-    /// Per-leg rects (a pack is selected if it intersects any) — tighter than the whole-route bounding
-    /// box on a diagonal route, and non-degenerate for a single-fix route.
-    private var routeRects: [MKMapRect] {
-        let pts = route.map { MKMapPoint($0.coord.clCoordinate) }
-        guard let f = pts.first else { return [] }
-        let eps: Double = 5_000        // map points — gives a single point some area so intersects() works
-        if pts.count == 1 { return [MKMapRect(x: f.x - eps, y: f.y - eps, width: 2 * eps, height: 2 * eps)] }
-        return (1..<pts.count).map { i in
-            let a = pts[i - 1], b = pts[i]
-            return MKMapRect(x: min(a.x, b.x) - eps, y: min(a.y, b.y) - eps,
-                             width: abs(a.x - b.x) + 2 * eps, height: abs(a.y - b.y) + 2 * eps)
-        }
+    override init(annotation: MKAnnotation?, reuseIdentifier: String?) {
+        super.init(annotation: annotation, reuseIdentifier: reuseIdentifier)
+        frame = CGRect(x: 0, y: 0, width: 48, height: 22)
+        shape.frame = CGRect(x: 20, y: 0, width: 8, height: 8)
+        addSubview(shape)
+        label.frame = CGRect(x: 0, y: 9, width: 48, height: 11)
+        label.textAlignment = .center
+        label.font = .monospacedSystemFont(ofSize: 7, weight: .medium)
+        label.textColor = UIColor.white.withAlphaComponent(0.85)
+        label.layer.shadowColor = UIColor.black.cgColor
+        label.layer.shadowOpacity = 0.7; label.layer.shadowRadius = 1; label.layer.shadowOffset = .zero
+        addSubview(label)
+        displayPriority = .defaultLow
+        isEnabled = false
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func configure(ident: String, isAirport: Bool) {
+        label.text = ident
+        shape.image = isAirport ? Self.airportImg : Self.navaidImg
     }
 
-    var body: some View {
-        NavigationStack {
-            ZStack(alignment: .top) {
-                ChartMapView(layer: layer, readers: store.readers, route: route,
-                             onVisibleRegion: { rect in Task { await store.ensureVisible(rect, layer: layer) } },
-                             model: model)
-                    .ignoresSafeArea(edges: .bottom)
-                VStack(spacing: 8) { switcher; statusPill }.padding(.top, 8)
+    private static let navaidImg: UIImage = {
+        let d: CGFloat = 8
+        return UIGraphicsImageRenderer(size: CGSize(width: d, height: d)).image { _ in
+            UIColor(red: 0.20, green: 0.83, blue: 0.60, alpha: 0.9).setStroke()
+            let path = UIBezierPath(); let c = CGPoint(x: d / 2, y: d / 2); let r = d / 2 - 0.75
+            for i in 0..<6 {
+                let a = CGFloat(i) * .pi / 3 - .pi / 2
+                let p = CGPoint(x: c.x + r * cos(a), y: c.y + r * sin(a))
+                if i == 0 { path.move(to: p) } else { path.addLine(to: p) }
             }
-            .navigationTitle("Chart")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { Haptics.impact(.light); dismiss() }.accessibilityIdentifier("chart-done")
-                }
-            }
+            path.close(); path.lineWidth = 1.2; path.stroke()
         }
-        .task {
-            if let o = ChartLayer.launchOverride { layer = o }
-            await Task.detached(priority: .userInitiated) { _ = NavDatabase.count }.value
-            route = RouteResolver.resolve(model.flightPlan?.fullRoute ?? []).points
-            await store.setLayer(layer, routeRects: routeRects)
+    }()
+    private static let airportImg: UIImage = {
+        let d: CGFloat = 8
+        return UIGraphicsImageRenderer(size: CGSize(width: d, height: d)).image { _ in
+            UIColor(red: 0.91, green: 0.47, blue: 0.98, alpha: 0.9).setStroke()
+            let ring = UIBezierPath(ovalIn: CGRect(x: 0.75, y: 0.75, width: d - 1.5, height: d - 1.5))
+            ring.lineWidth = 1.5; ring.stroke()
         }
-        .onChange(of: layer) { _, new in
-            store.phase = new.isRaster ? .downloading : .ready   // honest during the switch; setLayer refines
-            Task { await store.setLayer(new, routeRects: routeRects) }
-        }
-    }
+    }()
+}
 
-    private var switcher: some View {
-        Picker("Layer", selection: $layer) {
-            ForEach(ChartLayer.allCases) { Text($0.short).tag($0) }
-        }
-        .pickerStyle(.segmented)
-        .padding(.horizontal, 10).padding(.vertical, 6)
-        .background(.thinMaterial, in: Capsule())
-        .padding(.horizontal, 20)
-        .accessibilityIdentifier("chart-layer-picker")
-    }
-
-    @ViewBuilder private var statusPill: some View {
-        switch store.phase {
-        case .loadingCatalog:
-            pill { ProgressView(); Text("Loading chart index…") }
-        case .downloading:
-            pill { ProgressView(); Text("Loading charts for this area…") }
-        case .zoomOut where layer.isRaster:
-            pill { Image(systemName: "plus.magnifyingglass"); Text("Zoom in to load the chart here") }
-        case .empty where layer.isRaster:
-            pill { Image(systemName: "map"); Text(route.isEmpty ? "Pan and zoom in to load charts" : "No \(layer.title) here") }
-        case .failed:
-            pill { Image(systemName: "wifi.exclamationmark"); Text("Chart download failed — tap to retry") }
-                .onTapGesture { Task { await store.setLayer(layer, routeRects: routeRects) } }
-        default:
-            EmptyView()
-        }
-    }
-
-    private func pill<C: View>(@ViewBuilder _ content: () -> C) -> some View {
-        HStack(spacing: 8) { content() }
-            .font(.caption)
-            .padding(.horizontal, 14).padding(.vertical, 8)
-            .background(.thinMaterial, in: Capsule())
+extension BBox {
+    /// The visible region grown by `margin` (a fraction of the span) so context layers extend a little
+    /// past the screen edge and don't pop in during a pan.
+    init(region r: MKCoordinateRegion, margin: Double) {
+        let dLat = r.span.latitudeDelta * (0.5 + margin)
+        let dLon = r.span.longitudeDelta * (0.5 + margin)
+        self.init(minLat: r.center.latitude - dLat, minLon: r.center.longitude - dLon,
+                  maxLat: r.center.latitude + dLat, maxLon: r.center.longitude + dLon)
     }
 }
 

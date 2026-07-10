@@ -32,6 +32,22 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 37, version: "1.0", headline: "Download the whole US for offline — and the chart opens instantly",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "arrow.down.circle.fill",
+                    title: "Download every US chart for offline",
+                    detail: "In Settings → Offline charts you can now store the entire lower-48 on your device — VFR sectionals (~1.4 GB), IFR-low (~0.5 GB), or both (~1.9 GB) — so the map works with no signal anywhere you fly, not just along your filed route. It asks first before using cellular data, shows how much is stored, and refreshes each 56-day chart cycle."),
+                WhatsNewHighlight(
+                    icon: "bolt.fill",
+                    title: "The chart opens instantly",
+                    detail: "CommSight now fetches charts quietly in the background — for the area around you when you open the app, and for your route the moment you file a plan — so the map is ready the instant you open it instead of pausing to download. Once a chart's on the device it loads straight from storage."),
+                WhatsNewHighlight(
+                    icon: "square.2.layers.3d.fill",
+                    title: "One map that remembers your layer",
+                    detail: "The FAA chart is now a base layer right on the route map — switch between VFR sectional, IFR low, Map, and Satellite from the top, with your route, airspace, navaids, and traffic drawn over all of them. No more drilling into a separate chart screen, and it reopens on whichever layer you used last (VFR to start)."),
+            ]),
+        ReleaseNote(
             build: 36, version: "1.0", headline: "Pan the chart anywhere — now covering the whole country",
             highlights: [
                 WhatsNewHighlight(

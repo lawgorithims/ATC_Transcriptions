@@ -52,9 +52,6 @@ struct ConsoleView: View {
         .fullScreenCover(isPresented: $model.showRouteMap) {
             RouteMapSheet().environmentObject(model)
         }
-        .fullScreenCover(isPresented: $model.showChart) {
-            ChartSheet().environmentObject(model)
-        }
         .animation(.easeInOut(duration: 0.25), value: model.theme)
         .onAppear {
             // Bridge a finished download back to the model so it can load a model that wasn't
@@ -83,6 +80,9 @@ struct ConsoleView: View {
             if !ModelStore.isReady(ModelCatalog.llm), bundledLLMModelPath() == nil {
                 downloads.download(ModelCatalog.llm)
             }
+            // Warm the FAA chart catalog + prefetch the packs around the device and the filed route in the
+            // background, so opening the route map is instant instead of a cold catalog fetch + download.
+            model.prefetchChartsOnLaunch()
         }
         .onChange(of: scenePhase) { _, newPhase in
             // Backgrounding stops capture + releases audio (no background streaming/drain); ADS-B is

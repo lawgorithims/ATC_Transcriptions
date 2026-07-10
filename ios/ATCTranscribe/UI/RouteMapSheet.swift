@@ -1,66 +1,51 @@
 import SwiftUI
 import MapKit
 
-/// One polygon ring ready for MapKit — an airspace can be several concentric shelves, so a single
-/// `Airspace` expands into several of these. Pre-flattened off-main in `refreshOverlays` so the map's
-/// content builder is one flat `ForEach` (nested `ForEach` in `MapContentBuilder` is fragile).
-private struct AirspaceRing: Identifiable {
-    let id: String
-    let cls: String
-    let coords: [CLLocationCoordinate2D]
-}
-
-/// Full-screen route map: the filed flight plan drawn as the classic **magenta line** through its
-/// waypoints (departure, VORs, RNAV fixes, destination — resolved by `RouteResolver` against the
-/// bundled nav DB + `AirportCoordinates`), an offline **aviation layer** (Class B/C/D airspace outlines
-/// + nearby navaids/airports, both from the bundled DB), **live ADS-B traffic** (`model.aircraft`), and
-/// the Stratux **ownship** when the link has a fix. Pinch-zoom / pan are native MapKit (iOS 17 `Map`);
-/// the context layers refresh to whatever's in view. Reads existing state only — no capture/pipeline/
-/// traffic changes. Route points that can't be located are noted in the legend / route details.
+/// The flight-plan map: the filed route drawn as the classic **magenta line** through its waypoints
+/// (departure, VORs, RNAV fixes, destination — resolved by `RouteResolver` against the bundled nav DB +
+/// `AirportCoordinates`) over a **selectable base layer** — the self-hosted FAA **VFR sectional** /
+/// **IFR-low** raster charts (cached offline) or Apple's standard/satellite map — plus Class B/C/D
+/// **airspace** outlines and nearby navaids/airports (bundled DB), **live ADS-B traffic**, and the
+/// Stratux **ownship**. The raster packs the route crosses load up front and more as you pan/zoom (each
+/// cached for offline via `ChartLibrary`); the layer choice is remembered across opens. Built on
+/// `MKMapView` via `ChartMapView` (SwiftUI's `Map` can't host chart tiles). Reads existing state only —
+/// no capture/pipeline/traffic changes.
 struct RouteMapSheet: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
 
-    @State private var camera: MapCameraPosition = .automatic
+    // The per-sheet display store reads packs from the app-lifetime shared cache (`ChartLibrary.shared`),
+    // which is warmed + prefetched at launch — so opening the map does no network round-trip in the
+    // common case.
+    @StateObject private var store = ChartStore(library: ChartLibrary.shared)
     @State private var route: [ResolvedLeg] = []
     @State private var unresolved: [String] = []
-    @State private var routeIdents: Set<String> = []
     @State private var totalNM: Double = 0
-    @State private var hybrid = false
-    @State private var loading = true
-
+    // Seed from the remembered layer (or a `--chart-layer` launch override) so the map opens on the
+    // user's last-used chart; `.onChange` writes any switch back to `model.chartLayer`.
+    @State private var layer: ChartLayer = ChartLayer.launchOverride ?? AppModel.savedChartLayer
     @State private var showAirspace = true
     @State private var showNearby = true
     @State private var showRouteInfo = false
-    @State private var showChart = false
-    @State private var visibleRings: [AirspaceRing] = []
-    @State private var visibleNearby: [NavPoint] = []
-    @State private var currentRegion: MKCoordinateRegion?
+    @State private var loading = true
 
     private static let routeMagenta = Color(red: 0.92, green: 0.10, blue: 0.55)
-    private static let conus = MKCoordinateRegion(
-        center: CLLocationCoordinate2D(latitude: 39, longitude: -98),
-        span: MKCoordinateSpan(latitudeDelta: 42, longitudeDelta: 55))
+
+    /// Per-leg rects the raster packs are selected against — shared with background prefetch via `ChartGeo`.
+    private var routeRects: [MKMapRect] { ChartGeo.routeRects(route) }
 
     var body: some View {
         let p = model.palette
         NavigationStack {
-            Map(position: $camera) {
-                airspaceContent
-                nearbyContent
-                routeContent
-                trafficContent
-                ownshipContent
+            ZStack(alignment: .top) {
+                ChartMapView(layer: layer, readers: store.readers, route: route,
+                             showAirspace: showAirspace, showNearby: showNearby,
+                             initialCenter: model.stratuxGPS?.coordinate,
+                             onVisibleRegion: { rect in Task { await store.ensureVisible(rect, layer: layer) } },
+                             model: model)
+                    .ignoresSafeArea(edges: .bottom)
+                VStack(spacing: 8) { switcher; statusPill }.padding(.top, 8)
             }
-            .mapStyle(hybrid ? .hybrid(elevation: .flat)
-                             : .standard(elevation: .flat, pointsOfInterest: .excludingAll))
-            .mapControls { MapCompass(); MapScaleView() }
-            .onMapCameraChange(frequency: .onEnd) { ctx in
-                currentRegion = ctx.region
-                refreshOverlays(region: ctx.region)
-            }
-            .onChange(of: showAirspace) { _, _ in if let r = currentRegion { refreshOverlays(region: r) } }
-            .onChange(of: showNearby) { _, _ in if let r = currentRegion { refreshOverlays(region: r) } }
             .overlay(alignment: .center) {
                 if loading {
                     ProgressView("Plotting route…")
@@ -78,28 +63,25 @@ struct RouteMapSheet: View {
                 ToolbarItem(placement: .primaryAction) { layersMenu }
             }
             .sheet(isPresented: $showRouteInfo) { routeInfoSheet }
-            .fullScreenCover(isPresented: $showChart) { ChartSheet().environmentObject(model) }
         }
         .tint(p.accent)
         .task { await buildRoute() }
+        .onChange(of: layer) { _, new in
+            model.chartLayer = new                                   // remember the last-used layer
+            store.phase = new.isRaster ? .downloading : .ready       // honest during the switch; setLayer refines
+            Task { await store.setLayer(new, routeRects: routeRects) }
+        }
     }
+
+    // MARK: controls
 
     private var layersMenu: some View {
         Menu {
             Toggle(isOn: $showAirspace) { Label("Class B/C/D airspace", systemImage: "hexagon") }
             Toggle(isOn: $showNearby) { Label("Nearby navaids & airports", systemImage: "mappin.and.ellipse") }
             Divider()
-            Picker("Map style", selection: $hybrid) {
-                Label("Standard", systemImage: "map").tag(false)
-                Label("Satellite", systemImage: "globe.americas.fill").tag(true)
-            }
-            Divider()
             Button { Haptics.impact(.light); showRouteInfo = true } label: {
                 Label("Route details", systemImage: "list.bullet.rectangle")
-            }
-            Divider()
-            Button { Haptics.impact(.light); showChart = true } label: {
-                Label("FAA sectional chart", systemImage: "map.circle")
             }
         } label: {
             Image(systemName: "slider.horizontal.3")
@@ -108,122 +90,50 @@ struct RouteMapSheet: View {
         .accessibilityLabel("Map layers")
     }
 
-    // MARK: map content
+    /// VFR sectional · IFR low · standard map · satellite. FAA layers are raster charts; standard/satellite
+    /// are Apple's base map. The choice persists to `model.chartLayer`.
+    private var switcher: some View {
+        Picker("Layer", selection: $layer) {
+            ForEach(ChartLayer.allCases) { Text($0.short).tag($0) }
+        }
+        .pickerStyle(.segmented)
+        .padding(.horizontal, 10).padding(.vertical, 6)
+        .background(.thinMaterial, in: Capsule())
+        .padding(.horizontal, 20)
+        .accessibilityIdentifier("chart-layer-picker")
+    }
 
-    @MapContentBuilder private var airspaceContent: some MapContent {
-        ForEach(visibleRings) { r in
-            MapPolygon(coordinates: r.coords)
-                .stroke(Self.airspaceColor(r.cls), style: Self.airspaceStroke(r.cls))
-                .foregroundStyle(Self.airspaceColor(r.cls).opacity(0.05))
+    @ViewBuilder private var statusPill: some View {
+        switch store.phase {
+        case .loadingCatalog:
+            pill { ProgressView(); Text("Loading chart index…") }
+        case .downloading:
+            pill { ProgressView(); Text("Loading charts for this area…") }
+        case .zoomOut where layer.isRaster:
+            pill { Image(systemName: "plus.magnifyingglass"); Text("Zoom in to load the chart here") }
+        case .empty where layer.isRaster:
+            pill { Image(systemName: "map"); Text(route.isEmpty ? "Pan and zoom in to load charts" : "No \(layer.title) here") }
+        case .failed:
+            pill { Image(systemName: "wifi.exclamationmark"); Text("Chart download failed — tap to retry") }
+                .onTapGesture { Task { await store.setLayer(layer, routeRects: routeRects) } }
+        default:
+            EmptyView()
         }
     }
 
-    @MapContentBuilder private var nearbyContent: some MapContent {
-        ForEach(visibleNearby) { np in
-            Annotation("", coordinate: np.coord.clCoordinate, anchor: .center) { nearbyMarker(np) }
-        }
-    }
-
-    @MapContentBuilder private var routeContent: some MapContent {
-        if route.count >= 2 {
-            MapPolyline(coordinates: route.map { $0.coord.clCoordinate })
-                .stroke(Self.routeMagenta, style: StrokeStyle(lineWidth: 3, lineJoin: .round))
-        }
-        ForEach(route) { leg in
-            Annotation("", coordinate: leg.coord.clCoordinate, anchor: .center) {
-                waypointMarker(leg)   // ident is drawn inside the marker
-            }
-        }
-    }
-
-    @MapContentBuilder private var trafficContent: some MapContent {
-        ForEach(model.aircraft.filter { $0.coordinate != nil }) { ac in
-            Annotation("", coordinate: ac.coordinate!.clCoordinate, anchor: .center) {
-                trafficMarker(ac)   // callsign is drawn inside the marker
-            }
-        }
-    }
-
-    @MapContentBuilder private var ownshipContent: some MapContent {
-        if let own = model.stratuxGPS?.coordinate {
-            Annotation("", coordinate: own.clCoordinate, anchor: .center) { ownshipMarker }
-        }
-    }
-
-    // MARK: markers
-
-    private func waypointMarker(_ leg: ResolvedLeg) -> some View {
-        VStack(spacing: 2) {
-            Text(leg.ident)
-                .font(.system(size: 9, weight: .semibold, design: .monospaced)).foregroundStyle(.white)
-                .padding(.horizontal, 3).padding(.vertical, 1)
-                .background(.black.opacity(0.55), in: Capsule())
-            Circle().fill(color(leg.kind)).frame(width: 9, height: 9)
-                .overlay(Circle().stroke(.white, lineWidth: 1.5))
-        }
-    }
-
-    /// Context navaid/airport — deliberately smaller & dimmer than a filed waypoint or traffic, and a
-    /// distinct glyph (teal hexagon = navaid, magenta ring = airport) so it doesn't read as either.
-    private func nearbyMarker(_ np: NavPoint) -> some View {
-        VStack(spacing: 0) {
-            Group {
-                if np.kind == .airport {
-                    Circle().stroke(Color.hex(0xE879F9).opacity(0.9), lineWidth: 1.5).frame(width: 7, height: 7)
-                } else {
-                    Image(systemName: "hexagon")
-                        .font(.system(size: 8)).foregroundStyle(Color.hex(0x34D399).opacity(0.9))
-                }
-            }
-            Text(np.ident)
-                .font(.system(size: 7, weight: .medium, design: .monospaced))
-                .foregroundStyle(.white.opacity(0.8))
-                .padding(.horizontal, 2).background(.black.opacity(0.35), in: Capsule())
-        }
-    }
-
-    private func trafficMarker(_ ac: Aircraft) -> some View {
-        VStack(spacing: 1) {
-            Image(systemName: "airplane")
-                .font(.system(size: 14)).foregroundStyle(.orange)
-                .rotationEffect(.degrees((ac.trackDeg ?? 0) - 90))   // SF airplane points E(90°); align 0°=N
-                .shadow(radius: 1)
-            if let label = ac.label {
-                Text(label).font(.system(size: 8, weight: .semibold)).foregroundStyle(.white)
-                    .padding(.horizontal, 3).background(.black.opacity(0.55), in: Capsule())
-            }
-        }
-    }
-
-    private var ownshipMarker: some View {
-        Image(systemName: "location.north.circle.fill")
-            .font(.system(size: 22)).foregroundStyle(.cyan)
-            .background(Circle().fill(.black.opacity(0.45))).shadow(radius: 2)
-    }
-
-    private func color(_ kind: RouteKind) -> Color {
-        switch kind {
-        case .airport:  return .hex(0xE879F9)
-        case .vor:      return .hex(0x34D399)
-        case .waypoint: return .hex(0x60A5FA)
-        case .airway:   return .hex(0xF5C451)
-        case .other:    return .white
-        }
-    }
-
-    // Sectional-style airspace colours: Class B solid blue, Class C solid magenta, Class D dashed blue.
-    private static func airspaceColor(_ cls: String) -> Color {
-        switch cls {
-        case "C":  return .hex(0xC2185B)
-        default:   return .hex(0x2F6FED)   // B and D
-        }
-    }
-
-    private static func airspaceStroke(_ cls: String) -> StrokeStyle {
-        cls == "D" ? StrokeStyle(lineWidth: 1.2, dash: [4, 3]) : StrokeStyle(lineWidth: 1.5)
+    private func pill<C: View>(@ViewBuilder _ content: () -> C) -> some View {
+        HStack(spacing: 8) { content() }
+            .font(.caption)
+            .padding(.horizontal, 14).padding(.vertical, 8)
+            .background(.thinMaterial, in: Capsule())
     }
 
     // MARK: legend
+
+    // Sectional-style airspace colours (Class C solid magenta; B/D blue) for the legend swatches.
+    private static func airspaceColor(_ cls: String) -> Color {
+        switch cls { case "C": return .hex(0xC2185B); default: return .hex(0x2F6FED) }
+    }
 
     private func legend(_ p: Palette) -> some View {
         HStack(spacing: 8) {
@@ -336,76 +246,17 @@ struct RouteMapSheet: View {
     // MARK: build
 
     private func buildRoute() async {
-        // Parse the ~3 MB nav table + airspace OFF the main thread (first NavDatabase access triggers the
-        // load), so opening the map never janks; resolve() is then cheap on the main actor.
+        // Parse the nav table + airspace OFF the main thread (first access triggers the load) so opening
+        // the map never janks; `resolve()` is then cheap on the main actor.
         await Task.detached(priority: .userInitiated) { _ = NavDatabase.count; _ = NavDatabase.airspaceCount }.value
         let resolved = RouteResolver.resolve(model.flightPlan?.fullRoute ?? [])
         route = resolved.points
         unresolved = resolved.unresolved
-        routeIdents = Set(resolved.points.map { $0.ident })
         totalNM = legInfos().reduce(0) { $0 + $1.nm }
-
-        var pts = resolved.points.map { $0.coord.clCoordinate }
-        if let own = model.stratuxGPS?.coordinate { pts.append(own.clCoordinate) }
-        if pts.isEmpty { pts = model.aircraft.compactMap { $0.coordinate?.clCoordinate } }
-        let region = boundingRegion(pts) ?? Self.conus
-        camera = .region(region)
-        currentRegion = region
         loading = false
-        refreshOverlays(region: region)
-    }
-
-    /// Recompute the in-view context layers (airspace outlines + nearby navaids/airports) for a settled
-    /// region. Runs off-main (the nearby scan walks the full ~90k-ident table). Airspace hides when
-    /// zoomed out past regional scale, and nearby markers hide when zoomed out past ~5.5° so the map
-    /// stays legible; both cap their counts to keep MapKit snappy.
-    private func refreshOverlays(region: MKCoordinateRegion) {
-        let bb = BBox(region, margin: 0.15)
-        // Gate on the true angular scale, not just latitude: an east-west route is narrow in latitude
-        // yet zoomed far out, and would otherwise dump the whole corridor's aids into one cluttered blob.
-        let scale = max(region.span.latitudeDelta,
-                        region.span.longitudeDelta * cos(region.center.latitude * .pi / 180))
-        let wantAir = showAirspace && scale < 14
-        let wantNear = showNearby && scale < 5.5
-        let idents = routeIdents
-        Task {
-            let (rings, near) = await Task.detached(priority: .userInitiated) {
-                () -> ([AirspaceRing], [NavPoint]) in
-                var rings: [AirspaceRing] = []
-                if wantAir {
-                    let order: [String: Int] = ["B": 0, "C": 1, "D": 2]
-                    let asp = NavDatabase.airspaces(intersecting: bb)
-                        .sorted { (order[$0.cls] ?? 9, $0.name) < (order[$1.cls] ?? 9, $1.name) }
-                    building: for a in asp {
-                        for (j, ring) in a.rings.enumerated() {
-                            rings.append(AirspaceRing(id: "\(a.id)-\(j)", cls: a.cls,
-                                                      coords: ring.map { $0.clCoordinate }))
-                            if rings.count >= 260 { break building }
-                        }
-                    }
-                }
-                let near: [NavPoint] = wantNear
-                    ? NavDatabase.nearby(bb, limit: 160).filter { !idents.contains($0.ident) }
-                    : []
-                return (rings, near)
-            }.value
-            visibleRings = rings
-            visibleNearby = near
-        }
-    }
-
-    private func boundingRegion(_ coords: [CLLocationCoordinate2D]) -> MKCoordinateRegion? {
-        guard let first = coords.first else { return nil }
-        var minLat = first.latitude, maxLat = first.latitude
-        var minLon = first.longitude, maxLon = first.longitude
-        for c in coords {
-            minLat = min(minLat, c.latitude); maxLat = max(maxLat, c.latitude)
-            minLon = min(minLon, c.longitude); maxLon = max(maxLon, c.longitude)
-        }
-        let center = CLLocationCoordinate2D(latitude: (minLat + maxLat) / 2, longitude: (minLon + maxLon) / 2)
-        let span = MKCoordinateSpan(latitudeDelta: max(0.4, (maxLat - minLat) * 1.4),
-                                    longitudeDelta: max(0.4, (maxLon - minLon) * 1.4))
-        return MKCoordinateRegion(center: center, span: span)
+        // Load the raster packs the route crosses (up front, pinned). Usually already on disk from the
+        // file-time / launch prefetch, so this resolves without a download.
+        await store.setLayer(layer, routeRects: routeRects)
     }
 
     // MARK: geo
@@ -425,20 +276,5 @@ struct RouteMapSheet: View {
         let x = cos(la1) * sin(la2) - sin(la1) * cos(la2) * cos(dLo)
         let brg = atan2(y, x) * 180 / .pi
         return brg < 0 ? brg + 360 : brg
-    }
-}
-
-fileprivate extension Coord {
-    var clCoordinate: CLLocationCoordinate2D { .init(latitude: lat, longitude: lon) }
-}
-
-fileprivate extension BBox {
-    /// The visible region grown by `margin` (a fraction of the span) so context layers extend a little
-    /// past the screen edge and don't pop in during a pan.
-    init(_ r: MKCoordinateRegion, margin: Double) {
-        let dLat = r.span.latitudeDelta * (0.5 + margin)
-        let dLon = r.span.longitudeDelta * (0.5 + margin)
-        self.init(minLat: r.center.latitude - dLat, minLon: r.center.longitude - dLon,
-                  maxLat: r.center.latitude + dLat, maxLon: r.center.longitude + dLon)
     }
 }
