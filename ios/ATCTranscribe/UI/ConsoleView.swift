@@ -18,18 +18,14 @@ struct ConsoleView: View {
     var body: some View {
         let p = model.palette
         ZStack {
-            p.bg.ignoresSafeArea()
+            // The map is the home screen — always behind everything, with the widgets floating over it.
+            MapHostView().environmentObject(model)
             VStack(spacing: 0) {
                 TopBar()
-                // Collapsible strips — each toggled by its own heading-bar icon (default: only Input on
-                // first launch; the choice is remembered). As one appears/disappears the transcript
-                // below reflows to fill the freed space.
+                // The Input strip (source picker + setup) is the one genuinely bar-shaped control; it stays
+                // as a toggleable strip under the top bar. Everything else is now a floating widget.
                 if model.showInputBar { InputBar().transition(Self.barTransition) }
-                if model.showDiagnosticsBar { StatusBar().transition(Self.barTransition) }
-                if model.showFlightPlanBar { FlightPlanBar().transition(Self.barTransition) }
-                if model.showStratuxBar { StratuxBar().transition(Self.barTransition) }
-                hairline
-                mainArea
+                homeArea
             }
         }
         .tint(p.accent)
@@ -51,6 +47,14 @@ struct ConsoleView: View {
         }
         .fullScreenCover(isPresented: $model.showRouteMap) {
             RouteMapSheet().environmentObject(model)
+        }
+        .sheet(isPresented: $model.showMapSearch) {
+            MapSearchSheet(onPick: { model.selectMapObject($0); model.showMapSearch = false }, initialQuery: "")
+                .environmentObject(model)
+        }
+        // On compact width the tapped-object info is a bottom sheet; on regular it's a floating side panel.
+        .sheet(item: compactProbe) { result in
+            MapObjectSheet(result: result).environmentObject(model)
         }
         .animation(.easeInOut(duration: 0.25), value: model.theme)
         .onAppear {
@@ -93,28 +97,22 @@ struct ConsoleView: View {
 
     private var hairline: some View { Rectangle().fill(model.palette.border).frame(height: 1) }
 
-    @ViewBuilder private var mainArea: some View {
-        // When every widget is removed, drop the sidebar so the transcript reclaims the full width
-        // (re-add widgets from the "+" in the transcript header). Keep the column while editing so
-        // drag-to-reorder still works.
-        let showSidebar = !model.widgets.isEmpty || model.editingWidgets
+    /// Below the top bar: floating widgets over the map (regular width), or a bottom transcript card with
+    /// the map showing above it (compact). The area is transparent, so taps on the open map reach it.
+    @ViewBuilder private var homeArea: some View {
         if hSize == .regular {
-            HStack(alignment: .top, spacing: 14) {
-                transcriptArea.frame(maxWidth: .infinity, maxHeight: .infinity)
-                if showSidebar { SidebarColumn().frame(width: 300) }
-            }
-            .padding(14)
-            .animation(.easeInOut(duration: 0.2), value: showSidebar)
+            FloatingCanvas().environmentObject(model)
         } else {
-            ScrollView {
-                VStack(spacing: 14) {
-                    transcriptArea.frame(minHeight: 360)
-                    if showSidebar { SidebarColumn() }
-                }
-                .padding(14)
-                .animation(.easeInOut(duration: 0.2), value: showSidebar)
+            VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                transcriptArea.frame(height: 340).padding(10)
             }
         }
+    }
+
+    /// Only surface the tapped-object bottom sheet on compact width; on regular it's a floating side panel.
+    private var compactProbe: Binding<MapProbeResult?> {
+        Binding(get: { hSize == .compact ? model.mapProbe : nil }, set: { model.mapProbe = $0 })
     }
 
     /// Standby dims + disables ONLY the transcript box (the rest of the console stays usable) and
@@ -152,10 +150,9 @@ struct TopBar: View {
             HStack(spacing: barSpacing) {
                 toggle(p, "slider.horizontal.3", on: model.showInputBar,
                        id: "input-toggle", label: "Input controls") { model.showInputBar.toggle() }
-                toggle(p, "gauge.with.dots.needle.bottom.50percent", on: model.showDiagnosticsBar,
-                       id: "diagnostics-toggle", label: "Diagnostics") { model.showDiagnosticsBar.toggle() }
-                flightPlanToggle(p)
-                stratuxToggle(p)
+                iconButton(p, "magnifyingglass", id: "map-search", label: "Search") { Haptics.impact(.light); model.showMapSearch = true }
+                MapLayersMenu(iconSize: iconSize).foregroundStyle(p.text)   // base map + overlays
+                WidgetsMenu(iconSize: iconSize).foregroundStyle(p.text)     // show/hide floating widgets
                 ThemeMenu()
                 PowerButton()
                 iconButton(p, "gearshape.fill", id: "settings-button", label: "Settings") {
@@ -979,10 +976,97 @@ struct SquelchControls: View {
     }
 }
 
+// MARK: - Floating widget canvas (regular width)
+
+/// Lays out every visible floating widget over the map. Each card is a `FloatingWidgetContainer`
+/// positioned from its persisted `WidgetFrame`; the canvas itself is transparent, so taps between cards
+/// fall through to the map behind it.
+struct FloatingCanvas: View {
+    @EnvironmentObject var model: AppModel
+
+    private var frames: [WidgetFrame] {
+        model.widgetLayout.items.filter { $0.kind == .objectInfo ? (model.mapProbe != nil) : $0.visible }
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .topLeading) {
+                ForEach(frames) { frame in
+                    FloatingWidgetContainer(frame: frame, container: geo.size) { widget(frame.kind) }
+                        .environmentObject(model)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    @ViewBuilder private func widget(_ kind: FloatingWidgetKind) -> some View {
+        switch kind {
+        case .transcript:  TranscriptCard()
+        case .flightPlan:  FlightPlanWidget()
+        case .objectInfo:  if let probe = model.mapProbe { MapObjectView(result: probe, onClose: { model.mapProbe = nil }) }
+        case .proofOfLife: SidebarWidget.proofOfLife.card
+        case .stratux:     SidebarWidget.stratux.card
+        case .host:        SidebarWidget.host.card
+        case .latency:     SidebarWidget.latency.card
+        case .diagnostics: SidebarWidget.diagnostics.card
+        }
+    }
+}
+
+/// Compact flight-plan card for the floating layout — route summary + an Edit shortcut into the flight bag.
+struct FlightPlanWidget: View {
+    @EnvironmentObject var model: AppModel
+    var body: some View {
+        let p = model.palette
+        Card(title: "Flight plan") {
+            if let fp = model.flightPlan, !fp.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(fp.summaryLine).font(.callout.weight(.medium)).foregroundStyle(p.text)
+                    if !fp.route.isEmpty {
+                        Text(fp.routeText).font(.caption.monospaced()).foregroundStyle(p.textDim).lineLimit(2)
+                    }
+                    Button { Haptics.impact(.light); model.showFlightBag = true } label: {
+                        Label("Edit", systemImage: "pencil").font(.caption.weight(.semibold))
+                    }
+                }
+            } else {
+                Button { Haptics.impact(.light); model.showFlightBag = true } label: {
+                    Label("File a flight plan", systemImage: "plus.circle").font(.callout)
+                }
+            }
+        }
+    }
+}
+
+/// Top-bar menu to show/hide the floating widgets and reset the layout (replaces the old bar toggles).
+struct WidgetsMenu: View {
+    @EnvironmentObject var model: AppModel
+    var iconSize: CGFloat = 19
+    var body: some View {
+        Menu {
+            ForEach(model.widgetLayout.items.filter { $0.kind.userManageable }) { f in
+                Button {
+                    Haptics.impact(.light)
+                    if f.visible { model.updateWidget(f.kind) { $0.visible = false } } else { model.showFloatingWidget(f.kind) }
+                } label: { Label(f.kind.title, systemImage: f.visible ? "checkmark" : f.kind.symbol) }
+            }
+            Divider()
+            Button { Haptics.impact(.light); model.resetWidgetLayout() } label: {
+                Label("Reset layout", systemImage: "arrow.counterclockwise")
+            }
+        } label: {
+            Image(systemName: "rectangle.3.group").font(.system(size: iconSize)).frame(width: 30, height: 30)
+        }
+        .accessibilityIdentifier("widgets-menu").accessibilityLabel("Widgets")
+    }
+}
+
 // MARK: - Reusable card
 
 struct Card<Content: View>: View {
     @EnvironmentObject var model: AppModel
+    @Environment(\.floatingSurface) private var floating   // hosted in a FloatingWidgetContainer?
     let title: String
     @ViewBuilder var content: Content
     var body: some View {
@@ -995,9 +1079,10 @@ struct Card<Content: View>: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(p.surface)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(p.border, lineWidth: 1))
+        // When floating, the container owns the (opacity-adjustable) background — drop our own chrome.
+        .background(floating ? Color.clear : p.surface)
+        .clipShape(RoundedRectangle(cornerRadius: floating ? 0 : 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(p.border, lineWidth: floating ? 0 : 1))
     }
 }
 
