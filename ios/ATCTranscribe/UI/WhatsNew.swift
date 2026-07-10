@@ -32,6 +32,22 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 39, version: "1.0", headline: "Your charts are the home screen",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "map.fill",
+                    title: "The moving map is now your home screen",
+                    detail: "CommSight opens straight to the chart. Your live transcript, flight plan, and status panels float on top as cards you can drag anywhere, resize, and pin in place — set up your cockpit the way you like it and CommSight remembers it."),
+                WhatsNewHighlight(
+                    icon: "circle.lefthalf.filled",
+                    title: "See-through panels, laid out your way",
+                    detail: "Give any panel its own background opacity — from solid to fully see-through so the chart shows underneath — and show or hide panels from the new Widgets button. Performance and diagnostics panels stay hidden until you want them."),
+                WhatsNewHighlight(
+                    icon: "square.3.layers.3d",
+                    title: "Switch charts and overlays up top",
+                    detail: "A new map button in the top bar switches the base map between VFR, IFR-low, standard, and satellite and toggles airspace and nearby navaids (weather radar is coming soon). Panning the chart is smoother now, too — the airspace and navaid layers no longer flicker."),
+            ]),
+        ReleaseNote(
             build: 38, version: "1.0", headline: "Tap the map — identify anything, and build your route",
             highlights: [
                 WhatsNewHighlight(

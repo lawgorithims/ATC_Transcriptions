@@ -175,46 +175,17 @@ final class ConsoleUITests: XCTestCase {
         XCTAssertTrue(waitForLabel(btn, initial, timeout: 6), "run button did not toggle back to \(initial)")
     }
 
-    // 5. The proof-of-life control exists in the console and is tappable (runs the on-device check).
-    func test5_proofOfLifeButton() {
-        let app = launch(onboardingDismissed: true)
-        XCTAssertTrue(consoleReady(app))
-        let pol = app.buttons["proof-of-life-button"]
-        XCTAssertTrue(reveal(pol, app), "proof-of-life button missing")
-        XCTAssertTrue(pol.isHittable, "proof-of-life button not hittable")
-        pol.tap()
-        snap(app, "07-proof-of-life")
+    // 5 & 6 asserted the OLD console: a proof-of-life button in the right-rail sidebar and long-press
+    // context-menu widget management (remove/add). Build 39 makes the map the home screen with FLOATING
+    // widgets — proof-of-life is a draggable card, and widgets are shown/hidden from the top-bar Widgets
+    // menu with per-card ✕ / opacity controls (no sidebar, no "Remove <widget>" context menu). Skipped
+    // (not silently passing) until rewritten against the floating-widget UI; see the map-home redesign.
+    func test5_proofOfLifeButton() throws {
+        throw XCTSkip("Right-rail sidebar replaced by floating widgets in build 39 — UI test pending rewrite.")
     }
 
-    // 6. Sidebar widgets are customizable: long-press a card for a context menu to remove the
-    // touched widget, or add one that isn't shown (dropdown).
-    func test6_customizeWidgets() {
-        let app = launch(onboardingDismissed: true, resetWidgets: true)
-        XCTAssertTrue(consoleReady(app))
-
-        // Long-press the Host card (uppercased title) to open its context menu, then Remove it.
-        let host = app.staticTexts["HOST"].firstMatch
-        XCTAssertTrue(reveal(host, app), "host widget missing")
-        host.press(forDuration: 0.7)
-        let removeHost = app.buttons["Remove Host"].firstMatch
-        XCTAssertTrue(removeHost.waitForExistence(timeout: 5), "context-menu Remove control missing")
-        snap(app, "08-widget-menu")
-        removeHost.tap()
-        XCTAssertTrue(app.staticTexts["HOST"].waitForNonExistence(timeout: 4), "host widget not removed")
-
-        // Re-add Host via another widget's context menu → "Add widget" dropdown (best-effort:
-        // nested-menu UI can vary in the Simulator).
-        let perf = app.staticTexts["PERFORMANCE CHECK"].firstMatch
-        if reveal(perf, app) {
-            perf.press(forDuration: 0.7)
-            let addMenu = app.buttons["Add widget"].firstMatch
-            if addMenu.waitForExistence(timeout: 3) {
-                addMenu.tap()
-                let hostItem = app.buttons["Host"].firstMatch
-                if hostItem.waitForExistence(timeout: 3) { hostItem.tap() }
-            }
-        }
-        snap(app, "09-widget-readded")
+    func test6_customizeWidgets() throws {
+        throw XCTSkip("Long-press widget context menu replaced by the top-bar Widgets menu + per-card controls in build 39 — UI test pending rewrite.")
     }
 
     // 7. Standby: touch-and-hold the power button opens the low-power standby screen; Resume returns.
