@@ -7,6 +7,7 @@ import SwiftUI
 struct ConsoleView: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var downloads: ModelDownloadManager
+    @EnvironmentObject var widgets: WidgetStore
     @Environment(\.horizontalSizeClass) private var hSize
     @Environment(\.scenePhase) private var scenePhase
 
@@ -19,7 +20,7 @@ struct ConsoleView: View {
         let p = model.palette
         ZStack {
             // The map is the home screen — always behind everything, with the widgets floating over it.
-            MapHostView().environmentObject(model)
+            MapHostView(widgets: widgets).environmentObject(model)
             VStack(spacing: 0) {
                 TopBar()
                 // The Input strip (source picker + setup) is the one genuinely bar-shaped control; it stays
@@ -102,7 +103,7 @@ struct ConsoleView: View {
     /// the map showing above it (compact). The area is transparent, so taps on the open map reach it.
     @ViewBuilder private var homeArea: some View {
         if hSize == .regular {
-            FloatingCanvas().environmentObject(model)
+            FloatingCanvas(palette: model.palette).environmentObject(model)
         } else {
             VStack(spacing: 0) {
                 Spacer(minLength: 0)
@@ -113,7 +114,7 @@ struct ConsoleView: View {
 
     /// Only surface the tapped-object bottom sheet on compact width; on regular it's a floating side panel.
     private var compactProbe: Binding<MapProbeResult?> {
-        Binding(get: { hSize == .compact ? model.mapProbe : nil }, set: { model.mapProbe = $0 })
+        Binding(get: { hSize == .compact ? widgets.mapProbe : nil }, set: { widgets.mapProbe = $0 })
     }
 
     /// A strip shown while a coded procedure is drawn on the map — its name + a clear button.
@@ -1001,18 +1002,24 @@ struct SquelchControls: View {
 /// positioned from its persisted `WidgetFrame`; the canvas itself is transparent, so taps between cards
 /// fall through to the map behind it.
 struct FloatingCanvas: View {
-    @EnvironmentObject var model: AppModel
+    /// Observe ONLY the widget store (layout + probe) — never `AppModel` — so the several-per-second
+    /// live-data storm doesn't re-run this body (and rebuild every card) while one is being dragged. The
+    /// palette is passed in as a value so a theme switch still restyles the cards, and each card's live
+    /// content (transcript, etc.) keeps its own `AppModel` subscription from the environment.
+    @EnvironmentObject var widgets: WidgetStore
+    let palette: Palette
 
     private var frames: [WidgetFrame] {
-        model.widgetLayout.items.filter { $0.kind == .objectInfo ? (model.mapProbe != nil) : $0.visible }
+        widgets.layout.items.filter { $0.kind == .objectInfo ? (widgets.mapProbe != nil) : $0.visible }
     }
 
     var body: some View {
         GeometryReader { geo in
             ZStack(alignment: .topLeading) {
                 ForEach(frames) { frame in
-                    FloatingWidgetContainer(frame: frame, container: geo.size) { widget(frame.kind) }
-                        .environmentObject(model)
+                    FloatingWidgetContainer(frame: frame, container: geo.size, palette: palette, widgets: widgets) {
+                        widget(frame.kind)
+                    }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1023,7 +1030,7 @@ struct FloatingCanvas: View {
         switch kind {
         case .transcript:  TranscriptCard()
         case .flightPlan:  FlightPlanWidget()
-        case .objectInfo:  if let probe = model.mapProbe { MapObjectView(result: probe, onClose: { model.mapProbe = nil }) }
+        case .objectInfo:  if let probe = widgets.mapProbe { MapObjectView(result: probe, onClose: { widgets.mapProbe = nil }) }
         case .proofOfLife: SidebarWidget.proofOfLife.card
         case .stratux:     SidebarWidget.stratux.card
         case .host:        SidebarWidget.host.card
@@ -1060,18 +1067,18 @@ struct FlightPlanWidget: View {
 
 /// Top-bar menu to show/hide the floating widgets and reset the layout (replaces the old bar toggles).
 struct WidgetsMenu: View {
-    @EnvironmentObject var model: AppModel
+    @EnvironmentObject var widgets: WidgetStore
     var iconSize: CGFloat = 19
     var body: some View {
         Menu {
-            ForEach(model.widgetLayout.items.filter { $0.kind.userManageable }) { f in
+            ForEach(widgets.layout.items.filter { $0.kind.userManageable }) { f in
                 Button {
                     Haptics.impact(.light)
-                    if f.visible { model.updateWidget(f.kind) { $0.visible = false } } else { model.showFloatingWidget(f.kind) }
+                    if f.visible { widgets.update(f.kind) { $0.visible = false } } else { widgets.show(f.kind) }
                 } label: { Label(f.kind.title, systemImage: f.visible ? "checkmark" : f.kind.symbol) }
             }
             Divider()
-            Button { Haptics.impact(.light); model.resetWidgetLayout() } label: {
+            Button { Haptics.impact(.light); widgets.reset() } label: {
                 Label("Reset layout", systemImage: "arrow.counterclockwise")
             }
         } label: {

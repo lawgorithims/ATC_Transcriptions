@@ -222,9 +222,6 @@ final class AppModel: ObservableObject {
 
     // MARK: Home-screen map + floating widgets
 
-    /// The map object the user tapped on the home map (nil = nothing selected). Drives the object side
-    /// panel (regular width) / bottom sheet (compact). Transient.
-    @Published var mapProbe: MapProbeResult?
     /// Recenter the home map here (a search result). Transient.
     @Published var mapFocus: Coord?
     /// A coded procedure (approach/SID/STAR) drawn as a georeferenced overlay on the home map; nil = none.
@@ -235,7 +232,7 @@ final class AppModel: ObservableObject {
     /// A search result / programmatic selection: center the map on it and open its info panel.
     func selectMapObject(_ o: IdentifiedObject) {
         mapFocus = o.coord
-        mapProbe = MapProbeResult(id: "sel-\(o.id)", objects: [o])
+        widgetStore.mapProbe = MapProbeResult(id: "sel-\(o.id)", objects: [o])
     }
 
     /// Map overlay toggles shared by the always-on home map and the top-bar layers menu. Persisted.
@@ -257,29 +254,10 @@ final class AppModel: ObservableObject {
     /// Updated from `ProcessInfo.thermalStateDidChangeNotification` (observer installed in `init`).
     @Published var thermalSerious = ProcessInfo.processInfo.thermalState.rawValue >= ProcessInfo.ThermalState.serious.rawValue
 
-    /// The floating-widget layout (positions, sizes, opacity, visibility, pins). Persisted JSON.
-    @Published var widgetLayout: WidgetLayout = AppModel.initialWidgetLayout() {
-        didSet { widgetLayout.save() }
-    }
-
-    /// First run under the redesign migrates the old `atc.sidebarWidgets` list into a layout; else defaults.
-    /// `--reset-widgets` (UI tests / recovery) forces the default layout regardless of what's persisted.
-    nonisolated static func initialWidgetLayout() -> WidgetLayout {
-        if CommandLine.arguments.contains("--reset-widgets") { return .defaults() }
-        if let saved = WidgetLayout.load() { return saved }
-        if let ids = UserDefaults.standard.array(forKey: "atc.sidebarWidgets") as? [String] {
-            return .migrating(fromSidebarIDs: ids)
-        }
-        return .defaults()
-    }
-
-    func updateWidget(_ kind: FloatingWidgetKind, _ mutate: (inout WidgetFrame) -> Void) { widgetLayout.update(kind, mutate) }
-    func bringWidgetToFront(_ kind: FloatingWidgetKind) { widgetLayout.bringToFront(kind) }
-    func showFloatingWidget(_ kind: FloatingWidgetKind) {
-        widgetLayout.update(kind) { $0.visible = true }
-        widgetLayout.bringToFront(kind)
-    }
-    func resetWidgetLayout() { widgetLayout = .defaults() }
+    /// The floating-widget layout + tapped-object probe live in their OWN store (not `@Published` here) so
+    /// the several-per-second live-data storm on this model never re-renders the widget chrome — see
+    /// `WidgetStore`. Injected into the environment alongside this model at the app root.
+    let widgetStore = WidgetStore()
 
     // "What's new" popup: shown once after the app updates to a newer build (gated on CFBundleVersion
     // vs the persisted `atc.lastSeenBuild`). `whatsNewEntries` holds the release notes the sheet

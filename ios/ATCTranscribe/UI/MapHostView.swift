@@ -3,7 +3,7 @@ import MapKit
 
 /// The always-present home-screen map background. Lifts the map-owning half of `RouteMapSheet`: it draws
 /// the filed route + FAA/Apple base layer + airspace/nearby/traffic via `ChartMapView`, resolves the
-/// route with `RouteResolver`, and routes taps to `model.mapProbe` (which drives the object side panel /
+/// route with `RouteResolver`, and routes taps to `widgets.mapProbe` (which drives the object side panel /
 /// sheet — a sibling in `ConsoleView`'s ZStack). Layer + overlay choices come from persisted `AppModel`
 /// state so the top-bar layers menu and this map stay in sync.
 ///
@@ -11,6 +11,9 @@ import MapKit
 /// plain background stands in so MapKit stops rendering and never starves on-device transcription.
 struct MapHostView: View {
     @EnvironmentObject var model: AppModel
+    /// Plain reference (NOT observed): the map only WRITES the tapped-object probe here — it must not
+    /// re-render / re-reconcile just because a widget's layout changed.
+    let widgets: WidgetStore
     @Environment(\.scenePhase) private var scenePhase
 
     @StateObject private var store = ChartStore(library: ChartLibrary.shared)
@@ -39,7 +42,7 @@ struct MapHostView: View {
                              onTapObjects: { objs in
                                  guard !objs.isEmpty else { return }
                                  Haptics.impact(.light)
-                                 model.mapProbe = MapProbeResult(id: UUID().uuidString, objects: objs)
+                                 widgets.mapProbe = MapProbeResult(id: UUID().uuidString, objects: objs)
                              },
                              focus: model.mapFocus,
                              model: model)
