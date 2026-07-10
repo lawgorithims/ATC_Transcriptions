@@ -48,7 +48,7 @@ _PHONETIC_WORDS = {
 # Phrases that strongly indicate the CONTROLLER is speaking (instructions/clearances).
 _CONTROLLER_CUES = (
     "cleared to land", "cleared for takeoff", "cleared for the option",
-    "cleared", "contact", "fly heading", "turn left", "turn right",
+    "cleared", "contact", "fly heading", "heading", "turn left", "turn right",
     "climb and maintain", "descend and maintain", "climb", "descend", "maintain",
     "radar contact", "traffic", "wind", "expect", "reduce speed", "increase speed",
     "say again", "ident", "squawk", "go around", "line up and wait",
@@ -151,21 +151,30 @@ def extract_callsign(text: str) -> Optional[str]:
     return None
 
 
-def _callsign_position(tokens: List[str], callsign: Optional[str]) -> str:
-    """Where the full callsign span sits: 'front', 'back', or 'mid'/'none'.
+# Weight-class words spoken AFTER a callsign ("delta two thirty two heavy"). They trail the
+# callsign span (extract_callsign stops at the digits), so allow them when testing for a
+# trailing/readback callsign.
+_WEIGHT_SUFFIX = {"heavy", "super"}
 
-    Only 'back' is a useful role signal: a transmission ENDING in the callsign is a
-    readback tag, which leans pilot. 'front' is ambiguous — BOTH controllers (who
-    address the aircraft) and pilots (who lead with their own callsign on check-in)
-    do it — so it is treated as no signal. Matches the whole callsign span, not just
-    its first token, so "... delta twelve thirty four" is recognized as trailing.
+
+def _callsign_position(tokens: List[str], callsign: Optional[str]) -> str:
+    """Where the full callsign span sits: 'front', 'back', 'mid', or 'none'.
+
+    'back' = a transmission ENDING in the callsign (a readback / self-identification tag,
+    leans pilot); a trailing weight-class word ("heavy"/"super") still counts as back.
+    'front' = a transmission LEADING with the callsign (controller addressing an aircraft,
+    or a pilot check-in — disambiguated by whether an instruction follows). 'mid'/'none' =
+    no positional signal. Matches the whole callsign span, not just its first token.
     """
     if not callsign:
         return "none"
     cs = callsign.split()
     if not cs or len(cs) > len(tokens):
         return "none"
-    if tokens[-len(cs):] == cs:
+    tail = list(tokens)
+    while tail and tail[-1] in _WEIGHT_SUFFIX:
+        tail.pop()
+    if len(cs) <= len(tail) and tail[-len(cs):] == cs:
         return "back"
     if tokens[: len(cs)] == cs:
         return "front"
@@ -183,13 +192,17 @@ def _count_cues(text: str, cues) -> int:
 def classify_turn(text: str, context=None) -> TurnLabel:
     """Classify a single transmission as controller vs pilot and pull its callsign.
 
-    Heuristic and intentionally conservative. Pilot lexical cues (request / with
-    you / roger / unable ...) are strong because controllers rarely say them; a
-    trailing callsign (readback tag) adds weight to pilot. Controller instruction
-    cues are weaker because pilot READBACKS echo the same phraseology. When the
-    two sides tie (e.g. a bare readback that only echoes an instruction), we return
-    role="unknown" rather than guess — callers must not let "unknown" block a
-    segment from plain-ASR training.
+    STRUCTURAL first, lexical second. The strongest discriminator in ATC is WHERE the
+    callsign sits:
+      * ENDING in the callsign  -> pilot readback / self-identification. The controller
+        cue words present are the ECHOED instruction, NOT the controller speaking, so
+        they must not flip it (this is the main fix for readbacks being mislabeled
+        controller and pilots being undercounted).
+      * LEADING with the callsign -> controller IF it also carries an instruction (the
+        controller addresses then instructs); otherwise a pilot check-in / request.
+    Only with no positional signal do we fall back to counting controller vs pilot cue
+    phrases. A lone callsign with no cues leans pilot (ident/ack); a truly empty/ambiguous
+    turn stays "unknown" (callers must not let "unknown" block plain-ASR training).
 
     ``context`` is accepted for forward compatibility but is not required.
     """
@@ -200,22 +213,33 @@ def classify_turn(text: str, context=None) -> TurnLabel:
     tokens = norm.split()
     callsign = extract_callsign(norm)
     position = _callsign_position(tokens, callsign)
-
     score_c = _count_cues(norm, _CONTROLLER_CUES)
     score_p = _count_cues(norm, _PILOT_CUES)
+
+    # 1) Trailing callsign = readback / ident -> PILOT (echoed controller cues ignored).
     if position == "back":
-        score_p += 1  # trailing callsign = readback tag
+        return TurnLabel(role="pilot", callsign=callsign,
+                         confidence=0.8 if score_p else 0.65)
 
-    if score_c == 0 and score_p == 0:
-        return TurnLabel(role="unknown", callsign=callsign, confidence=0.0)
-    if score_c == score_p:
-        # Ambiguous (e.g. a readback that only echoes an instruction) — stay honest.
-        return TurnLabel(role="unknown", callsign=callsign, confidence=0.0)
+    # 2) Leading callsign: controller if it instructs, else a pilot check-in / request.
+    if position == "front":
+        if score_c > 0 and score_c >= score_p:
+            return TurnLabel(role="controller", callsign=callsign,
+                             confidence=round(min(1.0, 0.6 + 0.2 * (score_c - score_p)), 2))
+        return TurnLabel(role="pilot", callsign=callsign, confidence=0.65)
 
-    role = "controller" if score_c > score_p else "pilot"
-    margin = abs(score_c - score_p)
-    confidence = round(min(1.0, 0.5 + 0.25 * margin), 2)
-    return TurnLabel(role=role, callsign=callsign, confidence=confidence)
+    # 3) No positional signal -> lexical cue counts decide.
+    if score_p > score_c:
+        return TurnLabel(role="pilot", callsign=callsign,
+                         confidence=round(min(1.0, 0.5 + 0.25 * (score_p - score_c)), 2))
+    if score_c > score_p:
+        return TurnLabel(role="controller", callsign=callsign,
+                         confidence=round(min(1.0, 0.5 + 0.25 * (score_c - score_p)), 2))
+
+    # 4) Tie / no cues: a lone callsign leans pilot (ident/ack); otherwise unknown.
+    if callsign:
+        return TurnLabel(role="pilot", callsign=callsign, confidence=0.5)
+    return TurnLabel(role="unknown", callsign=None, confidence=0.0)
 
 
 def label_line(text: str, context=None) -> str:

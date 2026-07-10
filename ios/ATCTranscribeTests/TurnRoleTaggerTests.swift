@@ -46,10 +46,13 @@ final class TurnRoleTaggerTests: XCTestCase {
         XCTAssertEqual(TurnRoleTagger.countCues("cleared to land", TurnRoleTagger.controllerCues), 1)
     }
 
-    func testTrailingCallsignDetected() {
-        let tokens = "southwest 2914 left heading 270".split(separator: " ").map(String.init)
-        XCTAssertFalse(TurnRoleTagger.callsignIsTrailing(tokens: tokens, callsign: "southwest 2914"))
-        let tokens2 = "left heading 270 southwest 2914".split(separator: " ").map(String.init)
-        XCTAssertTrue(TurnRoleTagger.callsignIsTrailing(tokens: tokens2, callsign: "southwest 2914"))
+    func testCallsignPositionDetected() {
+        let front = "southwest 2914 left heading 270".split(separator: " ").map(String.init)
+        XCTAssertEqual(TurnRoleTagger.callsignPosition(tokens: front, callsign: "southwest 2914"), .front)
+        let back = "left heading 270 southwest 2914".split(separator: " ").map(String.init)
+        XCTAssertEqual(TurnRoleTagger.callsignPosition(tokens: back, callsign: "southwest 2914"), .back)
+        // weight-class word after the callsign still counts as a trailing (readback) tag
+        let heavy = "cleared to land southwest 2914 heavy".split(separator: " ").map(String.init)
+        XCTAssertEqual(TurnRoleTagger.callsignPosition(tokens: heavy, callsign: "southwest 2914"), .back)
     }
 }

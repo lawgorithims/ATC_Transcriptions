@@ -32,6 +32,9 @@ CASES = [
     "traffic in sight",
     "and that is all the traffic i have for you",            # ambiguous chatter -> unknown
     "climbing to one zero thousand",
+    "delta two thirty two heavy cleared to land runway two two",  # front + heavy -> controller
+    "cleared to land runway two two delta two thirty two heavy",  # readback + heavy -> pilot
+    "southwest eight eighty eight",                              # bare callsign ident -> pilot
     "",
 ]
 
