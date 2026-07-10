@@ -257,7 +257,9 @@ final class AppModel: ObservableObject {
     }
 
     /// First run under the redesign migrates the old `atc.sidebarWidgets` list into a layout; else defaults.
+    /// `--reset-widgets` (UI tests / recovery) forces the default layout regardless of what's persisted.
     nonisolated static func initialWidgetLayout() -> WidgetLayout {
+        if CommandLine.arguments.contains("--reset-widgets") { return .defaults() }
         if let saved = WidgetLayout.load() { return saved }
         if let ids = UserDefaults.standard.array(forKey: "atc.sidebarWidgets") as? [String] {
             return .migrating(fromSidebarIDs: ids)
