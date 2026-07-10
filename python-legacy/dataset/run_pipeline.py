@@ -266,6 +266,21 @@ def run(cfg: dict) -> dict:
                 processed += 1
                 if row is not None:
                     accepted += 1
+                    # P1: fail-safe acoustic speaker embedding for accepted clips, using
+                    # the audio array already in memory. Persisted to embeddings.jsonl
+                    # (keyed by seg_id) so the offline clustering pass need not re-read
+                    # audio. Wrapped so it can NEVER break the collector: any failure
+                    # (no speechbrain, bad clip, inference error) just skips the embedding.
+                    try:
+                        import json as _json
+                        from dataset import speaker_embed as _spk
+                        _emb = _spk.embed(audio)
+                        if _emb is not None:
+                            _ep = writer.manifest_path.parent / "embeddings.jsonl"
+                            with _ep.open("a", encoding="utf-8") as _fh:
+                                _fh.write(_json.dumps({"id": seg.seg_id, "emb": _emb}) + "\n")
+                    except Exception:
+                        pass
             print(f"  block {item.block_path.name}: {len(segments)} segs "
                   f"(running: {accepted} accepted / {processed} processed)")
         producer.join(timeout=5)

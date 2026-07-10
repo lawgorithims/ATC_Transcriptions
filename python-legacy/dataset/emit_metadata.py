@@ -133,6 +133,15 @@ def to_train_metadata(
     never become training data.
     """
     rows = read_manifest(manifest_path)
+    # Tier-2 acoustic speaker labels: optional sidecar written offline by
+    # dataset/atc_speaker_cluster.py; joined by segment id when present (absent -> None).
+    spk_path = Path(manifest_path).parent / "speaker_clusters.jsonl"
+    speakers = {}
+    if spk_path.exists():
+        for _line in spk_path.read_text(encoding="utf-8").splitlines():
+            if _line.strip():
+                _s = json.loads(_line)
+                speakers[_s["id"]] = _s
     excl_path = Path(manifest_path).resolve().parent.parent / "excluded_blocks_gold.txt"
     excluded = (set(excl_path.read_text(encoding="utf-8").splitlines())
                 if excl_path.exists() else set())
@@ -151,10 +160,19 @@ def to_train_metadata(
             tagged = src.with_suffix(".role.txt")
             tagged.write_text(f"{tag} {text}\n", encoding="utf-8")
             transcript_path = str(tagged)
+        sp = speakers.get(r["id"], {})
         out_rows.append({
             "id": r["id"],
             "audio_path": r["audio_path"],
             "transcript_path": transcript_path,
+            # Tier-1 content attribution (passthrough from the manifest row) + Tier-2
+            # acoustic speaker cluster (from the optional speaker_clusters.jsonl sidecar).
+            # Consumers that only need audio/transcript ignore these extra keys.
+            "role": r.get("role"),
+            "callsign": r.get("callsign"),
+            "role_confidence": r.get("role_confidence"),
+            "speaker_id": sp.get("speaker_id"),
+            "speaker_role_affinity": sp.get("speaker_role_affinity"),
         })
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     Path(out_path).write_text(json.dumps(out_rows, indent=2), encoding="utf-8")
