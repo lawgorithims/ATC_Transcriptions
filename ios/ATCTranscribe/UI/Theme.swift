@@ -16,7 +16,7 @@ enum AppTheme: String, CaseIterable, Identifiable {
 }
 
 /// Resolved colors for a theme.
-struct Palette {
+struct Palette: Equatable {
     let bg, surface, surfaceAlt, text, textDim, accent, border, good, warn, bad: Color
 }
 

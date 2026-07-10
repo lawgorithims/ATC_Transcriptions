@@ -125,6 +125,43 @@ struct WidgetLayout: Codable, Equatable {
     }
 }
 
+// MARK: - Widget store (isolated from the live-data storm)
+
+/// Owns the floating-widget layout + the tapped-object probe — the home-screen "panel" state.
+///
+/// This lives in its OWN `ObservableObject`, deliberately NOT on `AppModel`, so the several-per-second
+/// live-data publishes (transcript records, audio input level, ADS-B traffic, GPS — all mirrored into
+/// `AppModel`) never invalidate the widget chrome. Because `FloatingCanvas` / `FloatingWidgetContainer`
+/// observe this store instead of `AppModel`, SwiftUI skips their bodies on every unrelated storm tick, so
+/// a card being dragged doesn't re-rasterize its shadow/clip/content — only its own gesture state moves
+/// it. The live content INSIDE each card (e.g. `TranscriptCard`) keeps its own `AppModel` subscription, so
+/// it still updates in real time. Layout changes persist as JSON, mirroring the old `AppModel` behaviour.
+@MainActor final class WidgetStore: ObservableObject {
+    @Published var layout: WidgetLayout { didSet { layout.save() } }
+    /// The map object the user tapped on the home map (nil = nothing) — drives the object side panel
+    /// (regular width) / bottom sheet (compact). Transient; changes only on a tap, never on the storm.
+    @Published var mapProbe: MapProbeResult?
+
+    init() { layout = WidgetStore.initialLayout() }
+
+    /// First run under the redesign migrates the old `atc.sidebarWidgets` list into a layout; else the
+    /// saved layout, else defaults. `--reset-widgets` (UI tests / recovery) forces defaults.
+    static func initialLayout() -> WidgetLayout {
+        if CommandLine.arguments.contains("--reset-widgets") { return .defaults() }
+        if let saved = WidgetLayout.load() { return saved }
+        if let ids = UserDefaults.standard.array(forKey: "atc.sidebarWidgets") as? [String] {
+            return .migrating(fromSidebarIDs: ids)
+        }
+        return .defaults()
+    }
+
+    func update(_ kind: FloatingWidgetKind, _ mutate: (inout WidgetFrame) -> Void) { layout.update(kind, mutate) }
+    func bringToFront(_ kind: FloatingWidgetKind) { layout.bringToFront(kind) }
+    /// Reveal a widget and lift it to the front (top-bar Widgets menu / programmatic show).
+    func show(_ kind: FloatingWidgetKind) { layout.update(kind) { $0.visible = true }; layout.bringToFront(kind) }
+    func reset() { layout = .defaults() }
+}
+
 // MARK: - Pure geometry (unit-tested; no view state)
 
 /// Resolves a `WidgetFrame` to an on-screen rect and, inversely, snaps a dragged rect back to the
@@ -204,9 +241,11 @@ extension EnvironmentValues {
 /// Drag is scoped to the header handle (so inner scroll views / buttons keep working); on release it
 /// snaps to the nearest anchor via `WidgetGeometry`. Reads/writes its `WidgetFrame` through `AppModel`.
 struct FloatingWidgetContainer<Content: View>: View {
-    @EnvironmentObject var model: AppModel
     let frame: WidgetFrame
     let container: CGSize
+    let palette: Palette
+    let widgets: WidgetStore          // plain ref for actions only — NOT observed, so the live-data storm
+                                      // can never re-render (and re-rasterize) a card while it's being dragged
     @ViewBuilder var content: Content
 
     @GestureState private var drag: CGSize = .zero
@@ -214,7 +253,7 @@ struct FloatingWidgetContainer<Content: View>: View {
     @State private var showControls = false
 
     var body: some View {
-        let p = model.palette
+        let p = palette
         let rect = WidgetGeometry.rect(for: frame, in: container)
         let w = clampW(rect.width + resize.width)
         let h = clampH(rect.height + resize.height)
@@ -299,7 +338,7 @@ struct FloatingWidgetContainer<Content: View>: View {
                     .updating($resize) { v, s, _ in s = v.translation }
                     .onEnded { v in
                         let rect = WidgetGeometry.rect(for: frame, in: container)
-                        model.updateWidget(frame.kind) {
+                        widgets.update(frame.kind) {
                             $0.size = CGSize(width: clampW(rect.width + v.translation.width),
                                              height: clampH(rect.height + v.translation.height))
                         }
@@ -312,25 +351,25 @@ struct FloatingWidgetContainer<Content: View>: View {
     private var dragGesture: some Gesture {
         DragGesture(minimumDistance: 2)
             .updating($drag) { v, s, _ in s = v.translation }
-            .onChanged { _ in if model.widgetLayout.frame(frame.kind)?.z != model.widgetLayout.maxZ { model.bringWidgetToFront(frame.kind) } }
+            .onChanged { _ in if widgets.layout.frame(frame.kind)?.z != widgets.layout.maxZ { widgets.bringToFront(frame.kind) } }
             .onEnded { v in
                 let rect = WidgetGeometry.rect(for: frame, in: container)
                 let dropped = CGPoint(x: rect.origin.x + v.translation.width, y: rect.origin.y + v.translation.height)
                 let snapped = WidgetGeometry.snap(droppedOrigin: dropped, size: rect.size, in: container)
-                model.updateWidget(frame.kind) { $0.anchor = snapped.anchor; $0.offset = snapped.offset }
+                widgets.update(frame.kind) { $0.anchor = snapped.anchor; $0.offset = snapped.offset }
             }
     }
 
     private var opacityBinding: Binding<Double> {
-        Binding(get: { frame.opacity }, set: { v in model.updateWidget(frame.kind) { $0.opacity = v } })
+        Binding(get: { frame.opacity }, set: { v in widgets.update(frame.kind) { $0.opacity = v } })
     }
     private var pinnedBinding: Binding<Bool> {
-        Binding(get: { frame.pinned }, set: { v in model.updateWidget(frame.kind) { $0.pinned = v } })
+        Binding(get: { frame.pinned }, set: { v in widgets.update(frame.kind) { $0.pinned = v } })
     }
 
     private func close() {
-        if frame.kind == .objectInfo { model.mapProbe = nil }   // the object panel closes by clearing the tap
-        else { model.updateWidget(frame.kind) { $0.visible = false } }
+        if frame.kind == .objectInfo { widgets.mapProbe = nil }   // the object panel closes by clearing the tap
+        else { widgets.update(frame.kind) { $0.visible = false } }
     }
 
     private func clampW(_ x: CGFloat) -> CGFloat { min(max(x, WidgetGeometry.minSize.width), container.width - 2 * WidgetGeometry.margin) }

@@ -11,6 +11,7 @@ struct ATCTranscribeApp: App {
         WindowGroup {
             ConsoleView()
                 .environmentObject(model)
+                .environmentObject(model.widgetStore)   // isolated widget-layout/probe store (see WidgetStore)
                 .environmentObject(downloads)
         }
     }
