@@ -210,7 +210,11 @@ final class AppModel: ObservableObject {
     /// `savedChartLayer`; the map writes any switch back here.
     nonisolated static let chartLayerKey = "atc.chartLayer"
     nonisolated static var savedChartLayer: ChartLayer {
-        UserDefaults.standard.string(forKey: chartLayerKey).flatMap(ChartLayer.init(rawValue:)) ?? .sectional
+        // A `--chart-layer` launch arg (demo/screenshot only) frames the home map on that layer; otherwise
+        // restore the last-used layer, defaulting to VFR sectional on first run.
+        ChartLayer.launchOverride
+            ?? UserDefaults.standard.string(forKey: chartLayerKey).flatMap(ChartLayer.init(rawValue:))
+            ?? .sectional
     }
     @Published var chartLayer: ChartLayer = AppModel.savedChartLayer {
         didSet { UserDefaults.standard.set(chartLayer.rawValue, forKey: Self.chartLayerKey) }
@@ -223,6 +227,8 @@ final class AppModel: ObservableObject {
     @Published var mapProbe: MapProbeResult?
     /// Recenter the home map here (a search result). Transient.
     @Published var mapFocus: Coord?
+    /// A coded procedure (approach/SID/STAR) drawn as a georeferenced overlay on the home map; nil = none.
+    @Published var previewedProcedure: CIFPProcedure?
     /// Drives the map search sheet (top-bar magnifying glass). Transient.
     @Published var showMapSearch = false
 
@@ -532,6 +538,10 @@ final class AppModel: ObservableObject {
         // `--chart-layer ifr|vfr|std|sat` to pick the layer and `--chart-center lat,lon` to frame it.
         if args.contains("--open-chart") { showRouteMap = true }
         if args.contains("--open-settings") { showSettings = true }     // screenshot/demo: open Settings at launch
+        // screenshot/demo: draw an airport's first coded approach on the map (`--preview-proc KBOS`).
+        if let i = args.firstIndex(of: "--preview-proc"), i + 1 < args.count {
+            previewedProcedure = CIFP.procedures(airport: args[i + 1]).first { $0.kind == "IAP" }
+        }
 
         #if targetEnvironment(simulator)
         deviceLabel = "CPU (Simulator)"

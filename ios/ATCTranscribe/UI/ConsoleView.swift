@@ -25,6 +25,7 @@ struct ConsoleView: View {
                 // The Input strip (source picker + setup) is the one genuinely bar-shaped control; it stays
                 // as a toggleable strip under the top bar. Everything else is now a floating widget.
                 if model.showInputBar { InputBar().transition(Self.barTransition) }
+                if let proc = model.previewedProcedure { procedureStrip(proc) }
                 homeArea
             }
         }
@@ -113,6 +114,24 @@ struct ConsoleView: View {
     /// Only surface the tapped-object bottom sheet on compact width; on regular it's a floating side panel.
     private var compactProbe: Binding<MapProbeResult?> {
         Binding(get: { hSize == .compact ? model.mapProbe : nil }, set: { model.mapProbe = $0 })
+    }
+
+    /// A strip shown while a coded procedure is drawn on the map — its name + a clear button.
+    private func procedureStrip(_ proc: CIFPProcedure) -> some View {
+        let p = model.palette
+        return HStack(spacing: 8) {
+            Image(systemName: "point.topleft.down.to.point.bottomright.curvepath")
+                .foregroundStyle(Color(red: 0.16, green: 0.78, blue: 0.94))
+            Text("\(proc.airport) · \(proc.name)").font(.caption.weight(.semibold)).foregroundStyle(p.text).lineLimit(1)
+            Spacer(minLength: 4)
+            Button { Haptics.impact(.light); model.previewedProcedure = nil } label: {
+                Image(systemName: "xmark.circle.fill").foregroundStyle(p.textDim)
+            }
+            .buttonStyle(.plain).accessibilityIdentifier("clear-procedure")
+        }
+        .padding(.horizontal, 12).padding(.vertical, 7)
+        .background(p.surface)
+        .transition(Self.barTransition)
     }
 
     /// Standby dims + disables ONLY the transcript box (the rest of the console stays usable) and

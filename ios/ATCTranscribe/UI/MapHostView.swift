@@ -20,10 +20,19 @@ struct MapHostView: View {
     /// device is hot (a transient `.inactive`, e.g. a permission alert, must NOT blank the map).
     private var live: Bool { model.mapBackgroundEnabled && scenePhase != .background && !model.thermalSerious }
 
+    /// The previewed coded procedure's legs (fixes with resolved coordinates) — the georeferenced overlay.
+    private var procedureLegs: [ResolvedLeg] {
+        guard let p = model.previewedProcedure else { return [] }
+        return CIFP.legs(procedureID: p.id).compactMap { leg in
+            leg.coord.map { ResolvedLeg(ident: leg.fix, kind: .waypoint, coord: $0) }
+        }
+    }
+
     var body: some View {
         Group {
             if live {
                 ChartMapView(layer: model.chartLayer, readers: store.readers, route: route,
+                             procedure: procedureLegs,
                              showAirspace: model.showAirspace, showNearby: model.showNearby,
                              initialCenter: model.stratuxGPS?.coordinate,
                              onVisibleRegion: { rect in Task { await store.ensureVisible(rect, layer: model.chartLayer) } },

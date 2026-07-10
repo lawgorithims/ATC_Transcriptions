@@ -291,6 +291,7 @@ struct ChartMapView: UIViewRepresentable {
     let layer: ChartLayer
     let readers: [MBTilesReader]
     let route: [ResolvedLeg]
+    var procedure: [ResolvedLeg] = []                // a previewed coded procedure (approach/SID/STAR), georeferenced
     let showAirspace: Bool
     let showNearby: Bool
     let initialCenter: Coord?        // frame here when there's no filed route (device / Stratux position)
@@ -346,6 +347,35 @@ struct ChartMapView: UIViewRepresentable {
             }
         }
 
+        // Reconcile the previewed coded procedure (approach/SID/STAR) — a cyan georeferenced line through
+        // its fixes with labeled markers — whenever the selected procedure changes.
+        let procKey = procedure.map { "\($0.ident)|\($0.coord.lat),\($0.coord.lon)" }
+        if procKey != c.lastProcKey {
+            c.lastProcKey = procKey
+            if let po = c.procedureOverlay { mv.removeOverlay(po); c.procedureOverlay = nil }
+            mv.removeAnnotations(c.procedureFixes); c.procedureFixes = []
+            if procedure.count >= 2 {
+                let coords = procedure.map { $0.coord.clCoordinate }
+                let line = MKPolyline(coordinates: coords, count: coords.count)
+                mv.addOverlay(line, level: .aboveLabels)
+                c.procedureOverlay = line
+            }
+            if !procedure.isEmpty {
+                let fixes = procedure.map { ProcedureFixAnnotation($0) }
+                mv.addAnnotations(fixes); c.procedureFixes = fixes
+                // Frame the procedure when it first appears — and claim `didFrame` so the initial
+                // route-framing pass below (which runs once the async route resolves) doesn't snap the
+                // view back to the whole route and clobber this.
+                if procedure.count >= 2 {
+                    var r = MKCoordinateRegion(MKPolyline(coordinates: procedure.map { $0.coord.clCoordinate }, count: procedure.count).boundingMapRect)
+                    r.span.latitudeDelta = min(max(r.span.latitudeDelta * 1.4, 0.15), 3)
+                    r.span.longitudeDelta = min(max(r.span.longitudeDelta * 1.4, 0.15), 3)
+                    mv.setRegion(r, animated: true)
+                    c.didFrame = true
+                }
+            }
+        }
+
         // Incrementally reconcile the raster overlays to `readers` (they come and go as you pan). Tiles
         // sit at the bottom of the label level so airspace outlines + the route line draw over the chart.
         let want = Set(readers.map(ObjectIdentifier.init))
@@ -393,6 +423,9 @@ struct ChartMapView: UIViewRepresentable {
         var routeOverlay: MKPolyline?
         var waypointAnnotations: [WaypointAnnotation] = []
         var lastRouteKey: [String] = []
+        var procedureOverlay: MKPolyline?
+        var procedureFixes: [ProcedureFixAnnotation] = []
+        var lastProcKey: [String] = []
         var routeIdents: Set<String> = []
         var didFrame = false
         var didContext = false
@@ -596,8 +629,14 @@ struct ChartMapView: UIViewRepresentable {
             }
             if let line = overlay as? MKPolyline {
                 let r = MKPolylineRenderer(polyline: line)
-                r.strokeColor = UIColor(red: 0.92, green: 0.10, blue: 0.55, alpha: 1)
-                r.lineWidth = 3
+                if line === procedureOverlay {                    // previewed procedure — cyan dashed
+                    r.strokeColor = UIColor(red: 0.16, green: 0.78, blue: 0.94, alpha: 1)
+                    r.lineWidth = 3
+                    r.lineDashPattern = [8, 5]
+                } else {                                          // filed route — magenta solid
+                    r.strokeColor = UIColor(red: 0.92, green: 0.10, blue: 0.55, alpha: 1)
+                    r.lineWidth = 3
+                }
                 return r
             }
             return MKOverlayRenderer(overlay: overlay)
@@ -619,6 +658,13 @@ struct ChartMapView: UIViewRepresentable {
                     ?? MKMarkerAnnotationView(annotation: annotation, reuseIdentifier: "wp")
                 v.annotation = annotation; v.markerTintColor = w.tint; v.glyphText = w.glyph
                 v.displayPriority = .required; v.titleVisibility = .adaptive; v.animatesWhenAdded = false
+                return v
+            case is ProcedureFixAnnotation:
+                let v = mv.dequeueReusableAnnotationView(withIdentifier: "proc") as? MKMarkerAnnotationView
+                    ?? MKMarkerAnnotationView(annotation: annotation, reuseIdentifier: "proc")
+                v.annotation = annotation
+                v.markerTintColor = UIColor(red: 0.16, green: 0.78, blue: 0.94, alpha: 1)
+                v.glyphText = "◇"; v.displayPriority = .required; v.titleVisibility = .adaptive; v.animatesWhenAdded = false
                 return v
             case let n as NearbyAnnotation:
                 let v = mv.dequeueReusableAnnotationView(withIdentifier: "near") as? NearbyMarkerView
@@ -699,6 +745,16 @@ final class WaypointAnnotation: NSObject, MKAnnotation {
         case .waypoint: tint = UIColor(red: 0.38, green: 0.65, blue: 0.98, alpha: 1); glyph = "F"
         default:        tint = .lightGray; glyph = "•"
         }
+    }
+}
+
+/// A fix on a previewed coded procedure (approach/SID/STAR) — a cyan labeled marker.
+final class ProcedureFixAnnotation: NSObject, MKAnnotation {
+    let coordinate: CLLocationCoordinate2D
+    let title: String?
+    init(_ leg: ResolvedLeg) {
+        coordinate = leg.coord.clCoordinate
+        title = leg.ident
     }
 }
 

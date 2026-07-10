@@ -143,6 +143,27 @@ final class MapInteractionTests: XCTestCase {
         XCTAssertTrue(Procedures.forAirport("ZZZZ").isEmpty, "an unknown airport has no procedures")
     }
 
+    // MARK: Coded procedures (bundled FAA CIFP → cifp.sqlite)
+
+    func testCIFPProceduresAndLegsForKnownAirport() throws {
+        try XCTSkipIf(CIFP.procedureCount == 0, "cifp.sqlite not bundled in the test host")
+        let procs = CIFP.procedures(airport: "kbos")
+        XCTAssertFalse(procs.isEmpty, "KBOS should have coded procedures")
+        let approaches = procs.filter { $0.kind == "IAP" }
+        XCTAssertFalse(approaches.isEmpty, "KBOS should have approaches")
+
+        let legs = CIFP.legs(procedureID: approaches[0].id)
+        XCTAssertFalse(legs.isEmpty, "an approach should have legs")
+        XCTAssertEqual(legs.map(\.seq), legs.map(\.seq).sorted(), "legs are returned in sequence order")
+        XCTAssertTrue(legs.contains { $0.coord != nil }, "at least some legs resolve to a coordinate")
+
+        // Boston Logan ILS 04R ≈ 110.30 MHz / ~035° — sanity-check the decode.
+        let ils = CIFP.ils(airport: "KBOS")
+        XCTAssertFalse(ils.isEmpty, "KBOS should have ILS records")
+        XCTAssertTrue(ils.allSatisfy { ($0.freqMHz ?? 111) >= 108 && ($0.freqMHz ?? 111) <= 112 }, "localizer freqs in band")
+        XCTAssertTrue(CIFP.procedures(airport: "ZZZZ").isEmpty, "an unknown airport has no procedures")
+    }
+
     // MARK: Search (needs the bundled nav resources)
 
     func testSearchByIdentAndNameWhenBundled() throws {
