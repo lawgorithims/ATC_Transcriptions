@@ -20,6 +20,11 @@ enum RouteResolver {
         var unresolved: [String] = []
         var previous: Coord?
         for leg in legs {
+            if let c = UserPoint.parse(leg.ident) {   // a dropped lat/lon user waypoint
+                points.append(ResolvedLeg(ident: leg.ident, kind: .waypoint, coord: c))
+                previous = c
+                continue
+            }
             if leg.kind == .airway { continue }   // an airway is a path between fixes, not a point
             let coord: Coord?
             if leg.kind == .airport {

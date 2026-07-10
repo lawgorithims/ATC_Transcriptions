@@ -1,0 +1,141 @@
+import XCTest
+@testable import ATCTranscribe
+
+/// Pure coverage for the interactive map: shared geodesy, tap-ranking, airspace containment, and the
+/// flight-plan editing helpers (add / insert-in-order / Direct-To / remove / endpoints) with their
+/// endpoint + airway mapping edges. No MapKit / bundle needed except the skipped NavMeta smoke test.
+final class MapInteractionTests: XCTestCase {
+
+    // MARK: Geo
+
+    func testDistanceAndBearing() {
+        let bos = Coord(lat: 42.3629, lon: -71.0064)     // ~KBOS
+        let jfk = Coord(lat: 40.6398, lon: -73.7789)     // ~KJFK
+        XCTAssertEqual(Geo.nmBetween(bos, jfk), 158, accuracy: 8, "BOS→JFK ≈ 158 nm")
+        XCTAssertEqual(Geo.nmBetween(bos, bos), 0, accuracy: 0.001)
+        XCTAssertTrue((215...245).contains(Geo.bearing(bos, jfk)), "BOS→JFK is roughly SW")
+    }
+
+    // MARK: MapProbe ranking
+
+    private func obj(_ kind: MapObjectKind, _ ident: String) -> IdentifiedObject {
+        IdentifiedObject(kind: kind, ident: ident, coord: Coord(lat: 0, lon: 0), onRoute: false)
+    }
+
+    func testRankOrdersPointsByDistanceAirspaceLastAndDropsFar() {
+        let cands: [(object: IdentifiedObject, distance: Double)] = [
+            (obj(.airspace, "CLASS B"), 2),      // area feature — sorts after points despite being closest
+            (obj(.vor, "BOS"), 10),
+            (obj(.airport, "KBOS"), 5),
+            (obj(.fix, "FARFX"), 99),            // outside the 24 pt radius → dropped
+        ]
+        XCTAssertEqual(MapProbe.rank(cands, within: 24).map(\.ident), ["KBOS", "BOS", "CLASS B"])
+    }
+
+    func testRankEmptyWhenAllOutsideRadius() {
+        XCTAssertTrue(MapProbe.rank([(obj(.airport, "X"), 40)], within: 24).isEmpty)
+    }
+
+    // MARK: Airspace containment (ray casting)
+
+    func testAirspaceContainsCoord() {
+        let ring = [Coord(lat: 0, lon: 0), Coord(lat: 0, lon: 2), Coord(lat: 2, lon: 2), Coord(lat: 2, lon: 0)]
+        let a = Airspace(id: 1, cls: "B", name: "TEST", floorFt: 0, ceilingFt: 10000,
+                         bb: BBox(minLat: 0, minLon: 0, maxLat: 2, maxLon: 2), rings: [ring])
+        XCTAssertTrue(a.containsCoord(Coord(lat: 1, lon: 1)))
+        XCTAssertFalse(a.containsCoord(Coord(lat: 3, lon: 3)))
+    }
+
+    // MARK: FlightPlan editing
+
+    private func leg(_ ident: String, _ kind: RouteKind, _ lat: Double, _ lon: Double) -> ResolvedLeg {
+        ResolvedLeg(ident: ident, kind: kind, coord: Coord(lat: lat, lon: lon))
+    }
+
+    func testAddWaypointAppendsUppercased() {
+        var p = FlightPlan(departure: "KBOS", destination: "KJFK", route: ["PVD"])
+        p.addWaypoint(" hfd ")
+        XCTAssertEqual(p.route, ["PVD", "HFD"])
+    }
+
+    func testInsertInOrderBetweenEndpoints() {
+        var p = FlightPlan(departure: "KBOS", destination: "KJFK")
+        let resolved = [leg("KBOS", .airport, 42.36, -71.0), leg("KJFK", .airport, 40.64, -73.78)]
+        p.insertWaypointInOrder("HFD", at: Coord(lat: 41.7, lon: -72.65), resolved: resolved)
+        XCTAssertEqual(p.route, ["HFD"], "single gap between departure and destination")
+    }
+
+    func testInsertInOrderPicksNearestMiddleGap() {
+        var p = FlightPlan(departure: "KBOS", destination: "KDFW", route: ["ALB", "BUF"])
+        let resolved = [leg("KBOS", .airport, 42.36, -71.0), leg("ALB", .vor, 42.75, -73.8),
+                        leg("BUF", .vor, 42.93, -78.6), leg("KDFW", .airport, 32.90, -97.04)]
+        p.insertWaypointInOrder("SYR", at: Coord(lat: 43.0, lon: -76.1), resolved: resolved)   // between ALB & BUF
+        XCTAssertEqual(p.route, ["ALB", "SYR", "BUF"])
+    }
+
+    func testDirectToSetsDestinationAndClearsMiddle() {
+        var p = FlightPlan(departure: "KBOS", destination: "KJFK", route: ["PVD", "HFD"])
+        p.directTo("alb")
+        XCTAssertEqual(p.departure, "KBOS")
+        XCTAssertEqual(p.destination, "ALB")
+        XCTAssertTrue(p.route.isEmpty)
+    }
+
+    func testRemoveWaypointAndEndpoints() {
+        var p = FlightPlan(departure: "KBOS", destination: "KJFK", route: ["PVD", "HFD"])
+        p.removeWaypoint("hfd");  XCTAssertEqual(p.route, ["PVD"])
+        p.removeWaypoint("KJFK"); XCTAssertEqual(p.destination, "")
+        p.removeWaypoint("KBOS"); XCTAssertEqual(p.departure, "")
+    }
+
+    func testSetEndpointsAndContains() {
+        var p = FlightPlan(route: ["PVD"])
+        p.setDeparture("kbos"); p.setDestination("kjfk")
+        XCTAssertEqual(p.departure, "KBOS")
+        XCTAssertEqual(p.destination, "KJFK")
+        XCTAssertTrue(p.contains("pvd"))
+        XCTAssertTrue(p.contains("KBOS"))
+        XCTAssertFalse(p.contains("ZZZ"))
+    }
+
+    // MARK: NavMeta (only when the bundle resource is present in the test host)
+
+    func testNavMetaDecodesWhenBundled() throws {
+        try XCTSkipUnless(NavMeta.navaidCount > 0, "navaid_meta.json not in this test bundle")
+        XCTAssertEqual(NavMeta.navaid("BOS")?.type, "VORTAC")
+        XCTAssertNotNil(NavMeta.navaid("BOS")?.frequencyText)
+        XCTAssertNotNil(NavMeta.airport("KJFK")?.name)
+    }
+
+    // MARK: User waypoints (dropped lat/lon points)
+
+    func testUserPointParseFormatRoundTrip() {
+        XCTAssertEqual(UserPoint.parse("42.100,-71.300"), Coord(lat: 42.1, lon: -71.3))
+        XCTAssertNil(UserPoint.parse("KBOS"))            // real idents never parse
+        XCTAssertNil(UserPoint.parse("Q105"))
+        XCTAssertNil(UserPoint.parse("91.0,0.0"))        // lat out of range
+        XCTAssertTrue(UserPoint.isUserPoint("42.1,-71.3"))
+        XCTAssertFalse(UserPoint.isUserPoint("BOS"))
+        XCTAssertEqual(UserPoint.parse(UserPoint.token(Coord(lat: 42.12345, lon: -71.98765))),
+                       Coord(lat: 42.123, lon: -71.988))
+    }
+
+    func testRouteResolverResolvesUserPoint() {
+        let plan = FlightPlan(departure: "KBOS", destination: "KJFK", route: ["42.100,-71.300"])
+        let (points, unresolved) = RouteResolver.resolve(plan.fullRoute)
+        XCTAssertTrue(unresolved.isEmpty, "a lat/lon token resolves, never 'unresolved'")
+        XCTAssertEqual(points.map(\.ident), ["KBOS", "42.100,-71.300", "KJFK"])
+        XCTAssertEqual(points[1].coord, Coord(lat: 42.1, lon: -71.3))
+    }
+
+    // MARK: Search (needs the bundled nav resources)
+
+    func testSearchByIdentAndNameWhenBundled() throws {
+        try XCTSkipUnless(NavDatabase.count > 0 && NavMeta.airportCount > 0, "nav resources not in this test bundle")
+        XCTAssertTrue(MapSearch.results("").isEmpty)
+        let byIdent = MapSearch.results("KBOS")
+        XCTAssertEqual(byIdent.first?.ident, "KBOS", "exact ident sorts first")
+        XCTAssertEqual(byIdent.first?.kind, .airport)
+        XCTAssertTrue(MapSearch.results("Logan").contains { $0.ident == "KBOS" }, "name search finds Boston Logan")
+    }
+}

@@ -32,6 +32,22 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 38, version: "1.0", headline: "Tap the map — identify anything, and build your route",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "hand.tap",
+                    title: "Tap anything to identify it",
+                    detail: "Tap an airport, VOR, fix, or airspace on the map and CommSight shows what it is — an airport's runways and tower/ground/approach/ATIS frequencies and elevation, a navaid's type and frequency, an airspace's class and floor/ceiling — plus its bearing and distance from you. Tap where a few things overlap and it asks which one you meant."),
+                WhatsNewHighlight(
+                    icon: "point.topleft.down.to.point.bottomright.curvepath",
+                    title: "Build your route right on the map",
+                    detail: "From any airport, VOR, or fix, add it to your route, insert it in the right place along your course, go Direct-To it, or set it as your departure or destination — and the magenta line redraws instantly. Remove a filed waypoint just as easily."),
+                WhatsNewHighlight(
+                    icon: "magnifyingglass",
+                    title: "Search, and drop your own waypoints",
+                    detail: "Tap the search button to find any airport, VOR, or fix by identifier or name (e.g. “Logan”), then jump the map to it. Or press and hold anywhere to drop a custom point and add it to your route or go direct — no fix required."),
+            ]),
+        ReleaseNote(
             build: 37, version: "1.0", headline: "Download the whole US for offline — and the chart opens instantly",
             highlights: [
                 WhatsNewHighlight(

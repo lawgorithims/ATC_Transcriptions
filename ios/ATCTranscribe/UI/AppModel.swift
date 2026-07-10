@@ -801,6 +801,25 @@ final class AppModel: ObservableObject {
                                       vocab: flightPlan?.vocabTerms ?? [])
     }
 
+    // MARK: Flight-plan edits from the map (tap an object → act on the route)
+
+    /// Apply an edit to the filed plan and reassign it, so the `flightPlan` didSet persists + re-prefetches.
+    /// A plan that becomes empty is cleared to nil.
+    private func editPlan(_ mutate: (inout FlightPlan) -> Void) {
+        var p = flightPlan ?? FlightPlan()
+        mutate(&p)
+        flightPlan = p.isEmpty ? nil : p
+    }
+
+    func addToRoute(_ ident: String) { editPlan { $0.addWaypoint(ident) } }
+    func insertInRoute(_ ident: String, at coord: Coord, resolved: [ResolvedLeg]) {
+        editPlan { $0.insertWaypointInOrder(ident, at: coord, resolved: resolved) }
+    }
+    func directTo(_ ident: String) { editPlan { $0.directTo(ident) } }
+    func setDeparture(_ ident: String) { editPlan { $0.setDeparture(ident) } }
+    func setDestination(_ ident: String) { editPlan { $0.setDestination(ident) } }
+    func removeFromRoute(_ ident: String) { editPlan { $0.removeWaypoint(ident) } }
+
     // MARK: Chart prefetch (background — so the map opens instantly)
 
     /// The raster layers worth pre-downloading: the remembered layer when it's a chart, else VFR sectional.
