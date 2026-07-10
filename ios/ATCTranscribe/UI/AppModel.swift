@@ -196,13 +196,25 @@ final class AppModel: ObservableObject {
         didSet {
             if let fp = flightPlan { fp.save() } else { FlightPlan.clear() }
             pushFlightPlanContext()
+            prefetchRouteCharts()          // pull the FAA packs the filed route crosses in the background
         }
     }
     @Published var showFlightBag = false
-    /// Drives the full-screen route map (`RouteMapSheet`) — the filed route + live traffic. Transient
-    /// (not persisted); opened from the flight-plan strip's Map button or the flight-bag editor.
+    /// Drives the full-screen route map (`RouteMapSheet`) — the filed route, the selectable FAA chart
+    /// layer, and live traffic. Transient (not persisted); opened from the flight-plan strip's Map button
+    /// or the flight-bag editor.
     @Published var showRouteMap = false
-    @Published var showChart = false
+
+    /// The chart base layer the user last viewed (VFR sectional / IFR low / standard / satellite) so the
+    /// map reopens where they left off; defaults to VFR sectional on first run. Read at view-init time via
+    /// `savedChartLayer`; the map writes any switch back here.
+    nonisolated static let chartLayerKey = "atc.chartLayer"
+    nonisolated static var savedChartLayer: ChartLayer {
+        UserDefaults.standard.string(forKey: chartLayerKey).flatMap(ChartLayer.init(rawValue:)) ?? .sectional
+    }
+    @Published var chartLayer: ChartLayer = AppModel.savedChartLayer {
+        didSet { UserDefaults.standard.set(chartLayer.rawValue, forKey: Self.chartLayerKey) }
+    }
 
     // "What's new" popup: shown once after the app updates to a newer build (gated on CFBundleVersion
     // vs the persisted `atc.lastSeenBuild`). `whatsNewEntries` holds the release notes the sheet
@@ -457,7 +469,10 @@ final class AppModel: ObservableObject {
                                     route: ["BOS", "PVD"])                     // Boston Class B + Providence Class C
         }
         if args.contains("--open-route-map") { showRouteMap = true }   // screenshot/demo: open the map at launch
-        if args.contains("--open-chart") { showChart = true }          // screenshot/demo: open the FAA chart at launch
+        // The FAA chart is now a layer on the unified route map; `--open-chart` opens it there. Pair with
+        // `--chart-layer ifr|vfr|std|sat` to pick the layer and `--chart-center lat,lon` to frame it.
+        if args.contains("--open-chart") { showRouteMap = true }
+        if args.contains("--open-settings") { showSettings = true }     // screenshot/demo: open Settings at launch
 
         #if targetEnvironment(simulator)
         deviceLabel = "CPU (Simulator)"
@@ -786,6 +801,41 @@ final class AppModel: ObservableObject {
                                       vocab: flightPlan?.vocabTerms ?? [])
     }
 
+    // MARK: Chart prefetch (background — so the map opens instantly)
+
+    /// The raster layers worth pre-downloading: the remembered layer when it's a chart, else VFR sectional.
+    private var prefetchChartLayers: [ChartLayer] { chartLayer.isRaster ? [chartLayer] : [.sectional] }
+
+    /// Prefetch the FAA packs the filed route crosses. Called when a plan is filed/edited so the charts
+    /// are on disk before the pilot opens the map. Resolves the route OFF the main thread (first nav-DB
+    /// access parses a few MB) and no-ops when nothing is filed.
+    func prefetchRouteCharts() {
+        guard let legs = flightPlan?.fullRoute, !legs.isEmpty else { return }
+        let layers = prefetchChartLayers
+        Task {
+            let points = await Task.detached(priority: .utility) {
+                _ = NavDatabase.count
+                return RouteResolver.resolve(legs).points
+            }.value
+            let rects = ChartGeo.routeRects(points)
+            guard !rects.isEmpty else { return }
+            await ChartLibrary.shared.prefetch(rects: rects, layers: layers, cap: 12)
+        }
+    }
+
+    /// Prefetch the charts around the device (GPS, or the Stratux fix when connected) plus the last filed
+    /// route — kicked on launch and each foreground so the map is warm by the time it's opened.
+    func prefetchChartsOnLaunch() {
+        let layers = prefetchChartLayers
+        let stratux = stratuxGPS?.coordinate
+        Task {
+            if let here = await ChartLibrary.shared.nearestFix(preferring: stratux) {
+                await ChartLibrary.shared.prefetchAround(here, layers: layers)
+            }
+        }
+        prefetchRouteCharts()
+    }
+
     // MARK: ADS-B live traffic
 
     /// Whether airplanes.live (internet) ADS-B should be polling now. Session-coupled by design (its
@@ -910,6 +960,7 @@ final class AppModel: ObservableObject {
             guard !scenePhaseActive else { return }
             scenePhaseActive = true
             syncTraffic()
+            prefetchChartsOnLaunch()        // top up charts around the (possibly moved) position
             if backgroundPaused {
                 backgroundPaused = false
                 let resume = backgroundResumeSource

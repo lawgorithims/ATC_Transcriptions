@@ -68,6 +68,9 @@ struct SettingsSheet: View {
                                 .font(.caption2).foregroundStyle(p.textDim.opacity(0.8))
                         }
                     }
+                    Card(title: "Offline charts") {
+                        OfflineChartsControls()
+                    }
                     Card(title: "Stratux receiver") {
                         VStack(alignment: .leading, spacing: 10) {
                             Toggle(isOn: $model.stratuxEnabled) {
