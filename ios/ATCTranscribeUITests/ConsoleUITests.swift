@@ -175,17 +175,53 @@ final class ConsoleUITests: XCTestCase {
         XCTAssertTrue(waitForLabel(btn, initial, timeout: 6), "run button did not toggle back to \(initial)")
     }
 
-    // 5 & 6 asserted the OLD console: a proof-of-life button in the right-rail sidebar and long-press
-    // context-menu widget management (remove/add). Build 39 makes the map the home screen with FLOATING
-    // widgets — proof-of-life is a draggable card, and widgets are shown/hidden from the top-bar Widgets
-    // menu with per-card ✕ / opacity controls (no sidebar, no "Remove <widget>" context menu). Skipped
-    // (not silently passing) until rewritten against the floating-widget UI; see the map-home redesign.
-    func test5_proofOfLifeButton() throws {
-        throw XCTSkip("Right-rail sidebar replaced by floating widgets in build 39 — UI test pending rewrite.")
+    /// True when the app is laid out at regular width (iPad) — where widgets FLOAT over the map. On
+    /// compact (iPhone) the home screen is the map + a bottom transcript card, so the other widgets
+    /// aren't rendered and their tests are skipped.
+    private func isRegularWidth(_ app: XCUIApplication) -> Bool {
+        app.windows.firstMatch.frame.width >= 700
     }
 
+    // 5. The proof-of-life widget floats over the map by default (regular width); its Run button runs
+    // the on-device check. (Compact shows only the transcript card — skipped there.)
+    func test5_proofOfLifeButton() throws {
+        let app = launch(onboardingDismissed: true, resetWidgets: true)
+        XCTAssertTrue(consoleReady(app))
+        try XCTSkipUnless(isRegularWidth(app), "Floating widgets are iPad/regular-width only; compact shows the transcript.")
+
+        let pol = app.buttons["proof-of-life-button"]
+        XCTAssertTrue(pol.waitForExistence(timeout: 8), "proof-of-life widget/button missing on the map home")
+        XCTAssertTrue(pol.isHittable, "proof-of-life button not hittable")
+        pol.tap()
+        snap(app, "07-proof-of-life")
+    }
+
+    // 6. Widgets are shown/hidden from the top-bar Widgets menu (replaces the old sidebar context menu).
+    // The menu exists on every device; on regular width, enabling a hidden widget makes its card appear
+    // over the map, and disabling it removes the card.
     func test6_customizeWidgets() throws {
-        throw XCTSkip("Long-press widget context menu replaced by the top-bar Widgets menu + per-card controls in build 39 — UI test pending rewrite.")
+        let app = launch(onboardingDismissed: true, resetWidgets: true)
+        XCTAssertTrue(consoleReady(app))
+
+        let menu = app.buttons["widgets-menu"]
+        XCTAssertTrue(menu.waitForExistence(timeout: 8), "Widgets menu missing from the top bar")
+        menu.tap()
+        // Host is hidden by default, so the menu offers it (no checkmark) — tap to show it.
+        let host = app.buttons["Host"].firstMatch
+        XCTAssertTrue(host.waitForExistence(timeout: 5), "Host not offered in the Widgets menu")
+        snap(app, "08-widgets-menu")
+        host.tap()
+
+        guard isRegularWidth(app) else { return }   // compact renders only the transcript — menu tested, render N/A
+        XCTAssertTrue(app.staticTexts["HOST"].waitForExistence(timeout: 5), "Host widget did not appear after enabling")
+        snap(app, "09-widget-shown")
+
+        // Toggle it back off from the same menu → the card disappears.
+        menu.tap()
+        let hostOff = app.buttons["Host"].firstMatch
+        XCTAssertTrue(hostOff.waitForExistence(timeout: 5), "Host toggle missing on second open")
+        hostOff.tap()
+        XCTAssertTrue(app.staticTexts["HOST"].waitForNonExistence(timeout: 5), "Host widget did not hide")
     }
 
     // 7. Standby: touch-and-hold the power button opens the low-power standby screen; Resume returns.
