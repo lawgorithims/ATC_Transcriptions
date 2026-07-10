@@ -94,9 +94,42 @@ struct MapObjectView: View {
                 }
             }
             infoSection(o)
+            if o.kind == .airport { proceduresSection(o.ident) }
             actionSection(o)
         }
         .scrollContentBackground(.hidden)
+    }
+
+    /// Published FAA terminal procedures for an airport (bundled d-TPP index), grouped by kind; each row
+    /// opens its plate PDF.
+    @ViewBuilder private func proceduresSection(_ ident: String) -> some View {
+        let procs = Procedures.forAirport(ident)
+        let groups: [(AirportProcedure.Category, String)] = [
+            (.approach, "Approaches"), (.departure, "Departures"), (.arrival, "Arrivals"), (.diagram, "Airport diagram"),
+        ]
+        ForEach(groups, id: \.0) { cat, heading in
+            let items = procs.filter { $0.category == cat }
+            if !items.isEmpty {
+                Section("\(heading) (\(items.count))") {
+                    ForEach(items) { proc in procedureRow(proc) }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private func procedureRow(_ proc: AirportProcedure) -> some View {
+        let p = model.palette
+        if let url = proc.plateURL {
+            Link(destination: url) {
+                HStack(spacing: 8) {
+                    Text(proc.name).font(.callout).foregroundStyle(p.text)
+                    Spacer(minLength: 4)
+                    Image(systemName: "doc.text.magnifyingglass").font(.caption).foregroundStyle(p.accent)
+                }
+            }
+        } else {
+            Text(proc.name).font(.callout).foregroundStyle(p.text)
+        }
     }
 
     private func displayName(_ o: IdentifiedObject) -> String? {

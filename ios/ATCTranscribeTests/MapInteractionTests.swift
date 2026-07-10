@@ -128,6 +128,21 @@ final class MapInteractionTests: XCTestCase {
         XCTAssertEqual(points[1].coord, Coord(lat: 42.1, lon: -71.3))
     }
 
+    // MARK: Procedures (bundled FAA d-TPP index)
+
+    func testProceduresDecodeForKnownAirport() throws {
+        try XCTSkipIf(Procedures.airportCount == 0, "procedures.json not bundled in the test host")
+        let bos = Procedures.forAirport("kbos")   // case-insensitive
+        XCTAssertFalse(bos.isEmpty, "KBOS should have published procedures")
+        XCTAssertTrue(bos.contains { $0.category == .approach }, "KBOS should have approaches")
+        XCTAssertTrue(bos.contains { $0.category == .departure }, "KBOS should have departures")
+        if let p = bos.first(where: { !$0.pdf.isEmpty }) {
+            XCTAssertEqual(p.plateURL?.absoluteString,
+                           "https://aeronav.faa.gov/d-tpp/\(Procedures.cycle)/\(p.pdf)")
+        }
+        XCTAssertTrue(Procedures.forAirport("ZZZZ").isEmpty, "an unknown airport has no procedures")
+    }
+
     // MARK: Search (needs the bundled nav resources)
 
     func testSearchByIdentAndNameWhenBundled() throws {
