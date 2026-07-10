@@ -295,6 +295,8 @@ struct ChartMapView: UIViewRepresentable {
     let showNearby: Bool
     let initialCenter: Coord?        // frame here when there's no filed route (device / Stratux position)
     let onVisibleRegion: (MKMapRect) -> Void
+    let onTapObjects: ([IdentifiedObject]) -> Void   // tap / long-press → ranked objects there (empty = nothing)
+    let focus: Coord?                                // recenter here when it changes (search result)
     @ObservedObject var model: AppModel
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -305,6 +307,12 @@ struct ChartMapView: UIViewRepresentable {
         mv.pointOfInterestFilter = .excludingAll
         mv.showsCompass = true
         mv.showsUserLocation = true
+        let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTap(_:)))
+        tap.delegate = context.coordinator           // coexist with MapKit's own pan/zoom recognizers
+        mv.addGestureRecognizer(tap)
+        let hold = UILongPressGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleLongPress(_:)))
+        hold.delegate = context.coordinator
+        mv.addGestureRecognizer(hold)
         context.coordinator.requestLocation()
         mv.setRegion(MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: 39, longitude: -96),
                                         span: MKCoordinateSpan(latitudeDelta: 42, longitudeDelta: 55)), animated: false)
@@ -314,16 +322,28 @@ struct ChartMapView: UIViewRepresentable {
     func updateUIView(_ mv: MKMapView, context: Context) {
         let c = context.coordinator
         c.onVisibleRegion = onVisibleRegion
+        c.onTapObjects = onTapObjects
+        c.routeLegs = route                               // hit-test source for filed waypoints
+        c.routeIdents = Set(route.map { $0.ident })
         if mv.mapType != layer.mapType { mv.mapType = layer.mapType }
 
-        if !c.routeAdded, route.count >= 2 {              // route resolves after makeUIView
-            let coords = route.map { $0.coord.clCoordinate }
-            let line = MKPolyline(coordinates: coords, count: coords.count)
-            mv.addOverlay(line, level: .aboveLabels)
-            c.routeOverlay = line
-            mv.addAnnotations(route.map { WaypointAnnotation($0) })
-            c.routeAdded = true
-            c.routeIdents = Set(route.map { $0.ident })   // so nearby context skips filed waypoints
+        // Reconcile the route line + waypoint markers whenever the filed route changes (initial resolve,
+        // or a tap-to-edit add/insert/remove) — remove the old, draw the new.
+        let routeKey = route.map { "\($0.ident)|\($0.coord.lat),\($0.coord.lon)" }
+        if routeKey != c.lastRouteKey {
+            c.lastRouteKey = routeKey
+            if let ro = c.routeOverlay { mv.removeOverlay(ro); c.routeOverlay = nil }
+            mv.removeAnnotations(c.waypointAnnotations); c.waypointAnnotations = []
+            if route.count >= 2 {
+                let coords = route.map { $0.coord.clCoordinate }
+                let line = MKPolyline(coordinates: coords, count: coords.count)
+                mv.addOverlay(line, level: .aboveLabels)
+                c.routeOverlay = line
+            }
+            if !route.isEmpty {
+                let wps = route.map { WaypointAnnotation($0) }
+                mv.addAnnotations(wps); c.waypointAnnotations = wps
+            }
         }
 
         // Incrementally reconcile the raster overlays to `readers` (they come and go as you pan). Tiles
@@ -359,19 +379,29 @@ struct ChartMapView: UIViewRepresentable {
             c.refreshContext(mv)
         }
 
+        if let f = focus, f != c.lastFocus {          // center on a search result
+            c.lastFocus = f
+            mv.setRegion(MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: f.lat, longitude: f.lon),
+                                            span: MKCoordinateSpan(latitudeDelta: 0.5, longitudeDelta: 0.5)), animated: true)
+        }
+
         c.syncDynamic(mv, aircraft: model.aircraft, ownship: model.stratuxGPS?.coordinate)
     }
 
-    final class Coordinator: NSObject, MKMapViewDelegate, CLLocationManagerDelegate {
+    final class Coordinator: NSObject, MKMapViewDelegate, CLLocationManagerDelegate, UIGestureRecognizerDelegate {
         var overlays: [ObjectIdentifier: MBTilesTileOverlay] = [:]
         var routeOverlay: MKPolyline?
-        var routeAdded = false
+        var waypointAnnotations: [WaypointAnnotation] = []
+        var lastRouteKey: [String] = []
         var routeIdents: Set<String> = []
         var didFrame = false
         var didContext = false
         var showAirspace = true
         var showNearby = true
+        var routeLegs: [ResolvedLeg] = []
+        var lastFocus: Coord?
         var onVisibleRegion: ((MKMapRect) -> Void)?
+        var onTapObjects: (([IdentifiedObject]) -> Void)?
         private var regionDebounce: DispatchWorkItem?
         private var dynamic: [MKAnnotation] = []
         private var airspace: [MKPolygon] = []
@@ -386,6 +416,72 @@ struct ChartMapView: UIViewRepresentable {
             if loc.authorizationStatus == .notDetermined { loc.requestWhenInUseAuthorization() }
         }
         func locationManagerDidChangeAuthorization(_ m: CLLocationManager) {}
+
+        // Let the tap recognizer coexist with MapKit's built-in pan/zoom recognizers.
+        func gestureRecognizer(_ g: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
+
+        @objc func handleTap(_ gr: UITapGestureRecognizer) {
+            guard let mv = gr.view as? MKMapView else { return }
+            onTapObjects?(probeObjects(at: gr.location(in: mv), in: mv, radius: 24, userPoint: false))
+        }
+
+        @objc func handleLongPress(_ gr: UILongPressGestureRecognizer) {
+            guard gr.state == .began, let mv = gr.view as? MKMapView else { return }
+            onTapObjects?(probeObjects(at: gr.location(in: mv), in: mv, radius: 40, userPoint: true))   // press = drop a point
+        }
+
+        /// ForeFlight-style identify: convert the point to a coordinate, rank the point features (filed
+        /// route waypoints, navaids/airports/fixes near it, traffic) by on-screen distance, then append any
+        /// airspace whose polygon contains the point. Shared by tap (tight radius) and long-press (wider);
+        /// a long-press also drops a "user point" at the exact coordinate (first in the list).
+        private func probeObjects(at pt: CGPoint, in mv: MKMapView, radius: Double, userPoint: Bool) -> [IdentifiedObject] {
+            let ll = mv.convert(pt, toCoordinateFrom: mv)
+            let here = Coord(lat: ll.latitude, lon: ll.longitude)
+
+            // Search box: the degree-span of ~2.5× the radius around the point, floored so a zoomed-in
+            // view still has a non-degenerate box.
+            let off = mv.convert(CGPoint(x: pt.x + radius * 2.5, y: pt.y + radius * 2.5), toCoordinateFrom: mv)
+            let dLat = max(abs(ll.latitude - off.latitude), 0.002)
+            let dLon = max(abs(ll.longitude - off.longitude), 0.002)
+            let box = BBox(minLat: ll.latitude - dLat, minLon: ll.longitude - dLon,
+                           maxLat: ll.latitude + dLat, maxLon: ll.longitude + dLon)
+
+            func screenDist(_ c: Coord) -> Double {
+                let p = mv.convert(CLLocationCoordinate2D(latitude: c.lat, longitude: c.lon), toPointTo: mv)
+                return Double(hypot(p.x - pt.x, p.y - pt.y))
+            }
+
+            var cands: [(object: IdentifiedObject, distance: Double)] = []
+            var seen = Set<String>()
+
+            for leg in routeLegs {                                    // filed waypoints (authoritative onRoute)
+                let k = MapObjectKind(routeKind: leg.kind)
+                cands.append((IdentifiedObject(kind: k, ident: leg.ident, coord: leg.coord, onRoute: true), screenDist(leg.coord)))
+                seen.insert("\(k.rawValue)|\(leg.ident)")
+            }
+            for np in NavDatabase.nearby(box, types: [0, 1, 2], limit: 40) {   // airports/navaids/fixes near the point
+                let k = MapObjectKind(routeKind: np.kind)
+                let key = "\(k.rawValue)|\(np.ident)"
+                if seen.contains(key) { continue }
+                seen.insert(key)
+                cands.append((IdentifiedObject(kind: k, ident: np.ident, coord: np.coord,
+                                               onRoute: routeIdents.contains(np.ident)), screenDist(np.coord)))
+            }
+            for a in dynamic.compactMap({ $0 as? TrafficAnnotation }) {         // live traffic
+                let c = Coord(lat: a.coordinate.latitude, lon: a.coordinate.longitude)
+                cands.append((IdentifiedObject(kind: .traffic, ident: a.title ?? "Traffic", coord: c, onRoute: false, traffic: nil),
+                              screenDist(c)))
+            }
+
+            var results = MapProbe.rank(cands, within: radius)
+            for asp in NavDatabase.airspaces(intersecting: box) where asp.containsCoord(here) {   // "you're inside Class B"
+                results.append(IdentifiedObject(kind: .airspace, ident: asp.name, coord: here, onRoute: false, airspace: asp))
+            }
+            if userPoint {   // long-press: offer the exact pressed coordinate as a droppable waypoint, first
+                results.insert(IdentifiedObject(kind: .userPoint, ident: UserPoint.token(here), coord: here, onRoute: false), at: 0)
+            }
+            return results
+        }
 
         /// With no filed route to frame, center on the device GPS fix once it arrives (Stratux, when
         /// connected, frames immediately via `initialCenter`).
@@ -575,6 +671,12 @@ final class WaypointAnnotation: NSObject, MKAnnotation {
     let glyph: String
     init(_ leg: ResolvedLeg) {
         coordinate = leg.coord.clCoordinate
+        if UserPoint.isUserPoint(leg.ident) {           // a dropped user waypoint — short coord label, own glyph
+            title = UserPoint.label(leg.ident)
+            tint = UIColor(red: 0.98, green: 0.65, blue: 0.14, alpha: 1)   // amber
+            glyph = "◆"
+            return
+        }
         title = leg.ident
         switch leg.kind {
         case .airport:  tint = UIColor(red: 0.91, green: 0.47, blue: 0.98, alpha: 1); glyph = "A"

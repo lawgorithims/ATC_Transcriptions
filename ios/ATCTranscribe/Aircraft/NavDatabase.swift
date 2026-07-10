@@ -65,6 +65,20 @@ enum NavDatabase {
         return cands.min { squaredDistance($0, near) < squaredDistance($1, near) }
     }
 
+    /// Idents beginning with `prefix`, for the map search box — one point per ident, exact match first
+    /// then shortest ident. Scans the full table; call off-main (debounced) like `nearby`.
+    static func search(prefix: String, limit: Int = 30) -> [NavPoint] {
+        let q = prefix.trimmingCharacters(in: .whitespaces).uppercased()
+        guard !q.isEmpty else { return [] }
+        var out: [NavPoint] = []
+        for (ident, cands) in table where ident.hasPrefix(q) {
+            guard let c = cands.first, c.count >= 3 else { continue }
+            out.append(NavPoint(ident: ident, coord: Coord(lat: c[0], lon: c[1]), kind: kind(forCode: Int(c[2]))))
+        }
+        out.sort { ($0.ident == q ? 0 : 1, $0.ident.count, $0.ident) < ($1.ident == q ? 0 : 1, $1.ident.count, $1.ident) }
+        return Array(out.prefix(limit))
+    }
+
     /// Kind code (0=airport, 1=navaid, 2=fix) → its on-chart role.
     static func kind(forCode t: Int) -> RouteKind {
         switch t {

@@ -28,6 +28,10 @@ struct RouteMapSheet: View {
     @State private var showNearby = true
     @State private var showRouteInfo = false
     @State private var loading = true
+    @State private var probe: MapProbeResult?     // objects under the last tap → info/actions sheet
+    @State private var showSearch = false
+    @State private var searchSeed = ""            // `--search` screenshot affordance
+    @State private var focus: Coord?              // recenter the map on a search result
 
     private static let routeMagenta = Color(red: 0.92, green: 0.10, blue: 0.55)
 
@@ -42,6 +46,12 @@ struct RouteMapSheet: View {
                              showAirspace: showAirspace, showNearby: showNearby,
                              initialCenter: model.stratuxGPS?.coordinate,
                              onVisibleRegion: { rect in Task { await store.ensureVisible(rect, layer: layer) } },
+                             onTapObjects: { objs in
+                                 guard !objs.isEmpty else { return }
+                                 Haptics.impact(.light)
+                                 probe = MapProbeResult(id: UUID().uuidString, objects: objs)
+                             },
+                             focus: focus,
                              model: model)
                     .ignoresSafeArea(edges: .bottom)
                 VStack(spacing: 8) { switcher; statusPill }.padding(.top, 8)
@@ -60,12 +70,23 @@ struct RouteMapSheet: View {
                     Button("Done") { Haptics.impact(.light); dismiss() }
                         .accessibilityIdentifier("route-map-done")
                 }
+                ToolbarItem(placement: .primaryAction) {
+                    Button { Haptics.impact(.light); showSearch = true } label: { Image(systemName: "magnifyingglass") }
+                        .accessibilityIdentifier("route-map-search").accessibilityLabel("Search")
+                }
                 ToolbarItem(placement: .primaryAction) { layersMenu }
             }
             .sheet(isPresented: $showRouteInfo) { routeInfoSheet }
+            .sheet(isPresented: $showSearch) {
+                MapSearchSheet(onPick: pickSearchResult, initialQuery: searchSeed).environmentObject(model)
+            }
+            .sheet(item: $probe) { result in
+                MapObjectSheet(result: result, resolved: route, onCommit: { Task { await buildRoute() } })
+                    .environmentObject(model)
+            }
         }
         .tint(p.accent)
-        .task { await buildRoute() }
+        .task { applyLaunchEdit(); await buildRoute(); presentLaunchProbe(); presentLaunchSearch() }
         .onChange(of: layer) { _, new in
             model.chartLayer = new                                   // remember the last-used layer
             store.phase = new.isRaster ? .downloading : .ready       // honest during the switch; setLayer refines
@@ -239,7 +260,50 @@ struct RouteMapSheet: View {
         return (1..<route.count).map { i in
             let a = route[i - 1].coord, b = route[i].coord
             return LegInfo(id: i, from: route[i - 1].ident, to: route[i].ident,
-                           nm: Self.nmBetween(a, b), bearing: Self.bearing(a, b))
+                           nm: Geo.nmBetween(a, b), bearing: Geo.bearing(a, b))
+        }
+    }
+
+    /// Screenshot/demo affordance: `--probe-add IDENT` adds a waypoint before the map resolves, to
+    /// exercise the edit → route-redraw path without a synthetic touch.
+    private func applyLaunchEdit() {
+        let a = ProcessInfo.processInfo.arguments
+        if let i = a.firstIndex(of: "--probe-add"), i + 1 < a.count { model.addToRoute(a[i + 1]) }
+    }
+
+    /// Screenshot/demo affordance: `--probe-ident KBOS` opens the tap-to-identify sheet for that ident
+    /// (exercises the info sheet without a synthetic touch). Mirrors `--chart-center`/`--open-chart`.
+    private func presentLaunchProbe() {
+        let a = ProcessInfo.processInfo.arguments
+        guard let i = a.firstIndex(of: "--probe-ident"), i + 1 < a.count else { return }
+        let id = a[i + 1].uppercased()
+        if let c = UserPoint.parse(id) {          // a "lat,lon" token → user-point sheet
+            probe = MapProbeResult(id: "launch-up", objects: [IdentifiedObject(kind: .userPoint, ident: id, coord: c, onRoute: false)])
+            return
+        }
+        guard let c = NavDatabase.resolve(id, near: nil) else { return }
+        let obj = IdentifiedObject(kind: MapObjectKind(routeKind: RouteLeg.classify(id)),
+                                   ident: id, coord: c, onRoute: model.flightPlan?.contains(id) ?? false)
+        probe = MapProbeResult(id: "launch-\(id)", objects: [obj])
+    }
+
+    /// Screenshot/demo affordance: `--search Boston` opens the search sheet pre-filled with that query.
+    private func presentLaunchSearch() {
+        let a = ProcessInfo.processInfo.arguments
+        guard let i = a.firstIndex(of: "--search"), i + 1 < a.count else { return }
+        searchSeed = a[i + 1]
+        showSearch = true
+    }
+
+    /// A search result was chosen: dismiss search, center the map on it, then open its info sheet (with a
+    /// short delay so the two sheets don't fight over presentation).
+    private func pickSearchResult(_ o: IdentifiedObject) {
+        showSearch = false
+        focus = o.coord
+        let obj = IdentifiedObject(kind: o.kind, ident: o.ident, coord: o.coord,
+                                   onRoute: model.flightPlan?.contains(o.ident) ?? false)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            probe = MapProbeResult(id: "search-\(obj.ident)", objects: [obj])
         }
     }
 
@@ -259,22 +323,5 @@ struct RouteMapSheet: View {
         await store.setLayer(layer, routeRects: routeRects)
     }
 
-    // MARK: geo
-
-    private static func nmBetween(_ a: Coord, _ b: Coord) -> Double {
-        let R = 3440.065   // Earth radius in nautical miles
-        let la1 = a.lat * .pi / 180, la2 = b.lat * .pi / 180
-        let dLa = (b.lat - a.lat) * .pi / 180, dLo = (b.lon - a.lon) * .pi / 180
-        let h = sin(dLa / 2) * sin(dLa / 2) + cos(la1) * cos(la2) * sin(dLo / 2) * sin(dLo / 2)
-        return 2 * R * asin(min(1, sqrt(h)))
-    }
-
-    private static func bearing(_ a: Coord, _ b: Coord) -> Double {
-        let la1 = a.lat * .pi / 180, la2 = b.lat * .pi / 180
-        let dLo = (b.lon - a.lon) * .pi / 180
-        let y = sin(dLo) * cos(la2)
-        let x = cos(la1) * sin(la2) - sin(la1) * cos(la2) * cos(dLo)
-        let brg = atan2(y, x) * 180 / .pi
-        return brg < 0 ? brg + 360 : brg
-    }
+    // Great-circle leg distance/bearing live in the shared `Geo` (Core/MapProbe.swift).
 }

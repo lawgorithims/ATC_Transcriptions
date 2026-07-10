@@ -72,6 +72,76 @@ struct FlightPlan: Codable, Equatable {
         return t.filter { !$0.isEmpty }
     }
 
+    // MARK: Editing (map "add to route" / "Direct-To" actions)
+
+    // The enroute portion is `route` (middle only); `departure`/`destination` are separate and
+    // `fullRoute` synthesizes departure→route→destination. Edits therefore map back by IDENT and
+    // special-case the two endpoints. Callers reassign the whole struct to `AppModel.flightPlan` so its
+    // didSet persists + re-prefetches (a value type has no other save trigger).
+
+    private static func norm(_ s: String) -> String { s.trimmingCharacters(in: .whitespaces).uppercased() }
+
+    /// Append a waypoint to the end of the enroute portion (just before the destination).
+    mutating func addWaypoint(_ ident: String) {
+        let id = Self.norm(ident)
+        guard !id.isEmpty else { return }
+        route.append(id)
+    }
+
+    /// Insert a waypoint where it best fits geographically — into the adjacent leg-gap whose detour
+    /// through it is smallest — so the magenta line routes through it sensibly. `resolved` is the current
+    /// `RouteResolver.resolve(fullRoute).points`.
+    mutating func insertWaypointInOrder(_ ident: String, at coord: Coord, resolved: [ResolvedLeg]) {
+        let id = Self.norm(ident)
+        guard !id.isEmpty else { return }
+        guard resolved.count >= 2 else { addWaypoint(id); return }
+        var bestGap = 0, bestCost = Double.greatestFiniteMagnitude
+        for i in 0..<(resolved.count - 1) {
+            let a = resolved[i].coord, b = resolved[i + 1].coord
+            let cost = Geo.nmBetween(a, coord) + Geo.nmBetween(coord, b) - Geo.nmBetween(a, b)
+            if cost < bestCost { bestCost = cost; bestGap = i }
+        }
+        let at = routeIndex(afterResolved: bestGap, resolved: resolved)
+        route.insert(id, at: min(max(at, 0), route.count))
+    }
+
+    /// The `route`-array index at which to insert so a new leg follows `resolved[i]`.
+    private func routeIndex(afterResolved i: Int, resolved: [ResolvedLeg]) -> Int {
+        let leg = resolved[i]
+        if !departure.isEmpty, i == 0, leg.ident == Self.norm(departure) { return 0 }               // after departure → front
+        if !destination.isEmpty, i == resolved.count - 1, leg.ident == Self.norm(destination) { return route.count }  // after destination → end
+        if let k = route.firstIndex(where: { Self.norm($0) == leg.ident }) { return k + 1 }          // after a middle leg
+        return route.count
+    }
+
+    /// Proceed direct to `ident`: make it the destination and drop the intermediate enroute waypoints
+    /// (a straight course from the departure). Present-position GPS sequencing is a later phase.
+    mutating func directTo(_ ident: String) {
+        let id = Self.norm(ident)
+        guard !id.isEmpty else { return }
+        route = []
+        destination = id
+    }
+
+    mutating func setDeparture(_ ident: String) { departure = Self.norm(ident) }
+    mutating func setDestination(_ ident: String) { destination = Self.norm(ident) }
+
+    /// Remove a filed waypoint: clear the departure/destination endpoint if it matches, else drop its
+    /// first enroute occurrence.
+    mutating func removeWaypoint(_ ident: String) {
+        let id = Self.norm(ident)
+        if Self.norm(departure) == id { departure = ""; return }
+        if Self.norm(destination) == id { destination = ""; return }
+        if let k = route.firstIndex(where: { Self.norm($0) == id }) { route.remove(at: k) }
+    }
+
+    /// True when `ident` is already part of the filed plan (endpoint or enroute) — drives "Remove".
+    func contains(_ ident: String) -> Bool {
+        let id = Self.norm(ident)
+        return Self.norm(departure) == id || Self.norm(destination) == id
+            || route.contains { Self.norm($0) == id }
+    }
+
     // MARK: ForeFlight paste parsing
 
     /// Tolerant parser for a pasted ForeFlight-style route. Handles a plain string
