@@ -233,7 +233,16 @@ struct FloatingWidgetContainer<Content: View>: View {
         .shadow(color: .black.opacity(0.35), radius: 10, y: 4)
         .position(x: rect.midX + drag.width, y: rect.midY + drag.height)
         .zIndex(Double(frame.z))
-        .animation(.interactiveSpring(response: 0.3, dampingFraction: 0.82), value: frame)
+        // While a drag/resize is live, disable the implicit spring: otherwise the bring-to-front z-bump in
+        // the drag's onChanged mutates `frame` (WidgetFrame.Equatable includes z), arming the spring
+        // MID-drag so it chases the still-moving finger — the reported rubber-band "jitter" — and animates
+        // the .zIndex reorder in the same pass (grab "flicker"). Nil animation while gesturing → the card
+        // tracks the finger 1:1 and the z-lift is instant. Restored when idle (both gesture states .zero,
+        // which includes the release commit) so the snap-to-anchor + opacity/pin/size changes still spring.
+        .animation((drag == .zero && resize == .zero)
+                   ? .interactiveSpring(response: 0.3, dampingFraction: 0.82)
+                   : nil,
+                   value: frame)
     }
 
     // MARK: header (drag handle + controls)
