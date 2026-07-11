@@ -30,14 +30,26 @@ struct ATCCommand: Equatable, Sendable {
 enum ATCCommandParser {
 
     /// Who a transmission must be addressed to for a command to fire — used to POSITIONALLY bind a
-    /// clearance to ownship when several aircraft are named in one transmission. `ownshipTokens` is the
-    /// pilot's own callsign as NORMALIZED spoken tokens (e.g. `["american","1","2","3"]` or
-    /// `["november","3","4","5","alpha","bravo"]`); `callsignStarts` are the words that BEGIN any callsign
-    /// (airline telephony names, "november", GA type words), used to find where the NEXT aircraft is addressed.
+    /// clearance to ownship when several aircraft are named in one transmission. `ownshipVariants` are the
+    /// pilot's own callsign as NORMALIZED spoken tokens, in every accepted form (full callsign + its
+    /// allowed abbreviations, e.g. `["november","8","9","2","5","tango"]`, `["8","9","2","5","tango"]`,
+    /// `["seneca","2","5","tango"]`); a clearance binds to ownship if ANY variant occurs in its segment.
+    /// `callsignStarts` are the words that BEGIN any callsign (airline telephony names, "november", GA
+    /// type words), used to find where the NEXT aircraft is addressed.
     struct Addressee: Equatable {
-        let ownshipTokens: [String]
+        let ownshipVariants: [[String]]
         let callsignStarts: Set<String>
     }
+    static let maxOwnshipVariants = 64
+    // Ownship's clause is bounded to this many tokens past its callsign — a backstop against an undetected
+    // second-aircraft boundary. One controller instruction is short; a second aircraft's callsign +
+    // clearance is longer. Fail-closed on ambiguity — a wrong suggestion is worse than a miss.
+    static let maxClauseTokens = 8
+    // The clearance verbs that OPEN an EFB-actionable clause (direct-to / approach / SID / STAR). A
+    // command binds to ownship only when one of these immediately opens ownship's OWN instruction — so
+    // "ownship, <non-clearance instruction> … OTHER aircraft cleared …" can't bind the other's clearance.
+    static let efbOpeners: Set<String> = ["cleared", "recleared", "proceed", "proceeding", "fly", "climb", "descend"]
+    static let efbFillers: Set<String> = ["roger", "and", "then"]   // benign words allowed before the opener
 
     /// The grounded data a clearance must match, so the parser only ever proposes a REAL target: filed /
     /// nearby fix idents (direct-to fix), airport ICAO codes (direct-to airport), and the active airport's
@@ -133,12 +145,17 @@ enum ATCCommandParser {
         let tokens = tokenize(normalized)
         guard tokens.count >= 2 else { return nil }
         assert(tokens.count <= maxTokens, "tokenizer exceeded its cap")
-        // A single-aircraft transmission (0 or 1 callsign named) parses whole — current behavior. Only a
-        // MULTI-aircraft transmission is restricted to ownship's segment; if ownship's segment can't be
-        // located there, abstain (a wrong suggestion is worse than a miss).
+        // When ownship's accepted forms are known, ALWAYS bind the clearance to ownship's OWN clause —
+        // not just when a second aircraft is detected. A clearance to another aircraft in the same
+        // transmission must never leak, even when that aircraft's callsign-start word is unknown (so the
+        // aircraft count looks like 1). If ownship's clean clause can't be located, abstain.
         var scoped = tokens
-        if let addressee, boundaryCount(tokens, starts: addressee.callsignStarts) > 1 {
-            guard let range = ownshipSegment(tokens, addressee: addressee) else { return nil }
+        if let addressee {
+            guard let (range, after) = ownshipSegment(tokens, addressee: addressee) else { return nil }
+            // Ownship's OWN immediate instruction must open an EFB clearance. This rejects "ownship,
+            // <turn / ident / roger> … OTHER aircraft cleared direct X" — where the actionable clearance
+            // belongs to a later aircraft, not ownship (a wrong suggestion is worse than a miss).
+            guard efbClauseOpens(tokens, from: after) else { return nil }
             scoped = Array(tokens[range])
         }
         // A retraction/self-correction anywhere in the (scoped) transmission — "cleared direct GABBS
@@ -171,15 +188,54 @@ enum ATCCommandParser {
     /// The token range addressed to ownship: from where ownship's callsign appears to the next aircraft's
     /// callsign (or the end). nil when ownship isn't named, or is only a prefix of a longer callsign
     /// ("american 1 2 3" must not match "american 1 2 3 4"). Bounded scans.
-    static func ownshipSegment(_ tokens: [String], addressee: Addressee) -> Range<Int>? {
-        let own = addressee.ownshipTokens
-        guard own.count >= 1, own.count <= maxCallsignTokens else { return nil }
-        guard let start = subsequenceIndex(tokens, own) else { return nil }
-        let afterCallsign = start + own.count
-        if afterCallsign < tokens.count, digit(tokens[afterCallsign]) != nil { return nil }  // longer number
-        let end = boundaryAfter(tokens, from: afterCallsign, starts: addressee.callsignStarts)
-        guard start < end else { return nil }
-        return start..<end
+    static func ownshipSegment(_ tokens: [String], addressee: Addressee) -> (range: Range<Int>, after: Int)? {
+        // Try each accepted ownship variant; use the FIRST that occurs as a clean segment. The clause is
+        // bounded by the next KNOWN aircraft boundary AND a hard token cap, so an undetected boundary
+        // (an unknown second-aircraft type) can't let a later clearance leak into ownship's segment.
+        // `after` is the index right after ownship's callsign (where ownship's own instruction begins).
+        for own in addressee.ownshipVariants.prefix(maxOwnshipVariants) {   // bounded by the cap
+            guard own.count >= 1, own.count <= maxCallsignTokens else { continue }
+            guard let start = cleanSubsequenceIndex(tokens, own) else { continue }
+            let afterCallsign = start + own.count
+            if afterCallsign < tokens.count, digit(tokens[afterCallsign]) != nil { continue }  // longer number
+            let boundary = boundaryAfter(tokens, from: afterCallsign, starts: addressee.callsignStarts)
+            // End ownship's clause at the SECOND clearance opener too — a second "cleared/climb/descend"
+            // starts the next clause, so an unknown-type aircraft's complete clearance after ownship's own
+            // (possibly non-actionable, e.g. "cleared to land") can't leak in.
+            let nextClause = secondOpenerAfter(tokens, from: afterCallsign)
+            let end = min(boundary, nextClause, afterCallsign + maxClauseTokens, tokens.count)
+            guard start < end else { continue }
+            return (start..<end, afterCallsign)
+        }
+        return nil
+    }
+
+    /// Index of the SECOND EFB-opener at/after `from` (ownship's own is the first), i.e. the start of the
+    /// next clause; `tokens.count` when there is no second. Bounds ownship's clause so a following
+    /// aircraft's clearance can't leak in even inside the token cap. Bounded scan.
+    static func secondOpenerAfter(_ tokens: [String], from: Int) -> Int {
+        guard from >= 0 else { return tokens.count }
+        let bound = min(tokens.count, maxTokens)
+        var seen = 0
+        for k in from..<bound where efbOpeners.contains(tokens[k]) {   // bounded by maxTokens
+            seen += 1
+            if seen == 2 { return k }
+        }
+        return tokens.count
+    }
+
+    /// True when ownship's OWN immediate instruction opens an EFB clearance — an `efbOpeners` verb is the
+    /// FIRST token right after ownship's callsign, through at most one benign filler ("roger"/"and").
+    /// Ownship's clearance must be its OWN immediate instruction; a clearance verb reachable only by
+    /// skipping other words may belong to a FOLLOWING aircraft (whose callsign we may not recognize), so
+    /// it is deliberately not accepted — a wrong suggestion is worse than a miss. Bounded (constant).
+    static func efbClauseOpens(_ tokens: [String], from: Int) -> Bool {
+        guard from >= 0, from < tokens.count else { return false }
+        if efbOpeners.contains(tokens[from]) { return true }
+        if efbFillers.contains(tokens[from]), from + 1 < tokens.count, efbOpeners.contains(tokens[from + 1]) {
+            return true
+        }
+        return false
     }
 
     /// The first index at which `sub` occurs as a contiguous subsequence of `tokens`, or nil. Both loops
@@ -194,6 +250,27 @@ enum ATCCommandParser {
                 if tokens[i + j] != sub[j] { match = false; break }
             }
             if match { return i }
+        }
+        return nil
+    }
+
+    /// Like `subsequenceIndex`, but skips an occurrence that is the TAIL of a longer callsign — a
+    /// digit-initial ownship variant immediately preceded by a digit (so "8 9 2 5 tango" inside
+    /// "november 1 8 9 2 5 tango" is not bound). A word-initial variant is self-anchoring and never a
+    /// tail, so a preceding digit (a prior aircraft's heading) does not disqualify it. Bounded scans.
+    static func cleanSubsequenceIndex(_ tokens: [String], _ sub: [String]) -> Int? {
+        guard !sub.isEmpty, sub.count <= maxCallsignTokens, sub.count <= tokens.count else { return nil }
+        let last = min(tokens.count, maxTokens) - sub.count
+        guard last >= 0 else { return nil }
+        let digitInitial = sub.first.flatMap { digit($0) } != nil
+        for i in 0...last {                                              // bounded by maxTokens
+            var match = true
+            for j in 0..<min(sub.count, maxCallsignTokens) {            // bounded by maxCallsignTokens
+                if tokens[i + j] != sub[j] { match = false; break }
+            }
+            guard match else { continue }
+            if i > 0, digitInitial, digit(tokens[i - 1]) != nil { continue }   // tail of a longer callsign
+            return i
         }
         return nil
     }

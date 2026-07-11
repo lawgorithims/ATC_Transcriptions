@@ -943,30 +943,39 @@ final class AppModel: ObservableObject {
         lastEFBRecordID = latest.id
         guard latest.role == .controller else { return }   // content role (a clearance's text is controller)
         guard let plan = flightPlan, !plan.callsign.isEmpty else { return }   // no ownship → never act
-        guard ATCCommandParser.addressesOwnship(subject: latest.callsign,
-                                                subjectKey: latest.callsignKey,
-                                                own: plan.callsign) else { return }
+        // Ownship identity from the filed callsign + aircraft type. It recognizes the standard ATC
+        // abbreviations of the pilot's OWN tail ("Seneca 25T", "November 8 9 2 5 Tango", "8925T") — but
+        // only when ownship is ADDRESSED (transmission-initial or before an instruction), never merely
+        // mentioned to another aircraft. Matching one known callsign keeps abbreviation safe.
+        let identity = OwnshipIdentity(callsign: plan.callsign, aircraftType: plan.aircraftType,
+                                       spokenCallsign: ownshipSpokenTokens(plan.callsign))
+        guard identity.isValid else { return }
+        guard identity.isAddressed(inNormalized: latest.normalizedDisplay) else { return }
         let grounding = ATCCommandParser.Grounding(fixes: efbKnownFixes(), airports: efbKnownAirports(),
                                                    sids: efbProcedureIdents(kind: "SID"),
                                                    stars: efbProcedureIdents(kind: "STAR"))
         guard let command = ATCCommandParser.parse(latest.normalizedDisplay, grounding: grounding,
-                                                   addressee: efbAddressee(for: latest)) else { return }
+                                                   addressee: identity.addressee(airlineStarts: efbAirlineStarts())) else { return }
         assert(!command.target.isEmpty, "parser returned an empty target")
         efbSuggestion = EFBSuggestion.make(id: latest.id.uuidString, command: command, source: latest.display)
     }
 
-    /// Ownship's positional-binding key: its own callsign as normalized spoken tokens plus the words that
-    /// begin ANY callsign. Lets the parser bind a clearance to ownship's segment when a single transmission
-    /// names several aircraft. nil (→ no positional binding) when the live knowledge base isn't available.
-    private func efbAddressee(for record: TranscriptRecord) -> ATCCommandParser.Addressee? {
-        guard let knowledge = liveContext?.knowledge else { return nil }
-        let code = record.callsignKey ?? record.callsign ?? ""
-        guard !code.isEmpty else { return nil }
-        let spoken = ATCContext.spokenCallsign(code, knowledge: knowledge)
-        guard !spoken.isEmpty else { return nil }
-        let ownTokens = ATCNormalize.normalize(spoken).split(separator: " ").map(String.init)
-        guard !ownTokens.isEmpty, ownTokens.count <= ATCCommandParser.maxCallsignTokens else { return nil }
-        return ATCCommandParser.Addressee(ownshipTokens: ownTokens, callsignStarts: efbCallsignStarts(knowledge))
+    /// The filed callsign spelled as NORMALIZED spoken tokens via the knowledge base (airline telephony +
+    /// spelled tail) — an extra full-form variant for `OwnshipIdentity` (esp. airline callsigns, whose
+    /// telephony name it can't derive alone). Empty when the live knowledge base isn't available yet.
+    private func ownshipSpokenTokens(_ callsign: String) -> [String] {
+        guard let knowledge = liveContext?.knowledge else { return [] }
+        let spoken = ATCContext.spokenCallsign(callsign, knowledge: knowledge)
+        guard !spoken.isEmpty else { return [] }
+        let toks = ATCNormalize.normalize(spoken).split(separator: " ").map(String.init)
+        return toks.count <= ATCCommandParser.maxCallsignTokens ? toks : []
+    }
+
+    /// The words that BEGIN any callsign (airline telephony first-words + "november" + GA type words) —
+    /// used by the positional binding to find where the NEXT aircraft is addressed. Empty-safe.
+    private func efbAirlineStarts() -> Set<String> {
+        guard let knowledge = liveContext?.knowledge else { return ["november"] }
+        return efbCallsignStarts(knowledge)
     }
 
     /// The words that begin a callsign — airline telephony first-words + "november" + GA type words. Used
