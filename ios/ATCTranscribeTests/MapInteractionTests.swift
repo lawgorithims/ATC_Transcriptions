@@ -174,4 +174,85 @@ final class MapInteractionTests: XCTestCase {
         XCTAssertEqual(byIdent.first?.kind, .airport)
         XCTAssertTrue(MapSearch.results("Logan").contains { $0.ident == "KBOS" }, "name search finds Boston Logan")
     }
+
+    // MARK: Phase 5 — loaded procedures (SID / STAR / approach)
+
+    private func loaded(_ kind: String, _ ident: String, fixes: [String], transition: String = "") -> LoadedProcedure {
+        LoadedProcedure(airport: "KBOS", kind: kind, ident: ident, name: "\(ident) proc",
+                        runway: "33L", transition: transition, fixes: fixes)
+    }
+
+    func testLoadAndClearProcedureSlotsByKind() {
+        var p = FlightPlan(departure: "KBOS", destination: "KPVD")
+        p.loadProcedure(loaded("SID", "LOGN5", fixes: ["LOGN"]))
+        p.loadProcedure(loaded("STAR", "ROBUC3", fixes: ["ROBUC"]))
+        p.loadProcedure(loaded("IAP", "H33LX", fixes: ["BBOGG", "CRLTN"], transition: "BBOGG"))
+        XCTAssertEqual(p.departureProcedure?.ident, "LOGN5")
+        XCTAssertEqual(p.arrivalProcedure?.ident, "ROBUC3")
+        XCTAssertEqual(p.approachProcedure?.ident, "H33LX")
+        XCTAssertEqual(p.loadedProcedures.count, 3)
+        p.clearProcedure(kind: "IAP")
+        XCTAssertNil(p.approachProcedure)
+        XCTAssertEqual(p.loadedProcedures.count, 2)
+        p.clearProcedure(kind: "")
+        XCTAssertTrue(p.loadedProcedures.isEmpty, "clearing all removes every slot")
+    }
+
+    func testProcedureOnlyPlanIsNotEmpty() {
+        var p = FlightPlan()
+        XCTAssertTrue(p.isEmpty)
+        p.loadProcedure(loaded("IAP", "H33LX", fixes: ["BBOGG"]))
+        XCTAssertFalse(p.isEmpty, "a loaded procedure makes the plan non-empty (so it persists)")
+    }
+
+    func testGroundingContextNamesProcedureButKeepsFixesOutOfSnapVocab() {
+        var p = FlightPlan(callsign: "N345AB", departure: "KBOS", destination: "KPVD")
+        p.loadProcedure(loaded("IAP", "H33LX", fixes: ["BBOGG", "CRLTN"], transition: "BBOGG"))
+        // The LLM context block names the loaded approach + its transition …
+        XCTAssertTrue(p.contextBlock.contains("Approach H33LX proc via BBOGG"), p.contextBlock)
+        // … but the deterministic snap-vocab does NOT gain the procedure fixes (Phase-3 FP guard).
+        XCTAssertFalse(p.vocabTerms.contains("BBOGG"), "procedure fixes must not enter the snap-vocab")
+        XCTAssertFalse(p.vocabTerms.contains("CRLTN"))
+        XCTAssertTrue(p.vocabTerms.contains("N345AB"), "the filed callsign is still in the snap-vocab")
+    }
+
+    func testContextBlockProcedureOnlyHasNoDanglingOwnFlight() {
+        var p = FlightPlan()
+        p.loadProcedure(loaded("IAP", "H33LX", fixes: ["BBOGG"]))
+        let block = p.contextBlock
+        XCTAssertFalse(block.contains("Own flight"), "no callsign/airports → no 'Own flight:' fragment: \(block)")
+        XCTAssertTrue(block.contains("Approach H33LX proc"), block)
+        XCTAssertFalse(block.hasPrefix(" "), "no leading space")
+    }
+
+    func testOldPlanJSONDecodesWithoutProcedureKeys() throws {
+        let json = #"{"aircraftType":"","callsign":"N1","departure":"KBOS","destination":"KPVD","alternate":"","route":["PVD"],"savedAt":0}"#
+        let p = try JSONDecoder().decode(FlightPlan.self, from: Data(json.utf8))
+        XCTAssertNil(p.approachProcedure, "a pre-Phase-5 plan decodes with nil procedure slots")
+        XCTAssertEqual(p.destination, "KPVD")
+    }
+
+    func testCIFPReFindsProcedureLegsByStableKeys() throws {
+        try XCTSkipIf(CIFP.procedureCount == 0, "cifp.sqlite not bundled")
+        let iap = try XCTUnwrap(CIFP.procedures(airport: "KBOS").first { $0.kind == "IAP" })
+        let byKey = CIFP.legs(airport: "KBOS", ident: iap.ident, transition: iap.transition)
+        let byRowid = CIFP.legs(procedureID: iap.id)
+        XCTAssertEqual(byKey.map(\.fix), byRowid.map(\.fix), "re-find by keys == find by rowid")
+        XCTAssertTrue(CIFP.legs(airport: "KBOS", ident: "ZZZZZ", transition: "").isEmpty)
+    }
+
+    func testProcedureRouteExpandsWithApproachLegs() throws {
+        try XCTSkipIf(CIFP.procedureCount == 0, "cifp.sqlite not bundled")
+        let iap = try XCTUnwrap(CIFP.procedures(airport: "KBOS").first { $0.kind == "IAP" && !$0.runway.isEmpty })
+        let fixes = Array(Set(CIFP.legs(procedureID: iap.id).map(\.fix).filter { !$0.isEmpty && !$0.hasPrefix("RW") }))
+        var p = FlightPlan(departure: "KBOS", destination: "KPVD", route: ["PVD"])
+        p.loadProcedure(LoadedProcedure(airport: "KBOS", kind: "IAP", ident: iap.ident, name: iap.name,
+                                        runway: iap.runway, transition: iap.transition, fixes: fixes))
+        let route = ProcedureRoute.resolve(p)
+        XCTAssertGreaterThan(route.count, 2, "endpoints + approach legs")
+        XCTAssertLessThanOrEqual(route.count, ProcedureRoute.maxLegs)
+        XCTAssertTrue(route.contains { fixes.contains($0.ident) }, "the coded approach fixes are in the drawn route")
+        // consecutive-duplicate collapse holds
+        for i in 1..<route.count { XCTAssertNotEqual(route[i].ident, route[i - 1].ident) }
+    }
 }

@@ -974,7 +974,7 @@ final class AppModel: ObservableObject {
         guard !suggestion.command.target.isEmpty else { efbSuggestion = nil; return }
         switch suggestion.command.kind {
         case .directTo:        directTo(suggestion.command.target)
-        case .clearedApproach: previewApproach(runway: suggestion.command.target)
+        case .clearedApproach: loadApproachForRunway(suggestion.command.target)
         }
         Haptics.impact(.medium)
         efbSuggestion = nil
@@ -983,9 +983,9 @@ final class AppModel: ObservableObject {
     /// Discard the pending suggestion without acting.
     func dismissEFBSuggestion() { efbSuggestion = nil }
 
-    /// Preview the coded approach for `runway` at the active airport (Phase 5 will load it as the route).
-    /// Picks the first IAP whose runway matches; no-op if none. Bounded lookup (rule 2).
-    private func previewApproach(runway: String) {
+    /// Load the coded approach for `runway` at the active airport into the flight plan (EFB "cleared for
+    /// the approach"). Picks the first IAP whose runway matches; no-op if none. Bounded lookup (rule 2).
+    private func loadApproachForRunway(_ runway: String) {
         guard !runway.isEmpty else { return }
         let ident = liveContext?.airportIdent ?? (airport.isEmpty ? "" : airport)
         guard !ident.isEmpty else { return }
@@ -993,9 +993,30 @@ final class AppModel: ObservableObject {
         guard !want.num.isEmpty else { return }
         for proc in CIFP.procedures(airport: ident).prefix(2048) where proc.kind == "IAP" {
             let have = SlotSnap.parseDesignator(proc.runway)
-            if have.num == want.num, have.suffix == want.suffix { previewedProcedure = proc; return }
+            if have.num == want.num, have.suffix == want.suffix { loadProcedure(proc); return }
         }
     }
+
+    // MARK: Loaded procedures (Phase 5 — SID / STAR / approach into the active flight plan)
+
+    /// Load a coded procedure into the flight plan so its legs draw as the active route and its fixes
+    /// ground the corrector. Captures the fix idents now (bounded, deduped). Validates the input (rule 7).
+    func loadProcedure(_ proc: CIFPProcedure) {
+        guard !proc.ident.isEmpty, !proc.airport.isEmpty else { return }
+        var fixes: [String] = []
+        var seen = Set<String>()
+        for leg in CIFP.legs(procedureID: proc.id).prefix(256) {   // statically bounded
+            let f = leg.fix.uppercased()
+            if !f.isEmpty, !f.hasPrefix("RW"), seen.insert(f).inserted { fixes.append(f) }
+        }
+        let loaded = LoadedProcedure(airport: proc.airport, kind: proc.kind, ident: proc.ident,
+                                     name: proc.name, runway: proc.runway, transition: proc.transition, fixes: fixes)
+        editPlan { $0.loadProcedure(loaded) }
+        previewedProcedure = nil          // it's part of the route now, not just a preview
+    }
+
+    /// Remove a loaded procedure by kind ("SID"/"STAR"/"IAP", or "" for all).
+    func clearLoadedProcedure(kind: String) { editPlan { $0.clearProcedure(kind: kind) } }
 
     // MARK: Flight-plan edits from the map (tap an object → act on the route)
 

@@ -14,10 +14,24 @@ struct FlightPlan: Codable, Equatable {
     var route: [String] = []        // waypoints / airways between departure and destination
     var savedAt = Date()
 
+    // Loaded coded terminal procedures (CIFP). The flight plan is really departure → SID → enroute →
+    // STAR → approach → destination; these three slots hold the departure procedure (SID/ODP), the
+    // arrival procedure (STAR), and the instrument approach (IAP). Optional Codable → old persisted plans
+    // (which lack these keys) still decode (missing key → nil).
+    var departureProcedure: LoadedProcedure?
+    var arrivalProcedure: LoadedProcedure?
+    var approachProcedure: LoadedProcedure?
+
+    /// The loaded procedures in flight order (departure, arrival, approach), skipping empty slots.
+    var loadedProcedures: [LoadedProcedure] {
+        [departureProcedure, arrivalProcedure, approachProcedure].compactMap { $0 }
+    }
+
     /// True when nothing meaningful has been entered (drives the "no plan" prompt + warning badge).
     var isEmpty: Bool {
         aircraftType.isEmpty && callsign.isEmpty && departure.isEmpty
             && destination.isEmpty && alternate.isEmpty && route.isEmpty
+            && departureProcedure == nil && arrivalProcedure == nil && approachProcedure == nil
     }
 
     /// A filed plan older than this should be refreshed before the next flight.
@@ -57,19 +71,52 @@ struct FlightPlan: Codable, Equatable {
         let leg = [departure, destination].filter { !$0.isEmpty }.joined(separator: " to ")
         if !leg.isEmpty { bits.append(leg) }
         if !alternate.isEmpty { bits.append("alternate \(alternate)") }
-        var line = "Own flight: " + bits.joined(separator: ", ") + "."
-        if !route.isEmpty { line += " Route: " + route.joined(separator: " ") + "." }
-        return line
+        // Assemble as parts so a procedure-only plan (no callsign/airports/route) doesn't emit a dangling
+        // "Own flight: ." fragment.
+        var parts: [String] = []
+        if !bits.isEmpty { parts.append("Own flight: " + bits.joined(separator: ", ") + ".") }
+        if !route.isEmpty { parts.append("Route: " + route.joined(separator: " ") + ".") }
+        for proc in loadedProcedures { parts.append(proc.contextPhrase) }   // SID / STAR / approach
+        return parts.joined(separator: " ")
     }
 
-    /// Filed terms the corrector's validator should be allowed to snap onto (callsign + route
-    /// fixes/airways), so the LLM can fix a near-miss back onto what the pilot actually filed.
+    /// Filed terms the corrector's validator (deterministic near-miss snap) may snap onto — callsign +
+    /// route fixes/airways only. Loaded-procedure fixes are DELIBERATELY excluded: they go to the LLM
+    /// context block (`contextBlock`) for grounding, but adding a large procedure fix set to the snap-vocab
+    /// would let the validator rewrite a correct word onto a look-alike fix (the Phase-3 false-positive
+    /// class). Deterministic snapping of an airport's procedure fixes is already handled by the SlotSnap
+    /// fix slot via `AirportContextData.fixes`.
     var vocabTerms: [String] {
         var t = route
         if !callsign.isEmpty { t.append(callsign) }
         if !departure.isEmpty { t.append(departure) }
         if !destination.isEmpty { t.append(destination) }
         return t.filter { !$0.isEmpty }
+    }
+
+    // MARK: Loaded procedures (SID / STAR / approach)
+
+    /// Load a coded procedure into its slot by kind (SID → departure, STAR → arrival, IAP → approach).
+    /// Validates the kind (rule 7); an unknown kind is a no-op rather than a mis-file.
+    mutating func loadProcedure(_ proc: LoadedProcedure) {
+        assert(!proc.ident.isEmpty, "a loaded procedure must have an ident")
+        switch proc.kind {
+        case "SID":  departureProcedure = proc
+        case "STAR": arrivalProcedure = proc
+        case "IAP":  approachProcedure = proc
+        default:     break                                     // unknown kind → ignore (safety)
+        }
+    }
+
+    /// Clear the procedure slot for `kind` (or all slots when `kind` is empty).
+    mutating func clearProcedure(kind: String) {
+        switch kind {
+        case "SID":  departureProcedure = nil
+        case "STAR": arrivalProcedure = nil
+        case "IAP":  approachProcedure = nil
+        case "":     departureProcedure = nil; arrivalProcedure = nil; approachProcedure = nil
+        default:     break
+        }
     }
 
     // MARK: Editing (map "add to route" / "Direct-To" actions)
@@ -188,6 +235,42 @@ struct FlightPlan: Codable, Equatable {
     }
 
     static func clear() { UserDefaults.standard.removeObject(forKey: storageKey) }
+}
+
+/// A coded terminal procedure loaded into a flight plan (SID / STAR / IAP). Keyed by
+/// `airport`+`ident`+`transition` so it survives a CIFP database rebuild (rowids change each AIRAC
+/// cycle) — the legs are re-resolved from CIFP at draw time by those keys. `fixes` are captured at load
+/// for grounding + a compact display. Pure value type.
+struct LoadedProcedure: Codable, Equatable {
+    var airport: String
+    var kind: String        // "SID" | "STAR" | "IAP"
+    var ident: String       // ARINC ident, e.g. "H33LX"
+    var name: String        // readable, e.g. "RNAV (GPS) RWY 33L"
+    var runway: String
+    var transition: String
+    var fixes: [String]     // fix idents on the procedure, captured at load
+
+    /// The flight-phase label ("Departure" / "Arrival" / "Approach").
+    var phaseLabel: String {
+        switch kind {
+        case "SID":  return "Departure"
+        case "STAR": return "Arrival"
+        case "IAP":  return "Approach"
+        default:     return "Procedure"
+        }
+    }
+
+    /// A compact phrase for the LLM grounding block, e.g. "Approach RNAV (GPS) RWY 33L via BBOGG."
+    var contextPhrase: String {
+        var s = phaseLabel + " " + name
+        if !transition.isEmpty { s += " via " + transition }
+        return s + "."
+    }
+
+    /// One-line UI label, e.g. "Approach · RNAV (GPS) RWY 33L (BBOGG)".
+    var displayLine: String {
+        phaseLabel + " · " + name + (transition.isEmpty ? "" : " (" + transition + ")")
+    }
 }
 
 /// One element of a filed route, with a heuristic classification so the UI can colour-code it.

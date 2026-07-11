@@ -92,6 +92,21 @@ enum CIFP {
               """, airport) { text($0, 0) }
     }
 
+    /// Legs of a procedure re-found by its stable (airport, ident, transition) keys — robust to the rowid
+    /// changing when the CIFP DB is rebuilt for a new AIRAC cycle. Prefers an exact transition match, else
+    /// any transition of the same ident. Empty when not found. Bounded scans (rule 2).
+    static func legs(airport: String, ident: String, transition: String) -> [CIFPLeg] {
+        guard !airport.isEmpty, !ident.isEmpty else { return [] }
+        let procs = procedures(airport: airport)
+        for p in procs.prefix(4096) where p.ident == ident && p.transition == transition {
+            return legs(procedureID: p.id)
+        }
+        for p in procs.prefix(4096) where p.ident == ident {   // transition may have been stored empty
+            return legs(procedureID: p.id)
+        }
+        return []
+    }
+
     /// Localizer/ILS records for an airport (frequency + course + position).
     static func ils(airport: String) -> [CIFPILS] {
         query("SELECT runway,ident,freq_mhz,course_mag,lat,lon FROM ils WHERE airport=?1", airport) { st in

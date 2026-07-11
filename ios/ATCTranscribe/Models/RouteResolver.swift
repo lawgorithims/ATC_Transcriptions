@@ -15,10 +15,14 @@ struct ResolvedLeg: Identifiable, Equatable {
 /// so the line connects the fixes on either side. Idents that resolve to nothing are reported so the
 /// map can note "N waypoints not located".
 enum RouteResolver {
-    static func resolve(_ legs: [RouteLeg]) -> (points: [ResolvedLeg], unresolved: [String]) {
+    /// `seed` primes the "nearest to the previous point" disambiguation for the FIRST leg — pass the last
+    /// already-resolved coordinate when resolving a route SLICE (e.g. the enroute middle after a departure
+    /// or SID), so an ambiguous first ident resolves to the instance nearest the chain, not an arbitrary
+    /// candidate. nil (the default) preserves the original whole-route behavior.
+    static func resolve(_ legs: [RouteLeg], seed: Coord? = nil) -> (points: [ResolvedLeg], unresolved: [String]) {
         var points: [ResolvedLeg] = []
         var unresolved: [String] = []
-        var previous: Coord?
+        var previous: Coord? = seed
         for leg in legs {
             if let c = UserPoint.parse(leg.ident) {   // a dropped lat/lon user waypoint
                 points.append(ResolvedLeg(ident: leg.ident, kind: .waypoint, coord: c))
