@@ -17,8 +17,12 @@ final class MBTilesReader {
     let minZoom: Int
     let maxZoom: Int
     let bounds: MKMapRect
+    /// Stable per-pack id (the .mbtiles filename) — the shared tile cache keys on this, so a pack
+    /// that is evicted and later re-opened reuses its already-decoded tiles instead of re-fetching.
+    let packID: String
 
     init?(path: String) {
+        packID = (path as NSString).lastPathComponent
         guard sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
             if db != nil { sqlite3_close(db) }
             return nil
@@ -74,40 +78,94 @@ final class MBTilesReader {
 final class MBTilesTileOverlay: MKTileOverlay {
     private let reader: MBTilesReader
     private let transcode: Bool
-    /// Per-overlay cache of transcoded PNGs, keyed "z/x/y" (L11). MapKit re-requests the same tiles
-    /// as you pan back and forth; without this the WEBP→PNG decode+encode ran on every revisit. One
-    /// overlay per reader/pack, so this frees with the overlay when a pack is evicted. NSCache is
-    /// thread-safe for MapKit's background tile queues and self-evicts under memory pressure.
-    private let pngCache: NSCache<NSString, NSData>?
+    /// How many zoom levels past the pack's own max we keep drawing by upscaling (Issue 1 — overzoom).
+    /// Without this, MapKit stops requesting tiles above `reader.maxZoom` and the chart vanishes to the
+    /// bare Apple base map when you zoom in past the data. 5 levels keeps the sectional/IFR chart
+    /// visible (progressively softer) all the way in.
+    static let overzoomLevels = 5
+
+    /// SHARED, process-wide cache of ready-to-render tile PNGs, keyed "packID/z/x/y" (L11 + Issue 2).
+    /// Shared (not per-overlay) so a pack that is evicted on a fast pan and re-opened when you pan back
+    /// reuses its decoded tiles instantly instead of re-decoding/re-upscaling — killing the re-tile
+    /// flicker. NSCache is thread-safe for MapKit's background tile queues and self-evicts under
+    /// memory pressure; the single global budget bounds memory regardless of how many packs are mounted.
+    private static let tileCache: NSCache<NSString, NSData> = {
+        let c = NSCache<NSString, NSData>()
+        c.totalCostLimit = 128 * 1024 * 1024   // ~128 MB of decoded tiles across all packs
+        return c
+    }()
+
     init(reader: MBTilesReader) {
         self.reader = reader
         self.transcode = (reader.format == "webp")
-        if transcode {
-            let c = NSCache<NSString, NSData>()
-            c.totalCostLimit = 48 * 1024 * 1024   // ~48 MB of decoded PNG per pack
-            pngCache = c
-        } else {
-            pngCache = nil                          // native PNG/JPEG packs need no transcode/cache
-        }
         super.init(urlTemplate: nil)
         canReplaceMapContent = false
         tileSize = CGSize(width: 256, height: 256)
         minimumZ = reader.minZoom
-        maximumZ = reader.maxZoom
+        maximumZ = min(reader.maxZoom + Self.overzoomLevels, 22)
     }
+
     override func loadTile(at path: MKTileOverlayPath, result: @escaping (Data?, Error?) -> Void) {
-        if transcode, let cache = pngCache {
-            let key = "\(path.z)/\(path.x)/\(path.y)" as NSString
-            if let hit = cache.object(forKey: key) { result(hit as Data, nil); return }
-            guard let raw = reader.tileData(z: path.z, x: path.x, y: path.y) else { result(nil, nil); return }
-            if let png = UIImage(data: raw)?.pngData() {           // MapKit renders PNG/JPEG natively
-                cache.setObject(png as NSData, forKey: key, cost: png.count)
-                result(png, nil)
-            } else { result(raw, nil) }                            // undecodable → raw fallthrough (old behavior)
-            return
+        // Fast reject: this pack covers only its own region, but with many packs mounted (Issue 2)
+        // MapKit asks every overlay for every visible tile. Skip a SQLite hit for tiles outside our
+        // bounds so the non-matching packs stay O(1).
+        guard Self.tileRect(z: path.z, x: path.x, y: path.y).intersects(reader.bounds) else {
+            result(nil, nil); return
         }
-        guard let raw = reader.tileData(z: path.z, x: path.x, y: path.y) else { result(nil, nil); return }
-        result(raw, nil)
+        let key = "\(reader.packID)/\(path.z)/\(path.x)/\(path.y)" as NSString
+        if let hit = Self.tileCache.object(forKey: key) { result(hit as Data, nil); return }
+
+        let data: Data?
+        if path.z <= reader.maxZoom {
+            if let raw = reader.tileData(z: path.z, x: path.x, y: path.y) {
+                data = transcode ? (UIImage(data: raw)?.pngData() ?? raw) : raw   // MapKit renders PNG/JPEG natively
+            } else {
+                data = nil
+            }
+        } else {
+            data = overzoomedTile(z: path.z, x: path.x, y: path.y)   // upscale the deepest available tile
+        }
+        if let data {
+            Self.tileCache.setObject(data as NSData, forKey: key, cost: data.count)
+            result(data, nil)
+        } else {
+            result(nil, nil)
+        }
+    }
+
+    /// Zoomed in past the pack's data: take the deepest ancestor tile that DOES exist, crop the
+    /// sub-region this tile covers, and scale it up to 256×256 (Issue 1). Bounded to `overzoomLevels`.
+    private func overzoomedTile(z: Int, x: Int, y: Int) -> Data? {
+        let src = Self.overzoomSource(z: z, x: x, y: y, maxZoom: reader.maxZoom)
+        guard let src, let raw = reader.tileData(z: reader.maxZoom, x: src.ax, y: src.ay),
+              let img = UIImage(data: raw) else { return nil }
+        let tile: CGFloat = 256
+        let fmt = UIGraphicsImageRendererFormat.default(); fmt.scale = 1; fmt.opaque = false
+        let out = UIGraphicsImageRenderer(size: CGSize(width: tile, height: tile), format: fmt).image { _ in
+            // Draw the whole source scaled so its (ox, oy, sub, sub) sub-rect fills the 256×256 output.
+            let draw = tile / CGFloat(src.sub)                      // == scale factor
+            let size = CGSize(width: img.size.width * draw, height: img.size.height * draw)
+            img.draw(in: CGRect(x: -CGFloat(src.ox) * draw, y: -CGFloat(src.oy) * draw,
+                                width: size.width, height: size.height))
+        }
+        return out.pngData()
+    }
+
+    /// Pure overzoom math (unit-tested): which ancestor tile at `maxZoom` a deeper (z,x,y) tile falls
+    /// in, and the sub-rectangle (in the source's 256-pt space) it covers. Returns nil if not deeper.
+    static func overzoomSource(z: Int, x: Int, y: Int, maxZoom: Int) -> (ax: Int, ay: Int, sub: Double, ox: Double, oy: Double)? {
+        let dz = z - maxZoom
+        guard dz > 0, dz <= overzoomLevels + 2 else { return nil }
+        let scale = 1 << dz                                         // tiles per ancestor edge
+        let sub = 256.0 / Double(scale)                            // sub-tile size in source pixels
+        return (ax: x >> dz, ay: y >> dz, sub: sub,
+                ox: Double(x % scale) * sub, oy: Double(y % scale) * sub)
+    }
+
+    /// The MKMapRect a tile path covers — used for the fast out-of-bounds reject.
+    static func tileRect(z: Int, x: Int, y: Int) -> MKMapRect {
+        let side = MKMapSize.world.width / Double(1 << z)
+        return MKMapRect(x: Double(x) * side, y: Double(y) * side, width: side, height: side)
     }
 }
 
@@ -238,9 +296,18 @@ private func inflated(_ r: MKMapRect, by f: Double) -> MKMapRect {
     private var pinned: Set<String> = []          // route-corridor packs — never evicted
     private var inFlight: Set<String> = []
     private var layer: ChartLayer = .sectional
+    private var touch: [String: Int] = [:]        // last-used tick per pack — LRU eviction order
+    private var touchTick = 0
 
     private let autoLoadSpanLimit = 7.0           // ° — beyond this (zoomed out) free-pan waits
-    private let keepHalo = 1.0                     // keep packs within this many view-widths of the view
+    private let keepHalo = 1.5                     // keep packs within this many view-widths of the view
+    // Keep a GENEROUS working set of packs mounted (Issue 2): a pack is only closed once we exceed
+    // this many, and then the least-recently-used first — so a fast pan (and a pan back) reuses the
+    // still-open packs instead of removing + re-adding overlays, which blanked the chart and made it
+    // re-tile. The shared MBTilesTileOverlay tile cache means even a genuinely re-opened pack redraws
+    // instantly. Memory stays bounded: readers are lightweight SQLite handles and MapKit renders only
+    // visible overlays; the tile cache has its own global budget.
+    private let maxLoaded = 24
 
     init(library: ChartLibrary) { self.library = library }
 
@@ -258,7 +325,7 @@ private func inflated(_ r: MKMapRect, by f: Double) -> MKMapRect {
     /// Switch layer (or initial load): reset all per-layer state and pull the packs the route crosses.
     func setLayer(_ newLayer: ChartLayer, routeRects: [MKMapRect]) async {
         layer = newLayer
-        loaded.removeAll(); pinned.removeAll(); inFlight.removeAll(); publish()
+        loaded.removeAll(); pinned.removeAll(); inFlight.removeAll(); touch.removeAll(); publish()
         guard newLayer.isRaster else { phase = .ready; return }
         guard await ensureCatalog(), layer == newLayer else { return }
         if !routeRects.isEmpty {
@@ -325,14 +392,25 @@ private func inflated(_ r: MKMapRect, by f: Double) -> MKMapRect {
         }
     }
 
-    /// Bound memory: close packs that are neither pinned (on the route) nor near the current view.
+    /// Bound memory WITHOUT churning the working set (Issue 2). First mark every in-view pack as
+    /// freshly used; then, only if we're over `maxLoaded`, close the least-recently-used packs that
+    /// are neither pinned (on the route) nor within the keep-halo of the current view. Under the cap
+    /// nothing is closed and no `publish()` fires — so panning around never removes + re-adds
+    /// overlays (which blanked the chart and forced a re-tile).
     private func evict(near rects: [MKMapRect]) {
+        for (id, pair) in loaded where rects.contains(where: { pair.entry.mapRect.intersects($0) }) {
+            touchTick += 1; touch[id] = touchTick
+        }
+        guard loaded.count > maxLoaded else { return }
         let halos = rects.map { inflated($0, by: keepHalo) }
-        let stale = loaded.filter { pair in
+        let evictable = loaded.filter { pair in
             !pinned.contains(pair.key) && !halos.contains(where: { pair.value.entry.mapRect.intersects($0) })
-        }.map { $0.key }
-        guard !stale.isEmpty else { return }
-        for id in stale { loaded[id] = nil }                    // readers deinit → sqlite3_close
+        }.map(\.key)
+        guard !evictable.isEmpty else { return }
+        let overflow = loaded.count - maxLoaded
+        assert(overflow > 0, "evict only trims when over the cap")
+        let toClose = evictable.sorted { (touch[$0] ?? 0) < (touch[$1] ?? 0) }.prefix(overflow)   // LRU first
+        for id in toClose { loaded[id] = nil; touch[id] = nil }   // readers deinit → sqlite3_close
         publish()
     }
 }

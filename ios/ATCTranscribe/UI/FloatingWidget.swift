@@ -334,7 +334,7 @@ struct FloatingWidgetContainer<Content: View>: View {
             .padding(6)
             .contentShape(Rectangle())
             .gesture(
-                DragGesture()
+                DragGesture(minimumDistance: 0, coordinateSpace: .named(FloatingCanvas.dragSpace))
                     .updating($resize) { v, s, _ in s = v.translation }
                     .onEnded { v in
                         let rect = WidgetGeometry.rect(for: frame, in: container)
@@ -349,7 +349,9 @@ struct FloatingWidgetContainer<Content: View>: View {
     // MARK: gestures + bindings
 
     private var dragGesture: some Gesture {
-        DragGesture(minimumDistance: 2)
+        // Measure in the fixed canvas space (Issue 3) — NOT the card's local space, which moves with
+        // `.position` and fed the translation back into itself (the residual drag jitter).
+        DragGesture(minimumDistance: 2, coordinateSpace: .named(FloatingCanvas.dragSpace))
             .updating($drag) { v, s, _ in s = v.translation }
             .onChanged { _ in if widgets.layout.frame(frame.kind)?.z != widgets.layout.maxZ { widgets.bringToFront(frame.kind) } }
             .onEnded { v in
