@@ -98,7 +98,7 @@ final class ATCCommandParserTests: XCTestCase {
 
     private let callsignStarts: Set<String> = ["american", "delta", "united", "november", "cessna"]
     private func addr(_ ownTokens: String) -> ATCCommandParser.Addressee {
-        ATCCommandParser.Addressee(ownshipTokens: ownTokens.split(separator: " ").map(String.init),
+        ATCCommandParser.Addressee(ownshipVariants: [ownTokens.split(separator: " ").map(String.init)],
                                    callsignStarts: callsignStarts)
     }
 
