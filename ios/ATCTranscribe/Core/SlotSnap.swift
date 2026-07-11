@@ -63,9 +63,12 @@ enum SlotSnap {
     /// Apply the stage. Returns (canonical-space text, edits). No context → canonicalize only.
     /// `telephony` guards the frequency patterns against callsign flight numbers ("center
     /// american 1786" is a callsign, not frequency 178.6 — the dominant false-positive class
-    /// measured on the collected corpus).
+    /// measured on the collected corpus). `conservativeFrequencies` (H3): when true, a heard
+    /// value that is already a valid airband channel is never snapped — see `snapFrequency`.
+    /// Defaulted false so the byte-parity fixtures (which pass two args) replay unchanged.
     static func apply(_ text: String, context: AirportContextData?,
-                      telephony: Set<String> = CallsignSnap.telephonyWords(nil)) -> (text: String, edits: [Edit]) {
+                      telephony: Set<String> = CallsignSnap.telephonyWords(nil),
+                      conservativeFrequencies: Bool = false) -> (text: String, edits: [Edit]) {
         var out = ATCNormalize.normalize(text)
         guard let context else { return (out, []) }
         var edits: [Edit] = []
@@ -107,7 +110,8 @@ enum SlotSnap {
                 let heardStr = groups[0].replacingOccurrences(of: " ", with: "") + "."
                     + groups[1].replacingOccurrences(of: " ", with: "")
                 guard let heard = Double(heardStr) else { return nil }
-                let (verdict, snapped) = snapFrequency(heard, context: context)
+                let (verdict, snapped) = snapFrequency(heard, context: context,
+                                                       conservative: conservativeFrequencies)
                 if let snapped {
                     edits.append(Edit(slot: "frequency", verdict: "snapped", original: heardStr,
                                       snapped: trimFreq(snapped), applied: true))
@@ -189,18 +193,34 @@ enum SlotSnap {
     }
 
     static func onRaster(_ mhz: Double) -> Bool {
-        let k = ((mhz - 118.0) / 0.025).rounded()
-        return abs(118.0 + k * 0.025 - mhz) < 1e-6
+        // A frequency is a real channel if it sits on the 25 kHz grid, OR if it is the universal
+        // 2-decimal shorthand for an .xx5 channel — controllers drop the trailing 5 ("124.67" =
+        // 124.675). Mirror of python-legacy/slot_snap.py::_on_raster (live FP#4 fix, 2026-07-08 —
+        // the Swift port lagged the second arm; H3 remediation restores it). Genuinely mangled
+        // values (118.41) still fail both arms. Fixed 2-iteration loop (rule 2).
+        for cand in [mhz, mhz + 0.005] {
+            let k = ((cand - 118.0) / 0.025).rounded()
+            if abs(118.0 + k * 0.025 - cand) < 1e-6 { return true }
+        }
+        return false
     }
 
-    private static func snapFrequency(_ heard: Double,
-                                      context: AirportContextData) -> (verdict: String, snapped: Double?) {
+    private static func snapFrequency(_ heard: Double, context: AirportContextData,
+                                      conservative: Bool) -> (verdict: String, snapped: Double?) {
         let comms = context.frequencyValues.filter { airband.contains($0) }
         let nav = context.navFrequencies.filter { navBand.contains($0) }        // published ILS/LOC freqs
         // Snap ONLY within the heard value's own band — never let an airband comms freq be rewritten to a
         // nav/ILS freq or vice-versa (an edit-1 across the 118 boundary is a real cross-band corruption).
         let cands = navBand.contains(heard) ? nav : comms
         if cands.contains(where: { abs($0 - heard) < 1e-6 }) { return ("verified", nil) }
+        // PRODUCT POLICY (H3, Swift-only, 2026-07-11; python-legacy deliberately NOT updated — the
+        // same fixture-absent gating pattern as the nav-band branch below): a heard value that is
+        // already a plausible airband channel (in-band + on-raster) is NEVER rewritten — it is most
+        // likely a handoff to a facility outside this airport's published table, and a
+        // Levenshtein-1 "correction" would silently corrupt a valid frequency (the worst kind of
+        // error: official-looking and wrong). Only a garbled/impossible value may snap. The parity
+        // fixtures never pass `conservative`, so the Python-validated behavior stays byte-identical.
+        if conservative, airband.contains(heard), onRaster(heard) { return ("unverified", nil) }
         let hd = freqDigits(heard)
         let near = Set(cands.filter { CallsignSnap.levenshtein(freqDigits($0), hd) == 1 }).sorted()
         if near.count == 1 { return ("snapped", near[0]) }

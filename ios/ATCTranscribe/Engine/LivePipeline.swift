@@ -287,8 +287,13 @@ actor LivePipeline {
         let airportCtx = vicinityGroundingActive
             ? vicinityHard
             : await airportContext(for: context.airportIdent)
+        // conservativeFrequencies (H3): a heard frequency that is already a valid airband channel
+        // is NEVER rewritten — it is most likely a handoff to a facility outside this airport's
+        // published table, and a Levenshtein-1 "snap" would silently corrupt a correctly-heard
+        // frequency. Only a garbled/impossible value may snap. Unconditional — there is no toggle.
         let (slotText, slotEdits) = SlotSnap.apply(csText, context: airportCtx,
-                                                   telephony: telephony)
+                                                   telephony: telephony,
+                                                   conservativeFrequencies: true)
         // With NO candidate list every extracted callsign is trivially "unverified" —
         // that is absence of evidence, not suspicion, so it must not reach the gate or
         // the grounding block (review finding: offline mode would run the LLM on every
