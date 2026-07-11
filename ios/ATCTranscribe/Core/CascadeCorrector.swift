@@ -71,10 +71,44 @@ struct RemoteLLMCorrector: LLMCorrector {
 
     static func fromSettings(knowledge: ATCKnowledgeBase, feedKey: String?) -> RemoteLLMCorrector? {
         guard let raw = UserDefaults.standard.string(forKey: "atc.remoteFixerURL"),
-              !raw.isEmpty, let url = URL(string: raw), url.scheme?.hasPrefix("http") == true else {
+              !raw.isEmpty, let url = URL(string: raw), isEndpointAllowed(url) else {
             return nil
         }
         return RemoteLLMCorrector(endpoint: url, knowledge: knowledge, feedKey: feedKey)
+    }
+
+    /// Transport policy (L7 remediation): HTTPS anywhere; plain HTTP only to private/loopback hosts
+    /// (a cockpit LLM box on ship Wi-Fi — the Stratux at http://192.168.10.1 is the precedent).
+    /// Everything else — plaintext to the public internet, or a non-http scheme (the old
+    /// `hasPrefix("http")` even admitted "httpfoo://") — is rejected: live transcripts and the
+    /// airport/flight-plan context must never leave the aircraft unencrypted.
+    static func isEndpointAllowed(_ url: URL) -> Bool {
+        guard let host = url.host, !host.isEmpty else { return false }
+        switch url.scheme?.lowercased() {
+        case "https": return true
+        case "http": return isPrivateHost(host)
+        default: return false
+        }
+    }
+
+    /// Pure, bounded classification of a URL host as private/loopback — no DNS, no I/O: localhost,
+    /// IPv6 loopback, *.local (mDNS), and the RFC 1918 + loopback IPv4 literals (10/8, 127/8,
+    /// 172.16/12, 192.168/16). Non-literal public hostnames and other IPv6 are NOT private.
+    static func isPrivateHost(_ host: String) -> Bool {
+        let h = host.lowercased()
+        if h == "localhost" || h == "::1" || h.hasSuffix(".local") { return true }
+        let parts = h.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 4 else { return false }          // exactly a dotted quad (rule 7)
+        var octets: [UInt8] = []
+        octets.reserveCapacity(4)
+        for p in parts {                                      // fixed 4-element bound (rule 2)
+            guard p.count <= 3, let v = UInt8(p) else { return false }
+            octets.append(v)
+        }
+        if octets[0] == 10 || octets[0] == 127 { return true }
+        if octets[0] == 172, (16...31).contains(octets[1]) { return true }
+        if octets[0] == 192, octets[1] == 168 { return true }
+        return false
     }
 
     func correct(text: String, history: [String], retrieved: RetrievedContext) async -> Correction {

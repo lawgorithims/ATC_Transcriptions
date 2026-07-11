@@ -247,14 +247,24 @@ struct DeterministicCorrector: Corrector {
                     continue
                 }
 
-                // Stage 3: phonetic fallback.
+                // Stage 3: phonetic fallback. On a ratio tie pick the lexicographically-larger
+                // term — the same deterministic tie-break `closestMatch` uses (difflib
+                // heapq.nlargest semantics). NOTE: the Python reference resolves stage-3 ties by
+                // vocab insertion order instead; no curated parity value exercises a tie
+                // (parity_check.py + testPhoneticFallback are single-term vocab), and Swift's
+                // Dictionary.keys order is per-process random — without a tie-break the chosen
+                // correction of a fix/facility name was nondeterministic run-to-run (M6).
                 if phonetic {
                     let key = phoneticKey(nw)
                     var best: String?
                     var bestRatio = 0.0
                     for nv in normVocab where keys[nv] == key && nv != nw {
                         let r = SequenceMatcher(nw, nv).ratio()
-                        if r >= phoneticMin && r > bestRatio { best = nv; bestRatio = r }
+                        guard r >= phoneticMin else { continue }
+                        let wins: Bool
+                        if let b = best { wins = r > bestRatio || (r == bestRatio && nv > b) }
+                        else { wins = true }
+                        if wins { best = nv; bestRatio = r }
                     }
                     if let best, let canonical = canon[best] {
                         edits.append(CorrectionEdit(from: word, to: canonical, reason: "phonetic match",
