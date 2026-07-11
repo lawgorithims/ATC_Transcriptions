@@ -26,10 +26,21 @@ struct ATCCommand: Equatable, Sendable {
 
 enum ATCCommandParser {
 
+    /// Who a transmission must be addressed to for a command to fire — used to POSITIONALLY bind a
+    /// clearance to ownship when several aircraft are named in one transmission. `ownshipTokens` is the
+    /// pilot's own callsign as NORMALIZED spoken tokens (e.g. `["american","1","2","3"]` or
+    /// `["november","3","4","5","alpha","bravo"]`); `callsignStarts` are the words that BEGIN any callsign
+    /// (airline telephony names, "november", GA type words), used to find where the NEXT aircraft is addressed.
+    struct Addressee: Equatable {
+        let ownshipTokens: [String]
+        let callsignStarts: Set<String>
+    }
+
     // Hard caps so every loop below is statically bounded (rule 2). A radio transmission is short.
     static let maxChars = 512
     static let maxTokens = 64
     static let maxCallsignChars = 32
+    static let maxCallsignTokens = 12
     static let minFixLen = 3
     static let maxFixLen = 6
 
@@ -84,14 +95,76 @@ enum ATCCommandParser {
 
     /// Parse a NORMALIZED controller transcript (lowercase, per-digit-spaced — `TranscriptRecord.
     /// normalizedDisplay`) into one actionable command, or nil. `knownFixes` are the grounded, UPPERCASE
-    /// fix idents a direct-to target must belong to, so a mis-heard non-fix is never routed to.
-    static func parse(_ normalized: String, knownFixes: Set<String>) -> ATCCommand? {
+    /// fix idents a direct-to target must belong to, so a mis-heard non-fix is never routed to. When
+    /// `addressee` is supplied AND the transmission names more than one aircraft, the clearance is bound
+    /// to ownship's own segment, so a clearance to another aircraft in the same transmission never fires.
+    static func parse(_ normalized: String, knownFixes: Set<String>, addressee: Addressee? = nil) -> ATCCommand? {
         guard !normalized.isEmpty, normalized.count <= maxChars else { return nil }   // param check
         let tokens = tokenize(normalized)
         guard tokens.count >= 2 else { return nil }
         assert(tokens.count <= maxTokens, "tokenizer exceeded its cap")
-        if let direct = parseDirectTo(tokens, knownFixes: knownFixes) { return direct }
-        return parseApproach(tokens)
+        // A single-aircraft transmission (0 or 1 callsign named) parses whole — current behavior. Only a
+        // MULTI-aircraft transmission is restricted to ownship's segment; if ownship's segment can't be
+        // located there, abstain (a wrong suggestion is worse than a miss).
+        var scoped = tokens
+        if let addressee, boundaryCount(tokens, starts: addressee.callsignStarts) > 1 {
+            guard let range = ownshipSegment(tokens, addressee: addressee) else { return nil }
+            scoped = Array(tokens[range])
+        }
+        if let direct = parseDirectTo(scoped, knownFixes: knownFixes) { return direct }
+        return parseApproach(scoped)
+    }
+
+    /// How many callsign-start words the transmission names — a cheap aircraft count. Statically bounded.
+    static func boundaryCount(_ tokens: [String], starts: Set<String>) -> Int {
+        guard !starts.isEmpty else { return 0 }
+        let bound = min(tokens.count, maxTokens)
+        var count = 0
+        for i in 0..<bound where starts.contains(tokens[i]) { count += 1 }   // bounded by maxTokens
+        assert(count <= maxTokens, "boundary count exceeded token cap")
+        return count
+    }
+
+    /// The token range addressed to ownship: from where ownship's callsign appears to the next aircraft's
+    /// callsign (or the end). nil when ownship isn't named, or is only a prefix of a longer callsign
+    /// ("american 1 2 3" must not match "american 1 2 3 4"). Bounded scans.
+    static func ownshipSegment(_ tokens: [String], addressee: Addressee) -> Range<Int>? {
+        let own = addressee.ownshipTokens
+        guard own.count >= 1, own.count <= maxCallsignTokens else { return nil }
+        guard let start = subsequenceIndex(tokens, own) else { return nil }
+        let afterCallsign = start + own.count
+        if afterCallsign < tokens.count, digit(tokens[afterCallsign]) != nil { return nil }  // longer number
+        let end = boundaryAfter(tokens, from: afterCallsign, starts: addressee.callsignStarts)
+        guard start < end else { return nil }
+        return start..<end
+    }
+
+    /// The first index at which `sub` occurs as a contiguous subsequence of `tokens`, or nil. Both loops
+    /// are statically bounded (outer by maxTokens, inner by maxCallsignTokens).
+    static func subsequenceIndex(_ tokens: [String], _ sub: [String]) -> Int? {
+        guard !sub.isEmpty, sub.count <= maxCallsignTokens, sub.count <= tokens.count else { return nil }
+        let last = min(tokens.count, maxTokens) - sub.count
+        guard last >= 0 else { return nil }
+        for i in 0...last {                                              // bounded by maxTokens
+            var match = true
+            for j in 0..<min(sub.count, maxCallsignTokens) {            // bounded by maxCallsignTokens
+                if tokens[i + j] != sub[j] { match = false; break }
+            }
+            if match { return i }
+        }
+        return nil
+    }
+
+    /// The first index >= `from` whose token starts a callsign (another aircraft), else `tokens.count`.
+    static func boundaryAfter(_ tokens: [String], from: Int, starts: Set<String>) -> Int {
+        guard from >= 0 else { return tokens.count }
+        let bound = min(tokens.count, maxTokens)
+        var k = from
+        while k < bound {                                               // bounded by maxTokens
+            if starts.contains(tokens[k]) { return k }
+            k += 1
+        }
+        return tokens.count
     }
 
     /// Split into at most `maxTokens` word tokens. Bounded allocation + bounded loop (rules 2, 3).

@@ -94,6 +94,54 @@ final class ATCCommandParserTests: XCTestCase {
                        ATCCommand(kind: .clearedApproach, target: "04L", qualifier: "ILS"))
     }
 
+    // MARK: multi-aircraft positional binding (Addressee) — the review's HIGH finding
+
+    private let callsignStarts: Set<String> = ["american", "delta", "united", "november", "cessna"]
+    private func addr(_ ownTokens: String) -> ATCCommandParser.Addressee {
+        ATCCommandParser.Addressee(ownshipTokens: ownTokens.split(separator: " ").map(String.init),
+                                   callsignStarts: callsignStarts)
+    }
+
+    func testMultiAircraftClearanceForOtherAircraftAbstains() {
+        // ownship American 123; the direct-to belongs to American 456 in the SAME transmission → no fire.
+        let cmd = ATCCommandParser.parse("american 1 2 3 turn left heading 2 7 0 american 4 5 6 cleared direct bosox",
+                                         knownFixes: bosFixes, addressee: addr("american 1 2 3"))
+        XCTAssertNil(cmd, "a clearance to the other aircraft must not fire an ownship suggestion")
+    }
+
+    func testMultiAircraftClearanceForOwnshipFires() {
+        // ownship American 123 is the SECOND aircraft addressed; the direct-to is ours → fires.
+        let cmd = ATCCommandParser.parse("american 4 5 6 turn left heading 2 7 0 american 1 2 3 cleared direct bosox",
+                                         knownFixes: bosFixes, addressee: addr("american 1 2 3"))
+        XCTAssertEqual(cmd, ATCCommand(kind: .directTo, target: "BOSOX", qualifier: ""))
+    }
+
+    func testSingleAircraftUnaffectedByAddressee() {
+        let cmd = ATCCommandParser.parse("american 1 2 3 cleared direct crltn",
+                                         knownFixes: bosFixes, addressee: addr("american 1 2 3"))
+        XCTAssertEqual(cmd, ATCCommand(kind: .directTo, target: "CRLTN", qualifier: ""))
+    }
+
+    func testMultiAircraftOwnshipNotNamedAbstains() {
+        let cmd = ATCCommandParser.parse("delta 8 9 0 turn left united 1 2 cleared direct bosox",
+                                         knownFixes: bosFixes, addressee: addr("american 1 2 3"))
+        XCTAssertNil(cmd, "two other aircraft, ownship absent → abstain")
+    }
+
+    func testOwnshipPrefixDoesNotMatchLongerCallsign() {
+        // ownship American 123 must NOT match American 1234's segment.
+        let cmd = ATCCommandParser.parse("american 4 5 6 turn left american 1 2 3 4 cleared direct bosox",
+                                         knownFixes: bosFixes, addressee: addr("american 1 2 3"))
+        XCTAssertNil(cmd, "'american 1 2 3' must not prefix-match 'american 1 2 3 4'")
+    }
+
+    func testBoundaryCountAndSegmentHelpers() {
+        let toks = "american 1 2 3 turn left american 4 5 6 cleared direct bosox".split(separator: " ").map(String.init)
+        XCTAssertEqual(ATCCommandParser.boundaryCount(toks, starts: callsignStarts), 2)
+        XCTAssertEqual(ATCCommandParser.subsequenceIndex(toks, ["american", "4", "5", "6"]), 6)
+        XCTAssertNil(ATCCommandParser.subsequenceIndex(toks, ["delta", "9"]))
+    }
+
     // MARK: non-clearance chatter must never produce a command
 
     func testNonActionableTransmissionsAbstain() {
