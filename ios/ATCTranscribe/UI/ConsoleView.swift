@@ -1091,6 +1091,19 @@ struct FlightPlanWidget: View {
                     if !fp.route.isEmpty {
                         Text(fp.routeText).font(.caption.monospaced()).foregroundStyle(p.textDim).lineLimit(2)
                     }
+                    // Loaded SID / STAR / approach — each with a clear button (Phase 5).
+                    ForEach(fp.loadedProcedures, id: \.kind) { proc in
+                        HStack(spacing: 6) {
+                            Image(systemName: "point.topleft.down.to.point.bottomright.curvepath")
+                                .font(.caption2).foregroundStyle(p.accent)
+                            Text(proc.displayLine).font(.caption).foregroundStyle(p.text).lineLimit(1)
+                            Spacer(minLength: 4)
+                            Button { Haptics.impact(.light); model.clearLoadedProcedure(kind: proc.kind) } label: {
+                                Image(systemName: "xmark.circle.fill").font(.caption2).foregroundStyle(p.textDim)
+                            }
+                            .buttonStyle(.plain).accessibilityIdentifier("clear-loaded-\(proc.kind)")
+                        }
+                    }
                     Button { Haptics.impact(.light); model.showFlightBag = true } label: {
                         Label("Edit", systemImage: "pencil").font(.caption.weight(.semibold))
                     }

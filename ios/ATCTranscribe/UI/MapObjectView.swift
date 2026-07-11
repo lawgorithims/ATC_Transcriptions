@@ -117,17 +117,27 @@ struct MapObjectView: View {
 
     private func procedureRow(_ proc: CIFPProcedure) -> some View {
         let p = model.palette
-        return Button {
-            Haptics.impact(.medium)
-            model.previewedProcedure = proc     // draw it on the map
-            onClose()                           // dismiss the sheet/panel so the overlay is visible
-        } label: {
-            HStack(spacing: 8) {
-                Text(proc.name).font(.callout).foregroundStyle(p.text)
-                Spacer(minLength: 4)
-                Image(systemName: "point.topleft.down.to.point.bottomright.curvepath")
-                    .font(.caption).foregroundStyle(p.accent)
+        return HStack(spacing: 8) {
+            // Tap the name to PREVIEW it (a non-committal cyan overlay)…
+            Button {
+                Haptics.impact(.light); model.previewedProcedure = proc; onClose()
+            } label: {
+                HStack(spacing: 6) {
+                    Text(proc.name).font(.callout).foregroundStyle(p.text).lineLimit(1)
+                    Spacer(minLength: 4)
+                    Image(systemName: "eye").font(.caption2).foregroundStyle(p.textDim)
+                }
             }
+            .buttonStyle(.plain)
+            // …or LOAD it into the flight plan (its legs join the active route + ground the corrector).
+            Button {
+                Haptics.impact(.medium); model.loadProcedure(proc); onClose()
+            } label: {
+                Text("Load").font(.caption.weight(.bold)).foregroundStyle(.white)
+                    .padding(.horizontal, 10).padding(.vertical, 4)
+                    .background(Capsule().fill(p.accent))
+            }
+            .buttonStyle(.plain).accessibilityIdentifier("load-procedure")
         }
     }
 
