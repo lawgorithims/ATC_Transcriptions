@@ -8,7 +8,7 @@ enum RefinementState: String, Sendable {
     case pending          // queued for / awaiting the background LLM
     case refined          // the LLM produced a change (`llmCorrected`/`llmEdits` populated)
     case clean            // the LLM ran and made no change
-    case skipped          // dropped under load before it could run
+    case skipped          // dropped under load before it could run, or timed out mid-generation
 }
 
 /// One transcribed transmission with its latency metrics. Swift port of
