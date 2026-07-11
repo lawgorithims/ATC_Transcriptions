@@ -228,6 +228,12 @@ class StreamCapture:
                     "1",
                     "-reconnect_delay_max",
                     "5",
+                    # Fail a dead/stalled stream fast: error out after 20s of no I/O instead of
+                    # blocking forever (the 54-min-zombie cause). A live feed streams continuous
+                    # audio even when the frequency is QUIET, so this never trips on a merely
+                    # inactive/silent feed — only on genuinely dead or stalled ones. (microseconds)
+                    "-rw_timeout",
+                    "20000000",
                     "-user_agent",
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
                 ]
