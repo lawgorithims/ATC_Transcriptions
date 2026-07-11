@@ -265,6 +265,7 @@ def record_live(
     """
     import numpy as np
     import soundfile as sf
+    import threading
 
     from atc_stream import SAMPLE_RATE, StreamCapture
 
@@ -272,6 +273,15 @@ def record_live(
     collected: List = []
     grabbed = 0
     target = int(seconds * SAMPLE_RATE)
+    # Wall-clock deadline: a dead/stalled stream yields no chunks, so the sample-count loop
+    # below would block forever (iter_chunks reconnects indefinitely on no data). Force-stop
+    # the capture after the intended duration + a margin — cap.stop() terminates ffmpeg, which
+    # unblocks the read and ends iter_chunks — so the collector moves to the next (active) feed
+    # instead of hanging for hours and holding a 2nd LiveATC connection.
+    deadline_s = seconds + max(30.0, 0.2 * seconds)
+    guard = threading.Timer(deadline_s, cap.stop)
+    guard.daemon = True
+    guard.start()
     try:
         for chunk in cap.iter_chunks():
             collected.append(chunk)
@@ -279,6 +289,7 @@ def record_live(
             if grabbed >= target:
                 break
     finally:
+        guard.cancel()
         cap.stop()
 
     audio = np.concatenate(collected)[:target] if collected else np.zeros(0, dtype="float32")
