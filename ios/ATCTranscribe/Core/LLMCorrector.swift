@@ -31,5 +31,5 @@ struct RefinementRequest: Sendable, Identifiable {
 enum RefinementOutcome: Sendable {
     case refined(Correction, ms: Double)   // the LLM produced a change
     case clean(ms: Double)                 // the LLM ran and made no change
-    case skipped                           // dropped under load (queue overflow) — never ran
+    case skipped                           // dropped under load (queue overflow), or timed out mid-generation
 }

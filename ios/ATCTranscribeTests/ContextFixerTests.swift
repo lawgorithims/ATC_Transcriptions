@@ -218,4 +218,81 @@ final class ContextFixerTests: XCTestCase {
         XCTAssertEqual(sink.total, n)            // dropped or processed — each delivered once
         XCTAssertGreaterThan(sink.skipped, 0)    // under load some were dropped, not blocked
     }
+
+    // MARK: LLMRefiner timeout watchdog (L6 remediation)
+
+    /// Counts every outcome per request id — proves EXACTLY-ONCE delivery even when the watchdog
+    /// fires and the (slow) real result arrives afterward.
+    private final class CountingSink: @unchecked Sendable {
+        private let lock = NSLock()
+        private var byId: [UUID: [RefinementOutcome]] = [:]
+        func record(_ id: UUID, _ o: RefinementOutcome) { lock.lock(); byId[id, default: []].append(o); lock.unlock() }
+        func outcomes(_ id: UUID) -> [RefinementOutcome] { lock.lock(); defer { lock.unlock() }; return byId[id] ?? [] }
+    }
+
+    /// A generation that takes much longer than the watchdog deadline.
+    private struct HangingCorrector: LLMCorrector {
+        let delayMs: UInt64
+        func correct(text: String, history: [String], retrieved: RetrievedContext) async -> Correction {
+            try? await Task.sleep(nanoseconds: delayMs * 1_000_000)
+            return .unchanged(text, backend: "hang")
+        }
+    }
+
+    func testRefinerTimeoutReportsSkippedExactlyOnce() async {
+        let sink = CountingSink()
+        // 0.1 s watchdog vs a 0.6 s "generation" → the watchdog fires first, the real result lands
+        // after. Exactly one outcome must reach the sink, and it must be .skipped.
+        let refiner = LLMRefiner(corrector: HangingCorrector(delayMs: 600), maxQueue: 4, timeout: 0.1)
+        await refiner.setOutcomeHandler { id, outcome in sink.record(id, outcome) }
+        let id = UUID()
+        await refiner.enqueue(RefinementRequest(id: id, text: "slow one", history: [], retrieved: ctx()))
+        // Wait past BOTH the deadline and the real completion so a double-delivery would show.
+        try? await Task.sleep(nanoseconds: 1_000_000_000)
+        let outs = sink.outcomes(id)
+        XCTAssertEqual(outs.count, 1, "a timed-out request must be reported exactly once")
+        if case .skipped = outs.first { } else { XCTFail("expected .skipped, got \(String(describing: outs.first))") }
+    }
+
+    func testRefinerFastRequestIsNotTimedOut() async {
+        let sink = CountingSink()
+        // A fast generation (10 ms) well inside a generous 5 s watchdog → the real result wins.
+        let refiner = LLMRefiner(corrector: SlowCorrector(delayMs: 10), maxQueue: 4, timeout: 5)
+        await refiner.setOutcomeHandler { id, outcome in sink.record(id, outcome) }
+        let id = UUID()
+        await refiner.enqueue(RefinementRequest(id: id, text: "fast one", history: [], retrieved: ctx()))
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        let outs = sink.outcomes(id)
+        XCTAssertEqual(outs.count, 1)
+        if case .skipped = outs.first { XCTFail("a fast request must not be timed out") }
+    }
+
+    /// Asserts the serial one-generation invariant SURVIVES the watchdog: even when every
+    /// generation times out, no two correctors ever run concurrently (the llama.cpp KV-cache rule).
+    private actor ConcurrencyProbeCorrector: LLMCorrector {
+        private(set) var maxActive = 0
+        private var active = 0
+        let delayMs: UInt64
+        init(delayMs: UInt64) { self.delayMs = delayMs }
+        func correct(text: String, history: [String], retrieved: RetrievedContext) async -> Correction {
+            active += 1; maxActive = max(maxActive, active)
+            try? await Task.sleep(nanoseconds: delayMs * 1_000_000)
+            active -= 1
+            return .unchanged(text, backend: "probe")
+        }
+    }
+
+    func testRefinerNeverOverlapsGenerationsAfterTimeout() async {
+        let probe = ConcurrencyProbeCorrector(delayMs: 150)
+        // Watchdog (0.05 s) fires long before each 0.15 s generation finishes; even so the drain
+        // must fully await each generation before starting the next.
+        let refiner = LLMRefiner(corrector: probe, maxQueue: 8, timeout: 0.05)
+        await refiner.setOutcomeHandler { _, _ in }
+        for i in 0..<5 {
+            await refiner.enqueue(RefinementRequest(id: UUID(), text: "m\(i)", history: [], retrieved: ctx()))
+        }
+        try? await Task.sleep(nanoseconds: 1_200_000_000)   // let the chain drain
+        let maxActive = await probe.maxActive
+        XCTAssertEqual(maxActive, 1, "the watchdog must not let a second generation start")
+    }
 }
