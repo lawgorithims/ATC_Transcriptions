@@ -83,7 +83,11 @@ final class AudioMonitor: @unchecked Sendable {
         let n = chunk.count
         queued.withLock { $0 += n }
         player.scheduleBuffer(buf) { [weak self] in
-            self?.queued.withLock { $0 -= n }
+            // Floor at 0 (adversarial-review fix): player.stop() in healLocked() flushes the
+            // outstanding buffers by firing these completions ASYNCHRONOUSLY, AFTER healLocked has
+            // already reset `queued` to 0 — without this clamp each late completion would drive the
+            // counter negative and permanently loosen the ~2 s admission cap below.
+            self?.queued.withLock { $0 = max(0, $0 - n) }
         }
     }
 
