@@ -19,6 +19,11 @@ final class AudioMonitor: @unchecked Sendable {
     private let queued = OSAllocatedUnfairLock(initialState: 0)
     private let maxQueuedFrames = 16_000 * 2   // ~2 s at 16 kHz — drop beyond this to stay near-live
 
+    /// Consecutive failed self-heals (see `play`) — stop retrying after the cap so a dead output
+    /// can't burn a start() attempt per chunk forever. Reset by an explicit start().
+    private var restartFailures = 0
+    private static let maxRestartFailures = 5
+
     /// Start the playback graph. Call after the audio session is active (AppModel.start). Idempotent
     /// across runs: the node graph is built once; later starts just restart the engine.
     func start() {
@@ -30,6 +35,7 @@ final class AudioMonitor: @unchecked Sendable {
             configured = true
         }
         engine.prepare()
+        restartFailures = 0   // an explicit start re-arms self-healing
         do {
             try engine.start(); player.play()
             player.volume = muted ? 0 : 1
@@ -56,6 +62,15 @@ final class AudioMonitor: @unchecked Sendable {
     /// the queue is already ~2 s deep so a burst/reconnect can't grow latency or memory unbounded.
     func play(_ chunk: [Float]) {
         lock.lock(); defer { lock.unlock() }
+        // Self-heal (L1 remediation): an AVAudioSession interruption (Siri / alarm / call) stops
+        // the engine out from under us while `running` stays true — previously the scheduled-buffer
+        // completions never fired, `queued` pinned at its cap, and every later chunk was silently
+        // dropped for the rest of the session. play() runs ~2×/s on a live feed, so healing here
+        // recovers within one chunk. Bounded; a genuinely dead output flips `running` off.
+        // Known limit: after a mediaServicesWereReset the engine OBJECT may be unrecoverable —
+        // heal fails out and the monitor stays silent until the next Start (re-attaching a fresh
+        // engine here is the hard-crash noted at `configured`).
+        if running, !engine.isRunning { healLocked() }
         guard running, !chunk.isEmpty, queued.withLock({ $0 }) <= maxQueuedFrames,
               let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(chunk.count))
         else { return }
@@ -71,6 +86,25 @@ final class AudioMonitor: @unchecked Sendable {
             self?.queued.withLock { $0 -= n }
         }
     }
+
+    /// One bounded engine restart after an interruption stopped it. Caller holds `lock`.
+    private func healLocked() {
+        guard restartFailures < Self.maxRestartFailures else { running = false; return }
+        player.stop()                      // flush stale pre-interruption buffers (fires completions)
+        engine.prepare()
+        do {
+            try engine.start(); player.play()
+            player.volume = muted ? 0 : 1
+            queued.withLock { $0 = 0 }     // same reset start() does; completions drained above
+            restartFailures = 0
+        } catch { restartFailures += 1 }
+    }
+
+    #if DEBUG
+    /// Test hooks (AudioMonitorTests): simulate an interruption stopping the engine, and observe it.
+    func _stopEngineForTests() { engine.stop() }
+    var _engineIsRunningForTests: Bool { engine.isRunning }
+    #endif
 }
 
 /// Wraps an `AudioSource` so each PCM chunk is also played through `monitor` as it passes to the

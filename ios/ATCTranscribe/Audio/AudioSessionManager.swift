@@ -39,3 +39,43 @@ enum AudioSessionManager {
         #endif
     }
 }
+
+/// Pure classification of the `AVAudioSession` notifications the capture path must react to
+/// (H1 remediation) — Siri / alarms / call banners stop the audio engine and, before this, nothing
+/// restarted it. Pure so the decision logic is unit-testable with synthesized userInfo dictionaries;
+/// no audio state is touched here. Each function validates its inputs and recovers to `.irrelevant`.
+enum AudioSessionEvent: Equatable {
+    case interruptionBegan
+    case interruptionEnded(shouldResume: Bool)
+    /// The active input route disappeared (USB unplugged, Bluetooth dropped).
+    case inputRouteLost
+    /// The media services daemon reset — every audio object we hold is invalid.
+    case mediaServicesReset
+    case irrelevant
+
+    #if os(iOS)
+    static func classify(name: Notification.Name, userInfo: [AnyHashable: Any]?) -> AudioSessionEvent {
+        if name == AVAudioSession.mediaServicesWereResetNotification { return .mediaServicesReset }
+        if name == AVAudioSession.interruptionNotification {
+            guard let raw = userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  let type = AVAudioSession.InterruptionType(rawValue: raw) else { return .irrelevant }
+            switch type {
+            case .began:
+                return .interruptionBegan
+            case .ended:
+                let opts = AVAudioSession.InterruptionOptions(
+                    rawValue: (userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt) ?? 0)
+                return .interruptionEnded(shouldResume: opts.contains(.shouldResume))
+            @unknown default:
+                return .irrelevant
+            }
+        }
+        if name == AVAudioSession.routeChangeNotification {
+            guard let raw = userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+                  let reason = AVAudioSession.RouteChangeReason(rawValue: raw) else { return .irrelevant }
+            return reason == .oldDeviceUnavailable ? .inputRouteLost : .irrelevant
+        }
+        return .irrelevant
+    }
+    #endif
+}
