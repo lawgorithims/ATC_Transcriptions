@@ -73,6 +73,7 @@ final class AppModel: ObservableObject {
                AirportCoordinates.coordinate(icao: airport) != AirportCoordinates.coordinate(icao: oldValue) {
                 clearTraffic(); syncADSB()
             }
+            if didFinishInit, airport != oldValue { refreshEFBGrounding() }   // L4: airport changed → rebuild grounding
         }
     }
     @Published var frequency = UserDefaults.standard.string(forKey: "atc.frequency") ?? "auto" {
@@ -202,6 +203,7 @@ final class AppModel: ObservableObject {
             if let fp = flightPlan { fp.save() } else { FlightPlan.clear() }
             pushFlightPlanContext()
             prefetchRouteCharts()          // pull the FAA packs the filed route crosses in the background
+            if didFinishInit, flightPlan != oldValue { refreshEFBGrounding() }   // L4: plan changed → rebuild grounding
         }
     }
     @Published var showFlightBag = false
@@ -230,7 +232,14 @@ final class AppModel: ObservableObject {
     /// Recenter the home map here (a search result). Transient.
     @Published var mapFocus: Coord?
     /// A coded procedure (approach/SID/STAR) drawn as a georeferenced overlay on the home map; nil = none.
-    @Published var previewedProcedure: CIFPProcedure?
+    @Published var previewedProcedure: CIFPProcedure? {
+        didSet { if didFinishInit, previewedProcedure?.id != oldValue?.id { resolvePreviewedProcedure() } }
+    }
+    /// The previewed procedure's resolved legs (georeferenced overlay). Resolved ONCE off-main when
+    /// `previewedProcedure` changes (L8), instead of MapHostView re-scanning CIFP (SQLite) on every
+    /// SwiftUI re-render — the live-data storm made that run many times a second.
+    @Published private(set) var previewedProcedureLegs: [ResolvedLeg] = []
+    private var previewEpoch = 0
     /// Drives the map search sheet (top-bar magnifying glass). Transient.
     @Published var showMapSearch = false
 
@@ -243,6 +252,12 @@ final class AppModel: ObservableObject {
     }
     private var lastEFBRecordID: UUID?
     private var efbCancellable: AnyCancellable?
+    /// Cached EFB command grounding (fixes/airports/SIDs/STARs), keyed on the (airport ident, plan)
+    /// it was built for, so `interpretForEFB` doesn't hit CIFP (SQLite) on the main actor per
+    /// transmission (L4). Rebuilt off-main by `refreshEFBGrounding` on the setupLive commit and on
+    /// airport / flight-plan changes; the epoch discards a superseded async build.
+    private var efbGroundingCache: (ident: String, plan: FlightPlan, grounding: ATCCommandParser.Grounding)?
+    private var efbGroundingEpoch = 0
     /// Subscriptions mirroring the CURRENT session's published state into the UI. Torn down and
     /// rebuilt on every model swap (L5 remediation): the old `.assign(to: &$…)` bindings were never
     /// cancelled, so a swapped-out session's late `.stopped` publish clobbered the new session's
@@ -253,6 +268,24 @@ final class AppModel: ObservableObject {
     func selectMapObject(_ o: IdentifiedObject) {
         mapFocus = o.coord
         widgetStore.mapProbe = MapProbeResult(id: "sel-\(o.id)", objects: [o])
+    }
+
+    /// Resolve the previewed procedure's legs to plottable coordinates OFF the main actor (L8), then
+    /// publish them once — instead of MapHostView re-scanning CIFP on every re-render. Epoch-guarded
+    /// so a rapid preview change discards a superseded resolve; legs are statically bounded (rule 2).
+    private func resolvePreviewedProcedure() {
+        previewEpoch += 1
+        let epoch = previewEpoch
+        guard let procID = previewedProcedure?.id else { previewedProcedureLegs = []; return }
+        Task.detached { [weak self] in
+            let legs = CIFP.legs(procedureID: procID).prefix(256).compactMap { leg in
+                leg.coord.map { ResolvedLeg(ident: leg.fix, kind: .waypoint, coord: $0) }
+            }
+            await MainActor.run {
+                guard let self, self.previewEpoch == epoch else { return }
+                self.previewedProcedureLegs = Array(legs)
+            }
+        }
     }
 
     /// Map overlay toggles shared by the always-on home map and the top-bar layers menu. Persisted.
@@ -585,6 +618,7 @@ final class AppModel: ObservableObject {
         // screenshot/demo: draw an airport's first coded approach on the map (`--preview-proc KBOS`).
         if let i = args.firstIndex(of: "--preview-proc"), i + 1 < args.count {
             previewedProcedure = CIFP.procedures(airport: args[i + 1]).first { $0.kind == "IAP" }
+            resolvePreviewedProcedure()   // didSet is inert during init (L8) — resolve the launch preview explicitly
         }
         // screenshot/demo: show a sample one-tap EFB suggestion banner (`--demo-efb`).
         if args.contains("--demo-efb") {
@@ -769,6 +803,7 @@ final class AppModel: ObservableObject {
         self.session = nil
         self.feedKey = feedKey
         self.liveContext = context
+        refreshEFBGrounding()   // L4: the live airport ident just changed → rebuild the EFB grounding cache
         // Rewire the UI mirror to the NEW session. Tear the OLD subscriptions down FIRST (L5): the
         // former `.assign(to: &$…)` bindings were never cancelled across a swap, so `oldSession.stop()`
         // below (which publishes `.stopped`) clobbered the just-committed new session's status. The
@@ -974,13 +1009,69 @@ final class AppModel: ObservableObject {
                                        spokenCallsign: ownshipSpokenTokens(plan.callsign))
         guard identity.isValid else { return }
         guard identity.isAddressed(inNormalized: latest.normalizedDisplay) else { return }
-        let grounding = ATCCommandParser.Grounding(fixes: efbKnownFixes(), airports: efbKnownAirports(),
-                                                   sids: efbProcedureIdents(kind: "SID"),
-                                                   stars: efbProcedureIdents(kind: "STAR"))
-        guard let command = ATCCommandParser.parse(latest.normalizedDisplay, grounding: grounding,
+        // EFB grounding (fixes/airports/SIDs/STARs) is fetched from CIFP (SQLite) — do it OFF the main
+        // thread and CACHE it, keyed on (airport ident, flight plan), instead of running four SQLite
+        // scans on the main actor per transmission (L4). A miss (cache stale/absent) refreshes async
+        // and skips THIS transmission — miss-safe: the FIRST addressed clearance right after an airport
+        // or plan change may not fire (documented), every one after uses the fresh cache.
+        guard let cache = efbGroundingCache, cache.ident == efbActiveIdent(), cache.plan == plan else {
+            refreshEFBGrounding()
+            return
+        }
+        guard let command = ATCCommandParser.parse(latest.normalizedDisplay, grounding: cache.grounding,
                                                    addressee: identity.addressee(airlineStarts: efbAirlineStarts())) else { return }
         assert(!command.target.isEmpty, "parser returned an empty target")
         efbSuggestion = EFBSuggestion.make(id: latest.id.uuidString, command: command, source: latest.display)
+    }
+
+    /// The airport ident EFB grounding resolves against — the live context's, else the picker's.
+    private func efbActiveIdent() -> String { liveContext?.airportIdent ?? (airport.isEmpty ? "" : airport) }
+
+    /// Rebuild the EFB grounding cache off-main for the current (ident, plan). Epoch-guarded so a
+    /// superseding refresh (airport/plan change mid-build) discards a stale result. On a matching
+    /// epoch return, `self.flightPlan` is unchanged (a plan change would have bumped the epoch), so
+    /// it is the plan this grounding was built from.
+    private func refreshEFBGrounding() {
+        guard let plan = flightPlan else { efbGroundingCache = nil; return }
+        let ident = efbActiveIdent()
+        efbGroundingEpoch += 1
+        let epoch = efbGroundingEpoch
+        let routeIdents = plan.fullRoute.prefix(256).map { $0.ident }
+        let endpoints = [plan.departure, plan.destination, plan.alternate]
+        Task.detached { [weak self] in
+            let grounding = Self.buildEFBGrounding(ident: ident, routeIdents: routeIdents, endpointAirports: endpoints)
+            await MainActor.run {
+                guard let self, self.efbGroundingEpoch == epoch, let plan = self.flightPlan else { return }
+                self.efbGroundingCache = (ident, plan, grounding)
+            }
+        }
+    }
+
+    /// Build the EFB command grounding from CIFP + the filed route/endpoints. Pure + nonisolated so
+    /// it runs off the main actor (a single CIFP procedures scan is split into SID/STAR in one pass).
+    /// Every loop is statically bounded (rule 2); idents are uppercased + de-duped (Set/insert).
+    nonisolated static func buildEFBGrounding(ident: String, routeIdents: [String],
+                                              endpointAirports: [String]) -> ATCCommandParser.Grounding {
+        var fixes = Set<String>()
+        if !ident.isEmpty {
+            for fix in CIFP.fixes(airport: ident).prefix(1024) { fixes.insert(fix.uppercased()) }
+        }
+        for id in routeIdents.prefix(256) where !id.isEmpty { fixes.insert(id.uppercased()) }
+
+        var airports = Set<String>()
+        for icao in endpointAirports.prefix(3) where !icao.isEmpty { airports.insert(icao.uppercased()) }
+
+        var sids: [String] = [], stars: [String] = []
+        var seenSid = Set<String>(), seenStar = Set<String>()
+        if !ident.isEmpty {
+            for proc in CIFP.procedures(airport: ident).prefix(2048) {   // ONE scan, split by kind
+                if proc.kind == "SID", seenSid.insert(proc.ident).inserted { sids.append(proc.ident) }
+                else if proc.kind == "STAR", seenStar.insert(proc.ident).inserted { stars.append(proc.ident) }
+            }
+        }
+        assert(fixes.allSatisfy { !$0.isEmpty }, "known fixes must be non-empty (malformed CIFP/route row?)")
+        assert(sids.allSatisfy { !$0.isEmpty } && stars.allSatisfy { !$0.isEmpty }, "procedure idents must be non-empty")
+        return ATCCommandParser.Grounding(fixes: fixes, airports: airports, sids: sids, stars: stars)
     }
 
     /// The filed callsign spelled as NORMALIZED spoken tokens via the knowledge base (airline telephony +
@@ -1010,50 +1101,6 @@ final class AppModel: ObservableObject {
         }
         for word in SlotSnap.gaCallsignWords.prefix(256) { starts.insert(word) }
         return starts
-    }
-
-    /// The grounded fix idents a direct-to suggestion may target: the active airport's coded-procedure
-    /// fixes plus the filed route's fixes. Uppercased. Both loops are statically capped (rule 2).
-    private func efbKnownFixes() -> Set<String> {
-        var fixes = Set<String>()
-        let ident = liveContext?.airportIdent ?? (airport.isEmpty ? "" : airport)
-        if !ident.isEmpty {
-            for fix in CIFP.fixes(airport: ident).prefix(1024) { fixes.insert(fix.uppercased()) }
-        }
-        if let plan = flightPlan {
-            for leg in plan.fullRoute.prefix(256) { fixes.insert(leg.ident.uppercased()) }
-        }
-        // Real invariant (a checker cannot prove it): a malformed CIFP/route row yielding an empty ident
-        // would violate it. Empties are harmless downstream (isFixShaped rejects ""), so no defensive filter.
-        assert(fixes.allSatisfy { !$0.isEmpty }, "known fixes must be non-empty (malformed CIFP/route row?)")
-        return fixes
-    }
-
-    /// Airport ICAO codes a direct-to-AIRPORT suggestion may target — the filed endpoints (departure /
-    /// destination / alternate). Bounded by the 3 fields. Uppercased.
-    private func efbKnownAirports() -> Set<String> {
-        var airports = Set<String>()
-        guard let plan = flightPlan else { return airports }
-        for icao in [plan.departure, plan.destination, plan.alternate] where !icao.isEmpty {
-            airports.insert(icao.uppercased())
-        }
-        return airports
-    }
-
-    /// The active airport's DISTINCT coded-procedure ARINC idents of `kind` ("SID"/"STAR") — the grounded
-    /// set a procedure-load suggestion must uniquely match. Bounded by the DB rows + a hard cap (rule 2).
-    private func efbProcedureIdents(kind: String) -> [String] {
-        let apt = liveContext?.airportIdent ?? (airport.isEmpty ? "" : airport)
-        guard !apt.isEmpty else { return [] }
-        var seen = Set<String>()
-        var idents: [String] = []
-        for proc in CIFP.procedures(airport: apt).prefix(2048) where proc.kind == kind {
-            if seen.insert(proc.ident).inserted { idents.append(proc.ident) }
-        }
-        // Real invariant (a checker cannot prove it): a malformed CIFP row with an empty ident would
-        // violate it. An empty ident never matches a spoken clearance, so it is harmless if it slips through.
-        assert(idents.allSatisfy { !$0.isEmpty }, "procedure idents must be non-empty (malformed CIFP row?)")
-        return idents
     }
 
     /// Load the coded procedure identified by (kind, ARINC ident) at the active airport (EFB SID/STAR

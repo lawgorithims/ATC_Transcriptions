@@ -54,7 +54,7 @@ enum ATCCommandParser {
     /// The grounded data a clearance must match, so the parser only ever proposes a REAL target: filed /
     /// nearby fix idents (direct-to fix), airport ICAO codes (direct-to airport), and the active airport's
     /// coded SID / STAR ARINC idents (procedure loads). Empty sets simply disable that clearance class.
-    struct Grounding {
+    struct Grounding: Sendable, Equatable {
         var fixes: Set<String> = []
         var airports: Set<String> = []
         var sids: [String] = []
