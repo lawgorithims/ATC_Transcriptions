@@ -170,23 +170,29 @@ the iPad overheats, so MapKit never starves on-device Whisper.
 
 ## Appendix — Fragile Regions (where the bodies are buried)
 
-A skeptical review (2026-07) flagged these. **Read this before changing the relevant file.** Full
-context and severity are in the management risk report; the short version:
+A skeptical review (2026-07) flagged these. **All 23 audit findings were remediated in 2026-07** —
+see `ios/REMEDIATION.md` for the per-issue spec and the SHA each landed in. This table is kept as
+history + the guard-rail each fix now relies on; **read it before changing the relevant file.**
 
-| File | Watch out for |
+| File | What it was → how it's now guarded |
 | --- | --- |
-| `Audio/AudioSource.swift` | **No audio-interruption recovery.** Siri / a call / a Bluetooth connect stops the mic and nothing restarts it — the UI keeps looking live. (High) |
-| `UI/AppModel.swift:1810` | **Model-switch load isn't truly cancellable.** Rapid switching can hold 2–3 Whisper models in memory → out-of-memory kill. (High) |
-| `Core/SlotSnap.swift:196` | **Frequency snap runs unconditionally** and can rewrite a cleanly-heard handoff frequency to a different published one. (High) |
-| `Audio/VADSegmenter.swift` | Noise-floor is clamped at ~0.144; a genuinely loud cockpit exceeds it → transcribes engine noise forever. (Medium) |
-| `Engine/LivePipeline.swift:228` | A transcriber error is swallowed to empty and the transmission is dropped with **no indication**. (Medium) |
-| `Engine/TranscriptionSession.swift:55` | Per-record `Task { @MainActor }` hops give no ordering guarantee; the last line before a stop can be dropped. (Medium) |
-| `Core/CorrectionValidator.swift:209` | The spoken-digit guard omits teens/tens words → an LLM edit could flip `fifteen`→`fifty`. (Medium) |
-| `Core/ATCCorrector.swift:255` | Stage-3 phonetic fallback iterates a `Dictionary` with **no tie-break** → nondeterministic correction on a ratio tie. (Medium) |
-| `UI/MapHostView.swift` | The thermal gate has no hysteresis → the map tears down/rebuilds at the threshold and loses the pilot's pan. (Medium) |
-| `UI/AppModel.swift` (permission cb) | First-run mic-permission grant during a background/model-swap can start capture on a stale session. (Medium) |
-| `UI/ChartMapView.swift` | WEBP tiles re-transcoded every pan (no cache); traffic annotations removed+re-added each tick; a `URL(string:)!` on a network-decoded catalog path. (Low) |
+| `Audio/AudioSource.swift` | ~~No audio-interruption recovery~~ → **FIXED (H1, f8af58e).** `AudioSessionEvent` classifier + observers in DeviceAudioSource + bounded single-flight restart + repeating liveness watchdog. |
+| `UI/AppModel.swift` (switchModel) | ~~Model-switch load not truly cancellable~~ → **FIXED (H2, 877a43a).** Task-chaining serializes compiles; `cancelModelLoad` keeps the chain anchor; whole picker locks during a load. Don't nil `loadTask`. |
+| `Core/SlotSnap.swift:196` | ~~Frequency snap runs unconditionally~~ → **FIXED (H3, 055bf89).** `conservativeFrequencies` gate (defaulted false for parity) never rewrites a valid airband channel; `onRaster` restored the .xx5 arm. Byte-parity locked — change only via the defaulted flag. |
+| `Audio/VADSegmenter.swift` | ~~Loud cockpit transcribes noise forever~~ → **FIXED (M1, c567635).** Runaway detector SURFACES a squelch nudge (3 gapless caps); the floor clamp is deliberately untouched (a loud voice must still transcribe). |
+| `Engine/LivePipeline.swift` (process) | ~~Decode error swallowed silently~~ → **FIXED (M3, c567635).** do/catch surfaces `onTrouble` + a `decodeFailures` diag counter; CancellationError stays silent. |
+| `Engine/TranscriptionSession.swift` | ~~Per-record Task hops → no ordering, last line droppable~~ → **FIXED (M2, c567635).** `onRecord` is async + awaited: FIFO, and run() can't flip status before the final drain lands. Explicit stop still drops in-flight (documented). |
+| `Core/CorrectionValidator.swift` | ~~Digit guard omits teens/tens~~ → **FIXED (M5, 6511f35).** Lookup consults `ATCNormalize.teens`/`tens`; `fifteen`→`fifty` now rejected. |
+| `Core/ATCCorrector.swift` | ~~Phonetic stage-3 nondeterministic on a tie~~ → **FIXED (M6, 6511f35).** difflib-style tie-break (lexicographically-larger wins), no force-unwrap. |
+| `UI/AppModel.swift` (thermal) + map | ~~No thermal hysteresis; pan lost on rebuild~~ → **FIXED (M7, 3c7a350).** `applyThermal` 60 s exit dwell; `SavedMapCamera` restored first in the map framing chain (30 min freshness). |
+| `UI/AppModel.swift` (permission cb) | ~~Stale-state capture after a grant~~ → **FIXED (M4, 3c7a350).** `.starting` currency token + pure `captureRequestStillCurrent`; stop() aborts during the prompt. |
+| `Core/CascadeCorrector.swift` | ~~Remote fixer accepted plaintext-public http~~ → **FIXED (L7, 6511f35).** `isEndpointAllowed`: https anywhere, http only to private/LAN hosts. |
+| `Engine/LLMRefiner.swift` | ~~A hung generation blocked all cleanups~~ → **FIXED (L6, 493eb4a).** Watchdog reports `.skipped` at 20 s via an exactly-once `inflight` token; serial invariant preserved. |
+| `Audio/AudioMonitor.swift` / `StreamAudioSource.swift` | ~~Monitor silent / stream wedged after a drop~~ → **FIXED (L1/L2, f8af58e).** play() self-heal; stream no-decode watchdog + bounded give-up. |
+| `UI/ChartMapView.swift` | ~~Tiles re-transcoded per pan; traffic blinks; catalog `URL!` crash~~ → **FIXED (L10/L11/L12/L13, ea42e3c).** NSCache PNG cache; in-place hex-keyed traffic diff; off-main tap probe; optional `remote` URL. |
+| `UI/AppModel.swift` / `TranscriptView.swift` | ~~EFB/proc CIFP on main; transcript re-derives on every tick~~ → **FIXED (L4/L8/L9, ea42e3c).** Off-main grounding + legs caches; Equatable `TranscriptListSection`. |
 
-**The systemic theme:** most of the above are *silent* failures — the app keeps looking normal.
-The highest-leverage single improvement is a small, always-visible **health indicator** (mic live /
-feed live / last-update time) so any freeze is obvious at a glance.
+**The systemic theme** the audit named (silent failures) is now addressed: interruption recovery,
+the decode-failure counter, the runaway-noise nudge, and the transient `onNotice`/`onTrouble` detail
+messages all surface a problem that used to look normal. A dedicated always-on health indicator
+(mic live / feed live / last-update time) remains a worthwhile future consolidation.

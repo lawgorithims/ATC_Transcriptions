@@ -32,7 +32,7 @@ new tests required, and QA notes. Statuses are updated as fixes land.
 ### H1 — Mic/USB capture dies silently after an audio interruption
 **Severity:** HIGH · **Files:** `Audio/AudioSource.swift` (DeviceAudioSource),
 `Audio/AudioSessionManager.swift`, `UI/AppModel.swift` (~1437-1458)
-**Status:** OPEN
+**Status:** FIXED in f8af58e
 
 **Symptom.** Siri, an alarm, an incoming-call banner, or a Bluetooth/USB route change stops the
 `AVAudioEngine`; nothing restarts it. The UI keeps showing the last transcript as if live — the
@@ -131,7 +131,7 @@ Each: capture resumes (or the UI honestly shows error/paused), never a silent fr
 **Severity:** HIGH · **Files:** `UI/AppModel.swift` (switchModel ~1775-1845, beginModelLoad,
 cancelModelLoad ~1763-1769, setupLive ~664-682), `Transcription/ATCTranscriber.swift` (:76-90),
 `UI/SettingsSheet.swift` (:211-236)
-**Status:** OPEN
+**Status:** FIXED in 877a43a
 
 **Symptom.** Tapping between model options while one is compiling starts a second (third…)
 multi-GB CoreML compile concurrently; jetsam kills the app.
@@ -187,7 +187,7 @@ selection lands.
 ### H3 — Always-on frequency snap silently rewrites a correctly-heard handoff frequency
 **Severity:** HIGH · **Files:** `Core/SlotSnap.swift` (apply :67, snapFrequency :196-213,
 onRaster :191-194), `Engine/LivePipeline.swift` (:265)
-**Status:** OPEN
+**Status:** FIXED in 055bf89
 
 **Symptom.** "Contact center 133.65" where the airport publishes 133.75 (but not 133.65) →
 the transcript shows **133.75**. A single-digit rewrite to another plausible, official-looking
@@ -251,7 +251,7 @@ Plus `SnapReplayTests.testReplayConservativeFrequencyPolicyThroughProcess` (thro
 
 ### M1 — Loud cockpit → transcribes engine noise forever
 **Severity:** MED · **Files:** `Audio/VADSegmenter.swift`, `Engine/LivePipeline.swift` (run loop)
-**Status:** OPEN
+**Status:** FIXED in c567635
 
 **Symptom.** Ambient RMS above ~0.144 (the auto-gate ceiling `maxNoiseFloor 0.08 × noiseMargin
 1.8`) makes every frame read as speech; the 8 s cap re-opens forever → nonstop Whisper on noise.
@@ -287,7 +287,7 @@ true, second consume false, one-shot holds; single cap no latch; one sub-gate fr
 
 ### M2 — Transcript lines can append out of order; the last line before a stream end can vanish
 **Severity:** MED · **Files:** `Engine/LivePipeline.swift` (run/emit), `Engine/TranscriptionSession.swift` (:54-73)
-**Status:** OPEN
+**Status:** FIXED in c567635
 
 **Root cause.** Each `onRecord` hops to the main actor via an independent `Task {}` (no FIFO
 guarantee); the terminal `.stopped` flip can win the race against the final drained record's
@@ -316,7 +316,7 @@ present before `run` returns; a feed ending MID-SPEECH (only record comes from `
 ### M3 — A decode error silently discards the whole transmission
 **Severity:** MED · **Files:** `Engine/LivePipeline.swift` (:228 + run), `Engine/TranscriptionSession.swift`,
 `UI/AppModel.swift` (beginCapture), `UI/SidebarView.swift` (LatencyCard)
-**Status:** OPEN
+**Status:** FIXED in c567635
 
 **Root cause.** `(try? await transcriber.transcribe(…)) ?? .empty` swallows every error; empty
 text → `return nil` → the transmission vanishes with no indication.
@@ -343,7 +343,7 @@ trouble message; `CancellationError` → 0 records + 0 trouble; `LatencyStats` c
 
 ### M4 — First-run mic-permission grant can start capture on stale state
 **Severity:** MED · **Files:** `UI/AppModel.swift` (start :1406-1433, stop :1499-1507)
-**Status:** OPEN
+**Status:** FIXED in 3c7a350
 
 **Root cause.** The `requestRecordPermission` completion re-checks only `granted`. While the
 dialog sits open, the session can be swapped (model switch), the run stopped/standby'd/
@@ -379,7 +379,7 @@ source re-pick — grant each; capture starts only in the untouched case.
 
 ### M5 — The number-word guard misses teens/tens ("fifteen" → "fifty" passes)
 **Severity:** MED · **Files:** `Core/CorrectionValidator.swift` (:209-217)
-**Status:** OPEN
+**Status:** FIXED in 6511f35
 
 **Root cause.** `spokenDigits` maps only units + "oh"; teens/tens words produce empty digit
 lists on both sides, so an LLM edit `fifteen→fifty` passes every guard (ratio 0.67 > 0.55).
@@ -413,7 +413,7 @@ the NEW guard is provably the rejector: fifteen→fifty, thirteen→thirty) +
 
 ### M6 — Phonetic correction picks a different name run-to-run on a tie
 **Severity:** MED · **Files:** `Core/ATCCorrector.swift` (:252-258)
-**Status:** OPEN
+**Status:** FIXED in 6511f35
 
 **Root cause.** Stage-3 phonetic fallback iterates `Array(canon.keys)` (Swift Dictionary order is
 per-process random) with strict `r > bestRatio` and no tie-break. Stage 2 (`closestMatch`) added
@@ -444,7 +444,7 @@ decides), both vocab orders, repeated runs → always "Gilf".
 ### M7 — Heat/app-switch destroys the map and loses the pilot's pan/zoom
 **Severity:** MED · **Files:** `UI/AppModel.swift` (thermal :269/:628-631), `UI/MapHostView.swift`,
 `UI/ChartMapView.swift` (framing :391-403)
-**Status:** OPEN
+**Status:** FIXED in 3c7a350
 
 **Root cause.** (a) `thermalSerious` is a raw `>= .serious` compare with no hysteresis — a device
 hovering at the threshold flips it repeatedly, and each flip destroys/recreates the
@@ -478,7 +478,7 @@ camera intact).
 ## LOW
 
 ### L1 — Feed monitor goes permanently silent after an interruption
-**Files:** `Audio/AudioMonitor.swift` · **Status:** OPEN
+**Files:** `Audio/AudioMonitor.swift` · **Status:** FIXED in f8af58e
 **Fix (final): self-heal in `play()` only — NO observer** (play is called ~2×/s on a live feed →
 recovery within one chunk; an observer adds lifecycle to an app-lifetime singleton for nothing).
 `if running, !engine.isRunning { healLocked() }` at the top of `play()`: `player.stop()` (flushes
@@ -491,7 +491,7 @@ a convenience feature; rebuilding the engine risks the re-attach crash noted in 
 (`_stopEngineForTests`), or device-verify if hooks are rejected.
 
 ### L2 — A wedged radio-stream decoder never reconnects
-**Files:** `Audio/StreamAudioSource.swift` · **Status:** OPEN
+**Files:** `Audio/StreamAudioSource.swift` · **Status:** FIXED in f8af58e
 **Fix (final):** funnel everything into the existing reconnect/give-up machinery.
 (1) Extract the retry tail of `didCompleteWithError` into `scheduleRetry()` (rotation +
 `connectAttempts` give-up + 2 s backoff, unchanged). (2) Check `AudioFileStreamOpen`'s OSStatus —
@@ -506,7 +506,7 @@ decoded streams keep today's unbounded-reconnect design (live streams drop perio
 chunks well inside a 30 s test timeout.
 
 ### L3 — Transcript append housekeeping at the 500 cap
-**Files:** `Engine/TranscriptionSession.swift` (:239) · **Status:** OPEN
+**Files:** `Engine/TranscriptionSession.swift` (:239) · **Status:** FIXED in c567635
 **Fix (final): do nothing — document.** `removeFirst` moves 1 element/append (~µs at 500); the
 real cost is the `@Published` full-array republish, inherent to the contract. A ring buffer
 changes `records`' semantics for every consumer (UI diffing, AppModel mirror, EFB sink,
@@ -515,7 +515,7 @@ comment above :239 recording the considered-and-rejected alternative. `refuseAll
 (user-rare; per-row writes deliberate for single-row SwiftUI diffs).
 
 ### L4 — EFB grounding queries CIFP on the main thread per transmission
-**Files:** `UI/AppModel.swift` (interpretForEFB :939-961 + helpers) · **Status:** OPEN
+**Files:** `UI/AppModel.swift` (interpretForEFB :939-961 + helpers) · **Status:** FIXED in ea42e3c
 **Fix (final):** `efbGroundingCache: (ident, plan, grounding)?` + `efbGroundingEpoch`;
 `nonisolated static buildEFBGrounding(ident:routeIdents:endpointAirports:)` runs off-main
 (Task.detached + epoch guard), fetches procedures ONCE and splits SID/STAR in one pass.
@@ -531,7 +531,7 @@ after an airport/plan change may skip (miss-safe, documented).
 CIFP db is present).
 
 ### L5 — Session→UI bindings accumulate per model swap
-**Files:** `UI/AppModel.swift` (:754-762) · **Status:** OPEN
+**Files:** `UI/AppModel.swift` (:754-762) · **Status:** FIXED in 3c7a350
 **Fix (final):** `sessionCancellables: Set<AnyCancellable>`, `.removeAll()` BEFORE rewiring; the
 six `.assign(to: &$…)` become `.sink { [weak self] in self?.x = $0 }.store(in:)` (the session is
 `@MainActor` → delivery identical incl. the initial replay; `.assign(to:on:)` rejected — retains
@@ -541,7 +541,7 @@ clobbers the new session's status. Keep the subscriptions before `self.session =
 deallocate (they currently don't).
 
 ### L6 — A hung LLM cleanup blocks all later cleanups with no timeout
-**Files:** `Engine/LLMRefiner.swift` · **Status:** OPEN
+**Files:** `Engine/LLMRefiner.swift` · **Status:** FIXED in 493eb4a
 **Fix (final): a watchdog, NOT a `withTimeout` race.** Copying `CascadeCorrector.withTimeout` is
 WRONG here: `withTaskGroup` awaits all children at scope exit, and a non-cancellable llama.cpp
 generation would block it — silently defeating the timeout. Instead decouple REPORTING from
@@ -561,7 +561,7 @@ outcome, no double-delivery after the stale return); `testRefinerFastRequestIsNo
 
 ### L7 — The optional cloud text-cleaner accepts an insecure address
 **Files:** `Core/CascadeCorrector.swift` (:72-78), `UI/AppModel.swift` (remoteFixerURLValid),
-`UI/SettingsSheet.swift` (hint) · **Status:** OPEN
+`UI/SettingsSheet.swift` (hint) · **Status:** FIXED in 6511f35
 **Fix (final):** `isEndpointAllowed(url)`: https anywhere; http ONLY for private/loopback hosts
 via a pure bounded `isPrivateHost` (localhost, ::1, *.local, 10/8, 127/8, 172.16/12, 192.168/16 —
 UInt8 quad parse, no DNS, no I/O). Rejects plain-http public hosts AND the old
@@ -576,7 +576,7 @@ update the SettingsSheet hint copy ("Needs https, or http on a private LAN host 
 `isPrivateHostClassification` unit (incl. "256.168.0.1" → false).
 
 ### L8 — Map re-runs the same procedure query many times a second
-**Files:** `UI/MapHostView.swift` (:27-32), `UI/AppModel.swift` · **Status:** OPEN
+**Files:** `UI/MapHostView.swift` (:27-32), `UI/AppModel.swift` · **Status:** FIXED in ea42e3c
 **Fix (final):** resolve ONCE in AppModel (centralizes all four setters): `previewedProcedure`
 gains a `didSet → resolvePreviewedProcedure()` (off-main Task.detached + `previewEpoch` guard,
 legs bounded `.prefix(256)`) → `@Published private(set) previewedProcedureLegs: [ResolvedLeg]`.
@@ -586,7 +586,7 @@ and reads the published value. The overlay appears one publish later (impercepti
 procKey reconcile + framing are unchanged). Manual: `--preview-proc KBOS`.
 
 ### L9 — Transcript list re-derives itself on every unrelated update
-**Files:** `UI/TranscriptView.swift`, `Engine/LivePipeline.swift` (TranscriptRecord) · **Status:** OPEN
+**Files:** `UI/TranscriptView.swift`, `Engine/LivePipeline.swift` (TranscriptRecord) · **Status:** FIXED in ea42e3c
 **Fix (final):** extract `TranscriptListSection: View, Equatable` taking records/callsignFilter/
 newestFirst/theme as plain values, with an explicit `==` that compares **the full records array**
 — a count+last.id shortcut would freeze in-place refinements; Swift's `Array ==` fast-paths
@@ -600,7 +600,7 @@ states (the storm reads); the child owns the filter banner + ScrollViewReader li
 **Guards:** ConsoleUITests test5/test6; scroll-follow behavior preserved via `onChange` keys.
 
 ### L10 — Traffic markers blink instead of gliding
-**Files:** `UI/ChartMapView.swift` (syncDynamic :690-706) · **Status:** OPEN
+**Files:** `UI/ChartMapView.swift` (syncDynamic :690-706) · **Status:** FIXED in ea42e3c
 **Fix (final):** diff by **`Aircraft.hex`** (the stable id — labels collide and can be nil):
 `trafficByKey: [String: TrafficAnnotation]` + a single `ownshipAnn`. Survivors get in-place KVO
 `coordinate` writes (`@objc dynamic` — MapKit animates the move) + title refresh; a track change
@@ -612,7 +612,7 @@ set-diff as `TrafficReconcile.plan(existing:incoming:)` for unit tests.
 headings rotate.
 
 ### L11 — Chart tiles re-converted on every pan
-**Files:** `UI/ChartMapView.swift` (MBTilesTileOverlay :74-91) · **Status:** OPEN
+**Files:** `UI/ChartMapView.swift` (MBTilesTileOverlay :74-91) · **Status:** FIXED in ea42e3c
 **Fix (final):** KEEP the WEBP→PNG transcode (the "MapKit renders PNG/JPEG natively" comment is
 load-bearing; native-WebP is a separate device-verified follow-up). Add an
 `NSCache<NSString, NSData>` keyed `"z/x/y"` per overlay (one overlay per reader/pack → the cache
@@ -622,7 +622,7 @@ Undecodable data → raw fallthrough (old behavior). Verify with Instruments: on
 tile, zero on revisits.
 
 ### L12 — Tapping the map does its lookups on the drawing thread
-**Files:** `UI/ChartMapView.swift` (handleTap/probeObjects :457-518) · **Status:** OPEN
+**Files:** `UI/ChartMapView.swift` (handleTap/probeObjects :457-518) · **Status:** FIXED in ea42e3c
 **Fix (final):** split `probeObjects` into `beginProbe` (main: `mv.convert` screen math, BBox,
 `probeGen &+= 1`) → `Task.detached` (the `NavDatabase.nearby` full-table scan + `airspaces` +
 `containsCoord` — value structs, safe to hop) → main-actor `rankProbe` (live-map screen
@@ -634,7 +634,7 @@ stay responsive during a fast pan.
 
 ### L13 — A malformed chart-catalog entry would crash the app
 **Files:** `UI/ChartMapView.swift` (:118), `UI/ChartLibrary.swift` (:113),
-`ATCTranscribeTests/ChartLibraryTests.swift` (:73) · **Status:** OPEN
+`ATCTranscribeTests/ChartLibraryTests.swift` (:73) · **Status:** FIXED in ea42e3c
 **Fix (final):** `remote: URL?` with an `addingPercentEncoding(.urlQueryAllowed)` fallback;
 `ensureOnDisk` guards `let remote = e.remote else { return nil }` — verified nil routes through
 the EXISTING pack-unavailable path (`ChartStore.load` anyFailed → `.failed`; `prefetch` skips) —
@@ -655,3 +655,16 @@ new files. Zero app-source warnings throughout.
 
 Manual QA checklist (device): §H1 (interruptions), §H2 (rapid swap), §M4 (permission timing),
 §M7 (thermal dwell + camera), L10/L12 (map feel), plus one end-to-end LiveATC session.
+
+## Outcome (2026-07-11)
+
+All 23 findings implemented across 8 commits (`877a43a` … `ea42e3c`); full unit suite
+**438/0** on iPad Pro 11" (M5) sim, zero app-source warnings, `SnapParityTests` +
+`parity_check.py` byte-parity 29/29 after H3.
+
+A 16-agent **adversarial review** (one skeptical reviewer per commit → each finding
+independently refutation-tested) then ran over all 8 commits. It confirmed **3 defects, all in the
+H1/L1/L2 audio-recovery commit** (a startEngine hot-mic race, a startup-watchdog false terminal
+during an interruption, and a negative `queued` counter in the monitor) — fixed in `50294b0`; 2
+further findings were refuted. The other 7 commits reviewed clean. Manual on-device QA of the
+interruption/thermal/permission-timing items above remains the last gate before a build ships.
