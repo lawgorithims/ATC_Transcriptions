@@ -25,8 +25,30 @@ enum SlotSnap {
 
     static let freqAnchors: Set<String> = ["contact", "monitor", "frequency", "tower", "ground",
                                            "approach", "departure", "center", "radio",
-                                           "clearance", "atis"]
+                                           "clearance", "atis", "localizer", "ils", "tune"]
     static let airband = 118.0...136.975
+    static let navBand = 108.0...117.975     // VOR/ILS/localizer band, where CIFP publishes ILS freqs
+
+    // Fix slot: ground a misheard fix ident against the airport's coded-procedure fixes (CIFP). Fires only
+    // after a STRONG clearance anchor that is reliably followed by a fix name. "over" and "cross" are
+    // deliberately NOT anchors: they precede position/landmark ("over the river") and cross-runway /
+    // cross-traffic phrases far more often than fixes, and a busy airport almost always has one 5-letter
+    // fix at edit-distance 1 from a plain word — so those anchors caused real false snaps (river→RIVET,
+    // outer→OUTTR). The stoplist below is the second line of defense against the same collision class.
+    private static let fixRx = try! NSRegularExpression(
+        pattern: #"\b((?:direct|hold(?:ing)?|intercept|join)(?: (?:to|at|the|for))?) ([a-z]{4,7})\b"#)
+    static let fixStopwords: Set<String> = [
+        // pattern / taxi / clearance jargon
+        "traffic", "final", "short", "runway", "runways", "tower", "left", "right", "center",
+        "downwind", "base", "line", "position", "hold", "clear", "climb", "descend", "maintain",
+        "heading", "turn", "join", "intercept", "ground", "airport", "gate", "wind",
+        // filler / function words
+        "with", "into", "onto", "your", "that", "this", "then", "them", "when", "there",
+        "will", "have", "just", "past", "next", "point",
+        // geographic / position / ILS-phraseology nouns that legitimately follow these anchors
+        "river", "field", "water", "ridge", "shore", "fence", "bridge", "marker", "outer",
+        "inner", "middle", "coast", "beach", "numbers", "pattern", "present", "radial", "course",
+    ]
 
     // The suffix must not be a direction word belonging to the NEXT phrase ("runway 4,
     // right traffic" / "right turn") — capturing it would invent an L/R designator.
@@ -95,7 +117,39 @@ enum SlotSnap {
                 return nil
             }
         }
+
+        // fix slot — snap a misheard fix ident (right after a clearance anchor) onto the airport's coded
+        // procedure fixes. Conservative: exact → verified; a unique edit-1 candidate for a ≥5-char
+        // non-stopword token → snap; ambiguous / no candidates → abstain. Never invents or lengthens.
+        if !context.fixes.isEmpty {
+            out = substitute(fixRx, in: out) { groups, _, _, _ in
+                let anchorPhrase = groups[0]         // "direct" | "hold at" | "cross the" | …
+                let heard = groups[1]
+                guard !fixStopwords.contains(heard) else { return nil }
+                let (verdict, snapped) = snapFix(heard, context: context)
+                if let snapped {
+                    edits.append(Edit(slot: "fix", verdict: "snapped", original: heard, snapped: snapped, applied: true))
+                    return anchorPhrase + " " + snapped
+                }
+                edits.append(Edit(slot: "fix", verdict: verdict, original: heard))
+                return nil
+            }
+        }
         return (out, edits)
+    }
+
+    // MARK: fix
+
+    /// Snap a heard token onto the airport's coded-procedure fixes. Exact (case-insensitive) → verified;
+    /// a single edit-1 candidate when the heard token is ≥5 letters → snapped; otherwise abstain. The
+    /// ≥5-letter floor plus the caller's stoplist keep short common words from snapping onto a look-alike.
+    private static func snapFix(_ heard: String, context: AirportContextData) -> (verdict: String, snapped: String?) {
+        let up = heard.uppercased()
+        let cands = Set(context.fixes.map { $0.uppercased() }.filter { $0.count >= 4 && $0.allSatisfy(\.isLetter) })
+        if cands.contains(up) { return ("verified", nil) }
+        guard heard.count >= 5 else { return ("unverified", nil) }
+        let near = cands.filter { CallsignSnap.levenshtein($0, up) == 1 }.sorted()
+        return near.count == 1 ? ("snapped", near[0].lowercased()) : ("unverified", nil)
     }
 
     // MARK: runway
@@ -141,11 +195,19 @@ enum SlotSnap {
 
     private static func snapFrequency(_ heard: Double,
                                       context: AirportContextData) -> (verdict: String, snapped: Double?) {
-        let cands = context.frequencyValues.filter { airband.contains($0) }
+        let comms = context.frequencyValues.filter { airband.contains($0) }
+        let nav = context.navFrequencies.filter { navBand.contains($0) }        // published ILS/LOC freqs
+        // Snap ONLY within the heard value's own band — never let an airband comms freq be rewritten to a
+        // nav/ILS freq or vice-versa (an edit-1 across the 118 boundary is a real cross-band corruption).
+        let cands = navBand.contains(heard) ? nav : comms
         if cands.contains(where: { abs($0 - heard) < 1e-6 }) { return ("verified", nil) }
         let hd = freqDigits(heard)
         let near = Set(cands.filter { CallsignSnap.levenshtein(freqDigits($0), hd) == 1 }).sorted()
         if near.count == 1 { return ("snapped", near[0]) }
+        // A nav-band freq heard where the airport publishes ILS freqs abstains when it doesn't match — it
+        // must NOT fall into the airband's off-raster "invalid" verdict. With no nav freqs (all existing
+        // python-validated fixtures) this guard is skipped, so the airband policy below is byte-identical.
+        if navBand.contains(heard), !nav.isEmpty { return ("unverified", nil) }
         if !airband.contains(heard) || !onRaster(heard) { return ("invalid", nil) }
         return ("unverified", nil)
     }

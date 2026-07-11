@@ -6,10 +6,12 @@ import Foundation
 struct AirportContextData: Sendable, Equatable {
     let ident: String
     var runways: [String] = []                       // open designators, both ends ("17C", "31L")
-    var frequencies: [String: [Double]] = [:]        // type ("TWR"/"GND"/…) → MHz
+    var frequencies: [String: [Double]] = [:]        // type ("TWR"/"GND"/…) → MHz (airband comms)
+    var fixes: [String] = []                         // coded-procedure fix idents (CIFP) — "BOSOX", "CRLTN"
+    var navFrequencies: [Double] = []                // ILS/localizer freqs (nav band, 108–112 MHz)
 
     var frequencyValues: [Double] { frequencies.values.flatMap { $0 }.sorted() }
-    var isEmpty: Bool { runways.isEmpty && frequencies.isEmpty }
+    var isEmpty: Bool { runways.isEmpty && frequencies.isEmpty && fixes.isEmpty && navFrequencies.isEmpty }
 }
 
 /// A source of airport context. Sources compose in a priority chain (curated config → bundled
@@ -52,6 +54,25 @@ struct BundledAirportContextSource: AirportContextSource {
               let dict = try? JSONDecoder().decode([String: Entry].self, from: data) else { return [:] }
         return dict
     }()
+}
+
+/// CIFP-derived grounding: an airport's coded-procedure fix idents + ILS/localizer frequencies (from
+/// the bundled `cifp.sqlite`). This is the ONLY source that supplies `fixes`/`navFrequencies`, so it
+/// sits first in the chain and the priority sources below fill in runways + airband comms frequencies.
+/// Fail-soft: a missing DB or an airport with no coded procedures yields nil, and the chain moves on.
+struct CIFPAirportContextSource: AirportContextSource {
+    func airport(_ ident: String) async -> AirportContextData? { Self.lookup(ident) }
+
+    /// Synchronous seam for tests and non-async callers (mirrors `BundledAirportContextSource.lookup`).
+    static func lookup(_ ident: String) -> AirportContextData? {
+        let key = ident.trimmingCharacters(in: .whitespaces).uppercased()
+        let fixes = CIFP.fixes(airport: key)
+        let navFreqs = Array(Set(CIFP.ils(airport: key).compactMap(\.freqMHz))).sorted()
+        var data = AirportContextData(ident: key)
+        data.fixes = fixes
+        data.navFrequencies = navFreqs
+        return data.isEmpty ? nil : data
+    }
 }
 
 /// Hand-curated per-facility configs (`airport_configs/*.json`) — richest data for the few
@@ -156,7 +177,10 @@ actor NetworkAirportContextSource: AirportContextSource {
 /// answer wins per field; later sources fill missing fields (mirrors `CompositeSource` in
 /// `airport_data.py`). LiveATC/demo mode uses exactly this chain keyed by the feed's airport.
 struct AirportContextStore: Sendable {
+    // CIFP first (sole supplier of fixes/nav-freqs), then the runway+comms priority chain. Later sources
+    // fill only the fields still empty, so CIFP's fixes survive and curated data still wins on runways.
     var sources: [any AirportContextSource] = [
+        CIFPAirportContextSource(),
         CuratedAirportContextSource(),
         BundledAirportContextSource(),
         NetworkAirportContextSource.shared,
@@ -171,7 +195,12 @@ struct AirportContextStore: Sendable {
             } else {
                 if result!.runways.isEmpty { result!.runways = ctx.runways }
                 if result!.frequencies.isEmpty { result!.frequencies = ctx.frequencies }
+                if result!.fixes.isEmpty { result!.fixes = ctx.fixes }
+                if result!.navFrequencies.isEmpty { result!.navFrequencies = ctx.navFrequencies }
             }
+            // Stop once the airband grounding is complete (runways + comms); fixes/nav-freqs are a bonus
+            // CIFP already supplied, and gating on them would needlessly reach the slow network source at
+            // airports with no coded procedures.
             if let r = result, !r.runways.isEmpty, !r.frequencies.isEmpty { break }
         }
         return result

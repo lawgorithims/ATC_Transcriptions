@@ -24,6 +24,15 @@ final class ATCContext {
     private var flightPlanBlock = ""
     private var flightPlanVocab: [String] = []
 
+    // Coded-procedure grounding (CIFP) for the active airport. `groundingIdent` is the resolved airport
+    // (curated config code, else the user's typed airport) and — unlike the config-only path — also
+    // drives the `AirportContextStore`/SlotSnap lookup for ANY named airport, not just the curated few.
+    // The prompt line biases the Whisper decode toward the real fix names; the block gives the LLM
+    // corrector the fixes + ILS frequencies to ground a misheard fix/localizer against. Built once at init.
+    private let groundingIdent: String?
+    private var proceduresPromptLine = ""
+    private var proceduresBlock = ""
+
     // Live ADS-B traffic in range — a FRESHNESS-SELF-ENFORCING channel. The block is consumed only
     // while `Date() < trafficExpiry`, so a stalled/failed poller self-expires within the trust
     // window and stale aircraft can never leak into a prompt or the snap-vocab. `trafficEpoch` lets
@@ -37,17 +46,45 @@ final class ATCContext {
          feedKey: String? = nil,
          maxHistory: Int = 3,
          maxPromptChars: Int = 800,
+         groundingIdent: String? = nil,
          knowledge: ATCKnowledgeBase = .shared) {
         self.config = config
         self.feedKey = feedKey
         self.maxHistory = maxHistory
         self.maxPromptChars = maxPromptChars
         self.knowledge = knowledge
+        // The resolved airport: a curated config's code wins, else the user's typed airport.
+        let ident = (config?.airportCode ?? groundingIdent)?.trimmingCharacters(in: .whitespaces).uppercased()
+        self.groundingIdent = (ident?.isEmpty ?? true) ? nil : ident
         if let config, let feedKey {
             (staticPrefix, vocabTerms) = ATCContext.buildStaticPrefix(config: config, feedKey: feedKey)
         }
+        if let gid = self.groundingIdent {
+            // Curated configs already list fixes in the static prefix; only add the CIFP "Fixes:" decode
+            // bias when they didn't, to avoid doubling up in the ~220-token prompt budget.
+            let hasConfigFixes = !((config?.fixes ?? config?.waypoints ?? []).isEmpty)
+            (proceduresPromptLine, proceduresBlock) = ATCContext.buildProcedures(ident: gid, includePromptFixes: !hasConfigFixes)
+        }
         self.retriever = config == nil ? nil
             : ATCKnowledgeRetriever(kb: knowledge, config: config, feedKey: feedKey)
+    }
+
+    /// Build the CIFP procedures grounding for an airport: a capped Whisper "Fixes:" decode-bias line
+    /// (only when the facility config didn't already list fixes) and an LLM context block naming the
+    /// coded-procedure fixes + ILS frequencies the corrector can ground a misheard fix/localizer against.
+    private static func buildProcedures(ident: String, includePromptFixes: Bool) -> (prompt: String, block: String) {
+        let fixes = CIFP.fixes(airport: ident)
+        let ilsFreqs = Array(Set(CIFP.ils(airport: ident).compactMap(\.freqMHz))).sorted()
+        guard !fixes.isEmpty || !ilsFreqs.isEmpty else { return ("", "") }
+        let prompt = (includePromptFixes && !fixes.isEmpty)
+            ? "Fixes: " + fixes.prefix(12).joined(separator: ", ") + "."
+            : ""
+        var parts: [String] = []
+        if !fixes.isEmpty { parts.append("Procedure fixes at \(ident): " + fixes.prefix(40).joined(separator: ", ") + ".") }
+        if !ilsFreqs.isEmpty {
+            parts.append("ILS frequencies: " + ilsFreqs.map { String(format: "%.2f", $0) }.joined(separator: ", ") + ".")
+        }
+        return (prompt, parts.joined(separator: " "))
     }
 
     /// Build the static prefix and the canonical vocab (runways + fixes). Port of
@@ -91,6 +128,7 @@ final class ATCContext {
     func buildPrompt() -> String {
         var sections: [String] = []
         if !staticPrefix.isEmpty { sections.append(staticPrefix) }
+        if !proceduresPromptLine.isEmpty { sections.append(proceduresPromptLine) }
         // BB1: bias the DECODE toward the aircraft actually on frequency right now (fresh ADS-B), in
         // SPOKEN form — the strongest lever for misheard callsigns, and stronger than post-correction
         // because it shifts the acoustic decode. Freshness-gated like the LLM traffic block (a stalled
@@ -122,8 +160,10 @@ final class ATCContext {
         return prompt
     }
 
-    /// The active facility's ICAO ident (drives the `AirportContextStore` lookup for SlotSnap).
-    var airportIdent: String? { config?.airportCode }
+    /// The active facility's ICAO ident (drives the `AirportContextStore` lookup for SlotSnap). Resolves
+    /// to the curated config's code, else the user's typed airport — so SlotSnap grounds nationwide, not
+    /// just at the handful of curated facilities.
+    var airportIdent: String? { groundingIdent }
 
     /// Fresh in-range callsigns in SPOKEN telephony form — the CallsignSnap candidate list.
     /// Same source and freshness gate as the BB1 prompt bias (airline callsigns only). This feed
@@ -182,6 +222,14 @@ final class ATCContext {
     func retrieveKnowledge(for transcript: String) -> RetrievedContext {
         let r = retriever ?? ATCKnowledgeRetriever(kb: knowledge, config: nil, feedKey: nil)
         var ctx = r.retrieve(transcript: transcript, history: recentHistory)
+        // The active airport's coded-procedure fixes + ILS frequencies — sits just above the generic RAG
+        // so the corrector can ground a misheard fix/localizer, but below the pilot's own plan + live
+        // traffic (prepended after this). Informational only: deliberately NOT added to `ctx.vocab`, since
+        // the deterministic SlotSnap fix slot already snaps fixes with anchor + stoplist guards, and a
+        // large unanchored fix set in the snap-vocab would widen the false-positive surface.
+        if !proceduresBlock.isEmpty {
+            ctx.block = ctx.block.isEmpty ? proceduresBlock : proceduresBlock + "\n" + ctx.block
+        }
         // Order (top → bottom): own flight plan, then live traffic, then the retrieved RAG. The
         // traffic block is the LOAD-BEARING freshness gate: it's only injected while unexpired, so a
         // stalled poller self-expires and stale aircraft never reach the prompt or snap-vocab.
