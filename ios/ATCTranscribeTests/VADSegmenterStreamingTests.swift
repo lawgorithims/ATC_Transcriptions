@@ -20,8 +20,8 @@ final class VADSegmenterStreamingTests: XCTestCase {
 
     // 30ms frames @16k: silenceFrames=13 (400ms), pttBreakFrames=5 (150ms), onsetConfirm=10 (300ms),
     // minTurnSpeech=16 (500ms). "ATC" = 20 frames loud-low; a sub-400ms PTT gap; "aircraft" = 20 frames.
-    private let atc = { (s: VADSegmenterStreamingTests) in s.tone(9600, amp: 0.5, freq: 150) }
-    private let aircraft = { (s: VADSegmenterStreamingTests) in s.tone(9600, amp: 0.03, freq: 320) }
+    private let atc = { (s: VADSegmenterStreamingTests) in s.tone(9600, amp: 0.5, freq: 500) }
+    private let aircraft = { (s: VADSegmenterStreamingTests) in s.tone(9600, amp: 0.03, freq: 1500) }
     private var pttGap: [Float] { silence(2880) }   // 6 frames: > pttBreak (5), < silence (13)
 
     func testStreamingEmitsFirstTurnEarly() {
@@ -45,8 +45,8 @@ final class VADSegmenterStreamingTests: XCTestCase {
         // The SAME voice keying up much louder across a PTT gap (same pitch + brightness, ~+17 dB level)
         // must MERGE, never early-split: loudness alone is not a speaker change. The overall distance
         // clears newSpeakerDist purely on the `level` dim, so only the timbre gate prevents a wrong split.
-        let loud = tone(9600, amp: 0.5, freq: 150)
-        let quiet = tone(9600, amp: 0.06, freq: 150)   // same 150 Hz, far quieter
+        let loud = tone(9600, amp: 0.5, freq: 700)
+        let quiet = tone(9600, amp: 0.06, freq: 700)   // same 700 Hz, far quieter
         XCTAssertEqual(streaming().feed(loud + pttGap + quiet).count, 0,
                        "a same-voice loudness jump must merge, not split (level ≠ speaker change)")
     }
@@ -56,7 +56,7 @@ final class VADSegmenterStreamingTests: XCTestCase {
         // turn A + the PTT gap + the buffered onset into ONE merged plain segment — losing none of it.
         let seg = streaming()
         let a = atc(self)                              // 9600: arms turn A
-        let onset = tone(4320, amp: 0.5, freq: 320)    // 9 frames: < onsetConfirm(10) → parks in .confirmingOnset
+        let onset = tone(4320, amp: 0.5, freq: 1500)    // 9 frames: < onsetConfirm(10) → parks in .confirmingOnset
         XCTAssertEqual(seg.feed(a + pttGap + onset).count, 0, "onset too short to confirm — nothing emitted yet")
         seg.setSpeakerAware(false)                     // flip OFF mid-.confirmingOnset
         let out = seg.flush()                          // plain-path finalize of the folded segment
@@ -72,9 +72,9 @@ final class VADSegmenterStreamingTests: XCTestCase {
         // mirrored into segmentFrames). Exact length proves each frame folds in once, in order.
         let seg = streaming()
         let a = atc(self)                                                  // 9600: arms turn A
-        let onset = tone(1920, amp: 0.5, freq: 320)                        // 4 speech frames
+        let onset = tone(1920, amp: 0.5, freq: 1500)                        // 4 speech frames
             + silence(480)                                                 // 1 interior silence frame
-            + tone(1440, amp: 0.5, freq: 320)                              // 3 speech frames (7 speech < onsetConfirm 10)
+            + tone(1440, amp: 0.5, freq: 1500)                              // 3 speech frames (7 speech < onsetConfirm 10)
         XCTAssertEqual(seg.feed(a + pttGap + onset).count, 0, "onset too short to confirm — nothing emitted yet")
         seg.setSpeakerAware(false)
         let out = seg.flush()
@@ -99,7 +99,7 @@ final class VADSegmenterStreamingTests: XCTestCase {
     func testStreamingFlushDrainsParkedTurn() {
         // Stream ends while a turn is parked awaiting the next speaker's confirmation → flush emits it.
         let seg = streaming()
-        let bStart = tone(2400, amp: 0.03, freq: 320)   // 5 frames: < onsetConfirm, can't confirm
+        let bStart = tone(2400, amp: 0.03, freq: 1500)   // 5 frames: < onsetConfirm, can't confirm
         XCTAssertEqual(seg.feed(atc(self) + pttGap + bStart).count, 0, "onset too short to confirm yet")
         let flushed = seg.flush()
         XCTAssertEqual(flushed.count, 1, "flush must drain the parked turn, not lose it")
@@ -108,7 +108,7 @@ final class VADSegmenterStreamingTests: XCTestCase {
 
     func testStreamingCapEmitsAndResets() {
         // A gapless burst past the 8s cap emits at the cap (tagged) and keeps going.
-        let out = streaming().feed(tone(140_000, amp: 0.5, freq: 150))   // 8.75s continuous
+        let out = streaming().feed(tone(140_000, amp: 0.5, freq: 500))   // 8.75s continuous
         XCTAssertGreaterThanOrEqual(out.count, 1)
         XCTAssertNotNil(out[0].speaker)
     }

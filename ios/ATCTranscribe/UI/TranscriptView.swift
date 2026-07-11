@@ -115,9 +115,9 @@ struct TranscriptCard: View {
                     // Follow new transmissions only while pinned to the newest end. Drive off the
                     // RENDERED newest line's id (not records.count, which a 500-cap pins and which an
                     // off-filter arrival jolts), so it fires exactly when the visible newest changes.
-                    .onChange(of: newestRenderedID) { _ in if atNewest { scrollToNewest(proxy) } }
-                    .onChange(of: model.transcriptNewestFirst) { _ in atNewest = true; scrollToNewest(proxy) }
-                    .onChange(of: model.callsignFilter) { _ in atNewest = true; scrollToNewest(proxy) }
+                    .onChange(of: newestRenderedID) { _, _ in if atNewest { scrollToNewest(proxy) } }
+                    .onChange(of: model.transcriptNewestFirst) { _, _ in atNewest = true; scrollToNewest(proxy) }
+                    .onChange(of: model.callsignFilter) { _, _ in atNewest = true; scrollToNewest(proxy) }
                     .overlay(alignment: model.transcriptNewestFirst ? .topTrailing : .bottomTrailing) {
                         if !atNewest { jumpButton(proxy) }
                     }
@@ -199,19 +199,14 @@ struct TranscriptRow: View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 8) {
-                    if record.role != .unknown {
-                        let isCtl = record.role == .controller
-                        Label(isCtl ? "ATC" : "Pilot",
-                              systemImage: isCtl ? "antenna.radiowaves.left.and.right" : "airplane")
-                            .labelStyle(.titleAndIcon)
-                            .font(.caption2.weight(.bold))
-                            .padding(.horizontal, 6).padding(.vertical, 1)
-                            .background((isCtl ? p.accent : p.good).opacity(0.18))
-                            .foregroundStyle(isCtl ? p.accent : p.good)
-                            .clipShape(Capsule())
-                            .accessibilityIdentifier("role-chip")
-                    }
-                    if let spk = record.speaker {
+                    // ONE fused speaker label per line (the runtime `speaker_label`), mirroring the
+                    // website: "ATC" (→ addressed aircraft) for a controller, the callsign for a
+                    // pilot, a muted "Pilot" when the role is known but no callsign was recovered,
+                    // and nothing when we honestly don't know.
+                    fusedSpeakerChip(p)
+                    // The raw acoustic cluster id is now a fusion INPUT, not the answer — keep the
+                    // colored "S1/S2" chip for developers only.
+                    if model.showDebug, let spk = record.speaker {
                         Text("S\(spk + 1)")
                             .font(.caption2.weight(.bold))
                             .padding(.horizontal, 6).padding(.vertical, 1)
@@ -222,6 +217,11 @@ struct TranscriptRow: View {
                             .accessibilityIdentifier("speaker-chip")
                     }
                     if let cs = record.callsign {
+                        // For an ATC line the callsign is the ADDRESSED aircraft — draw the site's
+                        // "tower → callsign" connector. For a pilot line it stands alone as the speaker.
+                        if case .atc = record.speakerLabel {
+                            Image(systemName: "arrow.right").font(.system(size: 8)).foregroundStyle(p.textDim)
+                        }
                         // Tap to filter the transcript to this aircraft's conversation. Green +
                         // filled-airplane = currently in range on the live ADS-B feed — derived at
                         // render time so the badge tracks the feed instead of freezing at decode time.
@@ -336,6 +336,42 @@ struct TranscriptRow: View {
     }
 
     private func isAlnum(_ c: Character) -> Bool { c.isLetter || c.isNumber }
+
+    /// The single fused speaker label for this line. Controller → "ATC"; pilot-with-callsign renders
+    /// as the callsign chip alone (so this returns nothing); pilot-without-callsign → a muted "Pilot";
+    /// unknown → nothing (honest — we don't guess). A voice-inferred ATC label (filled from the
+    /// acoustic cluster, `fusedFrom == .acoustic`) is drawn deliberately lower-confidence: outline
+    /// only, dimmed, with a waveform glyph — never presented as certain.
+    @ViewBuilder private func fusedSpeakerChip(_ p: Palette) -> some View {
+        switch record.speakerLabel {
+        case .atc:
+            let inferred = record.fusedFrom == .acoustic
+            HStack(spacing: 3) {
+                Image(systemName: inferred ? "waveform" : "antenna.radiowaves.left.and.right")
+                    .font(.system(size: 8))
+                Text("ATC").font(.caption2.weight(.bold))
+            }
+            .padding(.horizontal, 6).padding(.vertical, 1)
+            .background(inferred ? Color.clear : p.accent.opacity(0.18))
+            .foregroundStyle(inferred ? p.accent.opacity(0.7) : p.accent)
+            .clipShape(Capsule())
+            .overlay { if inferred { Capsule().stroke(p.accent.opacity(0.5), lineWidth: 1) } }
+            .accessibilityIdentifier("fused-label-chip")
+            .accessibilityLabel(inferred ? "ATC, inferred from voice" : "ATC")
+        case .pilot:
+            Label("Pilot", systemImage: "airplane")
+                .labelStyle(.titleAndIcon)
+                .font(.caption2.weight(.bold))
+                .padding(.horizontal, 6).padding(.vertical, 1)
+                .background(p.good.opacity(0.18))
+                .foregroundStyle(p.good)
+                .clipShape(Capsule())
+                .accessibilityIdentifier("fused-label-chip")
+                .accessibilityLabel("Pilot")
+        case .callsign, .unknown:
+            EmptyView()
+        }
+    }
 
     /// Distinct color per diarization speaker id (cycles for many speakers).
     private func speakerColor(_ i: Int) -> Color {

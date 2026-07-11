@@ -54,6 +54,14 @@ struct SettingsSheet: View {
                             }
                             Text("Splits a transmission at push-to-talk / squelch breaks and tags each speaker (S1, S2…) on its own line — so ATC and the aircraft don't share a line. Heuristic and on-device; it can't separate people talking over each other simultaneously.")
                                 .font(.caption2).foregroundStyle(p.textDim)
+                            Divider().padding(.vertical, 2)
+                            Toggle(isOn: $model.acousticFillEnabled) {
+                                Text("Guess speaker by voice (experimental)").font(.caption).foregroundStyle(p.text)
+                            }
+                            .disabled(!model.diarizationEnabled)
+                            .accessibilityIdentifier("acoustic-fill-toggle")
+                            Text("When the words alone don't reveal who's talking, CommSight can guess from the sound of the voice. On a single radio frequency every voice shares the same channel, so this is unreliable and may mislabel lines — it's off by default. Needs \"Separate speakers\" on. Lines it guesses are shown dimmed as voice-inferred.")
+                                .font(.caption2).foregroundStyle(p.textDim)
                         }
                     }
                     Card(title: "Live traffic") {

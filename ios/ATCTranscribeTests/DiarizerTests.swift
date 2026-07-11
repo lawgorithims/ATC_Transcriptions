@@ -10,25 +10,26 @@ final class DiarizerTests: XCTestCase {
     }
     private func silence(_ n: Int) -> [Float] { [Float](repeating: 0, count: n) }
 
-    // Two clearly different transmissions (loud low vs quiet high) split by a PTT gap → 2 speakers.
+    // Two clearly different transmissions (distinct in-band timbres) split by a PTT gap → 2 speakers.
+    // Frequencies sit inside the 300–3800 Hz ATC voice band the MFCC front-end analyzes.
     func testSplitsTwoDifferentTransmissions() {
-        let pieces = Diarizer().diarize(tone(8000, amp: 0.5, freq: 150)
+        let pieces = Diarizer().diarize(tone(8000, amp: 0.5, freq: 500)
                                         + silence(3200)
-                                        + tone(8000, amp: 0.1, freq: 320))
+                                        + tone(8000, amp: 0.1, freq: 1500))
         XCTAssertEqual(pieces.count, 2)
         XCTAssertNotEqual(pieces[0].speaker, pieces[1].speaker)
     }
 
     // One continuous transmission → one piece.
     func testSingleContinuousIsOnePiece() {
-        XCTAssertEqual(Diarizer().diarize(tone(16000, amp: 0.4, freq: 180)).count, 1)
+        XCTAssertEqual(Diarizer().diarize(tone(16000, amp: 0.4, freq: 700)).count, 1)
     }
 
     // Same speaker with a short mid-sentence pause → split candidates merge back to one piece.
     func testMidSentencePauseMergesBack() {
-        let pieces = Diarizer().diarize(tone(6000, amp: 0.4, freq: 180)
+        let pieces = Diarizer().diarize(tone(6000, amp: 0.4, freq: 700)
                                         + silence(2400)
-                                        + tone(6000, amp: 0.4, freq: 180))
+                                        + tone(6000, amp: 0.4, freq: 700))
         XCTAssertEqual(pieces.count, 1)
     }
 }

@@ -142,6 +142,29 @@ final class ConsoleUITests: XCTestCase {
         XCTAssertTrue(consoleReady(app, timeout: 5), "did not return to console after Done")
     }
 
+    // 3b. Experimental "guess speaker by voice" (ECAPA) toggle: present, OFF by default, flips on,
+    //     and the app stays healthy after dismissing (drives the Stage-5b wiring end-to-end in the sim).
+    func test3b_experimentalVoiceToggle() {
+        let app = launch(onboardingDismissed: true)
+        XCTAssertTrue(app.buttons["settings-button"].waitForExistence(timeout: 20))
+        app.buttons["settings-button"].tap()
+        XCTAssertTrue(app.navigationBars["Model & settings"].waitForExistence(timeout: 5), "settings sheet missing")
+
+        // The toggle is present and functional. (Its default-OFF is covered by unit tests;
+        // UI-test state persists across runs, so assert it FLIPS rather than a fixed initial value.)
+        let toggle = app.switches["acoustic-fill-toggle"]
+        XCTAssertTrue(reveal(toggle, app), "experimental voice toggle missing")
+        let before = toggle.value as? String
+        toggle.tap()
+        XCTAssertNotEqual(toggle.value as? String, before, "toggle did not change state")
+        snap(app, "06-experimental-voice-toggled")
+        toggle.tap()   // restore the prior persisted state (test hygiene)
+        XCTAssertEqual(toggle.value as? String, before, "toggle did not restore")
+
+        app.buttons["Done"].tap()
+        XCTAssertTrue(consoleReady(app, timeout: 5), "app unhealthy after toggling the experimental backend")
+    }
+
     // 4. Source picker switches inputs; the Start/Stop power button toggles the (demo) session.
     func test4_sourceAndStartStop() {
         let app = launch(onboardingDismissed: true)

@@ -25,6 +25,59 @@ final class SnapReplayTests: XCTestCase {
         }
     }
 
+    /// Thread-safe collector for `pipeline.run`'s `@Sendable` record callback.
+    private final class RecordBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var buf: [TranscriptRecord] = []
+        func append(_ r: TranscriptRecord) { lock.lock(); buf.append(r); lock.unlock() }
+        var records: [TranscriptRecord] { lock.lock(); defer { lock.unlock() }; return buf }
+    }
+
+    /// Fuse a run's records exactly as `TranscriptionSession.append` does (ingest + retroactive
+    /// relabel of a flipped speaker's unknown lines).
+    private func fuseAsSession(_ records: [TranscriptRecord]) -> [TranscriptRecord] {
+        let labeler = SpeakerLabeler()
+        var out: [TranscriptRecord] = []
+        for input in records {
+            var r = input
+            let flipped = labeler.ingest(&r)
+            out.append(r)
+            if let spk = flipped {
+                for i in out.indices where out[i].speaker == spk && out[i].role == .unknown {
+                    var u = out[i]; labeler.refuse(&u); out[i] = u
+                }
+            }
+        }
+        return out
+    }
+
+    /// End-to-end: drive the gold clip through the REAL pipeline with diarization ON, scripting a
+    /// controller instruction for every diarized piece. Asserts the fused-label plumbing works and
+    /// the fusion invariants hold on real pipeline output (real speaker ids + assignment distances +
+    /// real `TurnRoleTagger` roles) — regardless of how many pieces the clip splits into.
+    func testFusionEndToEndControllerLinesLabelATC() async throws {
+        let script = Array(repeating: "delta 232 cleared to land runway 2 2 right", count: 40)
+        let config = try AirportConfig.load(named: "kjfk")
+        let context = ATCContext(config: config, feedKey: nil)
+        let pipeline = LivePipeline(transcriber: ScriptedTranscriber(script), context: context,
+                                    diarizationEnabled: true)
+        let box = RecordBox()
+        await pipeline.run(source: ArrayAudioSource(try goldAudio(), realtime: false)) { box.append($0) }
+
+        let fused = fuseAsSession(box.records)
+        XCTAssertFalse(fused.isEmpty, "diarization + replay should yield at least one line")
+        for r in fused {
+            XCTAssertNotNil(r.speaker, "diarization on → a speaker id per line")
+            XCTAssertNotNil(r.speakerDistance, "assignment distance must be plumbed through to the record")
+            // A confident content role is never overridden by fusion.
+            if r.role == .controller || r.role == .pilot { XCTAssertEqual(r.roleFused, r.role) }
+            if r.role == .controller {
+                XCTAssertEqual(r.speakerLabel, .atc)
+                XCTAssertEqual(r.fusedFrom, .content)
+            }
+        }
+    }
+
     /// Bundled gold clip audio (real LiveATC radio, 16 kHz mono) — the file-replay input.
     private func goldAudio() throws -> [Float] {
         let url = try XCTUnwrap(

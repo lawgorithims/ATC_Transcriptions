@@ -45,8 +45,22 @@ struct TranscriptRecord: Sendable, Identifiable {
     /// feed (rather than freezing whatever was true at the instant the line was decoded).
     var callsignKey: String? = nil
     /// Content-based role of this transmission (controller / pilot / unknown), from
-    /// `TurnRoleTagger`. Drives the per-line role chip in the transcript UI.
+    /// `TurnRoleTagger`. An INPUT to fusion (see `speakerLabel`).
     var role: TurnRole = .unknown
+    /// `TurnRoleTagger` confidence for `role` (0…1 heuristic margin). Kept for the fusion shadow
+    /// log / future tuning (the pipeline no longer discards it).
+    var roleConfidence: Double = 0
+    /// Nearest-centroid distance at speaker assignment — how tight the acoustic match was; nil when
+    /// diarization is off. The fusion fill-guard refuses to fill a line off a borderline match.
+    var speakerDistance: Float? = nil
+    /// The role after acoustic fusion: the own confident content role, else a guard-approved voice
+    /// cluster affinity. Offline `role_fused`. Set by `SpeakerLabeler` after append.
+    var roleFused: TurnRole = .unknown
+    /// Provenance of `roleFused` — content (own role) / acoustic (voice-cluster fill) / none.
+    var fusedFrom: FusedProvenance = .none
+    /// The fused, one-per-line speaker label the transcript renders — the runtime port of the
+    /// offline `speaker_label` (ATC / callsign / Pilot / unknown). Set by `SpeakerLabeler`.
+    var speakerLabel: SpeakerLabel = .unknown
 
     /// What the UI shows: the LLM-refined text if present, else the inline-corrected text, else
     /// the raw transcript.
@@ -178,13 +192,18 @@ actor LivePipeline {
          gateEnabled: Bool = true,
          gateSensitivity: GateSensitivity = .conservative,
          diarizationEnabled: Bool = true,
+         useECAPA: Bool = false,
          vadConfig: VADConfig = VADConfig()) {
         self.transcriber = transcriber
         self.context = context
         self.preprocessor = preprocessor
         self.corrector = corrector
         self.diarizationEnabled = diarizationEnabled
-        let sm = SpeakerModel()
+        // EXPERIMENTAL: use the neural ECAPA voice embedder for clustering when requested AND the model
+        // is bundled (fail-safe: falls back to MFCC otherwise). Off by default — it adds per-transmission
+        // inference cost and, per the corpus study, still can't cleanly separate same-feed speakers.
+        let embedder = useECAPA ? CoreMLSpeakerEmbedder() : nil
+        let sm = SpeakerModel(embedder: embedder)
         self.speakerModel = sm
         self.diarizer = Diarizer(speaker: sm)
         // Streaming speaker-change segmentation is on exactly when diarization is (they share `sm`).
@@ -200,7 +219,8 @@ actor LivePipeline {
 
     /// Transcribe one speech segment into a record, or nil when nothing usable was
     /// decoded. `speaker` tags the record with a diarization speaker id. Port of `_transcribe_segment`.
-    func process(_ segment: SpeechSegment, speaker: Int? = nil) async -> TranscriptRecord? {
+    func process(_ segment: SpeechSegment, speaker: Int? = nil,
+                 speakerDistance: Float? = nil) async -> TranscriptRecord? {
         let prompt = context.buildPrompt()
         let audio = preprocessor?.preprocess(segment.audio) ?? segment.audio
 
@@ -276,13 +296,17 @@ actor LivePipeline {
             corrections: inlineEdits,
             timestamp: Self.timeFormatter.string(from: Date()))
         record.speaker = speaker
+        record.speakerDistance = speakerDistance
         // Extract the canonical callsign this transmission addresses (the key that groups the
         // aircraft's conversation). ATTRIBUTION is gated by the snap verdict when a live candidate
         // list existed: an unverified callsign still displays as heard, but is not attributed to
         // an aircraft (the falseCS → 2% channel). With no list (offline/stale traffic) the
         // pre-snap behavior is preserved — extraction attributes ungated.
-        // Content-based controller/pilot role for the transcript's per-line chip (cheap, text-only).
-        record.role = TurnRoleTagger.classify(record.display, knowledge: context.knowledge).role
+        // Content-based controller/pilot role — an INPUT the session's `SpeakerLabeler` fuses with
+        // the acoustic cluster + callsign into the per-line `speakerLabel` (cheap, text-only).
+        let roleLabel = TurnRoleTagger.classify(record.display, knowledge: context.knowledge)
+        record.role = roleLabel.role
+        record.roleConfidence = roleLabel.confidence
         if let cs = CallsignExtractor.extract(record.display, knowledge: context.knowledge) {
             record.callsign = cs.display
             // Gate attribution only where the verdict is meaningful: a candidate list
@@ -404,7 +428,8 @@ actor LivePipeline {
                 let sub = SpeechSegment(audio: piece.audio, streamStartS: startS,
                                         streamEndS: startS + Double(piece.audio.count) / 16000.0,
                                         finalizedWallTime: segment.finalizedWallTime)
-                if let record = await process(sub, speaker: piece.speaker) { onRecord(record) }
+                if let record = await process(sub, speaker: piece.speaker,
+                                              speakerDistance: piece.distance) { onRecord(record) }
             }
         } else if let record = await process(segment) {
             onRecord(record)
