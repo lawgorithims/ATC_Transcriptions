@@ -21,14 +21,25 @@ never slows transcription, behind output guardrails and a **confidence gate** th
 it when a transmission looks suspicious. The full rationale is in
 [`ios/README.md` → Correction pipeline](ios/README.md#correction-pipeline).
 
-The deterministic tier now includes two **context-grounded snap stages** (Python reference,
-Swift port pending): `CallsignSnap` (snap-or-abstain against live ADS-B traffic + the filed
-flight plan; false callsign attributions 13.7% → 2.0% on the gold set) and `SlotSnap`
-(runway/frequency verification against the airport's real runways and published frequencies).
-Grounding data flows through a provider chain — flight plan → curated/offline map data → live
-position → **OurAirports internet fallback** (the only source in LiveATC/demo mode). Diagrams,
-stage policies, and measured findings: [`python-legacy/docs/PIPELINE.md`](python-legacy/docs/PIPELINE.md);
-standing metrics: [`python-legacy/docs/RESULTS.md`](python-legacy/docs/RESULTS.md).
+The deterministic tier now includes two **context-grounded snap stages** — live in the iOS app and
+**byte-parity-locked to the Python reference** (`ios/Tools/parity_check.py` + `SnapParityTests`):
+`CallsignSnap` (snap-or-abstain against live ADS-B traffic + the filed flight plan; false callsign
+attributions 13.7% → 2.0% on the gold set) and `SlotSnap` (runway/frequency verification against the
+airport's real runways and published frequencies). Grounding data flows through a provider chain —
+flight plan → curated/offline map data → live position → **OurAirports internet fallback** (the only
+source in LiveATC/demo mode). Diagrams, stage policies, and measured findings:
+[`python-legacy/docs/PIPELINE.md`](python-legacy/docs/PIPELINE.md); standing metrics:
+[`python-legacy/docs/RESULTS.md`](python-legacy/docs/RESULTS.md).
+
+Beyond the shared pipeline, the iOS app has grown a full **cockpit EFB**: a moving-map home screen
+with offline FAA VFR/IFR charts, airspace, tap-to-identify, search and on-map route editing; coded
+**approaches, SIDs and STARs** (FAA CIFP) drawn on the map and loadable into the plan; and a
+**voice-driven clearance loader** that hears an ATC clearance addressed to *your* aircraft ("N8925T,
+cleared direct BOSOX… cleared ILS runway 4 right") and offers a one-tap load — never firing on
+another aircraft. It ships through TestFlight as **CommSight**; the current architecture, feature
+set, and the 23-finding reliability/safety audit remediation are documented in
+[`ios/README.md`](ios/README.md), [`ios/PIPELINES.md`](ios/PIPELINES.md), and
+[`ios/REMEDIATION.md`](ios/REMEDIATION.md).
 
 ## Repository layout
 

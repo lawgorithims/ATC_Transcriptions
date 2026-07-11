@@ -7,14 +7,18 @@ context prompt → fine-tuned Whisper (CoreML / WhisperKit) → speaker diarizat
 correction — with no server. Universal: one binary for iPhone and iPad (iPad-first cockpit/EFB
 layout). Ships through TestFlight as **CommSight** (bundle `com.flycommsight.atctranscribe`).
 
-> **Status: shipping on TestFlight (build 11).** The whole pipeline runs on-device: the converted
-> Whisper models transcribe on the Apple Neural Engine (~12.5× real-time on an M-class device), the
-> LiveATC internet stream transcribes end-to-end, the optional two-tier correction layer refines each
-> transmission (a fast deterministic pass plus a background RAG context-fixer LLM, on the CPU), live
-> ADS-B traffic and a filed flight plan feed that corrector, callsigns are linked across a session,
-> and speakers are split onto their own lines. **115 unit tests + 7 UI tests pass** on the iOS
-> Simulator, and the engine + "performance check" run natively on the M4's real ANE. The lean
-> TestFlight build ships without the heavy models and downloads them on first launch.
+> **Status: shipping on TestFlight (build 40 in prep; 39 live).** The whole pipeline runs on-device:
+> the converted Whisper models transcribe on the Apple Neural Engine (~12.5× real-time on an M-class
+> device), the LiveATC internet stream transcribes end-to-end, the optional two-tier correction layer
+> refines each transmission (a fast deterministic pass plus a background RAG context-fixer LLM, on the
+> CPU), live ADS-B traffic and a filed flight plan feed that corrector, callsigns are linked across a
+> session, and speakers are labelled per line. The app is now a full cockpit EFB — a moving-map home
+> screen with offline FAA charts, coded approaches/SIDs/STARs, and a voice-driven clearance loader
+> (below). **438 unit tests + UI tests pass** on the iOS Simulator, and the engine + "performance
+> check" run natively on the M4's real ANE. A 2026-07 whole-app audit (23 findings) was fully
+> remediated + adversarially reviewed — see [`REMEDIATION.md`](REMEDIATION.md) and the Fragile
+> Regions table in [`PIPELINES.md`](PIPELINES.md). The lean TestFlight build ships without the heavy
+> models and downloads them on first launch.
 
 This folder is self-contained and intended to split out into its own repository.
 
@@ -28,7 +32,10 @@ This folder is self-contained and intended to split out into its own repository.
 | **Live ADS-B traffic** | Streams aircraft within **30 NM** of the airport from a public feed so the corrector can lock a mis-heard callsign onto a plane actually on frequency. **Fresh-only** — stale contacts are dropped and never injected. Off by default (network + battery opt-in). |
 | **Callsign linking** | Each transmission is tagged with its callsign; tap the chip to **filter the transcript to that one aircraft's conversation**. A green ✈ marks a callsign currently in range on the live ADS-B feed. |
 | **Electronic Flight Bag** | File a ForeFlight-style flight plan (paste a route and it parses), shown as a colour-coded route; it's packed into the AI fixer's context so your own callsign/airports/waypoints are recognised. A plan over a week old is flagged stale. |
-| **Speaker diarization** | Splits a merged transmission and puts each speaker (controller vs aircraft) on its own colour-coded line. |
+| **Moving-map home screen** | The app opens straight to an MKMapView chart with the live transcript, flight plan, and status as **draggable/resizable/pinnable floating cards** over it. Base layers switch between VFR sectional, IFR-low, standard, and satellite (offline-cached FAA charts — download by route or the whole lower-48), with Class B/C/D airspace, nearby navaids, and live traffic overlaid. **Tap any object** (airport/VOR/fix/airspace) to identify it; **search** by id or name; **long-press** to drop a waypoint; edit the route on the map. |
+| **Coded procedures (CIFP)** | FAA coded **approaches, SIDs, and STARs** (from the bundled `cifp.sqlite`) draw as georeferenced overlays and load into the flight plan. They also **ground the corrector** — a heard procedure/fix is verified against what the airport actually publishes. |
+| **Voice-driven clearance loader (EFB command interpreter)** | CommSight interprets a controller clearance addressed to **your own aircraft** — "N8925T, cleared direct BOSOX", "…cleared ILS runway 4 right", "…cleared via the SID/STAR" — and offers a **one-tap chip** to load it (direct-to a fix/airport, an approach for a runway, or a SID/STAR). Ownship-aware: it recognises your tail's ATC shorthands (`N8925T` / `8925T` / "Seneca 25T") but **never fires on another aircraft** mentioned on frequency, and never on a retracted/cancelled clearance. |
+| **Speaker labelling** | Each line carries one fused **speaker label** — "ATC" (→ the addressed aircraft) for a controller transmission, the callsign for a pilot — from a content-role + acoustic-cluster fusion. |
 | **Console UX** | Cockpit / Day / Night themes, a swipeable status·flight-plan·traffic notification carousel, a customizable sidebar (add/remove/reorder widgets), a one-tap low-power **standby**, **squelch** (auto noise-floor or manual), transcript sort + jump-to-newest, and a "performance check" self-test. All settings persist across launches. |
 | **Model management** | Lean build downloads models on first launch with a progress gate; Settings → Models re-downloads on demand. The AI fixer installs automatically alongside the speech model. |
 
@@ -339,8 +346,10 @@ The iOS Simulator has **no Apple Neural Engine** (CoreML silently falls back to 
 wrong place to validate the neural path. Testing is split accordingly:
 
 - **iOS Simulator** (`ATCTranscribe` scheme) — pure-logic XCTests (corrector, context, VAD, filters,
-  WER, `CallsignExtractor`, `FlightPlan`, ADS-B decode/freshness) + the `ConsoleUITests` that drive
-  every control. **115 unit tests + 7 UI tests**, headless via the Simulator.
+  WER, `CallsignExtractor`, `FlightPlan`, ADS-B decode/freshness, snap parity, EFB command parsing,
+  ownship matching, the audit-remediation regression suites) + the `ConsoleUITests` that drive every
+  control. **438 unit tests + UI tests**, headless via the Simulator. Deterministic-core behaviour is
+  additionally **byte-parity-locked** to the Python reference (`SnapParityTests` + `Tools/parity_check.py`).
 - **Native macOS, real ANE** (`ATCKitProbe`) — a command-line *probe* (not XCTest) that runs the
   engine + performance check on the Mac's actual Neural Engine: `bash Tools/probe.sh`. Measured
   **~12.5× real-time** on the M4 vs ~1× on the Simulator CPU.

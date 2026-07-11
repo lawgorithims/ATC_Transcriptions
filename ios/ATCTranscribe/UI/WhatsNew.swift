@@ -32,6 +32,22 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 40, version: "1.0", headline: "Approaches & SIDs on the map — and CommSight loads your clearance",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "point.topleft.down.to.point.bottomright.curvepath",
+                    title: "Coded approaches, SIDs & STARs on the chart",
+                    detail: "CommSight now draws real coded procedures — instrument approaches, departures (SIDs), and arrivals (STARs) — right on the map, and can load one into your flight plan. Tap a procedure on an airport to preview it, then load it so its fixes join your route. The same coded data also helps the transcript get procedure and fix names right."),
+                WhatsNewHighlight(
+                    icon: "text.bubble.fill",
+                    title: "It hears your clearance and offers to load it",
+                    detail: "When the controller gives YOUR aircraft a clearance — “November 8 9 2 5 Tango, cleared direct BOSOX,” “…cleared the ILS runway 4 right,” “…cleared the CIVET arrival” — a one-tap chip appears to load it (direct-to a fix or airport, an approach for a runway, or a SID/STAR). It recognises your tail’s shorthands (N8925T, 8925T, “Seneca 25T”) but only ever acts on a clearance to YOUR aircraft — never one it overhears to another plane, and never a cancelled one. File your callsign and aircraft type in the flight bag to use it; every load is a tap you confirm."),
+                WhatsNewHighlight(
+                    icon: "checkmark.shield.fill",
+                    title: "More dependable in the cockpit",
+                    detail: "A large reliability pass: CommSight now recovers on its own after Siri, a phone call, or unplugging a USB adapter interrupts the audio — instead of quietly going silent while still looking live. A garbled transmission is flagged rather than dropped without a trace, a constantly-noisy channel tells you to calibrate the squelch, and a correctly-heard handoff frequency is never “corrected” to a different one. Plus smoother map traffic and lower battery/heat."),
+            ]),
+        ReleaseNote(
             build: 39, version: "1.0", headline: "Your charts are the home screen",
             highlights: [
                 WhatsNewHighlight(
