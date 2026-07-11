@@ -637,7 +637,13 @@ final class AppModel: ObservableObject {
         // ATC prompt, which can't mislead.
         let cfg = airport.isEmpty ? nil : (try? AirportConfig.load(named: airport.lowercased()))
         let feedKey = cfg?.streams?.keys.sorted().first
-        let context = ATCContext(config: cfg, feedKey: feedKey)
+        // Nationwide CIFP grounding (fixes/ILS + the SlotSnap lookup) from the TYPED airport is limited to
+        // the internet feed, where the user explicitly names the facility for that stream. On an in-cockpit
+        // feed the typed field can be stale (feed + airport are independent persisted fields), so it must
+        // NOT drive deterministic SlotSnap edits on live audio from elsewhere — GPS-vicinity grounding for
+        // those feeds is the follow-up. Curated configs (KDFW/KJFK) still ground on any source, unchanged.
+        let groundIdent = (source == .liveFeed && !airport.isEmpty) ? airport : nil
+        let context = ATCContext(config: cfg, feedKey: feedKey, groundingIdent: groundIdent)
         // Seed the filed flight plan (Electronic Flight Bag) before the pipeline starts using the
         // context, so the first transmission's LLM correction already sees the pilot's own callsign,
         // airports, and route. Live edits afterward go through `pushFlightPlanContext`.

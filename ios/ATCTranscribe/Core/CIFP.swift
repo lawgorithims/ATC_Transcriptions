@@ -80,6 +80,18 @@ enum CIFP {
         return out
     }
 
+    /// Distinct navigation-fix idents referenced by an airport's coded procedures — the on-approach /
+    /// on-departure vocabulary ATC uses ("cleared direct BOSOX", "hold at CRLTN"). Excludes the
+    /// runway-threshold pseudo-fixes (RW*) that are leg endpoints, not spoken fixes. Grounds SlotSnap's
+    /// fix slot and the corrector's procedures block.
+    static func fixes(airport: String) -> [String] {
+        query("""
+              SELECT DISTINCT leg.fix FROM leg JOIN procedure ON leg.procedure_id = procedure.id
+              WHERE procedure.airport = ?1 AND leg.fix <> '' AND leg.fix NOT LIKE 'RW%'
+              ORDER BY leg.fix
+              """, airport) { text($0, 0) }
+    }
+
     /// Localizer/ILS records for an airport (frequency + course + position).
     static func ils(airport: String) -> [CIFPILS] {
         query("SELECT runway,ident,freq_mhz,course_mag,lat,lon FROM ils WHERE airport=?1", airport) { st in
