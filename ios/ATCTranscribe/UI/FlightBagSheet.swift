@@ -17,6 +17,9 @@ struct FlightBagSheet: View {
     @State private var alternate = ""
     @State private var routeText = ""
     @State private var paste = ""
+    // Garmin .fpl of the SAVED plan for the ShareLink; regenerated whenever the saved plan changes
+    // (the share reflects the last-saved plan, not unsaved edits in the fields above).
+    @State private var fplURL: URL?
 
     private var hasInput: Bool {
         ![aircraftType, callsign, departure, destination, alternate, routeText]
@@ -57,6 +60,8 @@ struct FlightBagSheet: View {
                             labeled("Route", "waypoints & airways", $routeText)
                         }
                     }
+
+                    if model.foreflightEnabled { foreflightCard(p) }
 
                     Card(title: "Used by") {
                         VStack(alignment: .leading, spacing: 8) {
@@ -110,7 +115,45 @@ struct FlightBagSheet: View {
         .tint(p.accent)
         .preferredColorScheme(model.theme == .day ? .light : .dark)
         .onAppear(perform: loadFromModel)
+        .task(id: model.flightPlan) { fplURL = await model.writeFPLFile() }   // keep the .fpl share fresh
     }
+
+    /// ForeFlight hand-off card: one-tap send of the SAVED plan via the offline URL scheme, plus a
+    /// Garmin .fpl share ("Copy to ForeFlight") as the file-based fallback. The send button needs
+    /// ForeFlight installed; the .fpl share works with any app that accepts flight-plan files.
+    private func foreflightCard(_ p: Palette) -> some View {
+        Card(title: "ForeFlight") {
+            VStack(alignment: .leading, spacing: 10) {
+                Button { model.openInForeFlight() } label: {
+                    Label("Send to ForeFlight", systemImage: "paperplane.fill")
+                        .font(.caption.weight(.semibold))
+                        .frame(maxWidth: .infinity).padding(.vertical, 9)
+                        .background(canSendToForeFlight ? p.accent : p.surfaceAlt)
+                        .foregroundStyle(canSendToForeFlight ? p.bg : p.textDim)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+                .buttonStyle(.plain).disabled(!canSendToForeFlight)
+                .accessibilityIdentifier("flight-bag-foreflight")
+                if let fplURL {
+                    ShareLink(item: fplURL) {
+                        Label("Share .fpl file", systemImage: "square.and.arrow.up")
+                            .font(.caption.weight(.semibold))
+                            .frame(maxWidth: .infinity).padding(.vertical, 9)
+                            .background(p.surfaceAlt).foregroundStyle(p.text)
+                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(p.border, lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("flight-bag-share-fpl")
+                }
+                Text("Loads the saved route onto ForeFlight's map — works offline (no cell or internet needed). Loaded departures and arrivals are sent as their individual fixes; approaches are not sent (load those in ForeFlight's own procedure advisor). The .fpl file can be shared to ForeFlight or any EFB that imports Garmin flight plans.")
+                    .font(.caption2).foregroundStyle(p.textDim)
+            }
+        }
+    }
+
+    /// The saved plan must exist and ForeFlight must be installed for the one-tap send.
+    private var canSendToForeFlight: Bool { model.flightPlan != nil && model.foreflightInstalled }
 
     private var canParse: Bool { !paste.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 

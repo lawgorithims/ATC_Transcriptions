@@ -250,6 +250,20 @@ final class AppModel: ObservableObject {
     @Published var efbSuggestionsEnabled = (UserDefaults.standard.object(forKey: "atc.efbSuggestions") as? Bool) ?? true {
         didSet { UserDefaults.standard.set(efbSuggestionsEnabled, forKey: "atc.efbSuggestions") }
     }
+    // ForeFlight hand-off: send the amended plan to ForeFlight via its offline URL scheme (and a
+    // Garmin .fpl share from the flight bag). `foreflightEnabled` is the pilot's master switch;
+    // `foreflightInstalled` re-probes the scheme on each read so installing/removing ForeFlight
+    // mid-session is picked up on the next render (the query is a cheap LaunchServices lookup) —
+    // iOS reports installed-or-not only (never whether ForeFlight is RUNNING), and the probe
+    // requires the LSApplicationQueriesSchemes entry in Info.plist.
+    @Published var foreflightEnabled = (UserDefaults.standard.object(forKey: "atc.foreflight") as? Bool) ?? true {
+        didSet { UserDefaults.standard.set(foreflightEnabled, forKey: "atc.foreflight") }
+    }
+    var foreflightInstalled: Bool {
+        URL(string: ForeFlightExport.scheme + "://").map { UIApplication.shared.canOpenURL($0) } ?? false
+    }
+    /// True when the EFB chip should offer the one-tap "Accept ➔ ForeFlight" action.
+    var offersForeFlight: Bool { foreflightEnabled && foreflightInstalled }
     private var lastEFBRecordID: UUID?
     private var efbCancellable: AnyCancellable?
     /// Cached EFB command grounding (fixes/airports/SIDs/STARs), keyed on the (airport ident, plan)
@@ -1131,6 +1145,54 @@ final class AppModel: ObservableObject {
 
     /// Discard the pending suggestion without acting.
     func dismissEFBSuggestion() { efbSuggestion = nil }
+
+    // MARK: ForeFlight hand-off (offline URL scheme + .fpl share)
+
+    /// Accept the pending suggestion AND hand the amended plan to ForeFlight (the chip's one-tap
+    /// "Accept ➔ ForeFlight" action). The hand-off fires only when accepting actually CHANGED the
+    /// plan — a SID/STAR/approach accept silently no-ops when no CIFP procedure matches at the
+    /// active airport, and switching the pilot into ForeFlight then would misrepresent the
+    /// clearance as loaded. Falls back to a plain accept when the integration is off.
+    func acceptEFBSuggestionSendingToForeFlight() {
+        guard efbSuggestion != nil else { return }                        // state check (rule 7)
+        guard offersForeFlight else { acceptEFBSuggestion(); return }     // integration off → plain accept
+        let before = flightPlan
+        acceptEFBSuggestion()
+        guard ForeFlightExport.shouldHandoff(before: before, after: flightPlan) else { return }
+        // openInForeFlight can still decline (a changed plan can serialize to <2 tokens, e.g. a
+        // direct-to with no departure filed). The accept — this button's primary job — already
+        // happened; staying in-app is the correct quiet outcome for an unsendable route.
+        openInForeFlight()
+    }
+
+    /// Open ForeFlight with the current filed plan on its Maps view (offline app-to-app URL scheme;
+    /// no network involved). No-op when nothing is filed or the plan serializes to fewer than two
+    /// route tokens — a single point is not worth switching apps for.
+    func openInForeFlight() {
+        guard let plan = flightPlan, !plan.isEmpty else { return }        // state check (rule 7)
+        guard let url = ForeFlightExport.url(for: plan) else { return }
+        UIApplication.shared.open(url)                                    // backgrounds CommSight; capture
+    }                                                                     // pauses/resumes via handleScenePhase
+
+    /// Write the resolved plan as a Garmin `.fpl` in the temp directory for the share sheet
+    /// ("Copy to ForeFlight"), or nil when nothing is filed / nothing resolves. The export is the
+    /// SENDABLE plan (approach slot + orphaned procedures dropped — see
+    /// `ForeFlightExport.sendablePlan`). Resolution touches the nav DB + CIFP (SQLite), so it runs
+    /// off-main (a cold nav DB parses a few MB — same detached pattern as `prefetchRouteCharts`).
+    func writeFPLFile() async -> URL? {
+        guard let plan = flightPlan, !plan.isEmpty else { return nil }    // state check (rule 7)
+        let sendable = ForeFlightExport.sendablePlan(plan)
+        let name = [plan.departure, plan.destination].filter { !$0.isEmpty }.joined(separator: " ")
+        return await Task.detached(priority: .utility) {
+            _ = NavDatabase.count                                         // warm the nav DB off-main
+            let legs = ProcedureRoute.resolve(sendable)
+            let xml = ForeFlightExport.fplXML(for: legs, routeName: name.isEmpty ? "CommSight Route" : name)
+            guard !xml.isEmpty else { return nil }                        // unresolvable plan → no file
+            let dest = FileManager.default.temporaryDirectory.appendingPathComponent("CommSight Route.fpl")
+            do { try xml.write(to: dest, atomically: true, encoding: .utf8) } catch { return nil }
+            return dest
+        }.value
+    }
 
     /// Load the coded approach for `runway` at the active airport into the flight plan (EFB "cleared for
     /// the approach"). Picks the first IAP whose runway matches; no-op if none. Bounded lookup (rule 2).

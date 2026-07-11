@@ -99,6 +99,10 @@ targets:
         NSLocationWhenInUseUsageDescription: "CommSight shows your aircraft's position on the chart map using your device's GPS."
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
+        # ForeFlight hand-off: canOpenURL("foreflightmobile://…") only answers for schemes declared
+        # here (outbound app-to-app only — no CFBundleURLTypes / document types needed).
+        LSApplicationQueriesSchemes:
+          - foreflightmobile
         UIBackgroundModes:
           - audio
         UISupportedInterfaceOrientations:
