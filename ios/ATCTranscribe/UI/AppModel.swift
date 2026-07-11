@@ -893,9 +893,35 @@ final class AppModel: ObservableObject {
         guard ATCCommandParser.addressesOwnship(subject: latest.callsign,
                                                 subjectKey: latest.callsignKey,
                                                 own: plan.callsign) else { return }
-        guard let command = ATCCommandParser.parse(latest.normalizedDisplay, knownFixes: efbKnownFixes()) else { return }
+        guard let command = ATCCommandParser.parse(latest.normalizedDisplay, knownFixes: efbKnownFixes(),
+                                                   addressee: efbAddressee(for: latest)) else { return }
         assert(!command.target.isEmpty, "parser returned an empty target")
         efbSuggestion = EFBSuggestion.make(id: latest.id.uuidString, command: command, source: latest.display)
+    }
+
+    /// Ownship's positional-binding key: its own callsign as normalized spoken tokens plus the words that
+    /// begin ANY callsign. Lets the parser bind a clearance to ownship's segment when a single transmission
+    /// names several aircraft. nil (→ no positional binding) when the live knowledge base isn't available.
+    private func efbAddressee(for record: TranscriptRecord) -> ATCCommandParser.Addressee? {
+        guard let knowledge = liveContext?.knowledge else { return nil }
+        let code = record.callsignKey ?? record.callsign ?? ""
+        guard !code.isEmpty else { return nil }
+        let spoken = ATCContext.spokenCallsign(code, knowledge: knowledge)
+        guard !spoken.isEmpty else { return nil }
+        let ownTokens = ATCNormalize.normalize(spoken).split(separator: " ").map(String.init)
+        guard !ownTokens.isEmpty, ownTokens.count <= ATCCommandParser.maxCallsignTokens else { return nil }
+        return ATCCommandParser.Addressee(ownshipTokens: ownTokens, callsignStarts: efbCallsignStarts(knowledge))
+    }
+
+    /// The words that begin a callsign — airline telephony first-words + "november" + GA type words. Used
+    /// to detect where each aircraft is addressed. Statically capped (rule 2).
+    private func efbCallsignStarts(_ knowledge: ATCKnowledgeBase) -> Set<String> {
+        var starts: Set<String> = ["november"]
+        for name in knowledge.airlineTelephony.values.prefix(8192) {
+            if let head = name.lowercased().split(separator: " ").first { starts.insert(String(head)) }
+        }
+        for word in SlotSnap.gaCallsignWords.prefix(256) { starts.insert(word) }
+        return starts
     }
 
     /// The grounded fix idents a direct-to suggestion may target: the active airport's coded-procedure
