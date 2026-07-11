@@ -67,7 +67,19 @@ final class CoreMLSpeakerEmbedderTests: XCTestCase {
         let model = SpeakerModel()   // no embedder → MFCC backend + MFCC-scale thresholds
         XCTAssertEqual(model.newSpeakerDist, 0.05, accuracy: 1e-6)
         XCTAssertEqual(model.mergeDist, 0.03, accuracy: 1e-6)
+        XCTAssertEqual(model.fillMatchMax, SpeakerModel.mfccFillMax, accuracy: 1e-6)
         XCTAssertEqual(model.fingerprint([Float](repeating: 0.1, count: 16_000)).count, 13)
+    }
+
+    /// Red-team fix: a 13-dim MFCC fallback vs a 192-dim ECAPA centroid must NOT be compared over a
+    /// truncated window (which would let a mismatched fingerprint merge into / corrupt a centroid of the
+    /// other backend). The cosine reads as MAX dissimilarity (1) regardless of order — no crash/OOB.
+    func testMismatchedFingerprintDimensionsReadAsDissimilar() {
+        let model = SpeakerModel()
+        let mfccLike = [Float](repeating: 0.2, count: 13)
+        let ecapaLike = [Float](repeating: 0.2, count: 192)
+        XCTAssertEqual(model.dist(mfccLike, ecapaLike), 1, accuracy: 1e-6)
+        XCTAssertEqual(model.dist(ecapaLike, mfccLike), 1, accuracy: 1e-6)
     }
 
     func testSpeakerModelUsesECAPABackendWhenGiven() throws {

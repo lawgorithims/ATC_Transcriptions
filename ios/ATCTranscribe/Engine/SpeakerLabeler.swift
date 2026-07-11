@@ -27,7 +27,12 @@ final class SpeakerLabeler {
     // Conservative fill-guard thresholds (used only when `acousticFillEnabled`; see the shadow log).
     static let minConfidentMembers = 4      // a cluster needs ≥ this many confident roles before it fills
     static let minControllerPurity = 0.75   // ≥ this share of confident members must be controller
-    static let maxFillDistance: Float = 0.03 // fill only from a tight (cosine) voice match
+    /// Cosine-distance ceiling for a fill — BACKEND-SCALED (set from `SpeakerModel.fillMatchMax` at
+    /// session build via `TranscriptionSession.setFillDistance`): ~0.03 for the MFCC fingerprint,
+    /// ~0.45 for ECAPA. Defaults to the MFCC scale so the fallback backend (ECAPA model missing) still
+    /// gates correctly. A single hardcoded 0.03 previously made the ECAPA fill path silently inert
+    /// (its ~0.51 same-speaker distances never satisfy 0.03).
+    var maxFillDistance: Float = SpeakerModel.mfccFillMax
 
     /// Speaker ids come from `SpeakerModel`, which caps at 6. The +2 is headroom so an out-of-range id
     /// is contained rather than crashing (it is then ignored by the guard).
@@ -111,7 +116,7 @@ final class SpeakerLabeler {
         let ownConfident = record.role == .controller || record.role == .pilot
         if acousticFillEnabled, !ownConfident, let spk = record.speaker, valid(spk),
            fillAffinity(for: spk) == .controller,
-           let d = record.speakerDistance, d < SpeakerLabeler.maxFillDistance {
+           let d = record.speakerDistance, d < maxFillDistance {
             affinity = .controller
         }
         let fused = SpeakerFusion.fuse(ownRole: record.role, affinity: affinity, callsign: record.callsign)

@@ -206,4 +206,45 @@ final class SpeakerFusionTests: XCTestCase {
         XCTAssertEqual(unk.speakerLabel, .unknown)
         XCTAssertEqual(unk.fusedFrom, .none)
     }
+
+    // MARK: - red-team fixes
+
+    private func matureUnknownFirst(distance: Float) -> [TranscriptRecord] {
+        [rec(.controller, speaker: 0, distance: distance),
+         rec(.unknown, speaker: 0, distance: distance),
+         rec(.controller, speaker: 0, distance: distance),
+         rec(.controller, speaker: 0, distance: distance),
+         rec(.controller, speaker: 0, distance: distance)]
+    }
+
+    func testEcapaScaleFillDistanceAllowsFill() {
+        // With the backend-scaled ECAPA fill distance (0.45), a tight ECAPA-scale match (~0.40) fills.
+        // The old hardcoded MFCC gate (0.03) made this impossible — the whole ECAPA fill path was inert.
+        let l = filler()
+        l.maxFillDistance = SpeakerModel.ecapaFillMax
+        let out = runSession(l, matureUnknownFirst(distance: 0.40))
+        XCTAssertEqual(out[1].speakerLabel, .atc)
+        XCTAssertEqual(out[1].fusedFrom, .acoustic)
+    }
+
+    func testMfccScaleGateRejectsEcapaDistance() {
+        // The default (MFCC) fill distance 0.03 correctly rejects an ECAPA-scale ~0.40 match → unknown.
+        let out = runSession(filler(), matureUnknownFirst(distance: 0.40))
+        XCTAssertEqual(out[1].speakerLabel, .unknown)
+        XCTAssertEqual(out[1].fusedFrom, FusedProvenance.none)
+    }
+
+    func testTogglingFillOffRetractsPriorAcousticLabels() {
+        // Reproduces TranscriptionSession.setAcousticFill(false)'s new re-fuse: after voice-filling an
+        // unknown line, disabling fill and re-fusing every record retracts it back to honest UNKNOWN.
+        let l = filler()
+        var out = runSession(l, matureUnknownFirst(distance: 0.01))
+        XCTAssertEqual(out[1].speakerLabel, .atc, "precondition: the line was voice-filled")
+
+        l.acousticFillEnabled = false
+        for i in out.indices { var u = out[i]; l.refuse(&u); out[i] = u }   // what refuseAll() does
+        XCTAssertEqual(out[1].speakerLabel, .unknown, "disabling fill retracts the voice-inferred label")
+        XCTAssertEqual(out[1].fusedFrom, FusedProvenance.none)
+        XCTAssertEqual(out[0].speakerLabel, .atc, "confident content lines are unaffected")
+    }
 }

@@ -19,7 +19,12 @@ import CoreML
 ///
 /// CODING STANDARD (NASA/JPL "Power of Ten"): fixed loop bounds, a preallocated input buffer, input
 /// validation with safe (nil) recovery, invariant asserts, no recursion, no function pointers.
-final class CoreMLSpeakerEmbedder {
+///
+/// `@unchecked Sendable`: built off the main actor (`Task.detached`) then handed to the `LivePipeline`
+/// actor, after which it is used SERIALLY inside that actor (the reused `input` buffer is only ever
+/// written on the actor). The only cross-domain event is the one-time construction handoff, with no
+/// concurrent access — so the unchecked promise holds.
+final class CoreMLSpeakerEmbedder: @unchecked Sendable {
     static let samples = 48_000   // fixed model input length = 3 s @ 16 kHz; Swift pads/crops to this
     static let dims = 192
     private static let minSamples = 400   // reject clips < ~25 ms (matches the offline embedder)
