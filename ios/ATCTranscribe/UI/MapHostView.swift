@@ -38,13 +38,19 @@ struct MapHostView: View {
                              procedure: procedureLegs,
                              showAirspace: model.showAirspace, showNearby: model.showNearby,
                              initialCenter: model.stratuxGPS?.coordinate,
-                             onVisibleRegion: { rect in Task { await store.ensureVisible(rect, layer: model.chartLayer) } },
+                             onVisibleRegion: { rect in
+                                 // Remember where the user settled so a thermal rebuild restores it (M7);
+                                 // the settle hook is already debounced (0.4 s) in the coordinator.
+                                 model.lastMapCamera = SavedMapCamera(rect: rect, now: Date())
+                                 Task { await store.ensureVisible(rect, layer: model.chartLayer) }
+                             },
                              onTapObjects: { objs in
                                  guard !objs.isEmpty else { return }
                                  Haptics.impact(.light)
                                  widgets.mapProbe = MapProbeResult(id: UUID().uuidString, objects: objs)
                              },
                              focus: model.mapFocus,
+                             restoreCamera: model.lastMapCamera,
                              model: model)
             } else {
                 model.palette.bg

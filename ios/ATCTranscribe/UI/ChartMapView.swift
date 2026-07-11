@@ -122,6 +122,37 @@ struct ChartCatalog: Decodable {
     static let url = URL(string: "\(base)/index.json")!
 }
 
+/// The map camera the user last settled on (M7): plain doubles + a timestamp, held transiently on
+/// AppModel so a thermal teardown/rebuild of the whole `ChartMapView` restores the pilot's pan/zoom
+/// instead of snapping back to the default framing. Deliberately NOT persisted — a fresh launch
+/// should frame the route, and a stale (30 min+) camera is discarded.
+struct SavedMapCamera: Equatable {
+    let centerLat, centerLon, latDelta, lonDelta: Double
+    let savedAt: Date
+
+    init(rect: MKMapRect, now: Date) {
+        let region = MKCoordinateRegion(rect)
+        centerLat = region.center.latitude
+        centerLon = region.center.longitude
+        latDelta = region.span.latitudeDelta
+        lonDelta = region.span.longitudeDelta
+        savedAt = now
+    }
+
+    var region: MKCoordinateRegion {
+        MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: centerLat, longitude: centerLon),
+                           span: MKCoordinateSpan(latitudeDelta: latDelta, longitudeDelta: lonDelta))
+    }
+
+    /// A saved camera is restorable only within `maxAge` (30 min) of being set — a rebuild moments
+    /// after a thermal blip restores; returning to a hours-old session re-frames the route instead.
+    static let maxAge: TimeInterval = 30 * 60
+    static func cameraIsFresh(savedAt: Date, now: Date) -> Bool {
+        let age = now.timeIntervalSince(savedAt)
+        return age >= 0 && age < maxAge
+    }
+}
+
 /// A selectable base layer. `standard`/`satellite` are Apple's base map; the FAA layers are our
 /// self-hosted raster charts (packs downloaded on demand from HuggingFace, then offline).
 enum ChartLayer: String, CaseIterable, Identifiable {
@@ -298,6 +329,7 @@ struct ChartMapView: UIViewRepresentable {
     let onVisibleRegion: (MKMapRect) -> Void
     let onTapObjects: ([IdentifiedObject]) -> Void   // tap / long-press → ranked objects there (empty = nothing)
     let focus: Coord?                                // recenter here when it changes (search result)
+    var restoreCamera: SavedMapCamera? = nil         // M7: re-frame to the user's last pan/zoom after a thermal rebuild
     @ObservedObject var model: AppModel
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -389,7 +421,13 @@ struct ChartMapView: UIViewRepresentable {
         }
 
         if !c.didFrame {
-            if route.count >= 2 {
+            // M7: after a thermal teardown rebuilt this view, restore the user's last pan/zoom FIRST
+            // (a fresh launch has no saved camera → falls through to route/launch framing; a stale
+            // one is discarded so an hours-later return re-frames the route).
+            if let cam = restoreCamera, SavedMapCamera.cameraIsFresh(savedAt: cam.savedAt, now: Date()) {
+                mv.setRegion(cam.region, animated: false)
+                c.didFrame = true
+            } else if route.count >= 2 {
                 let coords = route.map { $0.coord.clCoordinate }
                 var region = MKCoordinateRegion(MKPolyline(coordinates: coords, count: coords.count).boundingMapRect)
                 region.span.latitudeDelta = min(region.span.latitudeDelta * 1.3 + 0.1, 4.5)
