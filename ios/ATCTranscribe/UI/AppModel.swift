@@ -1715,7 +1715,15 @@ final class AppModel: ObservableObject {
             surfaceInitialLoadProblem(active: active,
                 reason: "\(ModelCatalog.shortLabel(forID: active)) is taking too long to load — it may be too large for this device.")
         }
+        let predecessor = loadTask   // chain anchor: a (possibly still-compiling) superseded load
         loadTask = Task {
+            // Serialize CoreML compiles: cancellation cannot interrupt an in-flight WhisperKit
+            // compile, so wait for the superseded load to actually RETURN before starting ours —
+            // two multi-GB compiles resident at once can OOM-kill the app. The chain is strictly
+            // linear (each task awaits only its immediate predecessor): no cycle, no deadlock; the
+            // predecessor's own generation guard makes it bail promptly once its compile returns.
+            if let predecessor { await predecessor.value }
+            guard modelSwapGeneration == gen else { return }   // superseded while we queued
             let ok = await setupLive(models: models, active: active, audioDir: audioDir,
                                      cpuOnly: storedCPUOnly, autostart: autostart, generation: gen)
             guard modelSwapGeneration == gen else { return }
@@ -1763,7 +1771,10 @@ final class AppModel: ObservableObject {
     private func cancelModelLoad(detail newDetail: String) {
         modelSwapGeneration += 1
         watchdogTask?.cancel(); watchdogTask = nil
-        loadTask?.cancel(); loadTask = nil
+        // Cancel but KEEP the reference: the next switch chains on `loadTask` to serialize CoreML
+        // compiles — nil-ing it here would let that switch compile while the abandoned (cancelled
+        // but non-interruptible) compile is still resident, re-opening the two-compiles OOM.
+        loadTask?.cancel()
         loadingModel = nil
         detail = newDetail
     }
@@ -1822,7 +1833,12 @@ final class AppModel: ObservableObject {
             detail = "\(ModelCatalog.shortLabel(forID: id)) is still loading — still using \(activeModelLabel). It’ll switch when ready, or pick another model."
         }
 
+        let predecessor = loadTask   // chain anchor: the (possibly still-compiling) superseded load
         loadTask = Task {
+            // Serialize CoreML compiles (see beginModelLoad): await the superseded load's actual
+            // return before starting this one, so two heavy compiles never coexist in memory.
+            if let predecessor { await predecessor.value }
+            guard modelSwapGeneration == gen else { return }   // superseded while we queued
             let ok = await setupLive(models: models, active: id, audioDir: audioDirPath,
                                      cpuOnly: storedCPUOnly, autostart: wasRunning,
                                      preserveHistory: true, generation: gen)

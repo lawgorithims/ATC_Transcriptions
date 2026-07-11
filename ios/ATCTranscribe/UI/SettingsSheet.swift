@@ -228,10 +228,13 @@ struct SettingsSheet: View {
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(p.border, lineWidth: 1))
         }
         .buttonStyle(.plain)
-        // Only the model that's actually compiling is inert; every OTHER button stays tappable so the
-        // user can change their mind mid-load — pick a different model (supersedes the load) or re-tap
-        // the still-running model (cancels the load). See AppModel.switchModel.
-        .disabled(!available || isLoading)
+        // Any in-flight compile locks the WHOLE picker: WhisperKit/CoreML compiles are heavy and
+        // non-interruptible, and stacking picks mid-compile risked two multi-GB models resident at
+        // once (OOM kill). This never wedges — `loadingModel` is cleared by the 30 s swap watchdog,
+        // the 60 s initial-load watchdog, both load-task completions, and cancelModelLoad — so the
+        // picker unlocks on its own even if a compile stalls. See AppModel.switchModel (task
+        // chaining) for the in-code serialization this backs up.
+        .disabled(!available || model.loadingModel != nil)
         .opacity(available ? 1 : 0.5)
     }
 

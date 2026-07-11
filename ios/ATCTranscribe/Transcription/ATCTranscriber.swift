@@ -74,6 +74,11 @@ actor ATCTranscriber: Transcribing {
     /// Load the converted CoreML model from a local folder. No network (`download: false`).
     /// Mirrors the model load in `ATCTranscriber.__init__`.
     func load() async throws {
+        // A superseded model switch cancels its load task, but cancellation cannot interrupt the
+        // WhisperKit/CoreML compile below once started — bail HERE so an already-superseded load
+        // never begins the multi-GB compile at all (the caller's generation guard handles the
+        // supersede-after-start case once the compile returns).
+        try Task.checkCancellation()
         let compute = cpuOnly
             ? ModelComputeOptions(melCompute: .cpuOnly, audioEncoderCompute: .cpuOnly, textDecoderCompute: .cpuOnly)
             : nil
