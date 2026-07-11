@@ -1116,7 +1116,7 @@ final class AppModel: ObservableObject {
     /// movement (a 1 Hz fix doesn't rescan the ~90k-ident nav table every tick) and epoch-guarded so a
     /// stale off-main resolve that lands late is dropped. Called on GPS movement, start, and stop.
     func syncGrounding(force: Bool = false) {
-        guard let session, isRunning, groundingSource?.isInCockpit == true,
+        guard session != nil, isRunning, groundingSource?.isInCockpit == true,
               let here = groundingCoordinate() else {
             // Not a running in-cockpit GPS session (or no fix yet) → drop any vicinity grounding so the
             // typed path (LiveATC) / no-grounding (replay / GPS-less) governs, and re-arm the dedup.
