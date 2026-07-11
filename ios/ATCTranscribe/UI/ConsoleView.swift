@@ -1073,8 +1073,15 @@ struct FloatingCanvas: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // Stable reference frame for the card drag/resize gestures (Issue 3). Measuring the drag
+            // in the card's OWN (.local) space fed back into `.position`, which moves that same space —
+            // an oscillation most visible when the finger is nearly still. This canvas space doesn't
+            // move, so the translation is the pure finger delta and the card tracks 1:1.
+            .coordinateSpace(.named(Self.dragSpace))
         }
     }
+
+    static let dragSpace = "floatingCanvas"
 
     @ViewBuilder private func widget(_ kind: FloatingWidgetKind) -> some View {
         switch kind {
