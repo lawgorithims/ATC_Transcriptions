@@ -19,6 +19,10 @@ struct EFBSuggestion: Identifiable, Equatable {
         case .clearedApproach:
             let kind = command.qualifier.isEmpty ? "approach" : command.qualifier
             return "Load " + kind + " runway " + command.target
+        case .loadSID:
+            return "Load " + command.target + " departure"
+        case .loadStar:
+            return "Load " + command.target + " arrival"
         }
     }
 
