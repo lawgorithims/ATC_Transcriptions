@@ -243,6 +243,11 @@ final class AppModel: ObservableObject {
     }
     private var lastEFBRecordID: UUID?
     private var efbCancellable: AnyCancellable?
+    /// Subscriptions mirroring the CURRENT session's published state into the UI. Torn down and
+    /// rebuilt on every model swap (L5 remediation): the old `.assign(to: &$…)` bindings were never
+    /// cancelled, so a swapped-out session's late `.stopped` publish clobbered the new session's
+    /// status. Cleared before rewiring in `setupLive`.
+    private var sessionCancellables: Set<AnyCancellable> = []
 
     /// A search result / programmatic selection: center the map on it and open its info panel.
     func selectMapObject(_ o: IdentifiedObject) {
@@ -266,8 +271,20 @@ final class AppModel: ObservableObject {
         didSet { UserDefaults.standard.set(mapBackgroundEnabled, forKey: "atc.map.background") }
     }
     /// True when the device is thermally stressed — the home map pauses so it never starves transcription.
-    /// Updated from `ProcessInfo.thermalStateDidChangeNotification` (observer installed in `init`).
+    /// Updated (with exit hysteresis) from `ProcessInfo.thermalStateDidChangeNotification` via
+    /// `applyThermal` — see there for why the exit is delayed.
     @Published var thermalSerious = ProcessInfo.processInfo.thermalState.rawValue >= ProcessInfo.ThermalState.serious.rawValue
+    /// The single pending "clear thermalSerious" timer (M7). A device hovering at the threshold used
+    /// to flip thermalSerious repeatedly, and each flip destroys + rebuilds the whole ChartMapView
+    /// (new Coordinator, refetched context, reset framing). Enter is immediate (protect transcription
+    /// now); exit waits out `thermalExitDwell` of sustained cooling, cancel-on-re-entry so exactly one
+    /// clear is ever pending.
+    private var thermalClearTask: Task<Void, Never>?
+    private static let thermalExitDwell: UInt64 = 60_000_000_000   // 60 s
+    /// The user's last settled map pan/zoom (M7). Set at the map's debounced settle rate, so it is
+    /// deliberately NOT `@Published` (it must not re-render the console) and NOT persisted (a fresh
+    /// launch frames the route). Read back only when the map rebuilds after a thermal blip.
+    var lastMapCamera: SavedMapCamera?
 
     /// The floating-widget layout + tapped-object probe live in their OWN store (not `@Published` here) so
     /// the several-per-second live-data storm on this model never re-renders the widget chrome — see
@@ -628,7 +645,7 @@ final class AppModel: ObservableObject {
         // Pause the live home map under thermal pressure so it never starves on-device transcription.
         NotificationCenter.default.addObserver(forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
             let hot = ProcessInfo.processInfo.thermalState.rawValue >= ProcessInfo.ThermalState.serious.rawValue
-            Task { @MainActor in self?.thermalSerious = hot }
+            Task { @MainActor in self?.applyThermal(serious: hot) }
         }
         evaluateWhatsNew()     // decide whether to greet this launch with the "What's new" popup
     }
@@ -752,15 +769,20 @@ final class AppModel: ObservableObject {
         self.session = nil
         self.feedKey = feedKey
         self.liveContext = context
-        session.$records.assign(to: &$records)   // mirror live session state into the UI
+        // Rewire the UI mirror to the NEW session. Tear the OLD subscriptions down FIRST (L5): the
+        // former `.assign(to: &$…)` bindings were never cancelled across a swap, so `oldSession.stop()`
+        // below (which publishes `.stopped`) clobbered the just-committed new session's status. The
+        // session is @MainActor, so a `.sink` delivers identically (including the initial replay).
+        sessionCancellables.removeAll()
+        session.$records.sink { [weak self] in self?.records = $0 }.store(in: &sessionCancellables)
         // Phase 4: interpret each finished transmission for a one-tap EFB suggestion (fires only on the
         // latest new record; the interpreter itself gates on controller-role + ownship, and only proposes).
         efbCancellable = session.$records.sink { [weak self] recs in self?.interpretForEFB(recs) }
-        session.$status.assign(to: &$status)
-        session.$stats.assign(to: &$stats)
-        session.$inputLevel.assign(to: &$inputLevel)
-        session.$transcribing.assign(to: &$transcribing)
-        session.$transcribeStartedAt.assign(to: &$transcribeStartedAt)
+        session.$status.sink { [weak self] in self?.status = $0 }.store(in: &sessionCancellables)
+        session.$stats.sink { [weak self] in self?.stats = $0 }.store(in: &sessionCancellables)
+        session.$inputLevel.sink { [weak self] in self?.inputLevel = $0 }.store(in: &sessionCancellables)
+        session.$transcribing.sink { [weak self] in self?.transcribing = $0 }.store(in: &sessionCancellables)
+        session.$transcribeStartedAt.sink { [weak self] in self?.transcribeStartedAt = $0 }.store(in: &sessionCancellables)
         // Match the fill-guard distance to the ACTUAL backend that loaded (ECAPA vs the MFCC fallback),
         // then apply the persisted toggle — order matters so a fill re-fuse uses the right scale.
         session.setFillDistance(ecapaActive ? SpeakerModel.ecapaFillMax : SpeakerModel.mfccFillMax)
@@ -1417,20 +1439,65 @@ final class AppModel: ObservableObject {
         // Microphone / USB capture needs an explicit permission grant first — without it
         // AVAudioEngine yields no input and the run just ends ("not activating").
         if source == .microphone || source == .usbAudio {
+            // Mark the request in flight and snapshot what it is FOR (M4). The dialog is async: a
+            // model swap (new session), a Stop, backgrounding, or a source re-pick can all happen
+            // while it sits open. `.starting` is otherwise unused; it is the currency token the
+            // completion re-checks so a stale grant can't start capture on changed state.
+            status = .starting
+            detail = "Waiting for microphone permission…"
+            let requested = source
             AVAudioApplication.requestRecordPermission { [weak self] granted in
                 Task { @MainActor in
                     guard let self else { return }
-                    if granted {
-                        self.beginCapture(session: session, resuming: resuming)
-                    } else {
+                    guard granted else {
                         self.status = .error
                         self.detail = "Microphone access denied. Enable it in Settings › CommSight › Microphone."
+                        return
                     }
+                    // Abort SILENTLY if anything moved under the dialog — the user's later action
+                    // (swap / Stop / background / re-pick) already put the app where it wants to be.
+                    guard Self.captureRequestStillCurrent(sessionMatches: self.session === session,
+                                                          status: self.status, sceneActive: self.scenePhaseActive,
+                                                          source: self.source, requested: requested) else { return }
+                    self.beginCapture(session: session, resuming: resuming)
                 }
             }
             return
         }
         beginCapture(session: session, resuming: resuming)
+    }
+
+    /// Pure currency predicate for a returning mic-permission grant (M4). Capture may proceed only
+    /// if the SAME session is still current, the request is still the in-flight `.starting` one, the
+    /// scene is active, and the source hasn't been re-picked. Pure + nonisolated so it is unit-tested
+    /// without the (untestable) system permission dialog.
+    nonisolated static func captureRequestStillCurrent(sessionMatches: Bool, status: SessionStatus,
+                                                       sceneActive: Bool, source: SourceKind,
+                                                       requested: SourceKind) -> Bool {
+        sessionMatches && status == .starting && sceneActive && source == requested
+    }
+
+    /// Apply a thermal-state change to `thermalSerious` with EXIT hysteresis (M7). Entering serious
+    /// is immediate — protect transcription now. Leaving waits out `thermalExitDwell` of sustained
+    /// cooling so a device oscillating at the threshold doesn't destroy + rebuild the map on every
+    /// flip; a cancellable single-flight task (cancelled on any re-entry) guarantees exactly one
+    /// pending clear, and it re-checks the LIVE thermal state at fire time.
+    private func applyThermal(serious: Bool) {
+        if serious {
+            thermalClearTask?.cancel(); thermalClearTask = nil
+            thermalSerious = true
+        } else {
+            guard thermalSerious, thermalClearTask == nil else { return }
+            thermalClearTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: Self.thermalExitDwell)
+                guard !Task.isCancelled, let self else { return }
+                // Re-check the live state — a re-entry during the dwell cancels this task, but guard
+                // anyway against a spurious clear if the device is still hot.
+                let stillHot = ProcessInfo.processInfo.thermalState.rawValue >= ProcessInfo.ThermalState.serious.rawValue
+                if !stillHot { self.thermalSerious = false }
+                self.thermalClearTask = nil
+            }
+        }
     }
 
     /// Build the chosen source and start the session. mic/USB failures are surfaced to `detail`.
@@ -1506,6 +1573,10 @@ final class AppModel: ObservableObject {
     }
 
     func stop() {
+        // Stop pressed WHILE the mic-permission dialog is open (status .starting, no run yet):
+        // session.stop() would no-op on a never-started session, leaving isRunning stuck true. Move
+        // to .stopped so the pending grant's currency check (status == .starting) aborts (M4).
+        if status == .starting { status = .stopped }
         // The session releases the audio session itself (on Stop and on a natural end); the demo
         // path never activated one, so nothing to release here.
         if let session { session.stop() } else { status = .stopped }
