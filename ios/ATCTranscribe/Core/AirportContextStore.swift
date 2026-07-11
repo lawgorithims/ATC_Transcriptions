@@ -206,16 +206,37 @@ struct AirportContextStore: Sendable {
         return result
     }
 
-    /// Airports around a position (Stratux GPS / device location / route leg), context-resolved.
-    /// Coordinates come from `NavDatabase` (kind 0 = airport) so the two bundles stay one source
-    /// of truth; context then resolves through the normal chain.
+    /// Airports around a position (Stratux GPS / device location / route leg), context-resolved and
+    /// NEAREST-FIRST. Thin wrapper over `nearbyRanked` (drops the per-airport distances).
     func nearby(lat: Double, lon: Double, radiusNm: Double = 30) async -> [AirportContextData] {
+        await nearbyRanked(lat: lat, lon: lon, radiusNm: radiusNm).map(\.data)
+    }
+
+    /// Vicinity airports NEAREST-FIRST, each paired with its distance (NM) from the query point — the
+    /// GPS-vicinity grounding resolver. The caller takes `.first` as the single HARD SlotSnap anchor
+    /// (nearest airport, optionally distance-gated to the terminal area) and the whole list as the SOFT
+    /// LLM/Whisper procedures union. Coordinates come from `NavDatabase` (kind 0 = airport) so the map
+    /// and the grounding stay one source of truth; each airport then resolves through the normal chain.
+    ///
+    /// Cost is bounded two ways so this can run on ownship movement without churn: the (square) nav-box
+    /// scan is trimmed to the circular `radiusNm` and to the `limit` NEAREST airports BEFORE the (slower)
+    /// per-airport chain resolution, so at most `limit` provider lookups run — not one per airport in view.
+    func nearbyRanked(lat: Double, lon: Double, radiusNm: Double = 30,
+                      limit: Int = 8) async -> [(data: AirportContextData, distanceNm: Double)] {
+        let center = Coord(lat: lat, lon: lon)
         let dLat = radiusNm / 60.0
         let dLon = radiusNm / (60.0 * max(0.2, cos(lat * .pi / 180)))
         let box = BBox(minLat: lat - dLat, minLon: lon - dLon, maxLat: lat + dLat, maxLon: lon + dLon)
-        var out: [AirportContextData] = []
-        for point in NavDatabase.nearby(box, types: [0], limit: 24) {
-            if let ctx = await airport(point.ident) { out.append(ctx) }
+        // Rank by true great-circle distance and keep only the nearest `limit` within the radius, so the
+        // chain (CIFP sqlite + curated file probe + bundled dict) is queried a bounded number of times.
+        let nearest = NavDatabase.nearby(box, types: [0], limit: 48)
+            .map { (point: $0, distanceNm: Geo.nmBetween(center, $0.coord)) }
+            .filter { $0.distanceNm <= radiusNm }
+            .sorted { $0.distanceNm < $1.distanceNm }
+            .prefix(limit)
+        var out: [(data: AirportContextData, distanceNm: Double)] = []
+        for entry in nearest {
+            if let ctx = await airport(entry.point.ident) { out.append((data: ctx, distanceNm: entry.distanceNm)) }
         }
         return out
     }

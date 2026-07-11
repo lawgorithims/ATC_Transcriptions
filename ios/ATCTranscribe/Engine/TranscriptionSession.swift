@@ -159,6 +159,19 @@ final class TranscriptionSession: ObservableObject {
         Task { await pipeline.clearTrafficContext(epoch: epoch) }
     }
 
+    /// Push the GPS-vicinity grounding (in-cockpit sources) into the live correction context: the nearest
+    /// airport grounds deterministic SlotSnap, the vicinity union feeds the LLM/Whisper procedures. Safe
+    /// while a run is active; takes effect on the next transmission.
+    func setGroundingAirports(hard: AirportContextData?, soft: [AirportContextData]) {
+        let pipeline = self.pipeline
+        Task { await pipeline.setGroundingAirports(hard: hard, soft: soft) }
+    }
+    /// Leave vicinity mode (LiveATC feed / replay / stop) — SlotSnap returns to the typed airport.
+    func clearGroundingAirports() {
+        let pipeline = self.pipeline
+        Task { await pipeline.clearGroundingAirports() }
+    }
+
     /// Apply a background-refinement outcome to the matching record (updates the `@Published`
     /// array element so the UI flips "refining…" → refined text). No-op if the record is gone.
     private func applyRefinement(id: UUID, outcome: RefinementOutcome) {

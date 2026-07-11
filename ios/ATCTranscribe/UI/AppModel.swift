@@ -15,6 +15,10 @@ enum SourceKind: String, CaseIterable, Identifiable {
     var needsLink: Bool { self == .liveFeed }
     /// Cockpit-audio sources from a Stratux receiver (audio sidecar + on-board ADS-B/GPS).
     var isStratux: Bool { self == .stratux }
+    /// In-cockpit live audio (mic / USB / Stratux) — grounds the corrector on the surrounding GPS
+    /// vicinity rather than the typed "Airport context" field (which the internet feed uses, and which
+    /// can be stale vs an in-cockpit feed). Replay has no location, so it grounds on neither.
+    var isInCockpit: Bool { self == .microphone || self == .usbAudio || self == .stratux }
 }
 
 /// The view-model the console binds to. In **live** mode (launched with `--model-dir`)
@@ -421,7 +425,14 @@ final class AppModel: ObservableObject {
     @Published var stratuxAudioPort = (UserDefaults.standard.object(forKey: "atc.stratuxAudioPort") as? Int) ?? 8090 {
         didSet { UserDefaults.standard.set(stratuxAudioPort, forKey: "atc.stratuxAudioPort") }
     }
-    @Published private(set) var stratuxGPS: StratuxGPS?
+    @Published private(set) var stratuxGPS: StratuxGPS? {
+        didSet {
+            // Ownship moved → re-resolve the GPS-vicinity corrector grounding (in-cockpit feeds only;
+            // `syncGrounding` dedups by distance so a ~1 Hz fix doesn't rescan the nav table every tick).
+            guard didFinishInit, stratuxGPS?.coordinate != oldValue?.coordinate else { return }
+            syncGrounding()
+        }
+    }
     @Published private(set) var stratuxStatus: StratuxStatus = .idle
     /// Built in `init` alongside `adsbService`.
     private var stratuxService: StratuxService!
@@ -456,6 +467,21 @@ final class AppModel: ObservableObject {
     private var liveContext: ATCContext?
     private var feedKey: String?
     private var liveMode = false
+
+    // GPS-vicinity corrector grounding (in-cockpit feeds). Resolves the surrounding airports off-main
+    // and pushes them to the running session as ownship moves — the analogue of the traffic push.
+    private let groundingStore = AirportContextStore()
+    /// The source of the RUNNING session (nil when stopped). Grounding follows what's actually
+    /// transcribing, NOT the picker — the picker can change mid-run without swapping the live source.
+    private var groundingSource: SourceKind?
+    /// Ownship position of the last resolve — the movement dedup anchor (nil re-arms a fresh resolve).
+    private var lastGroundingCenter: Coord?
+    /// Bumped on every resolve/clear so a stale off-main resolution that lands late is dropped.
+    private var groundingEpoch = 0
+    private static let vicinityRadiusNm: Double = 40       // SOFT LLM/Whisper union — the surrounding vicinity
+    private static let hardGroundingRadiusNm: Double = 15  // HARD SlotSnap — only the nearest airport, terminal-area
+    private static let vicinityAirportCap = 6              // airports fed into the soft union
+    private static let groundingRecomputeNm: Double = 2    // ownship movement before a re-scan
     private var storedCPUOnly = false
     private var modelDirs: [String: String] = [:]   // whisper variant id → on-disk model folder
     private var audioDirPath: String?               // demo clips dir, kept for model re-load on switch
@@ -656,8 +682,10 @@ final class AppModel: ObservableObject {
         // Nationwide CIFP grounding (fixes/ILS + the SlotSnap lookup) from the TYPED airport is limited to
         // the internet feed, where the user explicitly names the facility for that stream. On an in-cockpit
         // feed the typed field can be stale (feed + airport are independent persisted fields), so it must
-        // NOT drive deterministic SlotSnap edits on live audio from elsewhere — GPS-vicinity grounding for
-        // those feeds is the follow-up. Curated configs (KDFW/KJFK) still ground on any source, unchanged.
+        // NOT drive deterministic SlotSnap edits on live audio from elsewhere — those feeds instead ground
+        // DYNAMICALLY on the surrounding GPS vicinity, pushed live via `syncGrounding`/`setGroundingAirports`
+        // (NOT baked in here: GPS may not have a fix yet at build time, and the aircraft moves). Curated
+        // configs (KDFW/KJFK) still ground on any source, unchanged.
         let groundIdent = (source == .liveFeed && !airport.isEmpty) ? airport : nil
         let context = ATCContext(config: cfg, feedKey: feedKey, groundingIdent: groundIdent)
         // Seed the filed flight plan (Electronic Flight Bag) before the pipeline starts using the
@@ -1070,6 +1098,60 @@ final class AppModel: ObservableObject {
         airport.isEmpty ? nil : AirportCoordinates.coordinate(icao: airport)
     }
 
+    // MARK: GPS-vicinity grounding (in-cockpit feeds)
+
+    /// Ownship position for vicinity grounding: the Stratux GPS fix (from the always-on Stratux link,
+    /// so it's available for a mic/USB session too, not just the Stratux audio source). nil when there's
+    /// no usable fix. Device CLLocation is the natural follow-up here for a phone-mic-only cockpit setup.
+    private func groundingCoordinate() -> Coord? {
+        guard let gps = stratuxGPS, gps.hasFix else { return nil }
+        return gps.coordinate
+    }
+
+    /// Re-resolve the surrounding-vicinity corrector grounding and push it into the running session —
+    /// the in-cockpit analogue of `syncTraffic`. HARD (deterministic SlotSnap) grounds on the single
+    /// nearest airport within the terminal-area radius; SOFT (LLM/Whisper procedures union) spans the
+    /// whole vicinity. Only for a running in-cockpit (GPS) session; the LiveATC feed keeps its typed
+    /// airport and replay has no location, so both CLEAR any vicinity grounding here. Deduped by ownship
+    /// movement (a 1 Hz fix doesn't rescan the ~90k-ident nav table every tick) and epoch-guarded so a
+    /// stale off-main resolve that lands late is dropped. Called on GPS movement, start, and stop.
+    func syncGrounding(force: Bool = false) {
+        guard let session, isRunning, groundingSource?.isInCockpit == true,
+              let here = groundingCoordinate() else {
+            // Not a running in-cockpit GPS session (or no fix yet) → drop any vicinity grounding so the
+            // typed path (LiveATC) / no-grounding (replay / GPS-less) governs, and re-arm the dedup.
+            if lastGroundingCenter != nil {
+                lastGroundingCenter = nil
+                groundingEpoch += 1
+                session?.clearGroundingAirports()
+            }
+            return
+        }
+        // Only rescan once ownship has moved a meaningful distance (or on a forced resync at start).
+        if !force, let last = lastGroundingCenter, Geo.nmBetween(last, here) < Self.groundingRecomputeNm {
+            return
+        }
+        lastGroundingCenter = here
+        groundingEpoch += 1
+        let epoch = groundingEpoch
+        let store = groundingStore
+        // Resolve OFF the main actor — `nearbyRanked` scans the whole nav table + hits CIFP sqlite.
+        Task.detached(priority: .utility) {
+            let ranked = await store.nearbyRanked(lat: here.lat, lon: here.lon,
+                                                  radiusNm: Self.vicinityRadiusNm,
+                                                  limit: Self.vicinityAirportCap)
+            await MainActor.run { [weak self] in
+                guard let self, self.groundingEpoch == epoch else { return }   // a newer resolve/clear won
+                let soft = ranked.map(\.data)
+                // HARD grounding only when the nearest airport is close enough to be operationally
+                // relevant (terminal area) — beyond that we're en route and a deterministic runway/freq
+                // snap to an overflown field would only widen the false-snap surface. SOFT still spans all.
+                let hard = ranked.first.flatMap { $0.distanceNm <= Self.hardGroundingRadiusNm ? $0.data : nil }
+                self.session?.setGroundingAirports(hard: hard, soft: soft)
+            }
+        }
+    }
+
     /// The audio preprocessor preset for the CURRENT source: a lighter touch for the already-compressed
     /// internet feed, the aggressive radio cleanup for clean wideband sources (Stratux/mic/USB/replay).
     /// Measured on a live 8 kHz feed: the aggressive band-pass + spectral gate caused hallucinations +
@@ -1308,6 +1390,10 @@ final class AppModel: ObservableObject {
         sourceLabel = source.rawValue
         detail = "Transcribing."
         syncTraffic()   // a live session started → the session-coupled ADS-B poller may begin (Stratux is independent)
+        // Grounding follows the RUNNING source (settled here), not the picker. In-cockpit → resolve the
+        // GPS vicinity now if a fix is ready (else it lands on the next GPS tick); LiveATC/replay → clear.
+        groundingSource = source
+        syncGrounding(force: true)
     }
 
     func stop() {
@@ -1316,6 +1402,8 @@ final class AppModel: ObservableObject {
         if let session { session.stop() } else { status = .stopped }
         detail = "Stopped."
         syncTraffic()   // no live session → stop the session-coupled ADS-B poller (an enabled Stratux link keeps streaming)
+        groundingSource = nil
+        syncGrounding()   // no running in-cockpit source → drop any vicinity grounding
     }
 
     /// Enter standby: stop capture and release the audio session so a quiet, unattended feed
