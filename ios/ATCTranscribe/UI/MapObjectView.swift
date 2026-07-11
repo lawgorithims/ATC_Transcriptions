@@ -13,6 +13,7 @@ struct MapObjectView: View {
 
     @State private var picked: IdentifiedObject?
     @State private var confirmDirect: IdentifiedObject?
+    @State private var plate: AirportProcedure?    // the FAA plate being viewed full-screen
 
     /// The object to detail: the pick, else the sole probe hit (a multi-hit probe shows the chooser).
     private var object: IdentifiedObject? { picked ?? (result.objects.count == 1 ? result.objects.first : nil) }
@@ -30,7 +31,16 @@ struct MapObjectView: View {
         } message: {
             Text("Sets \(confirmDirect?.ident ?? "") as your destination and clears intermediate waypoints. Present-position sequencing comes later.")
         }
+        // The full approach/departure plate opens over the whole screen (its own "tab"), with the
+        // frequencies, altitudes, minimums, and profile the coded waypoints can't show.
+        .fullScreenCover(item: $plate) { proc in
+            PlateViewer(procedure: proc, airport: plateAirport, palette: model.palette,
+                        onClose: { plate = nil })
+        }
     }
+
+    /// The airport ident whose plate is open (the detailed airport object).
+    private var plateAirport: String { object?.ident ?? "" }
 
     private func title(_ o: IdentifiedObject) -> String {
         if o.kind == .userPoint { return UserPoint.label(o.ident) }
@@ -94,10 +104,45 @@ struct MapObjectView: View {
                 }
             }
             infoSection(o)
+            if o.kind == .airport { platesSection(o.ident) }
             if o.kind == .airport { proceduresSection(o.ident) }
             actionSection(o)
         }
         .scrollContentBackground(.hidden)
+    }
+
+    /// The FAA terminal-procedure PLATES (the actual charts, from the bundled d-TPP index) — the
+    /// approach/departure/arrival PDFs with frequencies, altitudes, minimums, and profiles the coded
+    /// waypoints can't show. Tapping one opens the full plate. Grouped by category.
+    @ViewBuilder private func platesSection(_ ident: String) -> some View {
+        let p = model.palette
+        let plates = Procedures.forAirport(ident)
+        let groups: [(AirportProcedure.Category, String)] = [
+            (.approach, "Approach plates"), (.departure, "Departures (DPs)"),
+            (.arrival, "Arrivals (STARs)"), (.diagram, "Airport diagram"),
+        ]
+        ForEach(groups, id: \.0) { cat, heading in
+            let items = plates.filter { $0.category == cat }
+            if !items.isEmpty {
+                Section("\(heading) (\(items.count))") {
+                    ForEach(items) { proc in
+                        Button { Haptics.impact(.light); plate = proc } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: "doc.richtext").font(.caption).foregroundStyle(p.accent)
+                                Text(proc.name).font(.callout).foregroundStyle(p.text).lineLimit(1)
+                                Spacer(minLength: 4)
+                                if PlateStore.isCached(proc) {
+                                    Image(systemName: "arrow.down.circle.fill").font(.caption2).foregroundStyle(p.good)
+                                }
+                                Image(systemName: "chevron.right").font(.caption2).foregroundStyle(p.textDim)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("plate-row")
+                    }
+                }
+            }
+        }
     }
 
     /// Coded procedures (CIFP) for an airport, grouped by kind; tapping one draws it on the map as a
