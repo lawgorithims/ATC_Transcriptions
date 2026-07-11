@@ -165,4 +165,129 @@ final class ATCCommandParserTests: XCTestCase {
         XCTAssertNil(EFBSuggestion.make(id: "r1", command: ATCCommand(kind: .directTo, target: "", qualifier: ""), source: "x"),
                      "empty target → nil")
     }
+
+    // MARK: Phase 6 — direct-to airport + SID/STAR (grounded, conservative) + broadened approach
+
+    func testDirectToAirportGrounded() {
+        let cmd = ATCCommandParser.parse("american 1 2 3 cleared direct kpvd",
+                                         grounding: .init(airports: ["KPVD"]))
+        XCTAssertEqual(cmd, ATCCommand(kind: .directTo, target: "KPVD", qualifier: "airport"))
+    }
+
+    func testDirectToAirportAbstainsWhenNotGrounded() {
+        XCTAssertNil(ATCCommandParser.parse("cleared direct kxyz", grounding: .init(airports: ["KPVD"])),
+                     "an un-filed airport is not a grounded direct-to target")
+    }
+
+    func testSIDLoadFromClimbVia() {
+        let cmd = ATCCommandParser.parse("american 1 2 3 climb via the blazzer 6 departure",
+                                         grounding: .init(sids: ["BLZZR6"]))
+        XCTAssertEqual(cmd, ATCCommand(kind: .loadSID, target: "BLZZR6", qualifier: ""))
+    }
+
+    func testSTARLoadFromDescendVia() {
+        let cmd = ATCCommandParser.parse("descend via the robuc 3 arrival", grounding: .init(stars: ["ROBUC3"]))
+        XCTAssertEqual(cmd, ATCCommand(kind: .loadStar, target: "ROBUC3", qualifier: ""))
+    }
+
+    func testProcedureAbstainsOnExpect() {
+        XCTAssertNil(ATCCommandParser.parse("expect the blazzer 6 departure", grounding: .init(sids: ["BLZZR6"])),
+                     "'expect' is anticipatory → abstain")
+    }
+
+    func testProcedureAbstainsOnVersionMismatch() {
+        XCTAssertNil(ATCCommandParser.parse("climb via the blazzer 7 departure", grounding: .init(sids: ["BLZZR6"])),
+                     "version 7 ≠ ident version 6")
+    }
+
+    func testProcedureAbstainsOnGarbledBase() {
+        XCTAssertNil(ATCCommandParser.parse("climb via the zzzzz 6 departure", grounding: .init(sids: ["BLZZR6"])),
+                     "base consonants don't match the ident")
+    }
+
+    func testProcedureAbstainsWhenAmbiguous() {
+        // two DISTINCT idents both matching base+version → abstain (a wrong SID load is a real error).
+        XCTAssertNil(ATCCommandParser.parse("climb via the blazzer 6 departure",
+                                            grounding: .init(sids: ["BLZZR6", "BLZZER6"])))
+    }
+
+    func testConsonantSkeletonAndIdentSplit() {
+        XCTAssertEqual(ATCCommandParser.consonantSkeleton("Blazzer"), "BLZZR")
+        XCTAssertEqual(ATCCommandParser.consonantSkeleton("BLZZR"), "BLZZR")
+        let split = ATCCommandParser.identBaseVersion("OOSHN5")
+        XCTAssertEqual(split.base, "OOSHN")
+        XCTAssertEqual(split.version, "5")
+    }
+
+    func testBroadenedApproachTypes() {
+        XCTAssertEqual(ATCCommandParser.parse("cleared vor runway 2 2", grounding: .init())?.qualifier, "VOR")
+        XCTAssertEqual(ATCCommandParser.parse("cleared rnp runway 3 3 left", grounding: .init())?.qualifier, "RNP")
+    }
+
+    func testSuggestionTitlesForNewKinds() {
+        XCTAssertEqual(EFBSuggestion.title(for: ATCCommand(kind: .loadSID, target: "BLZZR6", qualifier: "")),
+                       "Load BLZZR6 departure")
+        XCTAssertEqual(EFBSuggestion.title(for: ATCCommand(kind: .loadStar, target: "ROBUC3", qualifier: "")),
+                       "Load ROBUC3 arrival")
+    }
+
+    // MARK: Phase 6 review fixes — retraction / trailing-negation / ambiguity / first-letter disambiguation
+
+    func testProcedureAbstainsOnRetraction() {
+        // controller self-corrects mid-transmission: the FIRST-named procedure is the RETRACTED one.
+        XCTAssertNil(ATCCommandParser.parse("descend via the blazzer 6 arrival disregard descend via the camron 4 arrival",
+                                            grounding: .init(stars: ["BLZZR6", "CAMRN4"])),
+                     "a 'disregard' anywhere → the whole transmission is unreliable → abstain")
+        XCTAssertNil(ATCCommandParser.parse("climb via the blazzer 6 departure correction fly runway heading",
+                                            grounding: .init(sids: ["BLZZR6"])),
+                     "'correction' retracts the named departure → abstain")
+    }
+
+    func testProcedureAbstainsOnNegationAfterName() {
+        // the negation follows the procedure NAME — the pre-fix parser only looked at the prefix.
+        XCTAssertNil(ATCCommandParser.parse("american 1 2 3 climb and maintain 5 0 0 0 the blazzer 6 departure is no longer in use",
+                                            grounding: .init(sids: ["BLZZR6"])),
+                     "'is no longer in use' after the name → abstain")
+        XCTAssertNil(ATCCommandParser.parse("fly heading 2 7 0 the blazzer 6 departure is not authorized",
+                                            grounding: .init(sids: ["BLZZR6"])),
+                     "'is not authorized' after the name → abstain")
+    }
+
+    func testProcedureStillFiresWithSoftTrailingClause() {
+        // a SOFT anticipatory word after the keyword ("when able direct …") must NOT suppress a valid load.
+        XCTAssertEqual(ATCCommandParser.parse("climb via the blazzer 6 departure when able direct bosox",
+                                              grounding: .init(fixes: ["BOSOX"], sids: ["BLZZR6"])),
+                       ATCCommand(kind: .loadSID, target: "BLZZR6", qualifier: ""))
+    }
+
+    func testProcedureAbstainsWhenTwoDistinctProceduresNamed() {
+        // two different, both-grounded procedures in one transmission (no retraction word) → ambiguous.
+        XCTAssertNil(ATCCommandParser.parse("descend via the blazzer 6 arrival then the camron 4 arrival",
+                                            grounding: .init(stars: ["BLZZR6", "CAMRN4"])),
+                     "two distinct named procedures → abstain rather than guess which")
+    }
+
+    func testProcedureFiresValidWhenALaterProcedureIsNegated() {
+        // the first procedure is validly cleared; a LATER one is declared unavailable → still load the first.
+        XCTAssertEqual(ATCCommandParser.parse("climb via the blazzer 6 departure the camron 4 departure is not in use",
+                                              grounding: .init(sids: ["BLZZR6", "CAMRN4"])),
+                       ATCCommand(kind: .loadSID, target: "BLZZR6", qualifier: ""),
+                       "a negated later procedure must not block the validly-cleared earlier one")
+    }
+
+    func testProcedureFirstLetterDisambiguatesVowelInitialTwins() {
+        // "aspen" and "espen" share a consonant skeleton (SPN); the first-letter check must keep them apart.
+        XCTAssertNil(ATCCommandParser.parse("climb via the aspen 2 departure", grounding: .init(sids: ["ESPEN2"])),
+                     "'aspen' must not load the ESPEN departure")
+        XCTAssertEqual(ATCCommandParser.parse("climb via the espen 2 departure", grounding: .init(sids: ["ESPEN2"])),
+                       ATCCommand(kind: .loadSID, target: "ESPEN2", qualifier: ""),
+                       "the correctly-spoken name still loads")
+    }
+
+    func testDirectToFourLetterTokenPrefersGroundedFix() {
+        // a 4-letter token is BOTH fix- and airport-shaped; when grounded as a FIX it emits a plain direct-to.
+        XCTAssertEqual(ATCCommandParser.parse("cleared direct kpvd", grounding: .init(fixes: ["KPVD"])),
+                       ATCCommand(kind: .directTo, target: "KPVD", qualifier: ""),
+                       "grounded as a fix → fix direct-to (qualifier empty), airport branch not reached")
+    }
 }

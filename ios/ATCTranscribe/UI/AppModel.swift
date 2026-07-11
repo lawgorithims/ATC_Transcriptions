@@ -921,7 +921,10 @@ final class AppModel: ObservableObject {
         guard ATCCommandParser.addressesOwnship(subject: latest.callsign,
                                                 subjectKey: latest.callsignKey,
                                                 own: plan.callsign) else { return }
-        guard let command = ATCCommandParser.parse(latest.normalizedDisplay, knownFixes: efbKnownFixes(),
+        let grounding = ATCCommandParser.Grounding(fixes: efbKnownFixes(), airports: efbKnownAirports(),
+                                                   sids: efbProcedureIdents(kind: "SID"),
+                                                   stars: efbProcedureIdents(kind: "STAR"))
+        guard let command = ATCCommandParser.parse(latest.normalizedDisplay, grounding: grounding,
                                                    addressee: efbAddressee(for: latest)) else { return }
         assert(!command.target.isEmpty, "parser returned an empty target")
         efbSuggestion = EFBSuggestion.make(id: latest.id.uuidString, command: command, source: latest.display)
@@ -963,8 +966,48 @@ final class AppModel: ObservableObject {
         if let plan = flightPlan {
             for leg in plan.fullRoute.prefix(256) { fixes.insert(leg.ident.uppercased()) }
         }
-        assert(fixes.count <= 4096, "known-fix set unexpectedly large")
+        // Real invariant (a checker cannot prove it): a malformed CIFP/route row yielding an empty ident
+        // would violate it. Empties are harmless downstream (isFixShaped rejects ""), so no defensive filter.
+        assert(fixes.allSatisfy { !$0.isEmpty }, "known fixes must be non-empty (malformed CIFP/route row?)")
         return fixes
+    }
+
+    /// Airport ICAO codes a direct-to-AIRPORT suggestion may target — the filed endpoints (departure /
+    /// destination / alternate). Bounded by the 3 fields. Uppercased.
+    private func efbKnownAirports() -> Set<String> {
+        var airports = Set<String>()
+        guard let plan = flightPlan else { return airports }
+        for icao in [plan.departure, plan.destination, plan.alternate] where !icao.isEmpty {
+            airports.insert(icao.uppercased())
+        }
+        return airports
+    }
+
+    /// The active airport's DISTINCT coded-procedure ARINC idents of `kind` ("SID"/"STAR") — the grounded
+    /// set a procedure-load suggestion must uniquely match. Bounded by the DB rows + a hard cap (rule 2).
+    private func efbProcedureIdents(kind: String) -> [String] {
+        let apt = liveContext?.airportIdent ?? (airport.isEmpty ? "" : airport)
+        guard !apt.isEmpty else { return [] }
+        var seen = Set<String>()
+        var idents: [String] = []
+        for proc in CIFP.procedures(airport: apt).prefix(2048) where proc.kind == kind {
+            if seen.insert(proc.ident).inserted { idents.append(proc.ident) }
+        }
+        // Real invariant (a checker cannot prove it): a malformed CIFP row with an empty ident would
+        // violate it. An empty ident never matches a spoken clearance, so it is harmless if it slips through.
+        assert(idents.allSatisfy { !$0.isEmpty }, "procedure idents must be non-empty (malformed CIFP row?)")
+        return idents
+    }
+
+    /// Load the coded procedure identified by (kind, ARINC ident) at the active airport (EFB SID/STAR
+    /// clearance). Picks the first matching procedure; no-op if none. Bounded lookup (rule 2).
+    private func loadProcedureByIdent(kind: String, ident: String) {
+        guard !ident.isEmpty else { return }
+        let apt = liveContext?.airportIdent ?? (airport.isEmpty ? "" : airport)
+        guard !apt.isEmpty else { return }
+        for proc in CIFP.procedures(airport: apt).prefix(2048) where proc.kind == kind && proc.ident == ident {
+            loadProcedure(proc); return
+        }
     }
 
     /// Apply the pending suggestion via existing, reversible mutators, then clear it. The kind switch is
@@ -975,6 +1018,8 @@ final class AppModel: ObservableObject {
         switch suggestion.command.kind {
         case .directTo:        directTo(suggestion.command.target)
         case .clearedApproach: loadApproachForRunway(suggestion.command.target)
+        case .loadSID:         loadProcedureByIdent(kind: "SID", ident: suggestion.command.target)
+        case .loadStar:        loadProcedureByIdent(kind: "STAR", ident: suggestion.command.target)
         }
         Haptics.impact(.medium)
         efbSuggestion = nil
