@@ -76,6 +76,20 @@ struct SettingsSheet: View {
                                 .font(.caption2).foregroundStyle(p.textDim.opacity(0.8))
                         }
                     }
+                    Card(title: "ForeFlight") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Toggle(isOn: $model.foreflightEnabled) {
+                                Text("ForeFlight hand-off").font(.caption).foregroundStyle(p.text)
+                            }
+                            .accessibilityIdentifier("foreflight-toggle")
+                            Text("Offer to load amended flight plans into ForeFlight — an “Accept ➔ ForeFlight” button on clearance suggestions and a send button in the flight bag. App-to-app on this device, so it works offline (no cell or internet needed). Loaded departures and arrivals are sent as their individual fixes; approaches are not sent (load those in ForeFlight itself). Review the route in ForeFlight before using it.")
+                                .font(.caption2).foregroundStyle(p.textDim)
+                            if !model.foreflightInstalled {
+                                Text("ForeFlight isn't installed on this device — the buttons stay hidden until it is.")
+                                    .font(.caption2).foregroundStyle(p.textDim.opacity(0.8))
+                            }
+                        }
+                    }
                     Card(title: "Offline charts") {
                         OfflineChartsControls()
                     }

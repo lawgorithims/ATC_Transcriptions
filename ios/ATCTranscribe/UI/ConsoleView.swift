@@ -170,6 +170,17 @@ struct ConsoleView: View {
                     .background(Capsule().fill(p.accent))
             }
             .buttonStyle(.plain).accessibilityIdentifier("efb-accept")
+            // One-tap hand-off: accept the amendment AND load the amended route into ForeFlight
+            // (offline URL scheme). Only offered when the integration is on and ForeFlight is
+            // installed; skipped when accepting turns out not to change the plan.
+            if model.offersForeFlight {
+                Button { model.acceptEFBSuggestionSendingToForeFlight() } label: {
+                    Text("Accept ➔ ForeFlight").font(.caption.weight(.bold)).foregroundStyle(.white)
+                        .padding(.horizontal, 12).padding(.vertical, 6)
+                        .background(Capsule().fill(p.accent))
+                }
+                .buttonStyle(.plain).accessibilityIdentifier("efb-accept-foreflight")
+            }
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
         .background(p.surface)
