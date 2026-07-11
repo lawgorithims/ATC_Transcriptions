@@ -32,6 +32,18 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 41, version: "1.0", headline: "Send your amended plan to ForeFlight — no internet needed",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "paperplane.fill",
+                    title: "Accept ➔ ForeFlight, one tap",
+                    detail: "When CommSight hears your clearance and you accept it, a new “Accept ➔ ForeFlight” button applies the amendment AND opens ForeFlight with the amended route on its map. It's app-to-app on your iPad, so it works with no cell signal and no internet — Stratux-only cockpits included. Loaded departures and arrivals are sent as their individual fixes; approaches aren't sent (load those in ForeFlight's procedure advisor). Always review the route in ForeFlight before using it."),
+                WhatsNewHighlight(
+                    icon: "briefcase.fill",
+                    title: "Send or share from the flight bag",
+                    detail: "The flight bag gets a ForeFlight card: send the saved route to ForeFlight any time, or share it as a Garmin .fpl file — “Copy to ForeFlight” imports it as a route, and the same file works with other EFBs that read Garmin flight plans. Turn the whole hand-off on or off in Settings → ForeFlight."),
+            ]),
+        ReleaseNote(
             build: 40, version: "1.0", headline: "Approaches & SIDs on the map — and CommSight loads your clearance",
             highlights: [
                 WhatsNewHighlight(
