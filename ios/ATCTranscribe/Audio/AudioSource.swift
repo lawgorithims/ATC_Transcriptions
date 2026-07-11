@@ -170,7 +170,21 @@ final class DeviceAudioSource: AudioSource {
             input.removeTap(onBus: 0)
             return "Microphone failed to start: \(error.localizedDescription)"
         }
-        lock.lock(); self.engine = engine; lock.unlock()
+        // Publish under a post-start CURRENCY re-check (adversarial-review fix): while this runs in
+        // the recovery task, self.engine is nil, so a racing stop() (MainActor) would take e=nil and
+        // tear nothing down — leaving this freshly-started engine capturing the mic after Stop /
+        // background (a hot-mic zombie). stop() nils `continuation` under the lock, so if it ran, we
+        // see it here and tear the new engine down instead of leaking it; otherwise stop() (if it
+        // comes later) sees the published engine and stops it. Either interleaving → no zombie.
+        lock.lock()
+        guard self.continuation != nil else {
+            lock.unlock()
+            engine.inputNode.removeTap(onBus: 0)
+            engine.stop()
+            return "Capture already stopped."
+        }
+        self.engine = engine
+        lock.unlock()
         return nil
     }
 
@@ -274,8 +288,18 @@ final class DeviceAudioSource: AudioSource {
             try? await Task.sleep(nanoseconds: 3_500_000_000)
             if Task.isCancelled { return }   // stopped before the first buffer — not a failure
             if buffersSeen.withLock({ $0 }) == 0 {
-                onFailure?("No audio from the microphone — it may be muted or used by another app.")
-                return
+                // No audio in the startup grace window. Only TERMINAL if we're not mid-interruption:
+                // a Siri/call interruption in the first ~3.5 s tears the engine down before the first
+                // buffer, so buffersSeen is legitimately 0 — the interruption path owns recovery
+                // (adversarial-review fix). Fall through to the liveness loop rather than a spurious
+                // terminal error that would leave status stuck at .error after .ended recovers.
+                let paused: Bool = { guard let self else { return false }
+                    self.lock.lock(); defer { self.lock.unlock() }
+                    return self.interrupted || self.recovery != nil }()
+                if !paused {
+                    onFailure?("No audio from the microphone — it may be muted or used by another app.")
+                    return
+                }
             }
             var previous = buffersSeen.withLock { $0 }
             for i in 0..<Self.maxLivenessChecks {   // bounded: 24 h of checks (rule 2)
