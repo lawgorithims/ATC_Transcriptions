@@ -143,6 +143,13 @@ actor LivePipeline {
     /// the network fallback must never run per-transmission.
     private let airportStore = AirportContextStore()
     private var airportCtxCache: (ident: String, data: AirportContextData?)?
+    /// GPS-vicinity grounding (in-cockpit sources: mic / USB / Stratux). When `vicinityGroundingActive`,
+    /// `process` grounds SlotSnap on `vicinityHard` ALONE — the single nearest airport (kept conservative:
+    /// unioning runways/frequencies across airports would widen the false-snap surface) — and ignores the
+    /// typed `context.airportIdent`, which on an in-cockpit feed is a stale/unrelated field. Pushed from
+    /// `setGroundingAirports`; the soft vicinity union rides the `ATCContext` procedures block instead.
+    private var vicinityGroundingActive = false
+    private var vicinityHard: AirportContextData?
     /// Last transmission per aircraft (callsignKey → display text): the instruction↔readback
     /// pairing that feeds the prompt's expected-readback slot. Bounded FIFO — ATC conversations
     /// are short-lived, and 24 aircraft comfortably covers a busy frequency.
@@ -230,7 +237,11 @@ actor LivePipeline {
         let telephony = CallsignSnap.telephonyWords(context.knowledge)
         let (csText, csResult) = CallsignSnap.snapTranscript(
             snapInput, candidates: csCandidates, telephony: telephony)
-        let airportCtx = await airportContext(for: context.airportIdent)
+        // In-cockpit (GPS) grounding uses the pushed nearest airport ALONE; otherwise the typed-ident
+        // provider-chain lookup (LiveATC feed / curated config), memoized per facility.
+        let airportCtx = vicinityGroundingActive
+            ? vicinityHard
+            : await airportContext(for: context.airportIdent)
         let (slotText, slotEdits) = SlotSnap.apply(csText, context: airportCtx,
                                                    telephony: telephony)
         // With NO candidate list every extracted callsign is trivially "unverified" —
@@ -457,4 +468,25 @@ actor LivePipeline {
         context.setTraffic(block: block, vocab: vocab, expiry: expiry, epoch: epoch)
     }
     func clearTrafficContext(epoch: Int) { context.clearTraffic(epoch: epoch) }
+
+    /// Push the GPS-vicinity grounding (in-cockpit sources), re-resolved as ownship moves. `hard` — the
+    /// single nearest airport, or nil when none is close enough / GPS isn't ready — grounds the
+    /// deterministic SlotSnap; `soft` — the whole vicinity set — feeds ONLY the LLM/Whisper procedures
+    /// union (built here so the union policy lives in one place). Enters vicinity mode, so SlotSnap stops
+    /// using the typed airport. Mirrors `setTrafficContext`/`setFlightPlanContext`; next-transmission effect.
+    func setGroundingAirports(hard: AirportContextData?, soft: [AirportContextData]) {
+        vicinityGroundingActive = true
+        vicinityHard = hard
+        airportCtxCache = nil                       // the typed-ident memo is irrelevant in vicinity mode
+        let (promptLine, block) = ATCContext.vicinityProcedures(soft)
+        context.setVicinityProcedures(promptLine: promptLine, block: block)
+    }
+
+    /// Leave vicinity mode and drop the vicinity grounding (LiveATC feed / replay / stop): SlotSnap
+    /// returns to the typed-ident path and the soft vicinity block is cleared.
+    func clearGroundingAirports() {
+        vicinityGroundingActive = false
+        vicinityHard = nil
+        context.setVicinityProcedures(promptLine: "", block: "")
+    }
 }

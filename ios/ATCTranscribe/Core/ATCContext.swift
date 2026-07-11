@@ -33,6 +33,17 @@ final class ATCContext {
     private var proceduresPromptLine = ""
     private var proceduresBlock = ""
 
+    // GPS-VICINITY procedures (in-cockpit sources: mic / USB / Stratux). Unlike the init-built
+    // `proceduresBlock` above — the single TYPED airport, used only on the internet LiveATC feed — this
+    // is pushed at RUNTIME by `LivePipeline.setGroundingAirports` as ownship moves, a union across the
+    // surrounding-vicinity airports (map + CIFP derived). When present it SUPERSEDES the typed
+    // procedures in BOTH the Whisper prompt and the LLM block (same category; the two paths are
+    // source-exclusive, so this only overlaps if a LiveFeed-built context is reused for an in-cockpit
+    // run — vicinity is the right answer there too). No freshness gate: it's static map data refreshed
+    // on movement, not the spoofable ADS-B traffic channel. Empty clears it (back to the typed path).
+    private var vicinityPromptLine = ""
+    private var vicinityBlock = ""
+
     // Live ADS-B traffic in range — a FRESHNESS-SELF-ENFORCING channel. The block is consumed only
     // while `Date() < trafficExpiry`, so a stalled/failed poller self-expires within the trust
     // window and stale aircraft can never leak into a prompt or the snap-vocab. `trafficEpoch` lets
@@ -87,6 +98,37 @@ final class ATCContext {
         return (prompt, parts.joined(separator: " "))
     }
 
+    /// Build the SOFT vicinity procedures grounding from the GPS-resolved nearby airports (nearest-first):
+    /// a capped Whisper "Fixes:" decode-bias line and an LLM block naming the vicinity airports + a UNION
+    /// of their runways, coded-procedure fixes, and ILS frequencies — the map-derived "complete picture"
+    /// the corrector grounds against in-cockpit. Purely additive to the prompt (informational, like the
+    /// single-airport `buildProcedures`); the deterministic SlotSnap still grounds only on the single
+    /// nearest airport (see `LivePipeline.setGroundingAirports`), so this wider soft union never widens
+    /// the hard-snap surface. Caps keep it inside the ~220-token prompt budget.
+    static func vicinityProcedures(_ airports: [AirportContextData]) -> (prompt: String, block: String) {
+        guard !airports.isEmpty else { return ("", "") }
+        let idents = orderedUnique(airports.map(\.ident))
+        let fixes = orderedUnique(airports.flatMap(\.fixes))
+        let runways = orderedUnique(airports.flatMap(\.runways))
+        let ils = Array(Set(airports.flatMap(\.navFrequencies))).sorted()
+        // Whisper decode bias — the nearest few fix names (nearest-first order is preserved by the union).
+        let prompt = fixes.isEmpty ? "" : "Fixes: " + fixes.prefix(12).joined(separator: ", ") + "."
+        var parts: [String] = ["Vicinity airports: " + idents.prefix(6).joined(separator: ", ") + "."]
+        if !runways.isEmpty { parts.append("Runways: " + runways.prefix(16).joined(separator: ", ") + ".") }
+        if !fixes.isEmpty { parts.append("Procedure fixes: " + fixes.prefix(30).joined(separator: ", ") + ".") }
+        if !ils.isEmpty {
+            parts.append("ILS frequencies: " + ils.map { String(format: "%.2f", $0) }.joined(separator: ", ") + ".")
+        }
+        return (prompt, parts.joined(separator: " "))
+    }
+
+    /// Order-preserving dedup (keeps nearest-first union order; drops empties). Used by `vicinityProcedures`.
+    private static func orderedUnique(_ xs: [String]) -> [String] {
+        var seen = Set<String>(); var out: [String] = []
+        for x in xs where !x.isEmpty && seen.insert(x).inserted { out.append(x) }
+        return out
+    }
+
     /// Build the static prefix and the canonical vocab (runways + fixes). Port of
     /// `ATCContext._build_static_prefix`.
     private static func buildStaticPrefix(config: AirportConfig, feedKey: String) -> (prefix: String, vocab: [String]) {
@@ -128,7 +170,9 @@ final class ATCContext {
     func buildPrompt() -> String {
         var sections: [String] = []
         if !staticPrefix.isEmpty { sections.append(staticPrefix) }
-        if !proceduresPromptLine.isEmpty { sections.append(proceduresPromptLine) }
+        // GPS-vicinity decode bias supersedes the typed one (source-exclusive; same category).
+        let procLine = vicinityPromptLine.isEmpty ? proceduresPromptLine : vicinityPromptLine
+        if !procLine.isEmpty { sections.append(procLine) }
         // BB1: bias the DECODE toward the aircraft actually on frequency right now (fresh ADS-B), in
         // SPOKEN form — the strongest lever for misheard callsigns, and stronger than post-correction
         // because it shifts the acoustic decode. Freshness-gated like the LLM traffic block (a stalled
@@ -227,8 +271,10 @@ final class ATCContext {
         // traffic (prepended after this). Informational only: deliberately NOT added to `ctx.vocab`, since
         // the deterministic SlotSnap fix slot already snaps fixes with anchor + stoplist guards, and a
         // large unanchored fix set in the snap-vocab would widen the false-positive surface.
-        if !proceduresBlock.isEmpty {
-            ctx.block = ctx.block.isEmpty ? proceduresBlock : proceduresBlock + "\n" + ctx.block
+        // GPS-vicinity block supersedes the typed one (source-exclusive; same category).
+        let procBlock = vicinityBlock.isEmpty ? proceduresBlock : vicinityBlock
+        if !procBlock.isEmpty {
+            ctx.block = ctx.block.isEmpty ? procBlock : procBlock + "\n" + ctx.block
         }
         // Order (top → bottom): own flight plan, then live traffic, then the retrieved RAG. The
         // traffic block is the LOAD-BEARING freshness gate: it's only injected while unexpired, so a
@@ -254,6 +300,14 @@ final class ATCContext {
     func setFlightPlan(block: String, vocab: [String]) {
         flightPlanBlock = block
         flightPlanVocab = vocab
+    }
+
+    /// Inject (or clear, with empty strings) the GPS-vicinity procedures grounding — the soft
+    /// LLM/Whisper union built by `vicinityProcedures`, pushed by `LivePipeline.setGroundingAirports`
+    /// as ownship moves. Supersedes the typed procedures while non-empty.
+    func setVicinityProcedures(promptLine: String, block: String) {
+        vicinityPromptLine = promptLine
+        vicinityBlock = block
     }
 
     /// Inject the fresh in-range ADS-B traffic block with an absolute read-site `expiry`. Stored
