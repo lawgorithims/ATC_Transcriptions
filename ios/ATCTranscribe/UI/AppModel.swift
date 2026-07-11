@@ -1485,7 +1485,10 @@ final class AppModel: ObservableObject {
         // the user can Stop → switch source → Start without rebuilding it, so re-pick the preset here so a
         // wideband source never keeps the internet feed's light preset (or vice-versa).
         session.setPreprocessor(livePreprocessor())
-        session.start(source: src, label: source.rawValue, clearHistory: !resuming)
+        session.start(source: src, label: source.rawValue, clearHistory: !resuming,
+                      // Transient pipeline notices (failed decode, runaway noise) → the detail
+                      // line, status stays .live (the Stratux onTrouble pattern).
+                      onTrouble: { [weak self] msg in Task { @MainActor in self?.detail = msg } })
         if !resuming { callsignFilter = nil }   // a fresh transcript replaces history → drop a stale filter
         sourceLabel = source.rawValue
         detail = "Transcribing."

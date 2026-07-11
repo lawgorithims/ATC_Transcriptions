@@ -188,6 +188,12 @@ struct LatencyCard: View {
                 StatCell(value: speed.map { String(format: "%.1f×", $0) } ?? "—",
                          key: "speed (real-time)",
                          color: speed.map { model.palette.speedColor(realtime: $0) })
+                // Silent loss made visible: transmissions whose decode threw (audio captured, no
+                // text). Rendered only when non-zero so the healthy grid is unchanged.
+                if model.stats.decodeFailures > 0 {
+                    StatCell(value: "\(model.stats.decodeFailures)", key: "decode failures",
+                             color: model.palette.warn)
+                }
             }
         }
     }

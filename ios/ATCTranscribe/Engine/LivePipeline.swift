@@ -106,12 +106,18 @@ struct LatencyStats: Sendable {
     private var transcribe: [Double] = []
     private var rtf: [Double] = []
 
+    /// Transmissions whose decode threw (audio was captured, no text was produced). Makes silent
+    /// loss visible: the diag card shows the count, so a gap in the transcript is explainable.
+    private(set) var decodeFailures = 0
+
     mutating func add(_ r: TranscriptRecord) {
         count += 1
         captureToText.append(r.captureToTextMs)
         transcribe.append(r.transcribeMs)
         rtf.append(r.realTimeFactor)
     }
+
+    mutating func addDecodeFailure() { decodeFailures += 1 }
 
     var captureToTextSummary: Summary? { Self.summarize(captureToText) }
     var transcribeSummary: Summary? { Self.summarize(transcribe) }
@@ -149,6 +155,12 @@ actor LivePipeline {
     private var refiner: LLMRefiner?
     /// Where refinement outcomes are delivered (set for the duration of `run`).
     private var onRefined: (@Sendable (UUID, RefinementOutcome) -> Void)?
+    /// Where transient trouble notices (failed decode, runaway noise) are delivered — set for the
+    /// duration of `run`, like `onRefined`. nil (tests, probe) drops them.
+    private var onTrouble: (@Sendable (String) -> Void)?
+    /// The decode-failure notice, a shared constant so the session can count EXACTLY these
+    /// (and not other trouble notices) into `LatencyStats.decodeFailures`.
+    static let decodeFailureNotice = "Decode failed — a transmission may have been lost."
     /// Confidence gate: decides whether a transmission is worth the LLM. When `gateEnabled` is
     /// false the LLM runs on every (≥1-word) transmission (the gate is bypassed).
     private var gate = ConfidenceGate()
@@ -225,7 +237,20 @@ actor LivePipeline {
         let audio = preprocessor?.preprocess(segment.audio) ?? segment.audio
 
         let t0 = Date()
-        let out = (try? await transcriber.transcribe(audio, context: prompt)) ?? .empty
+        let out: TranscriptionOutput
+        do {
+            out = try await transcriber.transcribe(audio, context: prompt)
+        } catch is CancellationError {
+            return nil          // user stop cancelled the in-flight decode — not a failure
+        } catch {
+            // Guard-and-recover: no fake record, no crash — but never SILENT. The transmission's
+            // audio was real; the user must know a line may be missing (the old `try? … ?? .empty`
+            // here swallowed every engine error and the transmission just vanished).
+            guard !Task.isCancelled else { return nil }
+            NSLog("[pipeline] transcribe failed: %@", String(describing: error))
+            onTrouble?(Self.decodeFailureNotice)
+            return nil
+        }
         let transcribeMs = Date().timeIntervalSince(t0) * 1000.0
 
         let text = out.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -381,12 +406,20 @@ actor LivePipeline {
     /// Drive a live source: chunks → VAD → `process`, delivering each record via `onRecord` and
     /// each later background-LLM refinement via `onRefined`. Runs until the source ends or
     /// `stop()`. Port of the run loop, plus the decoupled refinement fan-out.
+    ///
+    /// `onRecord` is ASYNC and awaited per record: the sequential awaits give FIFO delivery, and
+    /// `run()` cannot return until every record (including the flush drain below) has been fully
+    /// consumed — so a session's terminal status flip can never race ahead of the final line.
+    /// `onTrouble` carries transient, non-fatal notices (a failed decode, runaway noise) for the
+    /// UI's detail line; nil drops them.
     func run(source: AudioSource,
-             onRecord: @escaping @Sendable (TranscriptRecord) -> Void,
+             onRecord: @escaping @Sendable (TranscriptRecord) async -> Void,
              onRefined: @escaping @Sendable (UUID, RefinementOutcome) -> Void = { _, _ in },
              onLevel: (@Sendable (Float) -> Void)? = nil,
-             onActivity: (@Sendable (Bool) -> Void)? = nil) async {
+             onActivity: (@Sendable (Bool) -> Void)? = nil,
+             onTrouble: (@Sendable (String) -> Void)? = nil) async {
         self.onRefined = onRefined
+        self.onTrouble = onTrouble
         await refiner?.setOutcomeHandler(onRefined)
         running = true
         // Cheap input-level meter (source-agnostic: mic, USB, stream, replay). Quantize to the 7
@@ -401,6 +434,12 @@ actor LivePipeline {
             }
             for segment in segmenter.feed(chunk) {
                 await emit(segment, onRecord: onRecord, onActivity: onActivity)
+            }
+            // Runaway-noise notice (M1): the segmenter latches when the channel NEVER goes quiet
+            // (gapless max-cap segments) — the auto squelch can't gate a floor above its clamp, so
+            // tell the user the remedy instead of silently transcribing noise forever.
+            if segmenter.consumeRunawayNoise() {
+                onTrouble?("Constant noise on the input — the channel never goes quiet. Calibrate the squelch in Settings.")
             }
         }
         // Drain any turn the streaming path parked waiting for a next speaker that never came (and any
@@ -417,9 +456,9 @@ actor LivePipeline {
     /// AUTHORITY) splits it into per-speaker pieces — re-splitting even a streaming-tagged segment; a
     /// clean single-speaker cut returns one piece — and each is transcribed onto its own line. With it
     /// off, the whole segment is transcribed. `onActivity` brackets the (slow) transcribe so the UI can
-    /// show it's working on a transmission, not stalled.
+    /// show it's working on a transmission, not stalled. Each record delivery is AWAITED (see `run`).
     private func emit(_ segment: SpeechSegment,
-                      onRecord: @escaping @Sendable (TranscriptRecord) -> Void,
+                      onRecord: @escaping @Sendable (TranscriptRecord) async -> Void,
                       onActivity: (@Sendable (Bool) -> Void)?) async {
         onActivity?(true)
         if diarizationEnabled {
@@ -429,10 +468,10 @@ actor LivePipeline {
                                         streamEndS: startS + Double(piece.audio.count) / 16000.0,
                                         finalizedWallTime: segment.finalizedWallTime)
                 if let record = await process(sub, speaker: piece.speaker,
-                                              speakerDistance: piece.distance) { onRecord(record) }
+                                              speakerDistance: piece.distance) { await onRecord(record) }
             }
         } else if let record = await process(segment) {
-            onRecord(record)
+            await onRecord(record)
         }
         onActivity?(false)
     }

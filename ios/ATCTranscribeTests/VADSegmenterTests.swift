@@ -122,4 +122,46 @@ final class VADSegmenterTests: XCTestCase {
         let s = VADSegmenter(config: VADConfig(squelchAuto: false, squelchLevel: 0.0), now: { 0 })
         XCTAssertEqual(s.feed(frames(20, 0.03) + frames(23, 0.0)).count, 1)
     }
+
+    // MARK: - Runaway-noise detector (M1 remediation)
+    // A channel whose RMS sits above the auto-gate ceiling reads as speech FOREVER (gapless 8 s
+    // cap emissions). The detector latches after 3 consecutive gapless caps and only SURFACES —
+    // segments still emit; audio is never gated by detection. Default config: cap at 8 s = 267
+    // frames, so 810 loud frames produce exactly 3 gapless caps.
+
+    /// Default-config segmenter (the runaway math is tied to the shipped 8 s cap).
+    private func runawaySeg() -> VADSegmenter { VADSegmenter(config: VADConfig(), now: { 0 }) }
+
+    func testGaplessLoudRunawayLatchesAfterThreeCaps() {
+        let s = runawaySeg()
+        let out = s.feed(frames(810, 0.5))
+        XCTAssertEqual(out.count, 3, "detection must not gate audio — the cap segments still emit")
+        XCTAssertTrue(s.consumeRunawayNoise(), "3 gapless caps must latch the runaway notice")
+        XCTAssertFalse(s.consumeRunawayNoise(), "the latch is poll-and-clear")
+        _ = s.feed(frames(810, 0.5))
+        XCTAssertFalse(s.consumeRunawayNoise(), "one-shot: no re-nag until the squelch changes")
+    }
+
+    func testSingleCapDoesNotLatchRunaway() {
+        let s = runawaySeg()
+        _ = s.feed(frames(300, 0.5))    // one cap emit (267 frames) + open segment
+        XCTAssertFalse(s.consumeRunawayNoise(), "a single long transmission is not a runaway")
+    }
+
+    func testGapResetsRunawayCounter() {
+        let s = runawaySeg()
+        // Two gapless caps, ONE sub-gate frame (the gate provably works), two more caps.
+        _ = s.feed(frames(540, 0.5) + frames(1, 0.0) + frames(540, 0.5))
+        XCTAssertFalse(s.consumeRunawayNoise(),
+                       "a single quiet frame between caps proves the gate works — no runaway")
+    }
+
+    func testSetSquelchReArmsRunawayOneShot() {
+        let s = runawaySeg()
+        _ = s.feed(frames(810, 0.5))
+        XCTAssertTrue(s.consumeRunawayNoise())
+        s.setSquelch(auto: true, level: 0)      // the user acted — re-arm the one-shot
+        _ = s.feed(frames(810, 0.5))
+        XCTAssertTrue(s.consumeRunawayNoise(), "a squelch change re-arms the notice once more")
+    }
 }

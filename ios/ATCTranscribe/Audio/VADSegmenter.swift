@@ -115,6 +115,17 @@ final class VADSegmenter {
     private var onsetPreRoll: [[Float]] = []
     private var changeVerdictStreak = 0
 
+    // Runaway-noise detector (M1 remediation). Consecutive 8 s max-cap emissions with ZERO
+    // intervening sub-gate frames are the signature of a channel whose RMS sits above the
+    // auto-gate ceiling (maxNoiseFloor × noiseMargin ≈ 0.144): every frame reads as speech and
+    // the cap re-opens forever. Real speech always breaks on a PTT gap. Detection only SURFACES
+    // (one-shot latch the pipeline polls) — it never gates audio: silently discarding what might
+    // be a long readback storm would be worse than transcribing noise.
+    private var consecutiveCapEmits = 0
+    private static let runawayCapEmits = 3          // ~24 s of gapless "speech" before we say anything
+    private var runawayLatched = false
+    private var runawaySurfaced = false             // one nag per squelch configuration
+
     private let now: () -> Double
 
     init(config: VADConfig = VADConfig(),
@@ -171,6 +182,29 @@ final class VADSegmenter {
         squelchAuto = auto
         manualGate = calibratedGateRMS ?? Self.manualRMS(level)   // absolute calibrated gate wins over the slider
         if auto { noiseFloor = 0; floorSeeded = false }   // re-seed from the live channel on the next frame
+        // The user acted on the squelch — reset the runaway detector AND re-arm its one-shot, so
+        // if the new setting still can't gate the channel they get told once more.
+        consecutiveCapEmits = 0
+        runawayLatched = false
+        runawaySurfaced = false
+    }
+
+    /// Poll-and-clear the runaway-noise latch (LivePipeline calls this after each feed()). True at
+    /// most ONCE per squelch configuration — re-armed only by `setSquelch`.
+    func consumeRunawayNoise() -> Bool {
+        let hit = runawayLatched
+        runawayLatched = false
+        return hit
+    }
+
+    /// Count a max-cap segment emission toward the runaway signature; latch at the bound.
+    private func noteCapEmit() {
+        consecutiveCapEmits += 1
+        assert(consecutiveCapEmits <= Self.runawayCapEmits, "cap-emit counter must reset at its bound")
+        if consecutiveCapEmits >= Self.runawayCapEmits {
+            consecutiveCapEmits = 0
+            if !runawaySurfaced { runawaySurfaced = true; runawayLatched = true }
+        }
     }
 
     private func currentGate() -> Float {
@@ -248,6 +282,7 @@ final class VADSegmenter {
             let frameStartS = streamCursorS
             streamCursorS += Double(Self.frameSamples) / Double(Self.sampleRate)
             let sp = isSpeechFrame(frame)                    // side effect: updates the noise floor
+            if !sp { consecutiveCapEmits = 0 }               // ONE sub-gate frame proves the gate works
 
             if speakerAware {
                 streamingFrame(frame, sp: sp, frameStartS: frameStartS, into: &completed)
@@ -268,6 +303,7 @@ final class VADSegmenter {
                 if segmentFrames.reduce(0, { $0 + $1.count }) >= maxSegmentSamples {
                     let endS = streamCursorS
                     if let seg = finalize(endS: endS) { completed.append(seg) }
+                    noteCapEmit()                            // runaway signature: gapless cap emits
                     speechActive = true
                     segmentStartS = endS
                 }
@@ -337,6 +373,7 @@ final class VADSegmenter {
                 if sampleCount(segmentFrames) >= maxSegmentSamples {   // 8s cap
                     emitStreaming(segmentFrames, startS: segmentStartS, endS: streamCursorS,
                                   fp: nil, speechCount: speechFrames, into: &completed)
+                    noteCapEmit()                                      // runaway signature (see detector)
                     // CAP RESET — clear any stale fingerprint so the next boundary decision is fresh.
                     segmentFrames = []; speechFrames = 0; silenceCount = 0; gapSilenceCount = 0
                     speechActive = true; segmentStartS = streamCursorS
@@ -482,6 +519,7 @@ final class VADSegmenter {
         speechActive = false; phase = .idle
         turnFp = nil; turnSnapshotFrames = []; changeVerdictStreak = 0
         onsetFrames = []; onsetSpeechCount = 0
+        consecutiveCapEmits = 0   // an idle reset means the channel went quiet — not a runaway
     }
 
     private func sampleCount(_ frames: [[Float]]) -> Int { frames.reduce(0) { $0 + $1.count } }

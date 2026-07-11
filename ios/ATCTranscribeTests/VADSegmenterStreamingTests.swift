@@ -119,4 +119,12 @@ final class VADSegmenterStreamingTests: XCTestCase {
         XCTAssertEqual(out.count, 1)
         XCTAssertNil(out[0].speaker)
     }
+
+    /// M1 remediation, streaming twin: a gapless loud channel latches the runaway-noise notice on
+    /// the speaker-aware path too (the `.speaking` cap counts; the onset-merged cap does not).
+    func testStreamingGaplessRunawayLatches() {
+        let s = streaming()
+        _ = s.feed(tone(480_000, amp: 0.5, freq: 500))   // 30 s gapless — ≥3 cap emissions
+        XCTAssertTrue(s.consumeRunawayNoise(), "gapless caps on the streaming path must latch")
+    }
 }

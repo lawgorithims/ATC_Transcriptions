@@ -41,8 +41,10 @@ final class TranscriptionSession: ObservableObject {
     }
 
     /// Start a run. `clearHistory: false` keeps the existing transcript/stats (used when resuming
-    /// from standby or switching model) so the accumulated console isn't wiped.
-    func start(source: AudioSource, label: String, clearHistory: Bool = true) {
+    /// from standby or switching model) so the accumulated console isn't wiped. `onTrouble` receives
+    /// transient pipeline notices (a failed decode, runaway noise) for the owner's detail line.
+    func start(source: AudioSource, label: String, clearHistory: Bool = true,
+               onTrouble: (@Sendable (String) -> Void)? = nil) {
         guard !isRunning else { return }
         if clearHistory { records = []; stats = LatencyStats(); labeler.reset() }
         errorMessage = nil
@@ -53,17 +55,24 @@ final class TranscriptionSession: ObservableObject {
 
         task = Task { [pipeline] in
             await pipeline.run(source: source) { [weak self] record in
-                Task { @MainActor in self?.append(record) }
+                // Sequential await: the pipeline emits records one at a time and each append
+                // COMPLETES on the main actor before the next emit — FIFO order, and run()
+                // cannot return (and flip status below) until every append has landed, so the
+                // final drained record can never be dropped on a natural stream end.
+                await MainActor.run { self?.append(record) }
             } onRefined: { [weak self] id, outcome in
                 Task { @MainActor in self?.applyRefinement(id: id, outcome: outcome) }
             } onLevel: { [weak self] level in
                 Task { @MainActor in self?.updateInputLevel(level) }
             } onActivity: { [weak self] on in
                 Task { @MainActor in self?.setTranscribing(on) }
+            } onTrouble: { [weak self] msg in
+                Task { @MainActor in self?.noteTrouble(msg, forward: onTrouble) }
             }
             await MainActor.run {
                 // The source ended on its own (clips drained / feed disconnected). Release the
                 // audio session so a finished run doesn't keep the app awake in the background.
+                // This runs only after the run loop's flush drain fully delivered (see onRecord).
                 if self.status == .live {
                     self.status = .stopped; self.detail = "Stream ended."
                     AudioSessionManager.deactivate()
@@ -71,6 +80,15 @@ final class TranscriptionSession: ObservableObject {
                 self.inputLevel = 0
             }
         }
+    }
+
+    /// Transient trouble from the pipeline: count it (diag card) + surface it on the detail line.
+    /// Status stays `.live` — the stream is healthy; one transmission failed. Ignored once stopped.
+    private func noteTrouble(_ msg: String, forward: (@Sendable (String) -> Void)?) {
+        guard isRunning else { return }
+        if msg == LivePipeline.decodeFailureNotice { stats.addDecodeFailure() }
+        detail = msg
+        forward?(msg)
     }
 
     func stop() {
@@ -232,10 +250,17 @@ final class TranscriptionSession: ObservableObject {
         // in-flight transcription can still complete and call back after stop() set a
         // terminal state; without this guard it would resurrect status to .live and append
         // a stray record. (Python drains the worker thread in stop(); we guard instead.)
+        // A NATURAL stream end never hits this guard: run() awaits each append inline, so the
+        // terminal status flip happens only after the flush drain's records have all landed.
         guard status == .live || status == .starting || status == .connecting else { return }
         var rec = record
         let flipped = labeler.ingest(&rec)   // fuse this line; get the speaker whose affinity changed
         records.append(rec)
+        // Bounded FIFO by removeFirst — O(records.count) per append at the cap, ~µs at 500 and
+        // dwarfed by the @Published full-array republish any structure would pay. A ring buffer
+        // was considered and rejected: it changes `records`' array semantics for every consumer
+        // (SwiftUI diffing, the AppModel mirror, the EFB sink, applyRefinement's firstIndex)
+        // for no visible win.
         if records.count > maxRecords { records.removeFirst(records.count - maxRecords) }
         // The cluster matured/flipped → re-fuse its still-unknown lines. Only unknown-content lines
         // can change (a confident role is immutable), and we write each back the SAME way
