@@ -30,6 +30,9 @@ final class TranscriptionSession: ObservableObject {
     private var source: AudioSource?
     private var task: Task<Void, Never>?
     private let maxRecords = 500
+    /// Fuses each appended record's content role + acoustic cluster + callsign into its per-line
+    /// `speakerLabel`, and retroactively relabels a speaker's unknown lines as its cluster matures.
+    private let labeler = SpeakerLabeler()
 
     init(pipeline: LivePipeline) { self.pipeline = pipeline }
 
@@ -41,7 +44,7 @@ final class TranscriptionSession: ObservableObject {
     /// from standby or switching model) so the accumulated console isn't wiped.
     func start(source: AudioSource, label: String, clearHistory: Bool = true) {
         guard !isRunning else { return }
-        if clearHistory { records = []; stats = LatencyStats() }
+        if clearHistory { records = []; stats = LatencyStats(); labeler.reset() }
         errorMessage = nil
         status = .live
         detail = "Transcribing."
@@ -98,6 +101,7 @@ final class TranscriptionSession: ObservableObject {
     func adopt(records: [TranscriptRecord], stats: LatencyStats) {
         self.records = records
         self.stats = stats
+        labeler.rebuild(from: records)   // restore cluster tallies so relabeling stays consistent
     }
 
     /// Swap the fast inline-correction stage at runtime (Settings toggle). Safe to call while
@@ -140,6 +144,11 @@ final class TranscriptionSession: ObservableObject {
         let pipeline = self.pipeline
         Task { await pipeline.setDiarization(on) }
     }
+
+    /// Toggle the experimental acoustic fill (Settings): when on, an unknown-content line may be
+    /// labeled from its voice cluster (see `SpeakerLabeler.acousticFillEnabled`). Off by default —
+    /// on-device voice separation is unreliable on single-feed radio. Takes effect on the next line.
+    func setAcousticFill(_ on: Bool) { labeler.acousticFillEnabled = on }
 
     /// Push the filed flight plan into the live correction context (Electronic Flight Bag). Safe
     /// while a run is active; takes effect on the next transmission.
@@ -185,6 +194,7 @@ final class TranscriptionSession: ObservableObject {
     func clear() {
         records = []
         stats = LatencyStats()
+        labeler.reset()
     }
 
     /// Quantize the meter level to the 7 bars the UI actually shows and only republish on a step
@@ -201,10 +211,35 @@ final class TranscriptionSession: ObservableObject {
         // terminal state; without this guard it would resurrect status to .live and append
         // a stray record. (Python drains the worker thread in stop(); we guard instead.)
         guard status == .live || status == .starting || status == .connecting else { return }
-        records.append(record)
+        var rec = record
+        let flipped = labeler.ingest(&rec)   // fuse this line; get the speaker whose affinity changed
+        records.append(rec)
         if records.count > maxRecords { records.removeFirst(records.count - maxRecords) }
-        stats.add(record)
+        // The cluster matured/flipped → re-fuse its still-unknown lines. Only unknown-content lines
+        // can change (a confident role is immutable), and we write each back the SAME way
+        // `applyRefinement` does (a one-element `records[i] = …`) so SwiftUI diffs a single row.
+        if let spk = flipped {
+            assert(records.count <= maxRecords)   // loop bound: records are capped at maxRecords
+            for i in records.indices where records[i].speaker == spk && records[i].role == .unknown {
+                var u = records[i]
+                labeler.refuse(&u)
+                records[i] = u
+            }
+        }
+        shadowLog(rec)
+        stats.add(rec)
         status = .live
         detail = "Transcribing."
+    }
+
+    /// Optional per-line fusion diagnostics (behind the app's debug flag) so the fill-guard
+    /// thresholds and acoustic fingerprint can be tuned against real audio without a UI or ground
+    /// truth. No-op unless `atc.showDebug` is set. Prints, deliberately — it's a dev shadow log.
+    private func shadowLog(_ r: TranscriptRecord) {
+        guard UserDefaults.standard.bool(forKey: "atc.showDebug") else { return }
+        let d = r.speakerDistance.map { $0 > 1e6 ? "new" : String(format: "%.3f", $0) } ?? "—"
+        print("[fuse-shadow] role=\(r.role.rawValue)(\(String(format: "%.2f", r.roleConfidence))) "
+            + "spk=\(r.speaker.map(String.init) ?? "—") dist=\(d) "
+            + "→ label=\(r.speakerLabel.fixtureString) from=\(r.fusedFrom.rawValue)")
     }
 }

@@ -16,8 +16,10 @@ import Foundation
 /// LIMITATION (documented for honesty): this cannot separate **simultaneous** talkers (true
 /// overtalk) — that needs source separation. It targets the common alternating-transmission case.
 final class Diarizer {
-    /// One speaker-homogeneous slice of a segment.
-    struct Piece { var audio: [Float]; var startSample: Int; var speaker: Int }
+    /// One speaker-homogeneous slice of a segment. `distance` is the nearest-centroid distance at
+    /// assignment (how tight the voice match was; `.greatestFiniteMagnitude` for a newly-opened
+    /// speaker) — consumed by the fusion fill-guard.
+    struct Piece { var audio: [Float]; var startSample: Int; var speaker: Int; var distance: Float = .greatestFiniteMagnitude }
 
     // Split tunables (mono 16 kHz).
     private let frame = 320               // 20 ms analysis frame
@@ -26,7 +28,8 @@ final class Diarizer {
     private let minPieceFrames = 10       // ~200 ms — below this, don't bother splitting
     private let minEmitFrames = 14        // ~280 ms — fold shorter pieces into a neighbor (no decode)
     private let maxPieces = 8             // cap decodes per VAD segment (a busy frequency safeguard)
-    private let mergeDist: Float = 0.16   // adjacent pieces closer than this fingerprint dist = same speaker
+    // Same-speaker merge distance comes from the SpeakerModel so it tracks the active backend's scale
+    // (MFCC ~0.03 vs ECAPA ~0.50) — see `speaker.mergeDist`.
 
     /// Shared session speaker clustering (fingerprint + centroids). Injected so this post-hoc
     /// diarizer and the streaming speaker-aware VAD number the same voice identically.
@@ -37,7 +40,8 @@ final class Diarizer {
     /// Split + label a VAD segment's audio into speaker-homogeneous pieces (always ≥ 1).
     func diarize(_ audio: [Float]) -> [Piece] {
         guard audio.count >= frame * minPieceFrames else {
-            return [Piece(audio: audio, startSample: 0, speaker: speaker.assign(speaker.fingerprint(audio)))]
+            let (id, d) = speaker.assignReporting(speaker.fingerprint(audio))
+            return [Piece(audio: audio, startSample: 0, speaker: id, distance: d)]
         }
 
         // 1. Per-frame RMS → carve speech runs separated by silence gaps ≥ minGapFrames.
@@ -72,7 +76,8 @@ final class Diarizer {
             runs.append((start, end))
         }
         guard runs.count > 1 else {
-            return [Piece(audio: audio, startSample: 0, speaker: speaker.assign(speaker.fingerprint(audio)))]
+            let (id, d) = speaker.assignReporting(speaker.fingerprint(audio))
+            return [Piece(audio: audio, startSample: 0, speaker: id, distance: d)]
         }
 
         // 2. Build piece audio + fingerprints.
@@ -86,7 +91,7 @@ final class Diarizer {
         // 3. Merge adjacent pieces that sound like the same speaker (a mid-sentence pause, not a turn).
         var merged: [(audio: [Float], start: Int, fp: [Float])] = []
         for piece in pieces {
-            if let last = merged.last, speaker.dist(last.fp, piece.fp) < mergeDist {
+            if let last = merged.last, speaker.dist(last.fp, piece.fp) < speaker.mergeDist {
                 var a = last.audio; a.append(contentsOf: piece.audio)
                 merged[merged.count - 1] = (a, last.start, speaker.fingerprint(a))
             } else {
@@ -98,8 +103,16 @@ final class Diarizer {
         // neighbor and cap the total (each piece = one decode).
         pieces = boundPieces(merged, minEmit: frame * minEmitFrames, maxPieces: maxPieces)
 
-        // 4. Assign stable session speaker ids.
-        return pieces.map { Piece(audio: $0.audio, startSample: $0.start, speaker: speaker.assign($0.fp)) }
+        // 4. Assign stable session speaker ids (carrying the match tightness for the fusion guard).
+        // Explicit bounded loop (≤ maxPieces) per the Power-of-Ten style used in the fusion path.
+        assert(pieces.count <= maxPieces)
+        var out: [Piece] = []
+        out.reserveCapacity(pieces.count)
+        for p in pieces {
+            let (id, d) = speaker.assignReporting(p.fp)
+            out.append(Piece(audio: p.audio, startSample: p.start, speaker: id, distance: d))
+        }
+        return out
     }
 
     /// Fold pieces shorter than `minEmit` into a neighbor, then cap the total at `maxPieces` by

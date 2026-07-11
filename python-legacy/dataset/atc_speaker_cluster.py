@@ -89,6 +89,32 @@ def sessionize(rows, gap_min):
     return sessions
 
 
+def cluster_affinity(roles):
+    """A cluster's role affinity = the majority of its members' CONFIDENT content roles (``unknown``
+    ignored), so a cluster of 3 controller + 5 unknown still reads as a controller voice. A count tie
+    resolves to the FIRST confident role seen (``Counter.most_common`` insertion order = time order).
+    Empty / all-unknown → ``"unknown"``. Pure so the Swift port (`SpeakerFusion.affinity`) can be
+    parity-tested against it."""
+    confident = Counter(r for r in roles if r in ("controller", "pilot"))
+    return confident.most_common(1)[0][0] if confident else "unknown"
+
+
+def fuse_line(content_role, affinity, callsign):
+    """Fuse one line: keep a confident content role, else fill it from the cluster ``affinity`` (a
+    confident content role is NEVER overridden). Returns ``(role_fused, speaker_label, fused_from)``
+    — the per-line Rung-2 output. Pure so the Swift port (`SpeakerFusion.fuse`) parity-tests it."""
+    role_fused = content_role if content_role in ("controller", "pilot") else affinity
+    if role_fused == "controller":
+        speaker_label = "ATC"
+    elif role_fused == "pilot":
+        speaker_label = callsign or "PILOT"
+    else:
+        speaker_label = "UNKNOWN"
+    fused_from = ("content" if content_role in ("controller", "pilot")
+                  else "acoustic" if role_fused != "unknown" else "none")
+    return role_fused, speaker_label, fused_from
+
+
 def cluster(embs, threshold):
     from sklearn.cluster import AgglomerativeClustering
     if len(embs) < 2:
@@ -168,26 +194,12 @@ def run(data_root, gap_min, threshold, device, feeds, out_path, verbose=True):
             n_clusters += len(members)
             scope = f"{key}#sess{si}"
             for l, mem in members.items():
-                # Cluster affinity from CONFIDENT content roles only (ignore unknown), so a
-                # cluster of 3 controller + 5 unknown still reads as a controller voice.
-                confident = Counter(cr for r in mem
-                                    if (cr := content_role(r)) in ("controller", "pilot"))
-                affinity = confident.most_common(1)[0][0] if confident else "unknown"
+                affinity = cluster_affinity([content_role(r) for r in mem])
                 if affinity == "controller" and len(mem) >= 3:
                     ctrl_clusters += 1
                 for r in mem:
                     cr = content_role(r)
-                    # Rung 2 fusion: keep a confident content role; fill an unknown from the
-                    # cluster's acoustic affinity (only when the cluster itself is confident).
-                    role_fused = cr if cr in ("controller", "pilot") else affinity
-                    # Per-line speaker label for display (website/app): ATC, else the aircraft
-                    # callsign when the pilot's callsign was recovered, else a generic tag.
-                    if role_fused == "controller":
-                        speaker_label = "ATC"
-                    elif role_fused == "pilot":
-                        speaker_label = r.get("callsign") or "PILOT"
-                    else:
-                        speaker_label = "UNKNOWN"
+                    role_fused, speaker_label, fused_from = fuse_line(cr, affinity, r.get("callsign"))
                     out_rows.append({
                         "id": r["id"],
                         "speaker_id": f"{scope}#spk{l}",
@@ -197,8 +209,7 @@ def run(data_root, gap_min, threshold, device, feeds, out_path, verbose=True):
                         "role": cr,
                         "role_fused": role_fused,
                         "speaker_label": speaker_label,
-                        "fused_from": ("content" if cr in ("controller", "pilot")
-                                       else "acoustic" if role_fused != "unknown" else "none"),
+                        "fused_from": fused_from,
                         "callsign": r.get("callsign"),
                     })
         if verbose:

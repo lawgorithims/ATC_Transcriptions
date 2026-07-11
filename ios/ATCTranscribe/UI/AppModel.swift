@@ -355,6 +355,18 @@ final class AppModel: ObservableObject {
         }
     }
 
+    // EXPERIMENTAL acoustic fill: when a line's speaker can't be told from the words, guess it from the
+    // sound of the voice. OFF by default — on a single radio frequency every voice shares the same
+    // channel, so voice-based guessing is unreliable (a corpus study measured ~coin-flip accuracy).
+    // Persisted; hot-applied to the running session's labeler. Only has any effect when "Separate
+    // speakers" is also on (it needs the per-line voice clusters).
+    @Published var acousticFillEnabled = (UserDefaults.standard.object(forKey: "atc.acousticFill") as? Bool) ?? false {
+        didSet {
+            UserDefaults.standard.set(acousticFillEnabled, forKey: "atc.acousticFill")
+            session?.setAcousticFill(acousticFillEnabled)
+        }
+    }
+
     // Live-feed monitor: play the internet feed out the speakers so it can be heard/verified (mic &
     // USB are NOT monitored — feedback). Persisted; toggled by the speaker button. Muting just sets
     // the player volume so it doesn't disrupt the running stream.
@@ -713,6 +725,9 @@ final class AppModel: ObservableObject {
                                     corrector: currentCorrector(), llm: llm,
                                     gateEnabled: skipWhenConfident, gateSensitivity: gateSensitivity,
                                     diarizationEnabled: diarizationEnabled,
+                                    // The experimental "guess speaker by voice" toggle also selects the
+                                    // neural ECAPA backend (applied at session build; takes effect next start).
+                                    useECAPA: acousticFillEnabled,
                                     vadConfig: VADConfig(squelchAuto: squelchAuto,
                                                          squelchLevel: Float(manualSquelch),
                                                          calibratedGateRMS: squelchAuto ? nil : calibratedGateRMS))
@@ -739,6 +754,7 @@ final class AppModel: ObservableObject {
         session.$inputLevel.assign(to: &$inputLevel)
         session.$transcribing.assign(to: &$transcribing)
         session.$transcribeStartedAt.assign(to: &$transcribeStartedAt)
+        session.setAcousticFill(acousticFillEnabled)   // apply the persisted experimental toggle
         self.session = session
         self.engine = engine
         self.modelDirs = models
@@ -1926,6 +1942,15 @@ final class AppModel: ObservableObject {
                 prompt: "Air traffic control radio transcript from KDFW Lone Star Approach. Runways: 17C, 35C.",
                 corrected: edits.isEmpty ? "" : display, corrections: edits, timestamp: ts)
             r.callsign = CallsignExtractor.extract(r.display, knowledge: .shared)?.display   // demo: tag for the filter
+            // Demo has no live acoustic clustering, so fuse content-only (affinity unknown) — the
+            // same mapping the live path uses, so the sample renders real ATC/callsign chips.
+            let lbl = TurnRoleTagger.classify(r.display, knowledge: .shared)
+            r.role = lbl.role
+            r.roleConfidence = lbl.confidence
+            let fused = SpeakerFusion.fuse(ownRole: lbl.role, affinity: .unknown, callsign: r.callsign)
+            r.roleFused = fused.roleFused
+            r.speakerLabel = fused.label
+            r.fusedFrom = fused.from
             return r
         }
         for r in records { stats.add(r) }

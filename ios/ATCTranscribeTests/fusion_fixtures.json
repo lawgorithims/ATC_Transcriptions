@@ -1,0 +1,218 @@
+[
+ {
+  "members": [
+   {
+    "role": "controller"
+   },
+   {
+    "role": "controller"
+   },
+   {
+    "role": "unknown"
+   }
+  ],
+  "affinity": "controller",
+  "expected": [
+   {
+    "role_fused": "controller",
+    "speaker_label": "ATC",
+    "fused_from": "content"
+   },
+   {
+    "role_fused": "controller",
+    "speaker_label": "ATC",
+    "fused_from": "content"
+   },
+   {
+    "role_fused": "controller",
+    "speaker_label": "ATC",
+    "fused_from": "acoustic"
+   }
+  ]
+ },
+ {
+  "members": [
+   {
+    "role": "controller"
+   },
+   {
+    "role": "pilot",
+    "callsign": "delta 232"
+   }
+  ],
+  "affinity": "controller",
+  "expected": [
+   {
+    "role_fused": "controller",
+    "speaker_label": "ATC",
+    "fused_from": "content"
+   },
+   {
+    "role_fused": "pilot",
+    "speaker_label": "delta 232",
+    "fused_from": "content"
+   }
+  ]
+ },
+ {
+  "members": [
+   {
+    "role": "pilot",
+    "callsign": "american 1"
+   },
+   {
+    "role": "pilot",
+    "callsign": "delta 2"
+   },
+   {
+    "role": "controller"
+   },
+   {
+    "role": "unknown"
+   }
+  ],
+  "affinity": "pilot",
+  "expected": [
+   {
+    "role_fused": "pilot",
+    "speaker_label": "american 1",
+    "fused_from": "content"
+   },
+   {
+    "role_fused": "pilot",
+    "speaker_label": "delta 2",
+    "fused_from": "content"
+   },
+   {
+    "role_fused": "controller",
+    "speaker_label": "ATC",
+    "fused_from": "content"
+   },
+   {
+    "role_fused": "pilot",
+    "speaker_label": "PILOT",
+    "fused_from": "acoustic"
+   }
+  ]
+ },
+ {
+  "members": [
+   {
+    "role": "pilot",
+    "callsign": "united 5"
+   },
+   {
+    "role": "pilot",
+    "callsign": "united 5"
+   },
+   {
+    "role": "unknown",
+    "callsign": "november 3 4 5"
+   }
+  ],
+  "affinity": "pilot",
+  "expected": [
+   {
+    "role_fused": "pilot",
+    "speaker_label": "united 5",
+    "fused_from": "content"
+   },
+   {
+    "role_fused": "pilot",
+    "speaker_label": "united 5",
+    "fused_from": "content"
+   },
+   {
+    "role_fused": "pilot",
+    "speaker_label": "november 3 4 5",
+    "fused_from": "acoustic"
+   }
+  ]
+ },
+ {
+  "members": [
+   {
+    "role": "unknown"
+   }
+  ],
+  "affinity": "unknown",
+  "expected": [
+   {
+    "role_fused": "unknown",
+    "speaker_label": "UNKNOWN",
+    "fused_from": "none"
+   }
+  ]
+ },
+ {
+  "members": [
+   {
+    "role": "unknown",
+    "callsign": "delta 5"
+   }
+  ],
+  "affinity": "unknown",
+  "expected": [
+   {
+    "role_fused": "unknown",
+    "speaker_label": "UNKNOWN",
+    "fused_from": "none"
+   }
+  ]
+ },
+ {
+  "members": [
+   {
+    "role": "controller"
+   },
+   {
+    "role": "controller"
+   },
+   {
+    "role": "controller"
+   }
+  ],
+  "affinity": "controller",
+  "expected": [
+   {
+    "role_fused": "controller",
+    "speaker_label": "ATC",
+    "fused_from": "content"
+   },
+   {
+    "role_fused": "controller",
+    "speaker_label": "ATC",
+    "fused_from": "content"
+   },
+   {
+    "role_fused": "controller",
+    "speaker_label": "ATC",
+    "fused_from": "content"
+   }
+  ]
+ },
+ {
+  "members": [
+   {
+    "role": "pilot",
+    "callsign": "southwest 2914"
+   },
+   {
+    "role": "pilot"
+   }
+  ],
+  "affinity": "pilot",
+  "expected": [
+   {
+    "role_fused": "pilot",
+    "speaker_label": "southwest 2914",
+    "fused_from": "content"
+   },
+   {
+    "role_fused": "pilot",
+    "speaker_label": "PILOT",
+    "fused_from": "content"
+   }
+  ]
+ }
+]

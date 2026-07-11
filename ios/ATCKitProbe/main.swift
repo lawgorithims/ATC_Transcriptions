@@ -38,6 +38,20 @@ print("WER self-checks: OK (\(werCases.count) cases)")
 
 let env = ProcessInfo.processInfo.environment
 
+// --- OPTIONAL: MFCC speaker-separation study over the real collected corpus (opt-in) ---------
+// ATC_SPKR_STUDY=<segments-root> (e.g. ~/CommSight/atc-data/segments). Optional overrides:
+// ATC_SPKR_MANIFEST=<manifest.jsonl> (default: <root>/../us_pseudo/manifest.jsonl),
+// ATC_SPKR_MAX=<clips>. Measures the SHIPPED Swift fingerprint's within/cross speaker separation.
+if let studyRoot = env["ATC_SPKR_STUDY"], !studyRoot.isEmpty {
+    let defaultManifest = (((studyRoot as NSString).deletingLastPathComponent) as NSString)
+        .appendingPathComponent("us_pseudo/manifest.jsonl")
+    let manifest = env["ATC_SPKR_MANIFEST"] ?? defaultManifest
+    let cap = Int(env["ATC_SPKR_MAX"] ?? "") ?? 1500
+    let rc = SpeakerStudy.run(segmentsRoot: studyRoot, manifestPath: manifest, maxClips: cap,
+                              ecapaModelPath: env["ATC_ECAPA_MODEL"])   // set to a .mlmodelc to use ECAPA
+    exit(Int32(rc))
+}
+
 // --- OPTIONAL: Apple Foundation Models correction benchmark over prepared world frames ---
 // ATC_FM_EVAL_IN=<frames.json from `python -m dataset.llm_eval --emit-frames`>
 // ATC_FM_EVAL_OUT=<results.jsonl> → runs the REAL FoundationModelsCorrector (guided
