@@ -27,6 +27,7 @@ struct ConsoleView: View {
                 // as a toggleable strip under the top bar. Everything else is now a floating widget.
                 if model.showInputBar { InputBar().transition(Self.barTransition) }
                 if let proc = model.previewedProcedure { procedureStrip(proc) }
+                if let sug = model.efbSuggestion { efbSuggestionBanner(sug) }
                 homeArea
             }
         }
@@ -144,6 +145,37 @@ struct ConsoleView: View {
         .padding(.horizontal, 12).padding(.vertical, 7)
         .background(p.surface)
         .transition(Self.barTransition)
+    }
+
+    /// One-tap EFB suggestion parsed from a controller clearance addressed to the pilot's aircraft
+    /// (Phase 4, suggest-and-confirm). Accept applies it via the existing mutators; Dismiss clears it.
+    /// Nothing changes until a tap.
+    private func efbSuggestionBanner(_ sug: EFBSuggestion) -> some View {
+        let p = model.palette
+        return HStack(spacing: 10) {
+            Image(systemName: "sparkles").font(.callout).foregroundStyle(p.accent)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(sug.title).font(.callout.weight(.semibold)).foregroundStyle(p.text).lineLimit(1)
+                Text(sug.source).font(.caption2).foregroundStyle(p.textDim).lineLimit(1)
+            }
+            Spacer(minLength: 4)
+            Button { Haptics.impact(.light); model.dismissEFBSuggestion() } label: {
+                Text("Dismiss").font(.caption.weight(.semibold)).foregroundStyle(p.textDim)
+                    .padding(.horizontal, 10).padding(.vertical, 6).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).accessibilityIdentifier("efb-dismiss")
+            Button { model.acceptEFBSuggestion() } label: {
+                Text("Accept").font(.caption.weight(.bold)).foregroundStyle(.white)
+                    .padding(.horizontal, 14).padding(.vertical, 6)
+                    .background(Capsule().fill(p.accent))
+            }
+            .buttonStyle(.plain).accessibilityIdentifier("efb-accept")
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(p.surface)
+        .overlay(alignment: .bottom) { Rectangle().fill(p.accent.opacity(0.5)).frame(height: 1) }
+        .transition(Self.barTransition)
+        .accessibilityIdentifier("efb-suggestion")
     }
 
     /// The live transcript card at the bottom of the compact (iPhone) layout. Standby dimming and the
