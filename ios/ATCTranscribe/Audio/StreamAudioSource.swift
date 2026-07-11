@@ -27,6 +27,10 @@ final class StreamAudioSource: NSObject, AudioSource, URLSessionDataDelegate {
     /// give up on a permanently unreachable feed instead of reconnecting forever.
     private var connectAttempts = 0
     private var decodedAnyAudio = false
+    // No-decode watchdog state (L2 remediation) — callbackQueue-confined like the rest.
+    private var connectGeneration = 0
+    private var decodedThisConnection = false
+    private static let noDecodeSeconds: TimeInterval = 10
 
     private var urlSession: URLSession?
     private var task: URLSessionDataTask?
@@ -75,8 +79,16 @@ final class StreamAudioSource: NSObject, AudioSource, URLSessionDataDelegate {
     private func connect() {
         guard !stopped else { return }
         let target = candidates[candidateIndex % candidates.count]
-        AudioFileStreamOpen(Unmanaged.passUnretained(self).toOpaque(),
-                            streamPropertyProc, streamPacketsProc, kAudioFileMP3Type, &streamID)
+        // Check the open (L2 remediation): a failed parser open used to be silently ignored —
+        // bytes then arrived forever into a nil streamID with no reconnect (the only retry
+        // trigger was task completion, which a live Icecast stream never reaches).
+        let openStatus = AudioFileStreamOpen(Unmanaged.passUnretained(self).toOpaque(),
+                                             streamPropertyProc, streamPacketsProc, kAudioFileMP3Type, &streamID)
+        guard openStatus == noErr, streamID != nil else {
+            NSLog("[stream] AudioFileStreamOpen failed status=%d", openStatus)
+            scheduleRetry()   // no task was started, so didCompleteWithError will never fire
+            return
+        }
         var req = URLRequest(url: target)
         req.setValue("Mozilla/5.0 CommSight/1.0", forHTTPHeaderField: "User-Agent")
         let session = urlSession ?? URLSession(configuration: .default, delegate: self, delegateQueue: callbackQueue)
@@ -84,7 +96,52 @@ final class StreamAudioSource: NSObject, AudioSource, URLSessionDataDelegate {
         let t = session.dataTask(with: req)
         task = t
         NSLog("[stream] connecting %@", target.absoluteString)
+        // No-decode watchdog (L2): a connection that delivers bytes but never yields PCM (a
+        // converter that failed to build, a 200-OK HTML error page, a wedged parser) would
+        // otherwise sit "connected" forever — the task never completes, so the reconnect logic
+        // never runs. Recycle it through the EXISTING retry machinery after a grace period.
+        decodedThisConnection = false
+        connectGeneration += 1
+        armNoDecodeWatchdog(connectGeneration)
         t.resume()
+    }
+
+    /// Count a failed attempt, rotate to the next edge server, and schedule a reconnect — or give
+    /// up after the bounded cap. Runs on `callbackQueue`. Shared by task completion AND a failed
+    /// parser open (which has no task to complete).
+    private func scheduleRetry() {
+        candidateIndex += 1
+        if !decodedAnyAudio {
+            connectAttempts += 1
+            if connectAttempts >= candidates.count * 2 {
+                NSLog("[stream] no audio after %d attempts — giving up", connectAttempts)
+                teardown()   // invalidate the session + finish the stream (UI shows "Stream ended")
+                return
+            }
+        }
+        // Live streams drop periodically; reconnect (mirrors the Python ffmpeg reconnect).
+        // Wait off-queue, then post connect back onto the serial callbackQueue.
+        DispatchQueue.global().asyncAfter(deadline: .now() + 2) { [weak self] in
+            self?.callbackQueue.addOperation { [weak self] in
+                guard let self, !self.stopped else { return }
+                self.connect()
+            }
+        }
+    }
+
+    /// If this connection hasn't produced any decoded PCM within the grace period, cancel its task
+    /// — forcing `didCompleteWithError`, which owns rotation, the bounded give-up, and the backoff.
+    /// Generation-countered so a watchdog from a superseded connection can never recycle a healthy
+    /// later one; `decodedThisConnection` clears it the moment real audio flows.
+    private func armNoDecodeWatchdog(_ generation: Int) {
+        DispatchQueue.global().asyncAfter(deadline: .now() + Self.noDecodeSeconds) { [weak self] in
+            self?.callbackQueue.addOperation { [weak self] in
+                guard let self, !self.stopped, generation == self.connectGeneration,
+                      !self.decodedThisConnection else { return }
+                NSLog("[stream] connected but no audio decoded in %.0fs — recycling", Self.noDecodeSeconds)
+                self.task?.cancel()   // → didCompleteWithError → scheduleRetry (rotation + give-up)
+            }
+        }
     }
 
     func stop() { callbackQueue.addOperation { [weak self] in self?.teardown() } }
@@ -118,27 +175,10 @@ final class StreamAudioSource: NSObject, AudioSource, URLSessionDataDelegate {
         if let s = streamID { AudioFileStreamClose(s); streamID = nil }
         if let d = decoder { AudioConverterDispose(d); decoder = nil }
         resampler = nil
-
         // Rotate to the next edge server. Until we've decoded any audio a completion is a
-        // connect failure, not a live drop: cap the attempts so a dead/unreachable feed
-        // ends the stream (UI shows "Stream ended") instead of reconnecting forever.
-        candidateIndex += 1
-        if !decodedAnyAudio {
-            connectAttempts += 1
-            if connectAttempts >= candidates.count * 2 {
-                NSLog("[stream] no audio after %d attempts — giving up", connectAttempts)
-                teardown()   // invalidate the session + finish the stream (UI shows "Stream ended")
-                return
-            }
-        }
-        // Live streams drop periodically; reconnect (mirrors the Python ffmpeg reconnect).
-        // Wait off-queue, then post connect back onto the serial callbackQueue.
-        DispatchQueue.global().asyncAfter(deadline: .now() + 2) { [weak self] in
-            self?.callbackQueue.addOperation { [weak self] in
-                guard let self, !self.stopped else { return }
-                self.connect()
-            }
-        }
+        // connect failure, not a live drop: `scheduleRetry` caps the attempts so a dead feed
+        // ends the stream instead of reconnecting forever.
+        scheduleRetry()
     }
 
     // MARK: parser callbacks
@@ -156,7 +196,15 @@ final class StreamAudioSource: NSObject, AudioSource, URLSessionDataDelegate {
             mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked,
             mBytesPerPacket: 4 * ch, mFramesPerPacket: 1, mBytesPerFrame: 4 * ch,
             mChannelsPerFrame: ch, mBitsPerChannel: 32, mReserved: 0)
-        guard AudioConverterNew(&sourceFormat, &pcm, &decoder) == noErr else { return }
+        let convStatus = AudioConverterNew(&sourceFormat, &pcm, &decoder)
+        guard convStatus == noErr else {
+            // A decoder that never builds means every later packet is silently dropped and the
+            // task never completes — recycle the connection now (faster than the watchdog) via
+            // the existing completion path (L2 remediation).
+            NSLog("[stream] AudioConverterNew failed status=%d — recycling connection", convStatus)
+            task?.cancel()
+            return
+        }
         pcmFormat = AVAudioFormat(streamDescription: &pcm)
         if let pcmFormat { resampler = AVAudioConverter(from: pcmFormat, to: target) }
         NSLog("[stream] decoding %.0f Hz %u ch", sourceFormat.mSampleRate, ch)
@@ -213,6 +261,7 @@ final class StreamAudioSource: NSObject, AudioSource, URLSessionDataDelegate {
 
     fileprivate func emit(_ samples: [Float]) {
         decodedAnyAudio = true
+        decodedThisConnection = true   // clears the no-decode watchdog for this connection
         connectAttempts = 0
         chunkCount += 1
         if chunkCount % 15 == 1 {

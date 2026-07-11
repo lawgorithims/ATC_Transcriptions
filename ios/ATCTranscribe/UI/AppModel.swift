@@ -1444,6 +1444,11 @@ final class AppModel: ObservableObject {
                 AudioSessionManager.deactivate()
             }
         }
+        // Transient capture notices (interruption paused / mic resumed) — detail line only, the
+        // run stays live. Terminal problems keep going through `micFailure` above.
+        let micNotice: @Sendable (String) -> Void = { [weak self] msg in
+            Task { @MainActor in self?.detail = msg }
+        }
         let src: AudioSource
         switch source {
         case .replay:
@@ -1453,9 +1458,9 @@ final class AppModel: ObservableObject {
             for c in clips { feed += c.audio; feed += silence }
             src = ArrayAudioSource(feed, chunkSamples: 8000, realtime: false)
         case .microphone:
-            src = DeviceAudioSource(preferUSB: false, onFailure: micFailure)
+            src = DeviceAudioSource(preferUSB: false, onFailure: micFailure, onNotice: micNotice)
         case .usbAudio:
-            src = DeviceAudioSource(preferUSB: true, onFailure: micFailure)
+            src = DeviceAudioSource(preferUSB: true, onFailure: micFailure, onNotice: micNotice)
         case .liveFeed:
             guard let resolved = try? StreamURLResolver.resolve(streamURL: streamURL.isEmpty ? nil : streamURL),
                   let url = URL(string: resolved) else {
