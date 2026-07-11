@@ -141,6 +141,11 @@ enum ATCCommandParser {
             guard let range = ownshipSegment(tokens, addressee: addressee) else { return nil }
             scoped = Array(tokens[range])
         }
+        // A retraction/self-correction anywhere in the (scoped) transmission — "cleared direct GABBS
+        // disregard cleared direct DENNA", "cleared ils runway 4 correction runway 22" — makes EVERY
+        // clearance class unreliable: first-match-wins would otherwise lock onto the target the
+        // controller just cancelled. Abstain for all kinds (a wrong suggestion is worse than a miss).
+        guard !containsRetraction(scoped) else { return nil }
         if let direct = parseDirectTo(scoped, fixes: grounding.fixes, airports: grounding.airports) { return direct }
         if let approach = parseApproach(scoped) { return approach }
         if let sid = parseProcedure(scoped, idents: grounding.sids, keyword: "departure", kind: .loadSID) { return sid }

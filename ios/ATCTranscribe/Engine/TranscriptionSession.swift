@@ -147,8 +147,30 @@ final class TranscriptionSession: ObservableObject {
 
     /// Toggle the experimental acoustic fill (Settings): when on, an unknown-content line may be
     /// labeled from its voice cluster (see `SpeakerLabeler.acousticFillEnabled`). Off by default —
-    /// on-device voice separation is unreliable on single-feed radio. Takes effect on the next line.
-    func setAcousticFill(_ on: Bool) { labeler.acousticFillEnabled = on }
+    /// on-device voice separation is unreliable on single-feed radio. Re-fuses EVERY retained line so
+    /// the change applies to already-appended records: turning it OFF retracts prior voice-inferred
+    /// labels back to their honest content label; turning it ON applies mature-cluster fills.
+    func setAcousticFill(_ on: Bool) {
+        guard labeler.acousticFillEnabled != on else { return }
+        labeler.acousticFillEnabled = on
+        refuseAll()
+    }
+
+    /// Set the backend-scaled fill-distance ceiling on the labeler (MFCC vs ECAPA scale); called at
+    /// session build once the active speaker backend is known, BEFORE `setAcousticFill`.
+    func setFillDistance(_ d: Float) { labeler.maxFillDistance = d }
+
+    /// Re-fuse every retained record in place (bounded by `maxRecords`), writing each back one-by-one so
+    /// SwiftUI diffs per row. Used when the acoustic-fill toggle flips so the change is reflected on
+    /// already-shown lines, not just future ones.
+    private func refuseAll() {
+        assert(records.count <= maxRecords, "records must stay within the cap")
+        for i in records.indices {
+            var u = records[i]
+            labeler.refuse(&u)
+            records[i] = u
+        }
+    }
 
     /// Push the filed flight plan into the live correction context (Electronic Flight Bag). Safe
     /// while a run is active; takes effect on the next transmission.

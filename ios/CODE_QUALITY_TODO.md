@@ -50,8 +50,12 @@ COMPLETED this session (waveform export removed the whole fbank-parity problem):
       `Resources/Models` (loads in the sim; 4 embedder tests + 2 backend tests green).
 - [x] Optional `SpeakerModel(embedder:)` backend with backend-aware thresholds (MFCC ~0.05 vs ECAPA
       ~0.55); `Diarizer` reads `speaker.mergeDist`. Default stays MFCC (all existing tests unchanged).
-- [x] Wired to the experimental toggle: `LivePipeline(useECAPA:)` ← `AppModel.acousticFillEnabled`.
-      Default-off, so no live latency regression. UI test drives it end-to-end.
+- [x] Wired to the experimental toggle: `AppModel.acousticFillEnabled` → the embedder is loaded
+      OFF-main and INJECTED as `LivePipeline(embedder:)` (red-team fix: was `useECAPA:` with a
+      synchronous 80 MB load inside the actor init on the main actor). Default-off, no live latency
+      regression. UI test drives it end-to-end. The fill-guard distance is now backend-scaled
+      (`SpeakerModel.fillMatchMax`: 0.03 MFCC / 0.45 ECAPA) — a single 0.03 constant previously made
+      the ECAPA fill path silently inert.
 - [x] `SpeakerStudy` re-run with ECAPA: **EER ~40% at t=0.60** (within-ctrl median 0.51 vs
       ctrl-vs-pilot 0.69) vs MFCC's ~53%. Real improvement, but still can't cleanly separate same-feed
       controller-vs-pilot → acoustic fill stays DEFAULT-OFF; ECAPA is the better *experimental* backend.

@@ -192,17 +192,17 @@ actor LivePipeline {
          gateEnabled: Bool = true,
          gateSensitivity: GateSensitivity = .conservative,
          diarizationEnabled: Bool = true,
-         useECAPA: Bool = false,
+         embedder: CoreMLSpeakerEmbedder? = nil,
          vadConfig: VADConfig = VADConfig()) {
         self.transcriber = transcriber
         self.context = context
         self.preprocessor = preprocessor
         self.corrector = corrector
         self.diarizationEnabled = diarizationEnabled
-        // EXPERIMENTAL: use the neural ECAPA voice embedder for clustering when requested AND the model
-        // is bundled (fail-safe: falls back to MFCC otherwise). Off by default — it adds per-transmission
-        // inference cost and, per the corpus study, still can't cleanly separate same-feed speakers.
-        let embedder = useECAPA ? CoreMLSpeakerEmbedder() : nil
+        // EXPERIMENTAL: a pre-loaded neural ECAPA voice embedder for clustering, or nil for the default
+        // MFCC backend. The 80 MB Core ML model is loaded OFF the main actor by the caller and INJECTED
+        // (never constructed here) so the actor's init never blocks the UI thread; SpeakerModel is
+        // fail-safe (falls back to MFCC if the embedder is unavailable). Off by default.
         let sm = SpeakerModel(embedder: embedder)
         self.speakerModel = sm
         self.diarizer = Diarizer(speaker: sm)

@@ -290,4 +290,29 @@ final class ATCCommandParserTests: XCTestCase {
                        ATCCommand(kind: .directTo, target: "KPVD", qualifier: ""),
                        "grounded as a fix → fix direct-to (qualifier empty), airport branch not reached")
     }
+
+    // MARK: red-team fix — retraction veto now covers direct-to + approach (was SID/STAR only)
+
+    func testDirectToAbstainsOnRetraction() {
+        // a mid-transmission self-correction must not fire the CANCELLED first target (first-match-wins).
+        XCTAssertNil(ATCCommandParser.parse("cleared direct gabbs disregard cleared direct denna",
+                                            grounding: .init(fixes: ["GABBS", "DENNA"])),
+                     "'disregard' retracts the first direct-to → abstain, not 'Fly direct GABBS'")
+        XCTAssertNil(ATCCommandParser.parse("cleared direct gabbs correction cleared direct denna",
+                                            grounding: .init(fixes: ["GABBS", "DENNA"])),
+                     "'correction' likewise")
+    }
+
+    func testApproachAbstainsOnRetraction() {
+        XCTAssertNil(ATCCommandParser.parse("cleared ils runway 4 disregard cleared ils runway 2 2",
+                                            grounding: .init()),
+                     "a retracted approach clearance must abstain rather than load runway 04")
+    }
+
+    func testCleanClearancesStillFireWithoutRetractionWords() {
+        // guard against over-abstaining: a normal clearance with no retraction token still fires.
+        XCTAssertEqual(ATCCommandParser.parse("cleared direct denna", grounding: .init(fixes: ["DENNA"])),
+                       ATCCommand(kind: .directTo, target: "DENNA", qualifier: ""))
+        XCTAssertEqual(ATCCommandParser.parse("cleared ils runway 2 2", grounding: .init())?.qualifier, "ILS")
+    }
 }

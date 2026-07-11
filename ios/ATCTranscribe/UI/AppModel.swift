@@ -720,14 +720,20 @@ final class AppModel: ObservableObject {
         // reads `self.liveContext` lazily at transcribe time, so building it before the commit is fine.)
         let llm = await makeLLMCorrector(knowledge: context.knowledge, feedKey: feedKey)
 
+        // The experimental "guess speaker by voice" toggle selects the neural ECAPA backend. Load its
+        // 80 MB Core ML model OFF the main actor (mirroring makeLLMCorrector) and INJECT it, so the
+        // pipeline's actor init never blocks the UI thread. nil → the default MFCC backend.
+        let embedder = acousticFillEnabled
+            ? await Task.detached(priority: .utility) { CoreMLSpeakerEmbedder() }.value
+            : nil
+        let ecapaActive = embedder?.isAvailable == true
+
         let pipeline = LivePipeline(transcriber: transcriber, context: context,
                                     preprocessor: livePreprocessor(),
                                     corrector: currentCorrector(), llm: llm,
                                     gateEnabled: skipWhenConfident, gateSensitivity: gateSensitivity,
                                     diarizationEnabled: diarizationEnabled,
-                                    // The experimental "guess speaker by voice" toggle also selects the
-                                    // neural ECAPA backend (applied at session build; takes effect next start).
-                                    useECAPA: acousticFillEnabled,
+                                    embedder: embedder,
                                     vadConfig: VADConfig(squelchAuto: squelchAuto,
                                                          squelchLevel: Float(manualSquelch),
                                                          calibratedGateRMS: squelchAuto ? nil : calibratedGateRMS))
@@ -754,7 +760,10 @@ final class AppModel: ObservableObject {
         session.$inputLevel.assign(to: &$inputLevel)
         session.$transcribing.assign(to: &$transcribing)
         session.$transcribeStartedAt.assign(to: &$transcribeStartedAt)
-        session.setAcousticFill(acousticFillEnabled)   // apply the persisted experimental toggle
+        // Match the fill-guard distance to the ACTUAL backend that loaded (ECAPA vs the MFCC fallback),
+        // then apply the persisted toggle — order matters so a fill re-fuse uses the right scale.
+        session.setFillDistance(ecapaActive ? SpeakerModel.ecapaFillMax : SpeakerModel.mfccFillMax)
+        session.setAcousticFill(acousticFillEnabled)
         self.session = session
         self.engine = engine
         self.modelDirs = models

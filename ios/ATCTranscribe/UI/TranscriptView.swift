@@ -217,9 +217,12 @@ struct TranscriptRow: View {
                             .accessibilityIdentifier("speaker-chip")
                     }
                     if let cs = record.callsign {
-                        // For an ATC line the callsign is the ADDRESSED aircraft — draw the site's
-                        // "tower → callsign" connector. For a pilot line it stands alone as the speaker.
-                        if case .atc = record.speakerLabel {
+                        // For a CONTENT-derived ATC line the callsign is the ADDRESSED aircraft — draw
+                        // the site's "tower → callsign" connector. Suppress it for a VOICE-INFERRED ATC
+                        // line (fusedFrom == .acoustic): the role is only a weak guess and the speaker is
+                        // truly unknown, so we must not assert a confident controller→aircraft direction
+                        // (the arrow could be exactly backwards). The callsign chip then stands alone.
+                        if case .atc = record.speakerLabel, record.fusedFrom != .acoustic {
                             Image(systemName: "arrow.right").font(.system(size: 8)).foregroundStyle(p.textDim)
                         }
                         // Tap to filter the transcript to this aircraft's conversation. Green +

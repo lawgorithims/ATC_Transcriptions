@@ -19,6 +19,16 @@ final class SpeakerModel {
     let turnChangeTimbreMin: Float
     /// Adjacent diarizer pieces closer than this are folded into one speaker (backend-scaled).
     let mergeDist: Float
+    /// Cosine-distance ceiling for a CONSERVATIVE acoustic fill (`SpeakerLabeler`) — backend-scaled like
+    /// the other thresholds. The labeler's fill gate was previously a hardcoded MFCC constant (0.03),
+    /// which the ECAPA scale (same-speaker ~0.51) could never satisfy, so ECAPA fills silently never
+    /// fired; expose the scaled value so the gate matches the active backend.
+    let fillMatchMax: Float
+
+    /// Fill-distance ceilings by backend (see `fillMatchMax`). ECAPA sits WELL BELOW the ~0.51
+    /// same-speaker median so only a tight voice match can fill (still experimental + guard-gated).
+    static let mfccFillMax: Float = 0.03
+    static let ecapaFillMax: Float = 0.45
 
     private static let maxSpeakers = 6
     private static let maxDims = 256    // MFCC=13, ECAPA=192; a fixed cap bounds the cosine loop
@@ -40,8 +50,10 @@ final class SpeakerModel {
         self.embedder = ecapa ? embedder : nil
         if ecapa {
             newSpeakerDist = 0.55; mergeDist = 0.50; turnChangeTimbreMin = 0.50
+            fillMatchMax = SpeakerModel.ecapaFillMax
         } else {
             newSpeakerDist = 0.05; mergeDist = 0.03; turnChangeTimbreMin = 0.03
+            fillMatchMax = SpeakerModel.mfccFillMax
         }
     }
 
@@ -49,9 +61,17 @@ final class SpeakerModel {
     /// (falling back to MFCC for a clip it rejects), else the mean MFCC. Compared by cosine distance.
     func fingerprint(_ a: [Float]) -> [Float] {
         guard !a.isEmpty else { return [Float](repeating: 0, count: mfcc.numCoeffs) }
-        if let embedder, let e = embedder.embed(a) {
-            assert(e.count == CoreMLSpeakerEmbedder.dims)
-            return e
+        if let embedder {
+            // ECAPA backend: on a clip the embedder rejects, return a ZERO 192-dim sentinel — NEVER an
+            // incommensurable 13-dim MFCC vector, which would be compared over a truncated 13-dim window
+            // against ECAPA-scaled thresholds and could corrupt a 192-dim centroid. The zero-norm guard
+            // in `cosineDistance` maps the sentinel to max distance, so it opens its own speaker and
+            // never merges. Keeps the whole centroid store dimensionally homogeneous (192).
+            if let e = embedder.embed(a) {
+                assert(e.count == CoreMLSpeakerEmbedder.dims)
+                return e
+            }
+            return [Float](repeating: 0, count: CoreMLSpeakerEmbedder.dims)
         }
         let fp = mfcc.features(a)
         assert(fp.count == mfcc.numCoeffs)
@@ -74,6 +94,10 @@ final class SpeakerModel {
     /// zero-norm input, so a bad fingerprint can never spuriously merge speakers.
     private func cosineDistance(_ x: [Float], _ y: [Float], from: Int) -> Float {
         guard from >= 0, x.count <= SpeakerModel.maxDims, y.count <= SpeakerModel.maxDims else { return 1 }
+        // Different feature spaces (e.g. a 13-dim MFCC fallback vs a 192-dim ECAPA centroid) are NOT
+        // comparable: a truncated cosine over min(count) dims is meaningless. Read as max dissimilarity
+        // so a mismatched fingerprint never merges into — or corrupts — a centroid of the other backend.
+        guard x.count == y.count else { return 1 }
         let n = min(x.count, y.count)
         guard from < n else { return 1 }
         var dot: Float = 0, nx: Float = 0, ny: Float = 0
