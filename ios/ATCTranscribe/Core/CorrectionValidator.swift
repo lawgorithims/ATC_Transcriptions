@@ -212,8 +212,18 @@ struct CorrectionValidator {
         "nine": "9", "niner": "9", "oh": "0",
     ]
     private func spokenDigits(_ s: String) -> [String] {
+        // Teens/tens words are protected too (M5 remediation): "fifteen"→"fifty" flips an
+        // altitude/speed value yet used to pass every guard (no numerals, no unit words on either
+        // side). Reuse the canonical ATCNormalize tables the same file already uses in
+        // phoneticSkeleton; whole-token matching means "attention" can never trip on "ten", and
+        // the "fourty" variant maps like "forty" so a spelling fix still passes.
         s.lowercased().split(whereSeparator: { !$0.isLetter })
-            .compactMap { Self.spokenDigitWords[String($0)] }
+            .compactMap { tok -> String? in
+                let w = String(tok)
+                if let d = Self.spokenDigitWords[w] { return d }                              // unit / oh
+                if let n = ATCNormalize.teens[w] ?? ATCNormalize.tens[w] { return String(n) } // 15 / 50
+                return nil
+            }
     }
 
     /// Clearance / instruction verbs are a protected semantic class: an edit may never add, remove,

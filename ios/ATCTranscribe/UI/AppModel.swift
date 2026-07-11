@@ -155,12 +155,13 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// True iff the remote URL is non-empty and parses as an http(s) endpoint (mirrors the guard in
-    /// `RemoteLLMCorrector.fromSettings`) — drives the Settings validity hint.
+    /// True iff the remote URL would actually be USED (mirrors `RemoteLLMCorrector.fromSettings`'s
+    /// transport policy: https anywhere, plain http only to a private/LAN host) — drives the
+    /// Settings validity hint, so it never says "enabled" for an endpoint the factory drops.
     var remoteFixerURLValid: Bool {
         let t = remoteFixerURL.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty, let u = URL(string: t) else { return false }
-        return u.scheme == "https" || u.scheme == "http"
+        return RemoteLLMCorrector.isEndpointAllowed(u)
     }
 
     // Confidence gate: only run the AI fixer when a transmission looks suspicious. `skipWhenConfident`

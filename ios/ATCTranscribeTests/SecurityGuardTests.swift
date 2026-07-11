@@ -79,6 +79,27 @@ final class SecurityGuardTests: XCTestCase {
         XCTAssertTrue(out.changed, "a non-safety mishear fix must still pass the guards")
     }
 
+    func testTeensAndTensWordSwapRejected() {
+        // M5 remediation: the spoken-digit guard used to know only unit words, so
+        // "fifteen"→"fifty" (an altitude/speed flip) passed every check. Permissive allowed-set
+        // so anti-hallucination can't be the rejector — the extended guard is.
+        let v = CorrectionValidator(allowed: ["fifteen", "fifty", "thirteen", "thirty"], phonetic: [:])
+        XCTAssertFalse(v.validate(raw: "climb and maintain fifteen hundred",
+                                  edits: edit("fifteen", "fifty"), backend: "remote-llm").changed,
+                       "fifteen→fifty flips a value and must be blocked")
+        XCTAssertFalse(v.validate(raw: "turn heading thirteen zero",
+                                  edits: edit("thirteen", "thirty"), backend: "remote-llm").changed,
+                       "thirteen→thirty must be blocked")
+    }
+
+    func testNonNumericEditNearTeensStillPasses() {
+        // CONTROL: teens elsewhere in the line must not block a benign fix.
+        let v = CorrectionValidator(allowed: ["contact", "tower"], phonetic: [:])
+        XCTAssertTrue(v.validate(raw: "fifteen miles out contact towerr",
+                                 edits: edit("towerr", "tower"), backend: "remote-llm").changed,
+                      "a benign fix near a teens word must still pass")
+    }
+
     // MARK: prompt sanitization
 
     func testWorldFrameStripsChatMLDelimiters() {

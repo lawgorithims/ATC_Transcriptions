@@ -94,4 +94,53 @@ final class CascadeCorrectorTests: XCTestCase {
         XCTAssertNotNil(RemoteLLMCorrector.fromSettings(knowledge: .shared, feedKey: nil))
         UserDefaults.standard.removeObject(forKey: "atc.remoteFixerURL")
     }
+
+    /// L7 remediation: https anywhere; plain http only to private/loopback hosts (the cockpit LAN
+    /// use case); everything else — plaintext to the public internet, weird schemes — rejected.
+    func testRemoteFromSettingsTransportPolicy() {
+        defer { UserDefaults.standard.removeObject(forKey: "atc.remoteFixerURL") }
+        let accepted = ["https://example.com/fix",
+                        "http://192.168.10.1/fix",
+                        "http://10.0.0.5:8080/fix",
+                        "http://172.16.0.2/fix",
+                        "http://172.31.255.254/fix",
+                        "http://127.0.0.1/fix",
+                        "http://localhost:11434/fix",
+                        "http://llmbox.local/fix"]
+        for url in accepted {
+            UserDefaults.standard.set(url, forKey: "atc.remoteFixerURL")
+            XCTAssertNotNil(RemoteLLMCorrector.fromSettings(knowledge: .shared, feedKey: nil),
+                            "\(url) should be accepted")
+        }
+        let rejected = ["http://example.com/fix",       // plaintext to the public internet
+                        "http://8.8.8.8/fix",
+                        "http://172.32.0.1/fix",        // just past the 172.16/12 boundary
+                        "http://192.169.0.1/fix",
+                        "httpfoo://example.com/fix",    // the old hasPrefix("http") hole
+                        "ftp://192.168.0.1/fix",
+                        "http://192.168.1/fix"]         // not a dotted quad
+        for url in rejected {
+            UserDefaults.standard.set(url, forKey: "atc.remoteFixerURL")
+            XCTAssertNil(RemoteLLMCorrector.fromSettings(knowledge: .shared, feedKey: nil),
+                         "\(url) should be rejected")
+        }
+    }
+
+    func testIsPrivateHostClassification() {
+        XCTAssertTrue(RemoteLLMCorrector.isPrivateHost("localhost"))
+        XCTAssertTrue(RemoteLLMCorrector.isPrivateHost("::1"))
+        XCTAssertTrue(RemoteLLMCorrector.isPrivateHost("llmbox.local"))
+        XCTAssertTrue(RemoteLLMCorrector.isPrivateHost("10.255.255.255"))
+        XCTAssertTrue(RemoteLLMCorrector.isPrivateHost("127.0.0.1"))
+        XCTAssertTrue(RemoteLLMCorrector.isPrivateHost("172.16.0.1"))
+        XCTAssertTrue(RemoteLLMCorrector.isPrivateHost("172.31.0.1"))
+        XCTAssertTrue(RemoteLLMCorrector.isPrivateHost("192.168.0.1"))
+        XCTAssertFalse(RemoteLLMCorrector.isPrivateHost("172.15.0.1"))
+        XCTAssertFalse(RemoteLLMCorrector.isPrivateHost("172.32.0.1"))
+        XCTAssertFalse(RemoteLLMCorrector.isPrivateHost("11.0.0.1"))
+        XCTAssertFalse(RemoteLLMCorrector.isPrivateHost("example.com"))
+        XCTAssertFalse(RemoteLLMCorrector.isPrivateHost("256.168.0.1"),
+                       "an out-of-range octet is not an IPv4 literal")
+        XCTAssertFalse(RemoteLLMCorrector.isPrivateHost(""))
+    }
 }

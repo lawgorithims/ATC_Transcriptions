@@ -122,6 +122,22 @@ final class ATCCorrectorTests: XCTestCase {
         XCTAssertEqual(r.edits.first?.reason, "phonetic match")
     }
 
+    func testPhoneticTieBreakIsDeterministic() async {
+        // M6 remediation: "golf" vs {"Gelf","Gilf"} — both share phonetic key "glf" and tie at
+        // ratio 0.75 (< the 0.84 stage-2 cutoff, ≥ the 0.62 phonetic floor), so stage 3 decides.
+        // Dictionary.keys iteration is per-process random, so without a tie-break the corrected
+        // fix/facility name differed run-to-run. The lexicographically LARGER normalized term
+        // must now win every time, in BOTH vocab orders.
+        for vocab in [["Gelf", "Gilf"], ["Gilf", "Gelf"]] {
+            for _ in 0..<50 {   // bounded repeat: shakes out ordering nondeterminism
+                let r = await det(vocab: vocab).correct("over golf intersection")
+                XCTAssertEqual(r.corrected, "over Gilf intersection",
+                               "the tie must resolve to the lexicographically larger term")
+                XCTAssertEqual(r.edits.first?.reason, "phonetic match")
+            }
+        }
+    }
+
     func testStopwordsAreProtected() async {
         // "right" is a stopword: never corrected even toward a close vocab term.
         let r = await det(vocab: ["Bright"]).correct("turn right")

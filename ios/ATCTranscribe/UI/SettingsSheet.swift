@@ -161,7 +161,8 @@ struct SettingsSheet: View {
                                 .keyboardType(.URL)
                                 .disabled(!model.correctionEnabled || model.llmBackend == .off)
                             if !model.remoteFixerURL.trimmingCharacters(in: .whitespaces).isEmpty {
-                                Label(model.remoteFixerURLValid ? "Cloud second-pass enabled" : "Not a valid http(s) URL — ignored",
+                                Label(model.remoteFixerURLValid ? "Cloud second-pass enabled"
+                                                                : "Needs https, or http on a private LAN host — ignored",
                                       systemImage: model.remoteFixerURLValid ? "checkmark.circle" : "exclamationmark.triangle")
                                     .font(.caption2)
                                     .foregroundStyle(model.remoteFixerURLValid ? p.accent : p.textDim)
