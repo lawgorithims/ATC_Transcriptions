@@ -229,6 +229,16 @@ final class AppModel: ObservableObject {
     /// Drives the map search sheet (top-bar magnifying glass). Transient.
     @Published var showMapSearch = false
 
+    // Electronic Flight Bag automation (Phase 4, suggest-and-confirm). A finished CONTROLLER transmission
+    // addressed to the pilot's own aircraft is parsed into at most one pending suggestion; NOTHING changes
+    // until the user taps Accept. `efbSuggestionsEnabled` lets the pilot silence the chips entirely.
+    @Published var efbSuggestion: EFBSuggestion?
+    @Published var efbSuggestionsEnabled = (UserDefaults.standard.object(forKey: "atc.efbSuggestions") as? Bool) ?? true {
+        didSet { UserDefaults.standard.set(efbSuggestionsEnabled, forKey: "atc.efbSuggestions") }
+    }
+    private var lastEFBRecordID: UUID?
+    private var efbCancellable: AnyCancellable?
+
     /// A search result / programmatic selection: center the map on it and open its info panel.
     func selectMapObject(_ o: IdentifiedObject) {
         mapFocus = o.coord
@@ -520,6 +530,12 @@ final class AppModel: ObservableObject {
         if let i = args.firstIndex(of: "--preview-proc"), i + 1 < args.count {
             previewedProcedure = CIFP.procedures(airport: args[i + 1]).first { $0.kind == "IAP" }
         }
+        // screenshot/demo: show a sample one-tap EFB suggestion banner (`--demo-efb`).
+        if args.contains("--demo-efb") {
+            efbSuggestion = EFBSuggestion.make(id: "demo",
+                                               command: ATCCommand(kind: .directTo, target: "BOSOX", qualifier: ""),
+                                               source: "commsight 3 4 5 cleared direct bosox")
+        }
 
         #if targetEnvironment(simulator)
         deviceLabel = "CPU (Simulator)"
@@ -687,6 +703,9 @@ final class AppModel: ObservableObject {
         self.feedKey = feedKey
         self.liveContext = context
         session.$records.assign(to: &$records)   // mirror live session state into the UI
+        // Phase 4: interpret each finished transmission for a one-tap EFB suggestion (fires only on the
+        // latest new record; the interpreter itself gates on controller-role + ownship, and only proposes).
+        efbCancellable = session.$records.sink { [weak self] recs in self?.interpretForEFB(recs) }
         session.$status.assign(to: &$status)
         session.$stats.assign(to: &$stats)
         session.$inputLevel.assign(to: &$inputLevel)
@@ -857,6 +876,71 @@ final class AppModel: ObservableObject {
     func pushFlightPlanContext() {
         session?.setFlightPlanContext(block: flightPlan?.contextBlock ?? "",
                                       vocab: flightPlan?.vocabTerms ?? [])
+    }
+
+    // MARK: - EFB command interpreter (Phase 4, suggest-and-confirm; NASA/JPL Power-of-10 style)
+
+    /// Interpret the most-recent finished transmission as a possible one-tap EFB suggestion. Fires only
+    /// for a CONTROLLER transmission addressed to the pilot's own aircraft, and only PROPOSES — accepting
+    /// is a separate tap (`acceptEFBSuggestion`). Every guard is a parameter/state check with recovery.
+    private func interpretForEFB(_ records: [TranscriptRecord]) {
+        guard efbSuggestionsEnabled else { return }
+        guard let latest = records.last else { return }
+        guard latest.id != lastEFBRecordID else { return }        // one interpretation per transmission
+        lastEFBRecordID = latest.id
+        guard latest.role == .controller else { return }   // content role (a clearance's text is controller)
+        guard let plan = flightPlan, !plan.callsign.isEmpty else { return }   // no ownship → never act
+        guard ATCCommandParser.addressesOwnship(subject: latest.callsign,
+                                                subjectKey: latest.callsignKey,
+                                                own: plan.callsign) else { return }
+        guard let command = ATCCommandParser.parse(latest.normalizedDisplay, knownFixes: efbKnownFixes()) else { return }
+        assert(!command.target.isEmpty, "parser returned an empty target")
+        efbSuggestion = EFBSuggestion.make(id: latest.id.uuidString, command: command, source: latest.display)
+    }
+
+    /// The grounded fix idents a direct-to suggestion may target: the active airport's coded-procedure
+    /// fixes plus the filed route's fixes. Uppercased. Both loops are statically capped (rule 2).
+    private func efbKnownFixes() -> Set<String> {
+        var fixes = Set<String>()
+        let ident = liveContext?.airportIdent ?? (airport.isEmpty ? "" : airport)
+        if !ident.isEmpty {
+            for fix in CIFP.fixes(airport: ident).prefix(1024) { fixes.insert(fix.uppercased()) }
+        }
+        if let plan = flightPlan {
+            for leg in plan.fullRoute.prefix(256) { fixes.insert(leg.ident.uppercased()) }
+        }
+        assert(fixes.count <= 4096, "known-fix set unexpectedly large")
+        return fixes
+    }
+
+    /// Apply the pending suggestion via existing, reversible mutators, then clear it. The kind switch is
+    /// exhaustive (total). Validates there is a suggestion + a non-empty target (rule 7).
+    func acceptEFBSuggestion() {
+        guard let suggestion = efbSuggestion else { return }
+        guard !suggestion.command.target.isEmpty else { efbSuggestion = nil; return }
+        switch suggestion.command.kind {
+        case .directTo:        directTo(suggestion.command.target)
+        case .clearedApproach: previewApproach(runway: suggestion.command.target)
+        }
+        Haptics.impact(.medium)
+        efbSuggestion = nil
+    }
+
+    /// Discard the pending suggestion without acting.
+    func dismissEFBSuggestion() { efbSuggestion = nil }
+
+    /// Preview the coded approach for `runway` at the active airport (Phase 5 will load it as the route).
+    /// Picks the first IAP whose runway matches; no-op if none. Bounded lookup (rule 2).
+    private func previewApproach(runway: String) {
+        guard !runway.isEmpty else { return }
+        let ident = liveContext?.airportIdent ?? (airport.isEmpty ? "" : airport)
+        guard !ident.isEmpty else { return }
+        let want = SlotSnap.parseDesignator(runway)
+        guard !want.num.isEmpty else { return }
+        for proc in CIFP.procedures(airport: ident).prefix(2048) where proc.kind == "IAP" {
+            let have = SlotSnap.parseDesignator(proc.runway)
+            if have.num == want.num, have.suffix == want.suffix { previewedProcedure = proc; return }
+        }
     }
 
     // MARK: Flight-plan edits from the map (tap an object → act on the route)
