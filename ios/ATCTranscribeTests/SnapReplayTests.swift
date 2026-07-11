@@ -164,4 +164,27 @@ final class SnapReplayTests: XCTestCase {
                       "no candidate list → no rewrite: \(record.display)")
         XCTAssertNotNil(record.callsignKey, "offline attribution behavior must be unchanged")
     }
+
+    /// H3 end-to-end: the conservative frequency policy holds through the REAL `process()`. Grounding
+    /// is pushed as a hard vicinity airport publishing 126.55; a handoff to the valid channel 127.55
+    /// (one digit away) must be shown AS HEARD, never rewritten to the published frequency.
+    func testReplayConservativeFrequencyPolicyThroughProcess() async throws {
+        let hyp = "delta 231 heavy contact tower one two seven point five five"
+        let (pipeline, _) = try makePipeline(script: [hyp])
+        await pipeline.setGroundingAirports(
+            hard: AirportContextData(ident: "KJFK", frequencies: ["TWR": [126.55]]), soft: [])
+
+        let audio = try goldAudio()
+        let maybeRecord = await pipeline.process(segment(audio))
+        let record = try XCTUnwrap(maybeRecord)
+        // A valid channel is left alone → no frequency edit is applied, so the display is the heard
+        // form ("...one two seven...") unchanged. Had the policy failed, it would have snapped to
+        // 126.55 (rendered "1 2 6 point 5 5") and carried a "frequency snap" correction.
+        XCTAssertTrue(record.display.lowercased().contains("seven"),
+                      "a valid heard frequency must survive as heard: \(record.display)")
+        XCTAssertFalse(record.display.contains("126") || record.display.contains("1 2 6"),
+                       "the correctly-heard frequency must NOT be rewritten to the published one: \(record.display)")
+        XCTAssertFalse(record.corrections.contains { $0.reason.contains("frequency") },
+                       "no frequency-snap edit may be applied to a valid channel")
+    }
 }
