@@ -109,8 +109,9 @@ final class ChartLibrary: ObservableObject {
     func ensureOnDisk(_ e: ChartCatalog.Entry) async -> URL? {
         let dst = localURL(e)
         if FileManager.default.fileExists(atPath: dst.path) { return dst }   // verified at write time
+        guard let remote = e.remote else { return nil }   // malformed path (L13) → pack simply unavailable
         do {
-            let (tmp, resp) = try await URLSession.shared.download(from: e.remote)
+            let (tmp, resp) = try await URLSession.shared.download(from: remote)
             guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return nil }
             try? FileManager.default.removeItem(at: dst)
             try FileManager.default.moveItem(at: tmp, to: dst)

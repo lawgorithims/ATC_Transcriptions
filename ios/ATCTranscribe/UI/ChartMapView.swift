@@ -74,9 +74,21 @@ final class MBTilesReader {
 final class MBTilesTileOverlay: MKTileOverlay {
     private let reader: MBTilesReader
     private let transcode: Bool
+    /// Per-overlay cache of transcoded PNGs, keyed "z/x/y" (L11). MapKit re-requests the same tiles
+    /// as you pan back and forth; without this the WEBP→PNG decode+encode ran on every revisit. One
+    /// overlay per reader/pack, so this frees with the overlay when a pack is evicted. NSCache is
+    /// thread-safe for MapKit's background tile queues and self-evicts under memory pressure.
+    private let pngCache: NSCache<NSString, NSData>?
     init(reader: MBTilesReader) {
         self.reader = reader
         self.transcode = (reader.format == "webp")
+        if transcode {
+            let c = NSCache<NSString, NSData>()
+            c.totalCostLimit = 48 * 1024 * 1024   // ~48 MB of decoded PNG per pack
+            pngCache = c
+        } else {
+            pngCache = nil                          // native PNG/JPEG packs need no transcode/cache
+        }
         super.init(urlTemplate: nil)
         canReplaceMapContent = false
         tileSize = CGSize(width: 256, height: 256)
@@ -84,9 +96,18 @@ final class MBTilesTileOverlay: MKTileOverlay {
         maximumZ = reader.maxZoom
     }
     override func loadTile(at path: MKTileOverlayPath, result: @escaping (Data?, Error?) -> Void) {
+        if transcode, let cache = pngCache {
+            let key = "\(path.z)/\(path.x)/\(path.y)" as NSString
+            if let hit = cache.object(forKey: key) { result(hit as Data, nil); return }
+            guard let raw = reader.tileData(z: path.z, x: path.x, y: path.y) else { result(nil, nil); return }
+            if let png = UIImage(data: raw)?.pngData() {           // MapKit renders PNG/JPEG natively
+                cache.setObject(png as NSData, forKey: key, cost: png.count)
+                result(png, nil)
+            } else { result(raw, nil) }                            // undecodable → raw fallthrough (old behavior)
+            return
+        }
         guard let raw = reader.tileData(z: path.z, x: path.x, y: path.y) else { result(nil, nil); return }
-        if transcode, let png = UIImage(data: raw)?.pngData() { result(png, nil) }
-        else { result(raw, nil) }
+        result(raw, nil)
     }
 }
 
@@ -115,7 +136,13 @@ struct ChartCatalog: Decodable {
             let ne = MKMapPoint(CLLocationCoordinate2D(latitude: bounds[3], longitude: bounds[2]))
             return MKMapRect(x: min(sw.x, ne.x), y: min(sw.y, ne.y), width: abs(ne.x - sw.x), height: abs(ne.y - sw.y))
         }
-        var remote: URL { URL(string: "\(ChartCatalog.base)/\(path)")! }
+        /// The download URL for this pack, or nil for a malformed `path` (L13). A path with spaces or
+        /// other URL-reserved characters falls back to percent-encoding; only genuinely un-encodable
+        /// input yields nil — which routes through the existing pack-unavailable path (no crash).
+        var remote: URL? {
+            let raw = "\(ChartCatalog.base)/\(path)"
+            return URL(string: raw) ?? raw.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed).flatMap(URL.init)
+        }
     }
 
     static let base = "https://huggingface.co/datasets/SingularityUS/faa-charts/resolve/main"
@@ -474,13 +501,13 @@ struct ChartMapView: UIViewRepresentable {
         var onVisibleRegion: ((MKMapRect) -> Void)?
         var onTapObjects: (([IdentifiedObject]) -> Void)?
         private var regionDebounce: DispatchWorkItem?
-        private var dynamic: [MKAnnotation] = []
+        private var trafficByKey: [String: TrafficAnnotation] = [:]  // keyed by Aircraft.hex (stable id) — diff, don't rebuild (L10)
+        private var ownshipAnn: OwnshipAnnotation?
         private var airspaceByKey: [String: MKPolygon] = [:]        // keyed so a settle diffs, never redraws all
         private var airspaceClass: [ObjectIdentifier: String] = [:]
         private var nearbyByKey: [String: NearbyAnnotation] = [:]   // keyed by NavPoint.id for the same reason
         private var contextGen = 0                                  // drops stale async refreshes (rapid panning)
-        private var lastTrafficKey: [String] = []
-        private var lastOwnship: CLLocationCoordinate2D?
+        private var probeGen = 0                                    // drops a superseded tap probe (L12) — double-tap debounce
         private let loc = CLLocationManager()
 
         func requestLocation() {
@@ -494,22 +521,22 @@ struct ChartMapView: UIViewRepresentable {
 
         @objc func handleTap(_ gr: UITapGestureRecognizer) {
             guard let mv = gr.view as? MKMapView else { return }
-            onTapObjects?(probeObjects(at: gr.location(in: mv), in: mv, radius: 24, userPoint: false))
+            beginProbe(at: gr.location(in: mv), in: mv, radius: 24, userPoint: false)
         }
 
         @objc func handleLongPress(_ gr: UILongPressGestureRecognizer) {
             guard gr.state == .began, let mv = gr.view as? MKMapView else { return }
-            onTapObjects?(probeObjects(at: gr.location(in: mv), in: mv, radius: 40, userPoint: true))   // press = drop a point
+            beginProbe(at: gr.location(in: mv), in: mv, radius: 40, userPoint: true)   // press = drop a point
         }
 
-        /// ForeFlight-style identify: convert the point to a coordinate, rank the point features (filed
-        /// route waypoints, navaids/airports/fixes near it, traffic) by on-screen distance, then append any
-        /// airspace whose polygon contains the point. Shared by tap (tight radius) and long-press (wider);
-        /// a long-press also drops a "user point" at the exact coordinate (first in the list).
-        private func probeObjects(at pt: CGPoint, in mv: MKMapView, radius: Double, userPoint: Bool) -> [IdentifiedObject] {
+        /// ForeFlight-style identify, split so the SLOW part runs OFF the main thread (L12). `beginProbe`
+        /// does only the cheap main-actor screen math (point→coordinate, the search box), then hops the
+        /// full-table `NavDatabase.nearby` scan + airspace containment off-main; `rankProbe` returns to
+        /// the main actor to finish the screen-distance ranking and deliver the result. A generation
+        /// counter drops a superseded probe — which also debounces a rapid double-tap to a single sheet.
+        private func beginProbe(at pt: CGPoint, in mv: MKMapView, radius: Double, userPoint: Bool) {
             let ll = mv.convert(pt, toCoordinateFrom: mv)
             let here = Coord(lat: ll.latitude, lon: ll.longitude)
-
             // Search box: the degree-span of ~2.5× the radius around the point, floored so a zoomed-in
             // view still has a non-degenerate box.
             let off = mv.convert(CGPoint(x: pt.x + radius * 2.5, y: pt.y + radius * 2.5), toCoordinateFrom: mv)
@@ -517,12 +544,28 @@ struct ChartMapView: UIViewRepresentable {
             let dLon = max(abs(ll.longitude - off.longitude), 0.002)
             let box = BBox(minLat: ll.latitude - dLat, minLon: ll.longitude - dLon,
                            maxLat: ll.latitude + dLat, maxLon: ll.longitude + dLon)
+            probeGen &+= 1
+            let gen = probeGen
+            Task.detached { [weak self] in
+                let nearby = NavDatabase.nearby(box, types: [0, 1, 2], limit: 40)        // full-table scan — off main
+                let airspaces = NavDatabase.airspaces(intersecting: box).filter { $0.containsCoord(here) }
+                await MainActor.run {
+                    guard let self, self.probeGen == gen else { return }   // a newer tap superseded this one
+                    self.rankProbe(pt: pt, here: here, radius: radius, userPoint: userPoint,
+                                   nearby: nearby, airspaces: airspaces, in: mv)
+                }
+            }
+        }
 
+        /// Finish the probe on the main actor: rank the point features (filed waypoints, the off-main
+        /// navaid/airport/fix hits, live traffic) by ON-SCREEN distance, then append the containing
+        /// airspaces and (for a long-press) the droppable user point first — orderings preserved verbatim.
+        private func rankProbe(pt: CGPoint, here: Coord, radius: Double, userPoint: Bool,
+                               nearby: [NavPoint], airspaces: [Airspace], in mv: MKMapView) {
             func screenDist(_ c: Coord) -> Double {
                 let p = mv.convert(CLLocationCoordinate2D(latitude: c.lat, longitude: c.lon), toPointTo: mv)
                 return Double(hypot(p.x - pt.x, p.y - pt.y))
             }
-
             var cands: [(object: IdentifiedObject, distance: Double)] = []
             var seen = Set<String>()
 
@@ -531,7 +574,7 @@ struct ChartMapView: UIViewRepresentable {
                 cands.append((IdentifiedObject(kind: k, ident: leg.ident, coord: leg.coord, onRoute: true), screenDist(leg.coord)))
                 seen.insert("\(k.rawValue)|\(leg.ident)")
             }
-            for np in NavDatabase.nearby(box, types: [0, 1, 2], limit: 40) {   // airports/navaids/fixes near the point
+            for np in nearby {                                        // airports/navaids/fixes near the point
                 let k = MapObjectKind(routeKind: np.kind)
                 let key = "\(k.rawValue)|\(np.ident)"
                 if seen.contains(key) { continue }
@@ -539,20 +582,20 @@ struct ChartMapView: UIViewRepresentable {
                 cands.append((IdentifiedObject(kind: k, ident: np.ident, coord: np.coord,
                                                onRoute: routeIdents.contains(np.ident)), screenDist(np.coord)))
             }
-            for a in dynamic.compactMap({ $0 as? TrafficAnnotation }) {         // live traffic
+            for a in trafficByKey.values {                                      // live traffic (L10)
                 let c = Coord(lat: a.coordinate.latitude, lon: a.coordinate.longitude)
                 cands.append((IdentifiedObject(kind: .traffic, ident: a.title ?? "Traffic", coord: c, onRoute: false, traffic: nil),
                               screenDist(c)))
             }
 
             var results = MapProbe.rank(cands, within: radius)
-            for asp in NavDatabase.airspaces(intersecting: box) where asp.containsCoord(here) {   // "you're inside Class B"
+            for asp in airspaces {   // "you're inside Class B" — containment already filtered off-main
                 results.append(IdentifiedObject(kind: .airspace, ident: asp.name, coord: here, onRoute: false, airspace: asp))
             }
             if userPoint {   // long-press: offer the exact pressed coordinate as a droppable waypoint, first
                 results.insert(IdentifiedObject(kind: .userPoint, ident: UserPoint.token(here), coord: here, onRoute: false), at: 0)
             }
-            return results
+            onTapObjects?(results)
         }
 
         /// With no filed route to frame, center on the device GPS fix once it arrives (Stratux, when
@@ -723,24 +766,44 @@ struct ChartMapView: UIViewRepresentable {
             }
         }
 
-        /// Rebuild traffic/ownship only when the aircraft/ownship set actually changed — not on every
-        /// updateUIView (which also fires as chart packs load in during a pan), so markers don't flicker.
+        /// Reconcile traffic/ownship IN PLACE, keyed on each aircraft's stable hex id (L10): survivors
+        /// get a KVO `coordinate` write (MapKit animates the marker gliding to its new position) and a
+        /// refreshed title/heading, departed aircraft are removed, and new ones added. The old code
+        /// removed + re-added EVERY annotation whenever any aircraft moved, so the whole field blinked
+        /// each ADS-B tick. Incoming is bounded (rule 2) and de-duped by hex.
         func syncDynamic(_ mv: MKMapView, aircraft: [Aircraft], ownship: Coord?) {
-            let key = aircraft.compactMap { ac -> String? in
-                guard let c = ac.coordinate else { return nil }
-                return "\(ac.label ?? "")|\(c.lat),\(c.lon)|\(ac.trackDeg ?? 0)"
+            var incoming: [String: Aircraft] = [:]
+            var order: [String] = []
+            for ac in aircraft.prefix(128) {                       // bound the field (rule 2)
+                guard ac.coordinate != nil, !ac.hex.isEmpty, incoming[ac.hex] == nil else { continue }
+                incoming[ac.hex] = ac; order.append(ac.hex)
             }
-            let own = ownship.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) }
-            if key == lastTrafficKey, own?.latitude == lastOwnship?.latitude, own?.longitude == lastOwnship?.longitude { return }
-            lastTrafficKey = key; lastOwnship = own
-            mv.removeAnnotations(dynamic); dynamic.removeAll()
-            for ac in aircraft {
-                guard let c = ac.coordinate else { continue }
+            let plan = TrafficReconcile.plan(existing: Set(trafficByKey.keys), incoming: order)
+            for hex in plan.remove {                               // departed
+                if let a = trafficByKey.removeValue(forKey: hex) { mv.removeAnnotation(a) }
+            }
+            for hex in plan.update {                               // survivors — move + refresh in place
+                guard let a = trafficByKey[hex], let ac = incoming[hex], let c = ac.coordinate else { continue }
+                a.coordinate = c.clCoordinate                      // @objc dynamic → animated glide
+                a.title = ac.label
+                let newTrack = ac.trackDeg ?? 0
+                if a.track != newTrack {
+                    a.track = newTrack
+                    // On-screen view: rotate now. Off-screen: viewFor applies a fresh transform on reuse.
+                    if let v = mv.view(for: a) {
+                        v.transform = CGAffineTransform(rotationAngle: CGFloat((newTrack - 90) * .pi / 180))
+                    }
+                }
+            }
+            for hex in plan.add {                                  // new arrivals
+                guard let ac = incoming[hex], let c = ac.coordinate else { continue }
                 let a = TrafficAnnotation(); a.coordinate = c.clCoordinate; a.title = ac.label; a.track = ac.trackDeg ?? 0
-                dynamic.append(a)
+                trafficByKey[hex] = a; mv.addAnnotation(a)
             }
-            if let ownship { let a = OwnshipAnnotation(); a.coordinate = ownship.clCoordinate; dynamic.append(a) }
-            mv.addAnnotations(dynamic)
+            if let ownship {                                       // ownship: move in place, or add once
+                if let a = ownshipAnn { a.coordinate = ownship.clCoordinate }
+                else { let a = OwnshipAnnotation(); a.coordinate = ownship.clCoordinate; ownshipAnn = a; mv.addAnnotation(a) }
+            } else if let a = ownshipAnn { mv.removeAnnotation(a); ownshipAnn = nil }
         }
 
         private static func disc(_ symbol: String, fill: UIColor, pt: CGFloat, d: CGFloat) -> UIImage {
@@ -800,6 +863,26 @@ final class TrafficAnnotation: NSObject, MKAnnotation {
     @objc dynamic var coordinate = CLLocationCoordinate2D()
     var title: String?
     var track: Double = 0
+}
+
+/// Pure set-diff for the live-traffic reconcile (L10) — which hex keys to add / remove / update
+/// in place — extracted from the MapKit-bound coordinator so it is unit-testable. `incoming` is
+/// assumed already de-duped and ordered; `remove` is sorted for deterministic output.
+enum TrafficReconcile {
+    struct Plan: Equatable {
+        var add: [String]
+        var remove: [String]
+        var update: [String]
+    }
+    static func plan(existing: Set<String>, incoming: [String]) -> Plan {
+        let incomingSet = Set(incoming)
+        var add: [String] = [], update: [String] = []
+        for hex in incoming {                       // preserve incoming order for add/update
+            if existing.contains(hex) { update.append(hex) } else { add.append(hex) }
+        }
+        let remove = existing.filter { !incomingSet.contains($0) }.sorted()
+        return Plan(add: add, remove: remove, update: update)
+    }
 }
 
 final class OwnshipAnnotation: NSObject, MKAnnotation {

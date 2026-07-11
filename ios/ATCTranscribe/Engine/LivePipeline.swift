@@ -15,7 +15,7 @@ enum RefinementState: String, Sendable {
 /// `live_atc_pipeline.LatencyRecord`. `text` is always the raw Whisper output;
 /// `corrected`/`corrections` carry the fast inline (deterministic) fix; `llmCorrected`/
 /// `llmEdits` carry the later background-LLM refinement (see `RefinementState`).
-struct TranscriptRecord: Sendable, Identifiable {
+struct TranscriptRecord: Sendable, Identifiable, Equatable {
     let id = UUID()
     let text: String
     let streamStartS: Double

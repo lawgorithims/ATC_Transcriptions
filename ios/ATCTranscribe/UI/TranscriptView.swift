@@ -6,25 +6,9 @@ import SwiftUI
 struct TranscriptCard: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.floatingSurface) private var floating   // true when hosted in a FloatingWidgetContainer
-    /// True while the user is pinned to the newest end (so we follow new transmissions); false once
-    /// they scroll into history (auto-scroll pauses, the jump-to-newest button appears).
-    @State private var atNewest = true
     /// Drives the squelch popover from the input-level meter, which now lives in this always-visible
     /// header (moved out of the old controls bar) so proof-of-audio survives collapsing the strips.
     @State private var showSquelch = false
-
-    /// Records in display order: filtered to one aircraft's conversation when a callsign filter is
-    /// active, then reversed (newest first) when the user prefers it.
-    private var orderedRecords: [TranscriptRecord] {
-        let base = model.callsignFilter.map { f in model.records.filter { $0.callsign == f } } ?? model.records
-        return model.transcriptNewestFirst ? Array(base.reversed()) : base
-    }
-
-    /// The id of the currently-newest RENDERED line (top in newest-first mode, else bottom) — the
-    /// auto-follow trigger, so it ignores the 500-record cap and off-filter arrivals.
-    private var newestRenderedID: TranscriptRecord.ID? {
-        model.transcriptNewestFirst ? orderedRecords.first?.id : orderedRecords.last?.id
-    }
 
     var body: some View {
         let p = model.palette
@@ -80,48 +64,18 @@ struct TranscriptCard: View {
             .padding(14)
             Rectangle().fill(p.border).frame(height: 1)
 
-            if let cs = model.callsignFilter {
-                HStack(spacing: 8) {
-                    Image(systemName: "line.3.horizontal.decrease.circle.fill").font(.caption)
-                    Text("Showing ").font(.caption).foregroundStyle(p.textDim)
-                        + Text(cs).font(.caption.weight(.semibold)).foregroundStyle(p.text)
-                        + Text("  ·  \(orderedRecords.count) msg\(orderedRecords.count == 1 ? "" : "s")")
-                            .font(.caption).foregroundStyle(p.textDim)
-                    Spacer(minLength: 4)
-                    Button("Clear") { model.callsignFilter = nil }
-                        .font(.caption.weight(.semibold)).foregroundStyle(p.accent).buttonStyle(.plain)
-                        .accessibilityIdentifier("callsign-filter-clear")
-                }
-                .foregroundStyle(p.accent)
-                .padding(.horizontal, 14).padding(.vertical, 8)
-                .background(p.accent.opacity(0.10))
-                Rectangle().fill(p.border).frame(height: 1)
-            }
-
             if model.records.isEmpty {
                 if model.loadingModel != nil { ModelLoadingView() }   // initial model load in progress
                 else { emptyState }
-            } else if orderedRecords.isEmpty {
-                filteredEmptyState                         // an active filter with zero matches
             } else {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(spacing: 0) {
-                            newestMarker(isTop: true)
-                            ForEach(orderedRecords) { TranscriptRow(record: $0) }
-                            newestMarker(isTop: false)
-                        }
-                    }
-                    // Follow new transmissions only while pinned to the newest end. Drive off the
-                    // RENDERED newest line's id (not records.count, which a 500-cap pins and which an
-                    // off-filter arrival jolts), so it fires exactly when the visible newest changes.
-                    .onChange(of: newestRenderedID) { _, _ in if atNewest { scrollToNewest(proxy) } }
-                    .onChange(of: model.transcriptNewestFirst) { _, _ in atNewest = true; scrollToNewest(proxy) }
-                    .onChange(of: model.callsignFilter) { _, _ in atNewest = true; scrollToNewest(proxy) }
-                    .overlay(alignment: model.transcriptNewestFirst ? .topTrailing : .bottomTrailing) {
-                        if !atNewest { jumpButton(proxy) }
-                    }
-                }
+                // The record list is an Equatable child (L9): its body — the O(n) filter/order pass,
+                // the ScrollViewReader, and the ForEach diff — re-runs ONLY when the records, the
+                // callsign filter, the sort order, or the theme actually change, not on every
+                // unrelated @Published tick from the several-per-second live-data storm.
+                TranscriptListSection(records: model.records, callsignFilter: model.callsignFilter,
+                                      newestFirst: model.transcriptNewestFirst, theme: model.theme,
+                                      onClearFilter: { model.callsignFilter = nil })
+                    .equatable()
             }
         }
         .frame(maxHeight: .infinity)
@@ -129,39 +83,6 @@ struct TranscriptCard: View {
         .background(floating ? Color.clear : p.surface)
         .clipShape(RoundedRectangle(cornerRadius: floating ? 0 : 12))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(p.border, lineWidth: floating ? 0 : 1))
-    }
-
-    /// A 1pt scroll anchor at one end of the list. The marker at the *newest* end (top when
-    /// newest-first, else bottom) drives `atNewest`: on screen → the user is following the latest
-    /// line; scrolled off → they're reading history, so auto-scroll pauses and the jump button shows.
-    @ViewBuilder private func newestMarker(isTop: Bool) -> some View {
-        Color.clear.frame(height: 1).id(isTop ? "top" : "bottom")
-            .onAppear { if isTop == model.transcriptNewestFirst { atNewest = true } }
-            .onDisappear { if isTop == model.transcriptNewestFirst { atNewest = false } }
-    }
-
-    /// Scroll to whichever end holds the newest transmission (top when newest-first, else bottom).
-    private func scrollToNewest(_ proxy: ScrollViewProxy) {
-        let newestIsTop = model.transcriptNewestFirst
-        withAnimation { proxy.scrollTo(newestIsTop ? "top" : "bottom", anchor: newestIsTop ? .top : .bottom) }
-    }
-
-    /// Floating button that snaps to the newest line — only shown while scrolled into history, and
-    /// pinned by the end where the newest line lives.
-    private func jumpButton(_ proxy: ScrollViewProxy) -> some View {
-        let p = model.palette
-        return Button { atNewest = true; scrollToNewest(proxy) } label: {
-            Image(systemName: model.transcriptNewestFirst ? "arrow.up.to.line" : "arrow.down.to.line")
-                .font(.system(size: 15, weight: .semibold))
-                .frame(width: 38, height: 38)
-                .background(p.accent).foregroundStyle(p.bg)
-                .clipShape(Circle())
-                .shadow(color: .black.opacity(0.25), radius: 6, y: 2)
-        }
-        .buttonStyle(.plain)
-        .padding(12)
-        .accessibilityIdentifier("transcript-jump-newest")
-        .accessibilityLabel("Jump to newest")
     }
 
     private var emptyState: some View {
@@ -175,15 +96,134 @@ struct TranscriptCard: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity).padding(40)
     }
+}
+
+/// The scrolling transcript list, extracted as an `Equatable` view (L9) so unrelated model publishes
+/// (input level, latency stats, transcribing flag, traffic…) don't re-run the O(n) order pass or the
+/// ForEach diff. It takes everything it renders as plain VALUES (records/filter/sort/theme) and one
+/// action closure — the closure is deliberately EXCLUDED from `==`, which compares the full records
+/// array (Array `==` fast-paths identical storage, so an unrelated publish that leaves records
+/// untouched costs O(1); a count+last.id shortcut would freeze an in-place refinement/relabel).
+/// `TranscriptRow` inside still reads the model via @EnvironmentObject, so individual rows self-update
+/// (a documented follow-up to make the row Equatable too).
+struct TranscriptListSection: View, Equatable {
+    let records: [TranscriptRecord]
+    let callsignFilter: String?
+    let newestFirst: Bool
+    let theme: AppTheme
+    var onClearFilter: () -> Void
+    /// True while the user is pinned to the newest end (so we follow new transmissions); false once
+    /// they scroll into history (auto-scroll pauses, the jump-to-newest button appears).
+    @State private var atNewest = true
+
+    static func == (a: TranscriptListSection, b: TranscriptListSection) -> Bool {
+        a.newestFirst == b.newestFirst && a.callsignFilter == b.callsignFilter
+            && a.theme == b.theme && a.records == b.records   // full compare — refinements repaint
+    }
+
+    /// Records in display order: filtered to one aircraft's conversation, then reversed if the user
+    /// prefers newest-first. Pure + static so it is unit-testable.
+    static func ordered(_ records: [TranscriptRecord], filter: String?, newestFirst: Bool) -> [TranscriptRecord] {
+        let base = filter.map { f in records.filter { $0.callsign == f } } ?? records
+        return newestFirst ? Array(base.reversed()) : base
+    }
+
+    private var orderedRecords: [TranscriptRecord] {
+        Self.ordered(records, filter: callsignFilter, newestFirst: newestFirst)
+    }
+
+    /// The id of the currently-newest RENDERED line (top in newest-first mode, else bottom) — the
+    /// auto-follow trigger, so it ignores the 500-record cap and off-filter arrivals.
+    private var newestRenderedID: TranscriptRecord.ID? {
+        newestFirst ? orderedRecords.first?.id : orderedRecords.last?.id
+    }
+
+    var body: some View {
+        let p = theme.palette
+        let ordered = orderedRecords
+        VStack(alignment: .leading, spacing: 0) {
+            if let cs = callsignFilter {
+                HStack(spacing: 8) {
+                    Image(systemName: "line.3.horizontal.decrease.circle.fill").font(.caption)
+                    Text("Showing ").font(.caption).foregroundStyle(p.textDim)
+                        + Text(cs).font(.caption.weight(.semibold)).foregroundStyle(p.text)
+                        + Text("  ·  \(ordered.count) msg\(ordered.count == 1 ? "" : "s")")
+                            .font(.caption).foregroundStyle(p.textDim)
+                    Spacer(minLength: 4)
+                    Button("Clear") { onClearFilter() }
+                        .font(.caption.weight(.semibold)).foregroundStyle(p.accent).buttonStyle(.plain)
+                        .accessibilityIdentifier("callsign-filter-clear")
+                }
+                .foregroundStyle(p.accent)
+                .padding(.horizontal, 14).padding(.vertical, 8)
+                .background(p.accent.opacity(0.10))
+                Rectangle().fill(p.border).frame(height: 1)
+            }
+
+            if ordered.isEmpty {
+                filteredEmptyState(p)                      // an active filter with zero matches
+            } else {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(spacing: 0) {
+                            newestMarker(isTop: true)
+                            ForEach(ordered) { TranscriptRow(record: $0) }
+                            newestMarker(isTop: false)
+                        }
+                    }
+                    // Follow new transmissions only while pinned to the newest end. Drive off the
+                    // RENDERED newest line's id (not records.count, which a 500-cap pins and which an
+                    // off-filter arrival jolts), so it fires exactly when the visible newest changes.
+                    .onChange(of: newestRenderedID) { _, _ in if atNewest { scrollToNewest(proxy) } }
+                    .onChange(of: newestFirst) { _, _ in atNewest = true; scrollToNewest(proxy) }
+                    .onChange(of: callsignFilter) { _, _ in atNewest = true; scrollToNewest(proxy) }
+                    .overlay(alignment: newestFirst ? .topTrailing : .bottomTrailing) {
+                        if !atNewest { jumpButton(proxy, p) }
+                    }
+                }
+            }
+        }
+        .frame(maxHeight: .infinity)
+    }
+
+    /// A 1pt scroll anchor at one end of the list. The marker at the *newest* end (top when
+    /// newest-first, else bottom) drives `atNewest`: on screen → the user is following the latest
+    /// line; scrolled off → they're reading history, so auto-scroll pauses and the jump button shows.
+    @ViewBuilder private func newestMarker(isTop: Bool) -> some View {
+        Color.clear.frame(height: 1).id(isTop ? "top" : "bottom")
+            .onAppear { if isTop == newestFirst { atNewest = true } }
+            .onDisappear { if isTop == newestFirst { atNewest = false } }
+    }
+
+    /// Scroll to whichever end holds the newest transmission (top when newest-first, else bottom).
+    private func scrollToNewest(_ proxy: ScrollViewProxy) {
+        withAnimation { proxy.scrollTo(newestFirst ? "top" : "bottom", anchor: newestFirst ? .top : .bottom) }
+    }
+
+    /// Floating button that snaps to the newest line — only shown while scrolled into history, and
+    /// pinned by the end where the newest line lives.
+    private func jumpButton(_ proxy: ScrollViewProxy, _ p: Palette) -> some View {
+        Button { atNewest = true; scrollToNewest(proxy) } label: {
+            Image(systemName: newestFirst ? "arrow.up.to.line" : "arrow.down.to.line")
+                .font(.system(size: 15, weight: .semibold))
+                .frame(width: 38, height: 38)
+                .background(p.accent).foregroundStyle(p.bg)
+                .clipShape(Circle())
+                .shadow(color: .black.opacity(0.25), radius: 6, y: 2)
+        }
+        .buttonStyle(.plain)
+        .padding(12)
+        .accessibilityIdentifier("transcript-jump-newest")
+        .accessibilityLabel("Jump to newest")
+    }
 
     /// Shown when a callsign filter is active but no transmission matches it (e.g. after switching
     /// feeds) — so the user sees why the list is empty instead of a blank box.
-    private var filteredEmptyState: some View {
-        let p = model.palette
-        return VStack(spacing: 10) {
+    private func filteredEmptyState(_ p: Palette) -> some View {
+        VStack(spacing: 10) {
             Image(systemName: "airplane.circle").font(.system(size: 30)).foregroundStyle(p.textDim.opacity(0.7))
-            Text("No messages for \(model.callsignFilter ?? "this aircraft") yet.").foregroundStyle(p.textDim)
-            Button("Clear filter") { model.callsignFilter = nil }
+            Text("No messages for \(callsignFilter ?? "this aircraft") yet.").foregroundStyle(p.textDim)
+            Button("Clear filter") { onClearFilter() }
                 .font(.caption.weight(.semibold)).foregroundStyle(p.accent).buttonStyle(.plain)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity).padding(40)

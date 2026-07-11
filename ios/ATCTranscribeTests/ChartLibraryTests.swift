@@ -70,7 +70,22 @@ final class ChartLibraryTests: XCTestCase {
         let ny = try XCTUnwrap(cat.sectional.first { $0.id == "New_York_SEC" })
         XCTAssertEqual(ny.bytes, 1_048_576)
         XCTAssertEqual(ny.path, "sectional/New_York_SEC.mbtiles")
-        XCTAssertTrue(ny.remote.absoluteString.hasSuffix("/sectional/New_York_SEC.mbtiles"))
+        let remote = try XCTUnwrap(ny.remote)   // L13: remote is now optional
+        XCTAssertTrue(remote.absoluteString.hasSuffix("/sectional/New_York_SEC.mbtiles"))
+    }
+
+    func testCatalogEntryWithSpacesPercentEncodesRatherThanNil() throws {
+        // L13: a path with a space is not a valid URL as-is — the fallback percent-encodes it so a
+        // real (if unusual) catalog entry still resolves to a non-nil URL instead of crashing.
+        let json = """
+        { "cycle": "2506", "sectional": [
+          { "id": "spacey", "bounds": [-74, 40, -73, 41], "bytes": 1, "path": "sectional/New York SEC.mbtiles" }
+        ], "ifrLow": [] }
+        """.data(using: .utf8)!
+        let cat = try JSONDecoder().decode(ChartCatalog.self, from: json)
+        let e = try XCTUnwrap(cat.sectional.first)
+        let remote = try XCTUnwrap(e.remote, "a space-bearing path must percent-encode, not return nil")
+        XCTAssertTrue(remote.absoluteString.contains("New%20York") || remote.absoluteString.contains("New York"))
     }
 
     func testEntryMapRectSelectsPacksARouteCrosses() throws {
