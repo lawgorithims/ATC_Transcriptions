@@ -11,6 +11,21 @@ struct PlateGeorefEntry {
     let rotationDeg: Double
     let rmsMeters: Double
     let inliers: Int
+
+    /// The invariants a HIGH-CONFIDENCE fit must satisfy — the exact predicate `build_plate_georef`
+    /// enforces before writing an entry, promoted into the runtime so a corrupted / hand-edited /
+    /// stale table can never place a mis-scaled or rotated plate in front of a pilot. Fails CLOSED:
+    /// anything outside these bounds → treated as "no georeference" → the pilot hand-aligns instead.
+    var isPlausible: Bool {
+        guard centerLat.isFinite, centerLon.isFinite, widthMeters.isFinite,
+              rotationDeg.isFinite, rmsMeters.isFinite else { return false }
+        guard abs(centerLat) <= 90, abs(centerLon) <= 180 else { return false }
+        guard widthMeters > 8_000, widthMeters < 250_000 else { return false }
+        guard abs(PlateSimilarity.normalizeDeg(rotationDeg)) < 12 else { return false }   // north-up prior
+        guard rmsMeters >= 0, rmsMeters < 250 else { return false }
+        guard inliers >= 3 else { return false }
+        return true
+    }
 }
 
 /// Bundled lookup of the offline plate-georeference table (`nav/plate_georef.json`, built by
@@ -21,10 +36,26 @@ enum PlateGeoref {
     private struct DTO: Decodable {
         let cycle: String
         let plates: [String: Entry]
+
         struct Entry: Decodable {
             let centerLat: Double; let centerLon: Double; let widthMeters: Double
             let rotationDeg: Double; let rmsMeters: Double; let inliers: Int
         }
+
+        /// One malformed/partial row must NOT collapse the whole table (F6): decode each entry
+        /// failably and drop only the bad ones. A wrapper whose `init` swallows a decode error.
+        private struct Failable: Decodable {
+            let entry: Entry?
+            init(from decoder: Decoder) throws { entry = try? Entry(from: decoder) }
+        }
+        private enum Key: String, CodingKey { case cycle, plates }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: Key.self)
+            cycle = (try? c.decode(String.self, forKey: .cycle)) ?? ""
+            let raw = (try? c.decode([String: Failable].self, forKey: .plates)) ?? [:]
+            plates = raw.compactMapValues { $0.entry }
+        }
+        init(cycle: String, plates: [String: Entry]) { self.cycle = cycle; self.plates = plates }
     }
     private static let data: DTO = load()
 
@@ -33,11 +64,15 @@ enum PlateGeoref {
     /// How many plates have a georeference (0 when the resource is absent).
     static var count: Int { data.plates.count }
 
-    /// The precomputed placement for a plate's PDF filename, or nil if it wasn't confidently fit.
+    /// The precomputed placement for a plate's PDF filename, or nil if it wasn't confidently fit OR
+    /// the stored entry fails the plausibility invariants (fail-closed — see `isPlausible`).
     static func lookup(pdf: String) -> PlateGeorefEntry? {
-        guard let e = data.plates[pdf] else { return nil }
-        return PlateGeorefEntry(centerLat: e.centerLat, centerLon: e.centerLon, widthMeters: e.widthMeters,
-                                rotationDeg: e.rotationDeg, rmsMeters: e.rmsMeters, inliers: e.inliers)
+        assert(!pdf.isEmpty, "lookup: empty pdf key")
+        guard !pdf.isEmpty, let e = data.plates[pdf] else { return nil }
+        let entry = PlateGeorefEntry(centerLat: e.centerLat, centerLon: e.centerLon, widthMeters: e.widthMeters,
+                                     rotationDeg: e.rotationDeg, rmsMeters: e.rmsMeters, inliers: e.inliers)
+        guard entry.isPlausible else { return nil }   // never trust a malformed / out-of-range fit
+        return entry
     }
 
     private static func load() -> DTO {
@@ -45,6 +80,7 @@ enum PlateGeoref {
             ?? Bundle.main.url(forResource: "plate_georef", withExtension: "json")
         guard let url, let d = try? Data(contentsOf: url),
               let dto = try? JSONDecoder().decode(DTO.self, from: d) else { return DTO(cycle: "", plates: [:]) }
+        assert(dto.plates.count >= 0)
         return dto
     }
 }

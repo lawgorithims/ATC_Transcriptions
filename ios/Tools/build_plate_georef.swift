@@ -61,19 +61,44 @@ var cifp: OpaquePointer?
 guard sqlite3_open_v2(cifpPath, &cifp, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else {
     FileHandle.standardError.write("cannot open cifp\n".data(using: .utf8)!); exit(1)
 }
-/// Distinct fix idents + coords for an airport's coded procedures.
+/// Distinct fix idents + coords for an airport's coded procedures. `ORDER BY` makes the row order —
+/// and therefore the coord chosen for a duplicate ident — DETERMINISTIC (run-to-run reproducible).
 func airportFixes(_ icao: String) -> [(id: String, lat: Double, lon: Double)] {
+    assert(!icao.isEmpty, "airportFixes: empty icao")
     var st: OpaquePointer?
-    let q = "SELECT DISTINCT l.fix, l.lat, l.lon FROM leg l JOIN procedure p ON l.procedure_id=p.id WHERE p.airport=?1 AND l.lat IS NOT NULL AND l.fix<>''"
+    let q = "SELECT DISTINCT l.fix, l.lat, l.lon FROM leg l JOIN procedure p ON l.procedure_id=p.id WHERE p.airport=?1 AND l.lat IS NOT NULL AND l.fix<>'' ORDER BY l.fix, l.lat, l.lon"
     guard sqlite3_prepare_v2(cifp, q, -1, &st, nil) == SQLITE_OK else { return [] }
     defer { sqlite3_finalize(st) }
     sqlite3_bind_text(st, 1, icao, -1, SQLITE_TRANSIENT_T)
     var out: [(String, Double, Double)] = []
+    var guardN = 0
     while sqlite3_step(st) == SQLITE_ROW {
+        guardN += 1; assert(guardN < 1_000_000, "airportFixes: runaway row count")
         guard let c = sqlite3_column_text(st, 0) else { continue }
         out.append((String(cString: c), sqlite3_column_double(st, 1), sqlite3_column_double(st, 2)))
     }
     return out
+}
+
+/// Build ident→coord map DETERMINISTICALLY (first row wins; `airportFixes` ORDER BY makes "first"
+/// reproducible run-to-run — the actual M2 bug). We deliberately do NOT drop an ident that appears at
+/// two coordinates: RANSAC's 450 m inlier gate already rejects a wrong/duplicate coord as an outlier,
+/// so keeping the deterministic first coord costs no correctness but preserves recall (dropping it
+/// silently lost otherwise-clean fits). Only a pathological >0.5° collision — the same ident naming two
+/// far-apart places, which even RANSAC could coincidentally consense — is dropped.
+func fixCoordMap(_ fixes: [(id: String, lat: Double, lon: Double)]) -> [String: (Double, Double)] {
+    var map: [String: (Double, Double)] = [:]
+    var pathological = Set<String>()
+    for f in fixes {
+        guard f.lat.isFinite, f.lon.isFinite, abs(f.lat) <= 90, abs(f.lon) <= 180 else { continue }
+        if let existing = map[f.id] {
+            if abs(existing.0 - f.lat) > 0.5 || abs(existing.1 - f.lon) > 0.5 { pathological.insert(f.id) }
+        } else {
+            map[f.id] = (f.lat, f.lon)
+        }
+    }
+    for id in pathological { map.removeValue(forKey: id) }
+    return map
 }
 /// Airport ENU origin = mean of its runway thresholds (always present, precise).
 func airportOrigin(_ icao: String) -> (lat: Double, lon: Double)? {
@@ -212,9 +237,16 @@ struct GeorefResult { let center: (lat: Double, lon: Double); let widthMeters: D
 /// an inlier if ANY of its pixel candidates lands within threshold; the best consensus wins, then a
 /// least-squares fit over the inlier pixels gives the final placement. Bounded loops throughout.
 func ransacGeoref(byFix: [String: [(px: SIMD2<Double>, world: SIMD2<Double>)]], W: Int, H: Int,
-                  lat0: Double, lon0: Double) -> GeorefResult? {
-    let ids = Array(byFix.keys)
+                  lat0: Double, lon0: Double, hasAirportOrigin: Bool) -> GeorefResult? {
+    assert(W > 1 && H > 1, "ransacGeoref: implausible image size")
+    assert(lat0.isFinite && lon0.isFinite, "ransacGeoref: non-finite origin")
+    // Bound the candidate explosion: a plate that OCRs many fix idents × many pixel occurrences makes
+    // the #fixes² × candidates² nest costly. Cap the idents considered and the pixels per ident.
+    let MAX_FIXES = 40, MAX_PX_PER_FIX = 12
+    let ids = Array(byFix.keys.sorted().prefix(MAX_FIXES))         // sorted → deterministic hypothesis order
     guard ids.count >= 2 else { return nil }
+    let capped = Dictionary(uniqueKeysWithValues: ids.map { ($0, Array(byFix[$0]!.prefix(MAX_PX_PER_FIX))) })
+    let byFix = capped
     let wD = Double(W), hD = Double(H)
     let inlierThreshM = 450.0
     var best: (inliers: Int, rms: Double, pts: [(px: SIMD2<Double>, world: SIMD2<Double>)])?
@@ -260,8 +292,14 @@ func ransacGeoref(byFix: [String: [(px: SIMD2<Double>, world: SIMD2<Double>)]], 
     // the plan view (upper-centre); a low-residual fit over the WRONG fixes (a coincidental cluster)
     // puts it outside the page or in the profile/margins. This is the discriminator that low rms +
     // few inliers alone miss.
+    // CRITICAL: this discriminator is only valid when the ENU origin IS the true airport (mean runway
+    // threshold). For no-runway airports (heliport/seaplane/missing CIFP runway rows) the origin falls
+    // back to an OCR'd corner tick, and testing "does the corner land in the plan view" is vacuously
+    // true — it would silently disable the primary false-positive guard (H1). Fail CLOSED: without a
+    // real airport origin, the plate cannot be confidently auto-aligned (still harvested for the corpus).
     let apPix = PlateSimilarity.worldToPixel(pl, imageW: wD, imageH: hD, east: 0, north: 0)
-    let airportInPlanView = apPix.x > 0.03 * wD && apPix.x < 0.97 * wD && apPix.y > 0.02 * hD && apPix.y < 0.68 * hD
+    let airportInPlanView = hasAirportOrigin
+        && apPix.x > 0.03 * wD && apPix.x < 0.97 * wD && apPix.y > 0.02 * hD && apPix.y < 0.68 * hD
     // North-up prior: EVERY FAA d-TPP plan view is drawn true-north-up, so a correct fit's rotation
     // must be ≈0 (a few degrees of OCR/label-offset noise). A large rotation means RANSAC locked onto
     // a coincidental cluster (e.g. a vertical column of fix names in a route table) — reject it. This
@@ -277,9 +315,40 @@ func ransacGeoref(byFix: [String: [(px: SIMD2<Double>, world: SIMD2<Double>)]], 
                         rms: rf.rmsMeters, inliers: b.inliers, spread: spread, confident: confident)
 }
 
+/// Shared georef derivation used by BOTH the OCR run and `--regeoref` (so re-deriving from the corpus
+/// applies the exact same gates as a fresh run). From an airport's fix map + (runway) origin + the
+/// plate's OCR text boxes, build pixel↔world control points and solve. Returns the result + the matched
+/// fix hits (for the corpus). Skips near-antimeridian origins (L3: linear ENU + avg(lon) break there).
+func computeGeoref(fixMap: [String: (Double, Double)], origin: (lat: Double, lon: Double)?,
+                   corner: (lat: Double, lon: Double)?, boxes: [TextBox], W: Int, H: Int)
+    -> (geo: GeorefResult?, fixHits: [(id: String, x: Int, y: Int, lat: Double, lon: Double)]) {
+    assert(W > 1 && H > 1, "computeGeoref: implausible image size")
+    let lat0 = origin?.lat ?? corner?.lat
+    let lon0 = origin?.lon ?? corner?.lon
+    guard let lat0, let lon0, lat0.isFinite, lon0.isFinite, abs(lat0) <= 90, abs(lon0) <= 179.5 else {
+        return (nil, [])
+    }
+    var byFix: [String: [(px: SIMD2<Double>, world: SIMD2<Double>)]] = [:]
+    var fixHits: [(id: String, x: Int, y: Int, lat: Double, lon: Double)] = []
+    var guardN = 0
+    for b in boxes {
+        guardN += 1; assert(guardN < 1_000_000, "computeGeoref: runaway box count")
+        let tok = b.t.trimmingCharacters(in: .whitespaces).uppercased()
+        guard isFixIdent(tok), let c = fixMap[tok] else { continue }
+        byFix[tok, default: []].append((SIMD2(Double(b.x), Double(b.y)), enu(lat: c.0, lon: c.1, lat0: lat0, lon0: lon0)))
+        fixHits.append((tok, b.x, b.y, c.0, c.1))
+    }
+    // hasAirportOrigin = a TRUE runway-derived origin (not a corner-tick fallback) → H1 gate.
+    let geo = ransacGeoref(byFix: byFix, W: W, H: H, lat0: lat0, lon0: lon0, hasAirportOrigin: origin != nil)
+    return (geo, fixHits)
+}
+
 // MARK: - JSON helpers (hand-rolled so numbers stay compact)
 
-func jnum(_ d: Double, _ p: Int = 6) -> String { String(format: "%.\(p)f", d) }
+// NaN/±Inf render as `nan`/`inf` under %f — INVALID JSON that would make the whole file unparseable
+// (and silently drop EVERY overlay). Emit 0 instead; upstream guards keep non-finite values out of
+// confident entries, so a 0 here only appears on already-rejected/diagnostic fields (M4).
+func jnum(_ d: Double, _ p: Int = 6) -> String { d.isFinite ? String(format: "%.\(p)f", d) : "0" }
 func jstr(_ s: String) -> String {
     var o = "\""
     for ch in s.unicodeScalars {
@@ -292,12 +361,68 @@ func jstr(_ s: String) -> String {
 // MARK: - run (RESUMABLE: ocr.jsonl is append-only + the source of truth; georef.json is derived
 // from it and re-flushed periodically, so a killed run resumes without reprocessing.)
 
-var georefEntries: [String] = []
+// georef entries keyed by PDF filename → dedup by construction (a shared/regional doc referenced by
+// many airports can only produce ONE key, so the JSON is never `{"X":{…},"X":{…}}`) (M1).
+var georefByPdf: [String: String] = [:]
 var done = Set<String>()
-func georefEntryString(pdf: String, airport: String, name: String, g: [String: Any]) -> String {
-    func n(_ k: String) -> Double { (g[k] as? Double) ?? 0 }
-    return "\(jstr(pdf)):{\"airport\":\(jstr(airport)),\"name\":\(jstr(name)),\"centerLat\":\(jnum(n("centerLat"))),\"centerLon\":\(jnum(n("centerLon"))),\"widthMeters\":\(jnum(n("widthMeters"),1)),\"rotationDeg\":\(jnum(n("rotationDeg"),2)),\"rmsMeters\":\(jnum(n("rmsMeters"),1)),\"inliers\":\(Int(n("inliers")))}"
+
+/// The distilled bundle-able entry BODY for a plate (no `"pdf":` prefix — the caller keys by pdf).
+func entryBody(airport: String, name: String, centerLat: Double, centerLon: Double,
+               widthMeters: Double, rotationDeg: Double, rmsMeters: Double, inliers: Int) -> String {
+    "{\"airport\":\(jstr(airport)),\"name\":\(jstr(name)),\"centerLat\":\(jnum(centerLat)),\"centerLon\":\(jnum(centerLon)),\"widthMeters\":\(jnum(widthMeters,1)),\"rotationDeg\":\(jnum(rotationDeg,2)),\"rmsMeters\":\(jnum(rmsMeters,1)),\"inliers\":\(inliers)}"
 }
+func flushGeoref() {
+    let body = georefByPdf.keys.sorted().map { "\(jstr($0)):\(georefByPdf[$0]!)" }.joined(separator: ",")
+    let json = "{\"cycle\":\(jstr(cycle)),\"plates\":{\(body)}}"
+    try? json.write(toFile: outPath, atomically: true, encoding: .utf8)
+}
+
+// Per-airport CIFP lookups are cached so `--regeoref` (and the airport-major run) query each airport once.
+var fixMapCache: [String: [String: (Double, Double)]] = [:]
+var originCache: [String: (lat: Double, lon: Double)?] = [:]
+func airportData(_ icao: String) -> (fixMap: [String: (Double, Double)], origin: (lat: Double, lon: Double)?) {
+    if let fm = fixMapCache[icao], let og = originCache[icao] { return (fm, og) }
+    let fm = fixCoordMap(airportFixes(icao)); let og = airportOrigin(icao)
+    fixMapCache[icao] = fm; originCache[icao] = og
+    return (fm, og)
+}
+
+// ---- --regeoref: re-derive plate_georef.json from the EXISTING OCR corpus under the CURRENT gates,
+//      WITHOUT re-rendering/re-OCR'ing (fast; reuses the expensive OCR). Then exit. ----
+if flag("--regeoref") {
+    guard let corpus = try? String(contentsOfFile: ocrOutPath, encoding: .utf8) else {
+        FileHandle.standardError.write("--regeoref: cannot read corpus \(ocrOutPath)\n".data(using: .utf8)!); exit(1)
+    }
+    var n = 0, conf = 0
+    for line in corpus.split(separator: "\n") {
+        guard let d = line.data(using: .utf8),
+              let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
+              let pdf = o["pdf"] as? String, let icao = o["airport"] as? String,
+              let W = o["imageW"] as? Int, let H = o["imageH"] as? Int, W > 1, H > 1,
+              let rawBoxes = o["ocr"] as? [[String: Any]] else { continue }
+        if let only = onlyAirport, icao != only { continue }
+        n += 1
+        let boxes = rawBoxes.compactMap { b -> TextBox? in
+            guard let t = b["t"] as? String, let x = b["x"] as? Int, let y = b["y"] as? Int else { return nil }
+            return TextBox(t: t, c: (b["c"] as? Double) ?? 1, x: x, y: y, w: (b["w"] as? Int) ?? 0, h: (b["h"] as? Int) ?? 0)
+        }
+        var corner: (lat: Double, lon: Double)?
+        if let cc = o["corner"] as? [String: Any], let la = cc["lat"] as? Double, let lo = cc["lon"] as? Double { corner = (la, lo) }
+        let ad = airportData(icao)
+        let (geo, _) = computeGeoref(fixMap: ad.fixMap, origin: ad.origin, corner: corner, boxes: boxes, W: W, H: H)
+        if let g = geo, g.confident {
+            georefByPdf[pdf] = entryBody(airport: icao, name: (o["name"] as? String) ?? "",
+                                         centerLat: g.center.lat, centerLon: g.center.lon, widthMeters: g.widthMeters,
+                                         rotationDeg: g.rotationDeg, rmsMeters: g.rms, inliers: g.inliers)
+            conf += 1
+        }
+        if n % 500 == 0 { FileHandle.standardError.write("  regeoref \(n), \(conf) confident\n".data(using: .utf8)!) }
+    }
+    flushGeoref()
+    FileHandle.standardError.write("REGEOREF DONE: \(n) plates re-derived, \(conf) confident -> \(outPath)\n".data(using: .utf8)!)
+    exit(0)
+}
+
 // Load prior progress from an existing corpus (resume).
 if let existing = try? String(contentsOfFile: ocrOutPath, encoding: .utf8) {
     for line in existing.split(separator: "\n") {
@@ -306,52 +431,41 @@ if let existing = try? String(contentsOfFile: ocrOutPath, encoding: .utf8) {
               let pdf = o["pdf"] as? String else { continue }
         done.insert(pdf)
         if let g = o["georef"] as? [String: Any], (g["confident"] as? Bool) == true {
-            georefEntries.append(georefEntryString(pdf: pdf, airport: (o["airport"] as? String) ?? "", name: (o["name"] as? String) ?? "", g: g))
+            func n(_ k: String) -> Double { (g[k] as? Double) ?? 0 }
+            georefByPdf[pdf] = entryBody(airport: (o["airport"] as? String) ?? "", name: (o["name"] as? String) ?? "",
+                                         centerLat: n("centerLat"), centerLon: n("centerLon"), widthMeters: n("widthMeters"),
+                                         rotationDeg: n("rotationDeg"), rmsMeters: n("rmsMeters"), inliers: Int(n("inliers")))
         }
     }
-    FileHandle.standardError.write("resume: \(done.count) plates already done, \(georefEntries.count) confident\n".data(using: .utf8)!)
+    FileHandle.standardError.write("resume: \(done.count) plates already done, \(georefByPdf.count) confident\n".data(using: .utf8)!)
+}
+// L1: a crash mid-write can leave a trailing partial line (no newline); appending would concatenate
+// the next record onto it. Truncate the corpus to the last COMPLETE line before we append.
+if let handle = FileHandle(forUpdatingAtPath: ocrOutPath), let all = try? Data(contentsOf: URL(fileURLWithPath: ocrOutPath)) {
+    if let lastNL = all.lastIndex(of: 0x0A), lastNL + 1 < all.count {
+        try? handle.truncate(atOffset: UInt64(lastNL + 1))
+    }
+    try? handle.close()
 }
 if !FileManager.default.fileExists(atPath: ocrOutPath) { FileManager.default.createFile(atPath: ocrOutPath, contents: nil) }
 let ocrOut = FileHandle(forWritingAtPath: ocrOutPath)!
 ocrOut.seekToEndOfFile()                                       // append
 var nDone = 0, nConfident = 0, nControlOK = 0
 
-func flushGeoref() {
-    let json = "{\"cycle\":\(jstr(cycle)),\"plates\":{\(georefEntries.joined(separator: ","))}}"
-    try? json.write(toFile: outPath, atomically: true, encoding: .utf8)
-}
-
 let airportsSorted = dtpp.airports.keys.sorted()
 outer: for icao in airportsSorted {
     if let only = onlyAirport, icao != only { continue }
-    let fixes = airportFixes(icao)
-    let fixMap = Dictionary(fixes.map { ($0.id, ($0.lat, $0.lon)) }, uniquingKeysWith: { a, _ in a })
-    let origin = airportOrigin(icao)
+    let ad = airportData(icao)
+
     for rec in dtpp.airports[icao] ?? [] {
         if let lim = limit, nDone >= lim { break outer }
         if done.contains(rec.f) { continue }                  // resume: skip already-processed
         guard let (cg, W, H) = plateImage(pdf: rec.f) else { continue }
         nDone += 1
+        done.insert(rec.f)                                    // M1: don't reprocess a shared PDF under other airports
         let boxes = ocr(cg, W: W, H: H)
         let corner = cornerLatLon(boxes)
-        let lat0 = origin?.lat ?? corner?.lat
-        let lon0 = origin?.lon ?? corner?.lon
-
-        // control-point candidates: EVERY OCR token that is one of this airport's coded fixes, with
-        // ALL its pixel occurrences (a fix repeats in the plan symbol, missed-approach track, profile,
-        // and minimums table). RANSAC below selects the geometrically-consistent plan-view cluster.
-        var byFix: [String: [(px: SIMD2<Double>, world: SIMD2<Double>)]] = [:]
-        var fixHits: [(id: String, x: Int, y: Int, lat: Double, lon: Double)] = []
-        if let lat0, let lon0 {
-            for b in boxes {
-                let tok = b.t.trimmingCharacters(in: .whitespaces).uppercased()
-                guard isFixIdent(tok), let c = fixMap[tok] else { continue }
-                byFix[tok, default: []].append((SIMD2(Double(b.x), Double(b.y)), enu(lat: c.0, lon: c.1, lat0: lat0, lon0: lon0)))
-                fixHits.append((tok, b.x, b.y, c.0, c.1))
-            }
-        }
-        var geo: GeorefResult?
-        if let lat0, let lon0 { geo = ransacGeoref(byFix: byFix, W: W, H: H, lat0: lat0, lon0: lon0) }
+        let (geo, fixHits) = computeGeoref(fixMap: ad.fixMap, origin: ad.origin, corner: corner, boxes: boxes, W: W, H: H)
         if geo != nil { nControlOK += 1 }
         if geo?.confident == true { nConfident += 1 }
 
@@ -367,14 +481,15 @@ outer: for icao in airportsSorted {
         line += ",\"ocr\":[" + boxes.map { "{\"t\":\(jstr($0.t)),\"c\":\(jnum($0.c,2)),\"x\":\($0.x),\"y\":\($0.y),\"w\":\($0.w),\"h\":\($0.h)}" }.joined(separator: ",") + "]}"
         ocrOut.write((line + "\n").data(using: .utf8)!)
 
-        // ---- distilled georef entry (bundle-able) ----
+        // ---- distilled georef entry (bundle-able, deduped by pdf) ----
         if let g = geo, g.confident {
-            georefEntries.append("\(jstr(rec.f)):{\"airport\":\(jstr(icao)),\"name\":\(jstr(rec.n)),\"centerLat\":\(jnum(g.center.lat)),\"centerLon\":\(jnum(g.center.lon)),\"widthMeters\":\(jnum(g.widthMeters,1)),\"rotationDeg\":\(jnum(g.rotationDeg,2)),\"rmsMeters\":\(jnum(g.rms,1)),\"inliers\":\(g.inliers)}")
+            georefByPdf[rec.f] = entryBody(airport: icao, name: rec.n, centerLat: g.center.lat, centerLon: g.center.lon,
+                                           widthMeters: g.widthMeters, rotationDeg: g.rotationDeg, rmsMeters: g.rms, inliers: g.inliers)
         }
-        if nDone % 25 == 0 { FileHandle.standardError.write("  +\(nDone) this run, \(georefEntries.count) confident total\n".data(using: .utf8)!) }
+        if nDone % 25 == 0 { FileHandle.standardError.write("  +\(nDone) this run, \(georefByPdf.count) confident total\n".data(using: .utf8)!) }
         if nDone % 200 == 0 { try? ocrOut.synchronize(); flushGeoref() }   // crash-safe checkpoint
     }
 }
 try? ocrOut.synchronize(); ocrOut.closeFile()
 flushGeoref()
-FileHandle.standardError.write("DONE: +\(nDone) this run, \(nControlOK) fitted, \(nConfident) newly confident, \(georefEntries.count) confident total -> \(outPath), corpus -> \(ocrOutPath)\n".data(using: .utf8)!)
+FileHandle.standardError.write("DONE: +\(nDone) this run, \(nControlOK) fitted, \(nConfident) newly confident, \(georefByPdf.count) confident total -> \(outPath), corpus -> \(ocrOutPath)\n".data(using: .utf8)!)

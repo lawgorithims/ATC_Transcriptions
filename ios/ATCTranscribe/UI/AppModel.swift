@@ -253,6 +253,13 @@ final class AppModel: ObservableObject {
     /// A plate (approach/departure PDF) superimposed on the home map as a hand-aligned REFERENCE
     /// overlay; nil = none. See `PlateOverlayState` — it is never a precise nav source.
     @Published var plateOverlay: PlateOverlayState?
+    /// Which bottom-bar tab is showing (Map / Plates). Switched to `.map` when a plate is sent to
+    /// the map so the pilot sees the overlay.
+    @Published var selectedTab: RootTab = .map
+    /// A transient one-shot: "open the Plates tab on this airport." Set by a map→Plates hand-off (or
+    /// the `--start-tab plates <ICAO>` QA arg); `PlatesTabView` CONSUMES it (applies it, then clears it
+    /// back to nil) so a repeat hand-off to the same airport still fires. nil = no pending request.
+    @Published var platesAirport: String?
     /// A coded procedure (approach/SID/STAR) drawn as a georeferenced overlay on the home map; nil = none.
     @Published var previewedProcedure: CIFPProcedure? {
         didSet { if didFinishInit, previewedProcedure?.id != oldValue?.id { resolvePreviewedProcedure() } }
@@ -308,11 +315,14 @@ final class AppModel: ObservableObject {
 
     // MARK: - Plate overlay (superimpose an approach plate on the map — reference aid)
 
-    /// Superimpose an approach/departure plate on the home map, auto-placed centered on the airport,
-    /// north-up, at a default scale — then the pilot fine-tunes (size/rotation/position/opacity) via
-    /// the `PlateControlBar`. A REFERENCE aid only: the bundled FAA index carries no georeferencing,
-    /// so this is never presented as survey-accurate. Rendering page 1 is a one-time cost on this
-    /// explicit tap. No-op if the airport has no known reference point or the PDF is unreadable.
+    /// Superimpose an approach/departure plate on the home map. When the plate has a precomputed,
+    /// plausibility-checked georeference (`PlateGeoref.lookup` — OCR'd fixes → CIFP coords → a solved
+    /// north-up placement), it auto-aligns to scale/position/rotation; otherwise it falls back to a
+    /// hand-aligned default centered on the airport. Either way it is a REFERENCE aid the pilot then
+    /// fine-tunes (size/rotation/position/opacity) via the `PlateControlBar` — never presented as
+    /// survey-accurate, and the auto-align caption asks the pilot to verify before use. Rendering
+    /// page 1 is a one-time cost on this explicit tap. No-op if neither a georeference nor an airport
+    /// reference point is known, or the PDF is unreadable.
     func overlayPlate(_ proc: AirportProcedure, airport: String, pdf: URL) {
         guard let img = PlateImageRenderer.firstPageImage(pdfURL: pdf) else { return }
         let aspect = Double(img.size.width / max(img.size.height, 1))
@@ -759,6 +769,12 @@ final class AppModel: ObservableObject {
                 self.overlayPlate(proc, airport: icao, pdf: url)
                 if let s = self.plateOverlay { self.mapFocus = Coord(lat: s.centerLat, lon: s.centerLon) }
             }
+        }
+        // QA/screenshot: open the app on a specific bottom tab (`--start-tab plates [KBOS]`).
+        if let i = args.firstIndex(of: "--start-tab"), i + 1 < args.count,
+           let tab = RootTab(rawValue: args[i + 1]) {
+            selectedTab = tab
+            if i + 2 < args.count, !args[i + 2].hasPrefix("-") { platesAirport = args[i + 2].uppercased() }
         }
         // screenshot/demo: show a sample one-tap EFB suggestion banner (`--demo-efb`).
         if args.contains("--demo-efb") {
