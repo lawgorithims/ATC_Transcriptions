@@ -73,6 +73,7 @@ struct PlatesTabView: View {
                             plate = nil
                         },
                         onClose: { plate = nil })
+                .environmentObject(model)
         }
         .onAppear { applyPendingOrDefault() }
         .onChange(of: model.platesAirport) { _, _ in applyPendingOrDefault() }
