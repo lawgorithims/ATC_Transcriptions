@@ -770,6 +770,15 @@ final class AppModel: ObservableObject {
                 if let s = self.plateOverlay { self.mapFocus = Coord(lat: s.centerLat, lon: s.centerLon) }
             }
         }
+        // QA/screenshot: open the tapped-airport card for an airport (`--preview-airport KATL`).
+        if let i = args.firstIndex(of: "--preview-airport"), i + 1 < args.count {
+            let icao = args[i + 1].uppercased()
+            if let c = AirportCoordinates.coordinate(icao: icao) {
+                Task { @MainActor [weak self] in
+                    self?.selectMapObject(IdentifiedObject(kind: .airport, ident: icao, coord: c, onRoute: false))
+                }
+            }
+        }
         // QA/screenshot: open the app on a specific bottom tab (`--start-tab plates [KBOS]`).
         if let i = args.firstIndex(of: "--start-tab"), i + 1 < args.count,
            let tab = RootTab(rawValue: args[i + 1]) {
