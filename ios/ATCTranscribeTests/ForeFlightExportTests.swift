@@ -166,6 +166,35 @@ final class ForeFlightExportTests: XCTestCase {
                        "hostile tokens must not create extra query items")
     }
 
+    // MARK: performance tokens (tail + altitude)
+
+    func testPerformanceTokensTailAndAltitude() {
+        var plan = basePlan()
+        plan.callsign = "N8925T"
+        plan.cruiseAltitudeFt = 16_000
+        XCTAssertEqual(ForeFlightExport.performanceTokens(for: plan), ["N8925T", "16000ft"])
+        XCTAssertEqual(ForeFlightExport.url(for: plan)?.absoluteString,
+                       "foreflightmobile://maps/search?q=KMSP+GEP+KAMMA+KORD+N8925T+16000ft")
+    }
+
+    func testPerformanceTokensDropUnusableValues() {
+        var plan = basePlan()
+        plan.callsign = "Jet Blue 1234"          // spaces → not a tail ForeFlight can match
+        plan.cruiseAltitudeFt = 0                // unset sentinel
+        XCTAssertTrue(ForeFlightExport.performanceTokens(for: plan).isEmpty)
+        plan.callsign = "VERYLONGCALL"           // > 8 chars → dropped
+        plan.cruiseAltitudeFt = 99_000           // beyond sanity bound → dropped
+        XCTAssertTrue(ForeFlightExport.performanceTokens(for: plan).isEmpty)
+    }
+
+    func testPerformanceTokensNeverMakeAnUnsendableRouteSendable() {
+        var single = FlightPlan()
+        single.destination = "KORD"
+        single.callsign = "N8925T"
+        single.cruiseAltitudeFt = 8000
+        XCTAssertNil(ForeFlightExport.url(for: single), "route itself still needs ≥2 tokens")
+    }
+
     // MARK: hand-off guard
 
     func testShouldHandoffOnRealAmendment() {

@@ -40,6 +40,34 @@ final class FlightPlanTests: XCTestCase {
         XCTAssertTrue(r.route.isEmpty)
     }
 
+    func testParsePreservesUserWaypointTokens() {
+        // A map-dropped waypoint is stored as "lat,lon" — the dotted-route separators (, .) must
+        // not shred it, or any flight-plan-strip edit silently destroys the waypoint.
+        let r = FlightPlan.parseRoute("KMSP 42.100,-71.300 KORD")
+        XCTAssertEqual(r.departure, "KMSP")
+        XCTAssertEqual(r.destination, "KORD")
+        XCTAssertEqual(r.route, ["42.100,-71.300"], "the lat,lon token must survive verbatim")
+        // …while a dotted ForeFlight route still splits normally.
+        let dotted = FlightPlan.parseRoute("KDFW./.BLECO.Q105..KAUS")
+        XCTAssertEqual(dotted.route, ["BLECO", "Q105"])
+    }
+
+    func testReconcileDropsOrphanedProcedures() {
+        var plan = FlightPlan()
+        plan.departure = "KMSP"; plan.destination = "KORD"
+        plan.departureProcedure = LoadedProcedure(airport: "KMSP", kind: "SID", ident: "S1", name: "S",
+                                                  runway: "", transition: "", fixes: ["A"])
+        plan.arrivalProcedure = LoadedProcedure(airport: "KORD", kind: "STAR", ident: "T1", name: "T",
+                                                runway: "", transition: "", fixes: ["B"])
+        plan.reconcileProceduresWithEndpoints()
+        XCTAssertNotNil(plan.departureProcedure, "matching SID survives")
+        XCTAssertNotNil(plan.arrivalProcedure, "matching STAR survives")
+        plan.departure = "KSTP"; plan.destination = "KMDW"   // pilot re-typed the route
+        plan.reconcileProceduresWithEndpoints()
+        XCTAssertNil(plan.departureProcedure, "SID at KMSP is stale for a KSTP departure")
+        XCTAssertNil(plan.arrivalProcedure, "STAR at KORD is stale for a KMDW arrival")
+    }
+
     // MARK: context block
 
     func testContextBlockOmitsEmptyFields() {
@@ -136,6 +164,25 @@ final class FlightPlanTests: XCTestCase {
         XCTAssertEqual(loaded?.callsign, "N345AB")
         XCTAssertEqual(loaded?.departure, "KDFW")
         XCTAssertEqual(loaded?.route, ["BLECO", "Q105"])
+    }
+
+    /// A pre-altitude persisted plan (no `cruiseAltitudeFt` key) must still decode — the field is
+    /// optional Codable, mirroring the procedure slots.
+    func testOldPlanWithoutAltitudeStillDecodes() throws {
+        let old = #"{"aircraftType":"","callsign":"N345AB","departure":"KDFW","destination":"KAUS","alternate":"","route":["BLECO"],"savedAt":700000000}"#
+        let plan = try JSONDecoder().decode(FlightPlan.self, from: Data(old.utf8))
+        XCTAssertNil(plan.cruiseAltitudeFt)
+        XCTAssertEqual(plan.callsign, "N345AB")
+    }
+
+    func testAltitudeRoundTripsAndCountsAsContent() {
+        var plan = FlightPlan()
+        plan.cruiseAltitudeFt = 16_000
+        XCTAssertFalse(plan.isEmpty, "an altitude alone is content — must not be dropped by editPlan")
+        plan.save()
+        XCTAssertEqual(FlightPlan.load()?.cruiseAltitudeFt, 16_000)
+        XCTAssertTrue(plan.contextBlock.contains("cruising 16000 feet"),
+                      "altitude grounds the corrector's context block")
     }
 
     func testSavingEmptyPlanClearsStorage() {

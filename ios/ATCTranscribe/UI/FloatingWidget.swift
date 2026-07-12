@@ -37,8 +37,15 @@ enum FloatingWidgetKind: String, Codable, CaseIterable, Identifiable {
     /// Performance/device-load panels — never shown by default.
     var isDiagnostic: Bool { self == .latency || self == .diagnostics }
 
-    /// `objectInfo` isn't user-addable — it appears only when a map object is tapped.
-    var userManageable: Bool { self != .objectInfo }
+    /// `objectInfo` isn't user-addable — it appears only when a map object is tapped. Retired
+    /// kinds are hidden from the Widgets menu too.
+    var userManageable: Bool { self != .objectInfo && !retired }
+
+    /// Kinds that no longer exist as widgets. `.flightPlan` moved to the flight-plan STRIP under
+    /// the top bar (the briefcase toggle). The enum case must STAY — `WidgetLayout` decodes its
+    /// items atomically, so deleting the case would fail the whole decode of every user's saved
+    /// layout and silently reset it to defaults. Retired frames are dropped at load instead.
+    var retired: Bool { self == .flightPlan }
 }
 
 // MARK: - Persisted layout
@@ -86,8 +93,10 @@ struct WidgetLayout: Codable, Equatable {
 
     static func load() -> WidgetLayout? {
         guard let data = UserDefaults.standard.data(forKey: storageKey),
-              let layout = try? JSONDecoder().decode(WidgetLayout.self, from: data),
+              var layout = try? JSONDecoder().decode(WidgetLayout.self, from: data),
               !layout.items.isEmpty else { return nil }
+        layout.items.removeAll { $0.kind.retired }   // flight plan is a strip now, not a card
+        guard !layout.items.isEmpty else { return nil }
         return layout
     }
 
@@ -99,11 +108,11 @@ struct WidgetLayout: Codable, Equatable {
 
     static func clear() { UserDefaults.standard.removeObject(forKey: storageKey) }
 
-    /// Fresh-install layout: transcript + flight plan + performance check visible; diagnostics OFF.
+    /// Fresh-install layout: transcript + performance check visible; diagnostics OFF. (The flight
+    /// plan is the strip under the top bar now — no card.)
     static func defaults() -> WidgetLayout {
         WidgetLayout(items: [
             WidgetFrame(kind: .transcript,  anchor: .bottomLeading, offset: .zero, size: CGSize(width: 380, height: 460), opacity: 0.92, visible: true,  pinned: false, z: 1),
-            WidgetFrame(kind: .flightPlan,  anchor: .topLeading,    offset: .zero, size: CGSize(width: 340, height: 150), opacity: 0.92, visible: true,  pinned: false, z: 2),
             WidgetFrame(kind: .objectInfo,  anchor: .trailing,      offset: .zero, size: CGSize(width: 340, height: 440), opacity: 0.95, visible: false, pinned: false, z: 6),
             WidgetFrame(kind: .proofOfLife, anchor: .bottomTrailing, offset: .zero, size: CGSize(width: 300, height: 150), opacity: 0.90, visible: true,  pinned: false, z: 3),
             WidgetFrame(kind: .stratux,     anchor: .topTrailing,   offset: .zero, size: CGSize(width: 300, height: 190), opacity: 0.90, visible: false, pinned: false, z: 4),

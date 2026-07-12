@@ -197,7 +197,8 @@ final class AppModel: ObservableObject {
 
     // Electronic Flight Bag: the filed flight plan (ForeFlight-style). Persisted as JSON; whenever
     // it changes, its context block is packed into the live correction layer (both LLM backends)
-    // and saved. `showFlightBag` drives the briefcase editor sheet.
+    // and saved. Edited LIVE in the flight-plan strip (`FlightPlanBar`) — there is no Save button,
+    // the strip's debounced commits land here directly.
     @Published var flightPlan: FlightPlan? = FlightPlan.load() {
         didSet {
             if let fp = flightPlan { fp.save() } else { FlightPlan.clear() }
@@ -208,13 +209,24 @@ final class AppModel: ObservableObject {
                 syncEONET()
                 if flightPlan != oldValue { hazardDismissedIDs.removeAll(); refreshHazardAlert() }
             }
+            if flightPlan != oldValue { refreshTripStats() }   // strip's DIST/ETE/ETA/FUEL row
         }
     }
-    @Published var showFlightBag = false
+
+    // The pilot's saved aircraft (the strip's callsign box menu). Selecting one copies its
+    // callsign/type into the filed plan — the plan remains the single source the EFB ownship gate
+    // and corrector grounding read. Persisted as JSON (AircraftStore).
+    @Published var aircraftProfiles: [AircraftProfile] = AircraftStore.load() {
+        didSet { AircraftStore.save(aircraftProfiles) }
+    }
+
+    /// The ForeFlight-style trip overview for the filed route (DIST always; ETE/ETA/FUEL when the
+    /// selected aircraft has performance numbers). Recomputed off-main whenever the plan changes.
+    @Published private(set) var tripStats: TripStats?
+    private var tripStatsEpoch = 0
     /// Drives the full-screen route map (`RouteMapSheet`) — the filed route, the selectable FAA chart
-    /// layer, and live traffic. Transient (not persisted); opened from the flight-plan strip's Map button
-    /// or the flight-bag editor. An `eonetActive` input (the sheet shows hazards even when the
-    /// home-map background is off).
+    /// layer, and live traffic. Transient (not persisted); opened from the flight-plan strip's Map
+    /// button. An `eonetActive` input (the sheet shows hazards even when the home-map background is off).
     @Published var showRouteMap = false {
         didSet { if didFinishInit, showRouteMap != oldValue { syncEONET() } }
     }
@@ -794,6 +806,7 @@ final class AppModel: ObservableObject {
         // first `.active` scene-phase change a no-op). Harmless when everything is off.
         syncTraffic()
         syncEONET()      // same launch edge for a restored hazards toggle
+        refreshTripStats()   // seed the flight-plan strip's stats row from the restored plan
         // Pause the live home map under thermal pressure so it never starves on-device transcription.
         NotificationCenter.default.addObserver(forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
             let hot = ProcessInfo.processInfo.thermalState.rawValue >= ProcessInfo.ThermalState.serious.rawValue
@@ -1287,7 +1300,7 @@ final class AppModel: ObservableObject {
         guard let plan = flightPlan, !plan.isEmpty else { return nil }    // state check (rule 7)
         let sendable = ForeFlightExport.sendablePlan(plan)
         let name = [plan.departure, plan.destination].filter { !$0.isEmpty }.joined(separator: " ")
-        return await Task.detached(priority: .utility) {
+        let url: URL? = await Task.detached(priority: .utility) {
             _ = NavDatabase.count                                         // warm the nav DB off-main
             let legs = ProcedureRoute.resolve(sendable)
             let xml = ForeFlightExport.fplXML(for: legs, routeName: name.isEmpty ? "CommSight Route" : name)
@@ -1296,6 +1309,8 @@ final class AppModel: ObservableObject {
             do { try xml.write(to: dest, atomically: true, encoding: .utf8) } catch { return nil }
             return dest
         }.value
+        guard !Task.isCancelled else { return nil }   // a newer plan superseded this build (.task id changed)
+        return url
     }
 
     /// Load the coded approach for `runway` at the active airport into the flight plan (EFB "cleared for
@@ -1351,6 +1366,103 @@ final class AppModel: ObservableObject {
     func setDeparture(_ ident: String) { editPlan { $0.setDeparture(ident) } }
     func setDestination(_ ident: String) { editPlan { $0.setDestination(ident) } }
     func removeFromRoute(_ ident: String) { editPlan { $0.removeWaypoint(ident) } }
+
+    // MARK: Flight-plan strip (live editing — no Save button)
+
+    /// Commit the strip's free-form route string to the filed plan: "KMSP GEP GOPHR1 KORD" parses
+    /// into departure / enroute / destination (`FlightPlan.parseRoute`, the same tolerant grammar
+    /// as the old paste box). Everything else on the plan (callsign, aircraft, altitude, loaded
+    /// procedures) is preserved. Mirrors the old editor's side effect: an empty live-feed airport
+    /// context is prefilled from the departure so the corrector grounds immediately.
+    func commitRouteString(_ text: String) {
+        let parsed = FlightPlan.parseRoute(text)
+        editPlan { p in
+            p.departure = parsed.departure ?? ""
+            p.destination = parsed.destination ?? ""
+            p.route = parsed.route
+            p.savedAt = Date()
+            p.reconcileProceduresWithEndpoints()   // typed edit re-anchors → stale procedures drop
+        }
+        if airport.isEmpty, let dep = parsed.departure, !dep.isEmpty { airport = dep }
+    }
+
+    /// Set the planned cruise altitude from the strip's altitude box (nil clears it).
+    func setCruiseAltitude(_ feet: Int?) {
+        let bounded = feet.map { min(max($0, 0), 60_000) }                // sanity bound (rule 7)
+        editPlan { $0.cruiseAltitudeFt = (bounded ?? 0) > 0 ? bounded : nil }
+    }
+
+    /// Set the alternate airport from the strip's alternate box (empty clears it).
+    func setAlternate(_ ident: String) {
+        let id = ident.trimmingCharacters(in: .whitespaces).uppercased()
+        guard id.count <= 8 else { return }                               // sanity bound (rule 7)
+        editPlan { $0.alternate = id }
+    }
+
+    /// The saved aircraft matching the filed callsign (drives the strip chip's checkmark + the
+    /// trip-stats performance numbers).
+    var selectedAircraft: AircraftProfile? {
+        guard let callsign = flightPlan?.callsign, !callsign.isEmpty else { return nil }
+        return aircraftProfiles.first { $0.callsign.caseInsensitiveCompare(callsign) == .orderedSame }
+    }
+
+    /// Fly `profile`: copy its callsign/type into the filed plan (the single source the EFB
+    /// ownship gate + corrector grounding read) and refresh the stats its performance drives.
+    func selectAircraft(_ profile: AircraftProfile) {
+        guard !profile.isEmpty else { return }                            // param check (rule 7)
+        editPlan { p in
+            p.callsign = profile.callsign.uppercased()
+            p.aircraftType = profile.type
+        }
+        refreshTripStats()                                                // perf numbers changed
+    }
+
+    /// Add or update a profile (matched by id), then fly it. Bounded by the store cap — a NEW
+    /// profile at the cap is rejected outright (not silently selected-but-unsaved, which would
+    /// leave the plan's callsign pointing at a profile that doesn't exist).
+    func saveAircraft(_ profile: AircraftProfile) {
+        guard !profile.isEmpty else { return }                            // param check (rule 7)
+        if let i = aircraftProfiles.firstIndex(where: { $0.id == profile.id }) {
+            aircraftProfiles[i] = profile
+        } else if aircraftProfiles.count < AircraftStore.maxProfiles {
+            aircraftProfiles.append(profile)
+        } else {
+            return                                                        // hangar full → reject whole save
+        }
+        selectAircraft(profile)
+    }
+
+    /// Remove a profile from the hangar (the filed plan's callsign is left as-is — the plan, not
+    /// the hangar, is the source of truth for the current flight). Stats refresh because the
+    /// deleted profile's cruise/burn numbers may have been feeding ETE/FUEL.
+    func deleteAircraft(_ profile: AircraftProfile) {
+        aircraftProfiles.removeAll { $0.id == profile.id }
+        refreshTripStats()
+    }
+
+    /// Recompute the trip-stats row OFF-MAIN (route resolution parses the nav DB / CIFP). Epoch
+    /// discards a superseded async build (same pattern as `refreshEFBGrounding`); it is bumped
+    /// BEFORE the empty-plan early-out so clearing the plan also invalidates any build in flight.
+    /// Distance is computed over the SENDABLE plan (approach + orphaned procedures dropped) so
+    /// DIST matches the route actually handed to ForeFlight — the raw plan would add the coded
+    /// approach INCLUDING its missed-approach segment to the total.
+    func refreshTripStats() {
+        tripStatsEpoch += 1
+        guard let plan = flightPlan, !plan.isEmpty else { tripStats = nil; return }
+        let epoch = tripStatsEpoch
+        let sendable = ForeFlightExport.sendablePlan(plan)
+        let kts = selectedAircraft?.cruiseKts
+        let gph = selectedAircraft?.burnGPH
+        Task {
+            let stats = await Task.detached(priority: .utility) {
+                _ = NavDatabase.count                                     // warm the nav DB off-main
+                let points = ProcedureRoute.resolve(sendable).map(\.coord)
+                return TripStats.compute(points: points, cruiseKts: kts, burnGPH: gph)
+            }.value
+            guard epoch == tripStatsEpoch else { return }                 // superseded → discard
+            tripStats = stats
+        }
+    }
 
     // MARK: Chart prefetch (background — so the map opens instantly)
 

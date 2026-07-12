@@ -26,6 +26,7 @@ struct ConsoleView: View {
                 // The Input strip (source picker + setup) is the one genuinely bar-shaped control; it stays
                 // as a toggleable strip under the top bar. Everything else is now a floating widget.
                 if model.showInputBar { InputBar().transition(Self.barTransition) }
+                if model.showFlightPlanBar { FlightPlanBar().transition(Self.barTransition) }
                 if let proc = model.previewedProcedure { procedureStrip(proc) }
                 if let sug = model.efbSuggestion { efbSuggestionBanner(sug) }
                 if let hz = model.hazardAlert, !hz.isEmpty { hazardBanner(hz) }
@@ -36,9 +37,6 @@ struct ConsoleView: View {
         .preferredColorScheme(model.theme == .day ? .light : .dark)
         .sheet(isPresented: $model.showSettings) {
             SettingsSheet().environmentObject(model).environmentObject(downloads)
-        }
-        .sheet(isPresented: $model.showFlightBag) {
-            FlightBagSheet().environmentObject(model)
         }
         .sheet(isPresented: $model.showWhatsNew) {
             WhatsNewSheet().environmentObject(model)
@@ -265,6 +263,7 @@ struct TopBar: View {
             HStack(spacing: barSpacing) {
                 toggle(p, "slider.horizontal.3", on: model.showInputBar,
                        id: "input-toggle", label: "Input controls") { model.showInputBar.toggle() }
+                flightPlanToggle(p)   // briefcase — the ForeFlight-style flight-plan strip
                 iconButton(p, "magnifyingglass", id: "map-search", label: "Search") { Haptics.impact(.light); model.showMapSearch = true }
                 MapLayersMenu(iconSize: iconSize).foregroundStyle(p.text)   // base map + overlays
                 WidgetsMenu(iconSize: iconSize).foregroundStyle(p.text)     // show/hide floating widgets
@@ -590,14 +589,33 @@ struct StratuxStatusChip: View {
 
 // MARK: - Flight-plan strip
 
-/// The filed flight plan shown as the full, colour-coded route (departure → fixes/airways →
-/// destination), or a prompt to file one. Airports are purple-pink, VOR navaids green, RNAV/GPS
-/// fixes blue, airways amber. The route is greyed until the on-device AI context (the fixer GGUF)
-/// has downloaded — until then the plan can't actually bias corrections. The briefcase heading icon
-/// toggles this strip; the Edit button opens the Electronic Flight Bag editor. (Was carousel page 2.)
+/// THE flight-plan editor — a ForeFlight-style FPL panel as a collapsible strip (briefcase toggle):
+/// aircraft + altitude boxes on the left, the free-form route field with live colour-coded entity
+/// chips in the middle (airports purple-pink, VORs green, RNAV/GPS fixes blue, airways amber),
+/// actions on the right, and the DIST/ETE/ETA/FUEL/WIND trip overview beneath. Edits commit LIVE
+/// (debounced) to `AppModel.flightPlan` — there is no Save button, so Send-to-ForeFlight always
+/// sends exactly what's on screen. Replaces the old flight-bag popup editor and flight-plan widget.
 struct FlightPlanBar: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var downloads: ModelDownloadManager
+    @Environment(\.horizontalSizeClass) private var hSize
+
+    // Strip-local editing state, reconciled with the model on every plan change — see
+    // `reconcileWithModel` for who wins when a clearance lands while the pilot is typing.
+    @State private var routeText = ""
+    @State private var altitudeText = ""
+    @State private var alternateText = ""
+    @State private var editingAircraft: AircraftProfile?
+    @State private var confirmClear = false
+    @State private var fplURL: URL?
+    @State private var commitTask: Task<Void, Never>?
+    @FocusState private var routeFocused: Bool
+    @FocusState private var altitudeFocused: Bool
+    @FocusState private var alternateFocused: Bool
+
+    /// Debounce for live route commits — long enough to type between fixes, short enough that the
+    /// plan (grounding, map, Send) is current the moment the pilot pauses.
+    static let commitDelayNS: UInt64 = 800_000_000
 
     private var contextReady: Bool {
         if case .ready = downloads.state(ModelCatalog.llm.id) { return true }
@@ -606,87 +624,376 @@ struct FlightPlanBar: View {
 
     var body: some View {
         let p = model.palette
-        VStack(alignment: .leading, spacing: 5) {
-            if let fp = model.flightPlan, !fp.fullRoute.isEmpty {
-                HStack(spacing: 8) {
-                    Image(systemName: "briefcase.fill").font(.caption2).foregroundStyle(p.textDim)
-                    if !fp.callsign.isEmpty {
-                        Text(fp.callsign).font(.caption.weight(.semibold)).foregroundStyle(p.text)
-                    }
-                    if !fp.aircraftType.isEmpty {
-                        Text(fp.aircraftType).font(.caption2).foregroundStyle(p.textDim).lineLimit(1)
-                    }
-                    Spacer(minLength: 4)
-                    if fp.isStale {
-                        Label("Update", systemImage: "exclamationmark.triangle.fill")
-                            .font(.caption2.weight(.semibold)).foregroundStyle(p.warn)
-                    } else if !contextReady {
-                        Label("AI context downloading", systemImage: "arrow.down.circle")
-                            .font(.caption2).foregroundStyle(p.textDim)
-                    }
-                    mapButton(p)
-                    editButton(p)
-                }
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 5) {
-                        ForEach(Array(fp.fullRoute.enumerated()), id: \.offset) { i, leg in
-                            if i > 0 {
-                                Image(systemName: "chevron.compact.right")
-                                    .font(.caption2).foregroundStyle(p.textDim.opacity(0.5))
-                            }
-                            Text(leg.ident)
-                                .font(.caption.weight(.semibold).monospaced())
-                                .foregroundStyle(contextReady ? legColor(leg.kind, p) : p.textDim.opacity(0.7))
-                        }
-                    }
-                    .padding(.trailing, 16)
-                }
-                .opacity(contextReady ? 1 : 0.55)
-            } else {
-                HStack(spacing: 10) {
-                    Image(systemName: "briefcase.fill").font(.callout).foregroundStyle(p.textDim)
-                    Text("No flight plan filed").font(.caption).foregroundStyle(p.textDim)
-                    Spacer(minLength: 0)
-                    mapButton(p)
-                    editButton(p)
-                }
-            }
+        Group {
+            if hSize == .compact { compactContent(p) } else { regularContent(p) }
         }
-        .padding(.horizontal, 16).padding(.vertical, 10)
+        .padding(.horizontal, 14).padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(p.bg)
         .barSeparator(p)
         .accessibilityIdentifier("flight-plan-bar")
-    }
-
-    /// Opens the Electronic Flight Bag editor sheet (the briefcase heading icon only toggles the strip).
-    private func editButton(_ p: Palette) -> some View {
-        Button {
-            Haptics.impact(.light)
-            model.showFlightBag = true
-        } label: {
-            Label("Edit", systemImage: "square.and.pencil")
-                .font(.caption2.weight(.semibold)).foregroundStyle(p.accent)
+        .onAppear { syncFromModel() }
+        .onChange(of: model.flightPlan) { _, _ in reconcileWithModel() }
+        .onChange(of: routeText) { _, text in scheduleRouteCommit(text) }
+        .onChange(of: routeFocused) { _, focused in if !focused { commitRouteNow() } }
+        .onChange(of: altitudeFocused) { _, focused in if !focused { commitAltitude() } }
+        .onChange(of: alternateFocused) { _, focused in if !focused { commitAlternate() } }
+        .task(id: model.flightPlan) { fplURL = await model.writeFPLFile() }
+        .sheet(item: $editingAircraft) { AircraftSheet(profile: $0).environmentObject(model) }
+        .alert("Clear flight plan?", isPresented: $confirmClear) {
+            Button("Clear", role: .destructive) { model.flightPlan = nil }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Removes the route, altitude, and loaded procedures. Saved aircraft are kept.")
         }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("flight-plan-edit")
-        .accessibilityLabel("Edit flight plan")
     }
 
-    /// Opens the full-screen route map — the filed route (magenta line + waypoints) with live traffic.
-    private func mapButton(_ p: Palette) -> some View {
-        Button {
-            Haptics.impact(.light)
-            model.showRouteMap = true
-        } label: {
-            Label("Map", systemImage: "map").font(.caption2.weight(.semibold)).foregroundStyle(p.accent)
+    /// iPad / regular width — the ForeFlight FPL arrangement: boxes left, route center, actions right.
+    private func regularContent(_ p: Palette) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 10) {
+                VStack(spacing: 6) {
+                    aircraftChip(p)
+                    altitudeBox(p)
+                    alternateBox(p)
+                }
+                .frame(width: 150)
+                centerColumn(p)
+                rightColumn(p)
+            }
+            statsRow(p)
         }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("flight-plan-map")
-        .accessibilityLabel("View route on map")
     }
 
-    /// Colour per route-leg kind (see the user's spec: airports purple-pink, VOR green, GPS blue).
+    /// iPhone / compact width — the same pieces stacked so nothing clips at 320–430pt.
+    private func compactContent(_ p: Palette) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                aircraftChip(p)
+                altitudeBox(p)
+                alternateBox(p)
+            }
+            centerColumn(p)
+            HStack(spacing: 10) {
+                if model.foreflightEnabled { sendButton(p) }
+                Spacer(minLength: 4)
+                actionIcons(p)
+            }
+            ScrollView(.horizontal, showsIndicators: false) { statsRow(p) }
+        }
+    }
+
+    // MARK: left column — aircraft + altitude (the ForeFlight boxes)
+
+    /// The callsign box: shows the filed aircraft; tapping picks another saved aircraft or adds one.
+    private func aircraftChip(_ p: Palette) -> some View {
+        Menu {
+            ForEach(model.aircraftProfiles) { profile in
+                Button {
+                    Haptics.impact(.light)
+                    model.selectAircraft(profile)
+                } label: {
+                    Label(profile.displayLine,
+                          systemImage: model.selectedAircraft?.id == profile.id ? "checkmark" : "airplane")
+                }
+            }
+            if !model.aircraftProfiles.isEmpty { Divider() }
+            Button { editingAircraft = AircraftProfile() } label: {
+                Label("Add aircraft…", systemImage: "plus")
+            }
+            if let selected = model.selectedAircraft {
+                Button { editingAircraft = selected } label: {
+                    Label("Edit \(selected.callsign)…", systemImage: "pencil")
+                }
+            }
+        } label: {
+            box(p) {
+                HStack(spacing: 6) {
+                    Image(systemName: "airplane").font(.caption2).foregroundStyle(p.textDim)
+                    Text(model.flightPlan?.callsign.isEmpty == false
+                         ? model.flightPlan!.callsign : "Aircraft")
+                        .font(.caption.weight(.semibold).monospaced())
+                        .foregroundStyle(model.flightPlan?.callsign.isEmpty == false ? p.text : p.textDim)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.down").font(.caption2).foregroundStyle(p.textDim)
+                }
+            }
+        }
+        .accessibilityIdentifier("plan-aircraft")
+        .accessibilityLabel("Aircraft")
+    }
+
+    /// The cruise-altitude box, e.g. "16000 ft". Commits on focus loss / collapse / Send (the
+    /// number pad has no return key, so there is no submit event to hook).
+    private func altitudeBox(_ p: Palette) -> some View {
+        box(p) {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.up.forward").font(.caption2).foregroundStyle(p.textDim)
+                TextField("Altitude", text: $altitudeText)
+                    .textFieldStyle(.plain).keyboardType(.numberPad)
+                    .font(.caption.weight(.semibold).monospaced())
+                    .focused($altitudeFocused)
+                    .accessibilityIdentifier("plan-altitude")
+                Text("ft").font(.caption2).foregroundStyle(p.textDim)
+            }
+        }
+    }
+
+    /// The alternate-airport box (the plan's `alternate` — grounding + the old editor's field).
+    private func alternateBox(_ p: Palette) -> some View {
+        box(p) {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.triangle.branch").font(.caption2).foregroundStyle(p.textDim)
+                TextField("Alternate", text: $alternateText)
+                    .textFieldStyle(.plain).autocorrectionDisabled()
+                    .textInputAutocapitalization(.characters)
+                    .font(.caption.weight(.semibold).monospaced())
+                    .focused($alternateFocused)
+                    .onSubmit { commitAlternate() }
+                    .accessibilityIdentifier("plan-alternate")
+            }
+        }
+    }
+
+    // MARK: center — the free-form route field + live entity chips
+
+    private func centerColumn(_ p: Palette) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            box(p) {
+                HStack(spacing: 6) {
+                    Image(systemName: "point.topleft.down.to.point.bottomright.curvepath")
+                        .font(.caption2).foregroundStyle(p.textDim)
+                    TextField("Route — e.g. KMSP GEP KAMMA KORD", text: $routeText)
+                        .textFieldStyle(.plain).autocorrectionDisabled()
+                        .textInputAutocapitalization(.characters)
+                        .font(.caption.weight(.semibold).monospaced())
+                        .focused($routeFocused)
+                        .onSubmit { commitRouteNow() }
+                        .accessibilityIdentifier("plan-route")
+                    if !routeText.isEmpty || model.flightPlan != nil {   // clearable even when only
+                        Button { Haptics.impact(.light); confirmClear = true } label: {  // altitude/procedures remain
+                            Image(systemName: "xmark.circle.fill").font(.caption).foregroundStyle(p.textDim)
+                        }
+                        .buttonStyle(.plain).accessibilityIdentifier("plan-clear")
+                    }
+                }
+            }
+            chipsRow(p)
+        }
+    }
+
+    /// The recognized entities of the committed plan as colour-coded pills (the ForeFlight look) +
+    /// any loaded SID/STAR/approach as clearable chips. Recognition is `RouteLeg.classify` — KXXX
+    /// airports, 3-letter VORs, 5-letter fixes, letter+digit airways — applied as soon as a commit
+    /// lands (typing pause / return / focus loss).
+    private func chipsRow(_ p: Palette) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 5) {
+                if let fp = model.flightPlan {
+                    ForEach(Array(fp.fullRoute.enumerated()), id: \.offset) { i, leg in
+                        if i > 0 {
+                            Image(systemName: "chevron.compact.right")
+                                .font(.caption2).foregroundStyle(p.textDim.opacity(0.5))
+                        }
+                        Text(leg.ident)
+                            .font(.caption.weight(.semibold).monospaced())
+                            .foregroundStyle(legColor(leg.kind, p))
+                            .padding(.horizontal, 6).padding(.vertical, 2)
+                            .background(Capsule().fill(legColor(leg.kind, p).opacity(0.14)))
+                    }
+                    ForEach(fp.loadedProcedures, id: \.kind) { proc in
+                        HStack(spacing: 4) {
+                            Image(systemName: "point.topleft.down.to.point.bottomright.curvepath")
+                                .font(.caption2)
+                            Text(proc.displayLine).font(.caption2.weight(.semibold)).lineLimit(1)
+                            Button { Haptics.impact(.light); model.clearLoadedProcedure(kind: proc.kind) } label: {
+                                Image(systemName: "xmark.circle.fill").font(.caption2)
+                            }
+                            .buttonStyle(.plain).accessibilityIdentifier("clear-loaded-\(proc.kind)")
+                        }
+                        .foregroundStyle(p.accent)
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Capsule().fill(p.accent.opacity(0.14)))
+                    }
+                } else {
+                    Text("Type a route above — airports, fixes, VORs, and airways are recognized as you go.")
+                        .font(.caption2).foregroundStyle(p.textDim)
+                }
+            }
+            .padding(.trailing, 16)
+        }
+        .frame(minHeight: 18)
+    }
+
+    // MARK: right column — actions
+
+    private func rightColumn(_ p: Palette) -> some View {
+        VStack(alignment: .trailing, spacing: 6) {
+            if model.foreflightEnabled { sendButton(p) }
+            actionIcons(p)
+        }
+    }
+
+    /// The small action icons (.fpl share / map / collapse) — shared by both layouts.
+    private func actionIcons(_ p: Palette) -> some View {
+        HStack(spacing: 10) {
+            if let fplURL {
+                ShareLink(item: fplURL) {
+                    Image(systemName: "square.and.arrow.up").font(.caption).foregroundStyle(p.accent)
+                }
+                .buttonStyle(.plain).accessibilityIdentifier("plan-share-fpl")
+            }
+            Button { Haptics.impact(.light); model.showRouteMap = true } label: {
+                Image(systemName: "map").font(.caption).foregroundStyle(p.accent)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("flight-plan-map").accessibilityLabel("View route on map")
+            Button {
+                Haptics.impact(.light)
+                commitPendingEdits()   // the number-pad altitude has no submit — don't lose it
+                withAnimation(.easeInOut(duration: 0.22)) { model.showFlightPlanBar = false }
+            } label: {
+                Image(systemName: "checkmark").font(.caption.weight(.semibold)).foregroundStyle(p.accent)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("plan-bar-done").accessibilityLabel("Collapse flight plan")
+        }
+    }
+
+    /// One-tap hand-off of the CURRENT strip contents (pending edits are committed first).
+    private func sendButton(_ p: Palette) -> some View {
+        let enabled = model.offersForeFlight && model.flightPlan != nil
+        return Button {
+            Haptics.impact(.medium)
+            commitPendingEdits()
+            model.openInForeFlight()
+        } label: {
+            Label("ForeFlight", systemImage: "paperplane.fill")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(enabled ? .white : p.textDim)
+                .padding(.horizontal, 12).padding(.vertical, 6)
+                .background(Capsule().fill(enabled ? p.accent : p.surfaceAlt))
+        }
+        .buttonStyle(.plain).disabled(!enabled)
+        .accessibilityIdentifier("plan-send-foreflight")
+    }
+
+    // MARK: stats row — the ForeFlight trip overview
+
+    /// DIST / ETE / ETA / FUEL / WIND, exactly like ForeFlight's FPL header. ETE/FUEL need the
+    /// selected aircraft's cruise speed / burn (edit the aircraft to set them); WIND has no
+    /// offline data source, so it reads "–" just as ForeFlight does without wind data.
+    private func statsRow(_ p: Palette) -> some View {
+        HStack(alignment: .top, spacing: 18) {
+            stat(p, "DIST", model.tripStats?.distanceText ?? "–")
+            stat(p, "ETE", model.tripStats?.eteText ?? "–")
+            TimelineView(.everyMinute) { context in
+                stat(p, "ETA", model.tripStats?.etaText(from: context.date) ?? "–")
+            }
+            stat(p, "FUEL", model.tripStats?.fuelText ?? "–")
+            stat(p, "WIND", "–")
+            Spacer(minLength: 4)
+            if model.flightPlan?.isStale == true {
+                Label("Update plan", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption2.weight(.semibold)).foregroundStyle(p.warn)
+            } else if model.flightPlan != nil, !contextReady {
+                Label("AI context downloading", systemImage: "arrow.down.circle")
+                    .font(.caption2).foregroundStyle(p.textDim)
+            }
+        }
+        .accessibilityIdentifier("plan-stats")
+    }
+
+    private func stat(_ p: Palette, _ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 1) {
+            Text(label).font(.system(size: 9, weight: .semibold)).foregroundStyle(p.textDim)
+            Text(value).font(.caption.weight(.semibold).monospaced()).foregroundStyle(p.text)
+        }
+    }
+
+    // MARK: commit plumbing (live editing — no Save button)
+
+    /// The committed plan as the route string the field shows (dep + enroute + dest).
+    private var canonicalRoute: String {
+        guard let fp = model.flightPlan else { return "" }
+        return ([fp.departure] + fp.route + [fp.destination]).filter { !$0.isEmpty }.joined(separator: " ")
+    }
+
+    /// Pull the model's state into the fields — skipped for a field the pilot is typing in.
+    private func syncFromModel() {
+        if !routeFocused { routeText = canonicalRoute }
+        if !altitudeFocused { altitudeText = model.flightPlan?.cruiseAltitudeFt.map(String.init) ?? "" }
+        if !alternateFocused { alternateText = model.flightPlan?.alternate ?? "" }
+    }
+
+    /// Called on every model plan change. If the field's current text re-parses to exactly the
+    /// plan the model now holds, the change was (or is equivalent to) our own commit — leave the
+    /// pilot's raw text alone. Otherwise the model moved UNDER the field (an accepted EFB
+    /// clearance, a map edit): the clearance wins, even mid-typing — a stale field must never
+    /// silently revert an accepted amendment on blur, so the pending commit is cancelled and the
+    /// field re-seeded from the plan.
+    private func reconcileWithModel() {
+        let parsed = FlightPlan.parseRoute(routeText)
+        let field = (parsed.departure ?? "", parsed.destination ?? "", parsed.route)
+        let plan = (model.flightPlan?.departure ?? "", model.flightPlan?.destination ?? "",
+                    model.flightPlan?.route ?? [])
+        if field != plan {
+            commitTask?.cancel()
+            routeText = canonicalRoute            // the model (clearance / map edit) wins
+        }
+        if !altitudeFocused { altitudeText = model.flightPlan?.cruiseAltitudeFt.map(String.init) ?? "" }
+        if !alternateFocused { alternateText = model.flightPlan?.alternate ?? "" }
+    }
+
+    /// Debounced live commit: (re)arm on every keystroke; fires after the pilot pauses.
+    private func scheduleRouteCommit(_ text: String) {
+        guard routeFocused else { return }              // programmatic sync, not a pilot edit
+        commitTask?.cancel()
+        commitTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: Self.commitDelayNS)
+            guard !Task.isCancelled else { return }
+            commitRouteNow()
+        }
+    }
+
+    /// Commit the route field now (pause / return / focus loss / Send). No-op when unchanged, so
+    /// the flightPlan didSet chain (save, grounding, prefetch) doesn't churn.
+    private func commitRouteNow() {
+        commitTask?.cancel()
+        let text = routeText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard text != canonicalRoute else { return }
+        model.commitRouteString(text)
+    }
+
+    /// Commit the altitude box (digits only; empty clears).
+    private func commitAltitude() {
+        let digits = altitudeText.filter(\.isNumber)
+        model.setCruiseAltitude(digits.isEmpty ? nil : Int(digits))
+    }
+
+    /// Commit the alternate box (empty clears).
+    private func commitAlternate() {
+        model.setAlternate(alternateText)
+    }
+
+    /// Flush every pending field edit — Send and Collapse call this so what leaves the strip is
+    /// exactly what's on screen.
+    private func commitPendingEdits() {
+        commitRouteNow()
+        commitAltitude()
+        commitAlternate()
+    }
+
+    /// A ForeFlight-style field box (matches InputBar.field styling).
+    private func box(_ p: Palette, @ViewBuilder content: () -> some View) -> some View {
+        content()
+            .padding(.horizontal, 10).padding(.vertical, 8)
+            .background(p.surfaceAlt).clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(p.border, lineWidth: 1))
+    }
+
+    /// Colour per route-leg kind (airports purple-pink, VOR green, GPS blue, airways amber).
     private func legColor(_ kind: RouteKind, _ p: Palette) -> Color {
         switch kind {
         case .airport:  return .hex(0xE879F9)   // purple-pink — departure / destination
@@ -1131,51 +1438,13 @@ struct FloatingCanvas: View {
     @ViewBuilder private func widget(_ kind: FloatingWidgetKind) -> some View {
         switch kind {
         case .transcript:  TranscriptCard()
-        case .flightPlan:  FlightPlanWidget()
+        case .flightPlan:  EmptyView()   // retired — the flight plan is the strip under the top bar now
         case .objectInfo:  if let probe = widgets.mapProbe { MapObjectView(result: probe, onClose: { widgets.mapProbe = nil }) }
         case .proofOfLife: SidebarWidget.proofOfLife.card
         case .stratux:     SidebarWidget.stratux.card
         case .host:        SidebarWidget.host.card
         case .latency:     SidebarWidget.latency.card
         case .diagnostics: SidebarWidget.diagnostics.card
-        }
-    }
-}
-
-/// Compact flight-plan card for the floating layout — route summary + an Edit shortcut into the flight bag.
-struct FlightPlanWidget: View {
-    @EnvironmentObject var model: AppModel
-    var body: some View {
-        let p = model.palette
-        Card(title: "Flight plan") {
-            if let fp = model.flightPlan, !fp.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(fp.summaryLine).font(.callout.weight(.medium)).foregroundStyle(p.text)
-                    if !fp.route.isEmpty {
-                        Text(fp.routeText).font(.caption.monospaced()).foregroundStyle(p.textDim).lineLimit(2)
-                    }
-                    // Loaded SID / STAR / approach — each with a clear button (Phase 5).
-                    ForEach(fp.loadedProcedures, id: \.kind) { proc in
-                        HStack(spacing: 6) {
-                            Image(systemName: "point.topleft.down.to.point.bottomright.curvepath")
-                                .font(.caption2).foregroundStyle(p.accent)
-                            Text(proc.displayLine).font(.caption).foregroundStyle(p.text).lineLimit(1)
-                            Spacer(minLength: 4)
-                            Button { Haptics.impact(.light); model.clearLoadedProcedure(kind: proc.kind) } label: {
-                                Image(systemName: "xmark.circle.fill").font(.caption2).foregroundStyle(p.textDim)
-                            }
-                            .buttonStyle(.plain).accessibilityIdentifier("clear-loaded-\(proc.kind)")
-                        }
-                    }
-                    Button { Haptics.impact(.light); model.showFlightBag = true } label: {
-                        Label("Edit", systemImage: "pencil").font(.caption.weight(.semibold))
-                    }
-                }
-            } else {
-                Button { Haptics.impact(.light); model.showFlightBag = true } label: {
-                    Label("File a flight plan", systemImage: "plus.circle").font(.callout)
-                }
-            }
         }
     }
 }

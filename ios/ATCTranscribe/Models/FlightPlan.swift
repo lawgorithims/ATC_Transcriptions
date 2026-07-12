@@ -22,6 +22,10 @@ struct FlightPlan: Codable, Equatable {
     var arrivalProcedure: LoadedProcedure?
     var approachProcedure: LoadedProcedure?
 
+    /// Planned cruise altitude in feet (the flight-plan bar's altitude box). Optional Codable —
+    /// old persisted plans (which lack the key) still decode. Also sent to ForeFlight as `NNNNft`.
+    var cruiseAltitudeFt: Int?
+
     /// The loaded procedures in flight order (departure, arrival, approach), skipping empty slots.
     var loadedProcedures: [LoadedProcedure] {
         [departureProcedure, arrivalProcedure, approachProcedure].compactMap { $0 }
@@ -32,6 +36,7 @@ struct FlightPlan: Codable, Equatable {
         aircraftType.isEmpty && callsign.isEmpty && departure.isEmpty
             && destination.isEmpty && alternate.isEmpty && route.isEmpty
             && departureProcedure == nil && arrivalProcedure == nil && approachProcedure == nil
+            && cruiseAltitudeFt == nil
     }
 
     /// A filed plan older than this should be refreshed before the next flight.
@@ -71,6 +76,7 @@ struct FlightPlan: Codable, Equatable {
         let leg = [departure, destination].filter { !$0.isEmpty }.joined(separator: " to ")
         if !leg.isEmpty { bits.append(leg) }
         if !alternate.isEmpty { bits.append("alternate \(alternate)") }
+        if let alt = cruiseAltitudeFt, alt > 0 { bits.append("cruising \(alt) feet") }
         // Assemble as parts so a procedure-only plan (no callsign/airports/route) doesn't emit a dangling
         // "Own flight: ." fragment.
         var parts: [String] = []
@@ -106,6 +112,17 @@ struct FlightPlan: Codable, Equatable {
         case "IAP":  approachProcedure = proc
         default:     break                                     // unknown kind → ignore (safety)
         }
+    }
+
+    /// Drop loaded procedures whose airport no longer matches the plan's endpoints — a TYPED route
+    /// edit re-anchors the plan, so a SID at an airport that is no longer the departure (or a
+    /// STAR/approach no longer at the destination) is a stale clearance, not part of what the
+    /// pilot just filed. (An EFB direct-to deliberately KEEPS procedures; only route-field edits
+    /// call this.)
+    mutating func reconcileProceduresWithEndpoints() {
+        if let sid = departureProcedure, sid.airport.uppercased() != departure.uppercased() { departureProcedure = nil }
+        if let star = arrivalProcedure, star.airport.uppercased() != destination.uppercased() { arrivalProcedure = nil }
+        if let iap = approachProcedure, iap.airport.uppercased() != destination.uppercased() { approachProcedure = nil }
     }
 
     /// Clear the procedure slot for `kind` (or all slots when `kind` is empty).
@@ -194,14 +211,20 @@ struct FlightPlan: Codable, Equatable {
     /// Tolerant parser for a pasted ForeFlight-style route. Handles a plain string
     /// ("KDFW DCT BLECO Q105 LFK KAUS") and a dotted one ("KDFW./.BLECO.Q105.LFK..KAUS"): the
     /// first and last 4-letter ICAO-shaped tokens are the departure/destination, the tokens
-    /// between them are the route. `DCT`/`DIRECT` filler is dropped. Anything ambiguous is left
-    /// for the pilot to fix in the editor.
+    /// between them are the route. `DCT`/`DIRECT` filler is dropped. A map-dropped user waypoint
+    /// ("42.100,-71.300" — see `UserPoint`) is kept VERBATIM: the dotted-route separators would
+    /// otherwise shred it, destroying the waypoint on any flight-plan-strip edit. Anything
+    /// ambiguous is left for the pilot to fix in the editor.
     static func parseRoute(_ pasted: String) -> (departure: String?, destination: String?, route: [String]) {
         let separators = CharacterSet(charactersIn: " \t\r\n./\\,;")
-        let tokens = pasted.uppercased()
-            .components(separatedBy: separators)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty && $0 != "DCT" && $0 != "DIRECT" }
+        var tokens: [String] = []
+        for word in pasted.uppercased().split(whereSeparator: \.isWhitespace).prefix(600) {   // bounded
+            if UserPoint.isUserPoint(String(word)) { tokens.append(String(word)); continue }  // lat,lon kept whole
+            for piece in word.components(separatedBy: separators) {
+                let tok = piece.trimmingCharacters(in: .whitespaces)
+                if !tok.isEmpty, tok != "DCT", tok != "DIRECT" { tokens.append(tok) }
+            }
+        }
         guard !tokens.isEmpty else { return (nil, nil, []) }
 
         func isICAO(_ s: String) -> Bool { s.count == 4 && s.allSatisfy(\.isLetter) }

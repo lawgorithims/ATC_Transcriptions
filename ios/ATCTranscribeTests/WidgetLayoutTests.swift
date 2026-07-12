@@ -9,7 +9,7 @@ final class WidgetLayoutTests: XCTestCase {
     // MARK: geometry
 
     func testRectResolvesTopTrailingFlushToCorner() {
-        let f = WidgetFrame(kind: .flightPlan, anchor: .topTrailing, offset: .zero,
+        let f = WidgetFrame(kind: .stratux, anchor: .topTrailing, offset: .zero,
                             size: CGSize(width: 300, height: 150), opacity: 1, visible: true, pinned: false, z: 1)
         let r = WidgetGeometry.rect(for: f, in: container)
         let m = WidgetGeometry.margin
@@ -51,10 +51,27 @@ final class WidgetLayoutTests: XCTestCase {
     func testDefaultsShowTranscriptAndHideDiagnostics() {
         let d = WidgetLayout.defaults()
         XCTAssertEqual(d.frame(.transcript)?.visible, true)
-        XCTAssertEqual(d.frame(.flightPlan)?.visible, true)
+        XCTAssertNil(d.frame(.flightPlan), "flight plan is the strip now — no widget in defaults")
         XCTAssertEqual(d.frame(.latency)?.visible, false)      // diagnostics off by default
         XCTAssertEqual(d.frame(.diagnostics)?.visible, false)
         XCTAssertEqual(d.frame(.objectInfo)?.visible, false)   // only shows on a tap
+    }
+
+    /// A pre-redesign saved layout (which includes a `flightPlan` card) must still decode — the
+    /// retired kind's case survives for Codable — and the retired frame is dropped at load rather
+    /// than resetting the user's whole layout to defaults.
+    func testLoadDropsRetiredFlightPlanFrameButKeepsLayout() throws {
+        var old = WidgetLayout.defaults()
+        old.items.append(WidgetFrame(kind: .flightPlan, anchor: .topLeading, offset: .zero,
+                                     size: CGSize(width: 340, height: 150), opacity: 0.92,
+                                     visible: true, pinned: false, z: 2))
+        old.update(.transcript) { $0.opacity = 0.33 }          // a user customization to preserve
+        UserDefaults.standard.set(try JSONEncoder().encode(old), forKey: WidgetLayout.storageKey)
+        defer { WidgetLayout.clear() }
+        let loaded = WidgetLayout.load()
+        XCTAssertNotNil(loaded, "layout with a retired kind must still load")
+        XCTAssertNil(loaded?.frame(.flightPlan), "retired frame dropped")
+        XCTAssertEqual(loaded?.frame(.transcript)?.opacity, 0.33, "customizations preserved")
     }
 
     func testCodableRoundTrip() throws {
