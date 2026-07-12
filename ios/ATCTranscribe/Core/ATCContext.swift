@@ -23,6 +23,10 @@ final class ATCContext {
     // on the pipeline actor via `LivePipeline.setFlightPlanContext`, so only the actor mutates it.
     private var flightPlanBlock = ""
     private var flightPlanVocab: [String] = []
+    // Route PLATE priming (PlateIndex): decode-bias line + LLM block/vocab of the charts' fixes/freqs.
+    private var platePromptLine = ""
+    private var plateBlock = ""
+    private var plateVocab: [String] = []
 
     // Coded-procedure grounding (CIFP) for the active airport. `groundingIdent` is the resolved airport
     // (curated config code, else the user's typed airport) and — unlike the config-only path — also
@@ -173,6 +177,9 @@ final class ATCContext {
         // GPS-vicinity decode bias supersedes the typed one (source-exclusive; same category).
         let procLine = vicinityPromptLine.isEmpty ? proceduresPromptLine : vicinityPromptLine
         if !procLine.isEmpty { sections.append(procLine) }
+        // Route chart-fix names (from the filed plan's plates) bias the decode toward what's printed on
+        // the approaches the pilot is likely to fly — capped in `PlateIndex.priming` to protect the budget.
+        if !platePromptLine.isEmpty { sections.append(platePromptLine) }
         // BB1: bias the DECODE toward the aircraft actually on frequency right now (fresh ADS-B), in
         // SPOKEN form — the strongest lever for misheard callsigns, and stronger than post-correction
         // because it shifts the acoustic decode. Freshness-gated like the LLM traffic block (a stalled
@@ -293,6 +300,10 @@ final class ATCContext {
             ctx.block = ctx.block.isEmpty ? flightPlanBlock : flightPlanBlock + "\n" + ctx.block
             ctx.vocab += flightPlanVocab   // let the validator snap a near-miss onto a filed term
         }
+        if !plateBlock.isEmpty {
+            ctx.block = ctx.block.isEmpty ? plateBlock : plateBlock + "\n" + ctx.block
+            ctx.vocab += plateVocab        // the route's chart fixes as validator snap targets
+        }
         return ctx
     }
 
@@ -300,6 +311,15 @@ final class ATCContext {
     func setFlightPlan(block: String, vocab: [String]) {
         flightPlanBlock = block
         flightPlanVocab = vocab
+    }
+
+    /// Inject (or clear) the route's PLATE priming — the frequencies/fix idents printed on the filed
+    /// route's terminal-procedure charts (`PlateIndex`). `promptLine` biases the Whisper decode toward
+    /// chart fix names; `block`/`vocab` give the corrector the same names to ground on.
+    func setPlatePriming(promptLine: String, block: String, vocab: [String]) {
+        platePromptLine = promptLine
+        plateBlock = block
+        plateVocab = vocab
     }
 
     /// Inject (or clear, with empty strings) the GPS-vicinity procedures grounding — the soft
