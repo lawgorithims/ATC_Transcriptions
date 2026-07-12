@@ -81,11 +81,30 @@ enum ForeFlightExport {
         return trimmed
     }
 
-    /// The one-tap hand-off URL (`foreflightmobile://maps/search?q=FIX+FIX+…`), or nil when the plan
-    /// serializes to fewer than two tokens — a single point is not a route worth switching apps for.
+    /// Trailing performance tokens per ForeFlight's route grammar: the tail number (matches the
+    /// pilot's ForeFlight aircraft profile, e.g. "N8925T") and the planned cruise altitude
+    /// ("16000ft"). Both optional; a callsign with non-alphanumeric characters is dropped rather
+    /// than guessed (an airline radio callsign is not a tail number ForeFlight can match).
+    static func performanceTokens(for plan: FlightPlan) -> [String] {
+        var tokens: [String] = []
+        let tail = plan.callsign.trimmingCharacters(in: .whitespaces).uppercased()
+        if !tail.isEmpty, tail.count <= 8, tail.allSatisfy({ $0.isLetter || $0.isNumber }) {
+            tokens.append(tail)
+        }
+        if let alt = plan.cruiseAltitudeFt, alt > 0, alt <= 60_000 {          // sanity bound (rule 7)
+            tokens.append("\(alt)ft")
+        }
+        assert(tokens.count <= 2, "at most tail + altitude")
+        return tokens
+    }
+
+    /// The one-tap hand-off URL (`foreflightmobile://maps/search?q=FIX+FIX+…+TAIL+ALTft`), or nil
+    /// when the plan serializes to fewer than two route tokens — a single point is not a route
+    /// worth switching apps for. Performance tokens ride at the end per ForeFlight's grammar.
     static func url(for plan: FlightPlan) -> URL? {
-        let tokens = routeTokens(for: plan)
-        guard tokens.count >= 2 else { return nil }                           // nothing worth sending
+        let route = routeTokens(for: plan)
+        guard route.count >= 2 else { return nil }                            // route itself must have ≥2
+        let tokens = route + performanceTokens(for: plan)
         var allowed = CharacterSet.alphanumerics
         allowed.insert(charactersIn: "./-")                                   // lat/lon token chars
         var encoded: [String] = []

@@ -85,17 +85,13 @@ final class ScreenshotTests: XCTestCase {
             if app.buttons["callsign-filter-clear"].exists { app.buttons["callsign-filter-clear"].tap() }
         }
 
-        // 5. Electronic Flight Bag — the ForeFlight-style editor. The briefcase heading icon opens the
-        //    flight-plan strip; its Edit button opens the editor sheet.
+        // 5. Flight-plan strip — the ForeFlight-style FPL panel (route field, entity chips, trip
+        //    stats). The briefcase heading icon toggles it; edits commit live (no editor sheet).
         if app.buttons["flight-bag-button"].waitForExistence(timeout: 5) {
             app.buttons["flight-bag-button"].tap()
-            let edit = app.buttons["flight-plan-edit"]
-            if edit.waitForExistence(timeout: 5) {
-                edit.tap()
-                if app.navigationBars["Flight bag"].waitForExistence(timeout: 5) {
-                    snap(app, "flight_bag")
-                    if app.buttons["Done"].exists { app.buttons["Done"].tap() }
-                }
+            if app.otherElements["flight-plan-bar"].waitForExistence(timeout: 5)
+                || app.textFields["plan-route"].waitForExistence(timeout: 5) {
+                snap(app, "flight_plan_strip")
             }
             // Collapse the strip again so later shots aren't affected.
             if app.buttons["flight-bag-button"].exists { app.buttons["flight-bag-button"].tap() }
