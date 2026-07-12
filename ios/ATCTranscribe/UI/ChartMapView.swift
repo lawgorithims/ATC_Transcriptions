@@ -565,6 +565,7 @@ struct ChartMapView: UIViewRepresentable {
         }
 
         c.syncDynamic(mv, aircraft: model.aircraft, ownship: model.stratuxGPS?.coordinate)
+        c.syncHazards(mv, events: model.showHazards ? model.hazardEvents : [])
     }
 
     /// Reconcile the superimposed plate overlay. Rebuild the MKOverlay only when the PLACEMENT
@@ -611,6 +612,13 @@ struct ChartMapView: UIViewRepresentable {
         private var ownshipAnn: OwnshipAnnotation?
         private var airspaceByKey: [String: MKPolygon] = [:]        // keyed so a settle diffs, never redraws all
         private var airspaceClass: [ObjectIdentifier: String] = [:]
+        // NASA EONET hazard layer — diffed like airspace/traffic; the reconcile lives in
+        // HazardMapLayer.swift (stored properties can't move into the extension).
+        var hazardAnnByKey: [String: HazardAnnotation] = [:]
+        var hazardPolyByKey: [String: MKPolygon] = [:]
+        var hazardTrackByKey: [String: MKPolyline] = [:]
+        var hazardOverlayCategory: [ObjectIdentifier: EONETCategory] = [:]
+        var hazardEventsByID: [String: EONETEvent] = [:]
         private var nearbyByKey: [String: NearbyAnnotation] = [:]   // keyed by NavPoint.id for the same reason
         private var contextGen = 0                                  // drops stale async refreshes (rapid panning)
         private var probeGen = 0                                    // drops a superseded tap probe (L12) — double-tap debounce
@@ -693,10 +701,22 @@ struct ChartMapView: UIViewRepresentable {
                 cands.append((IdentifiedObject(kind: .traffic, ident: a.title ?? "Traffic", coord: c, onRoute: false, traffic: nil),
                               screenDist(c)))
             }
+            for h in hazardAnnByKey.values {                                    // NASA EONET hazard markers
+                let c = Coord(lat: h.coordinate.latitude, lon: h.coordinate.longitude)
+                cands.append((IdentifiedObject(kind: .hazard, ident: h.title ?? "Hazard", coord: c,
+                                               onRoute: false, hazard: hazardEventsByID[h.eventID]),
+                              screenDist(c)))
+            }
 
             var results = MapProbe.rank(cands, within: radius)
             for asp in airspaces {   // "you're inside Class B" — containment already filtered off-main
                 results.append(IdentifiedObject(kind: .airspace, ident: asp.name, coord: here, onRoute: false, airspace: asp))
+            }
+            for ev in hazardEventsByID.values where ev.polygon.count >= 3 {   // inside a hazard perimeter
+                guard Geo.pointInRing(here, ev.polygon),
+                      !results.contains(where: { $0.hazard?.id == ev.id }) else { continue }
+                results.append(IdentifiedObject(kind: .hazard, ident: ev.title, coord: ev.point,
+                                                onRoute: false, hazard: ev))
             }
             if userPoint {   // long-press: offer the exact pressed coordinate as a droppable waypoint, first
                 results.insert(IdentifiedObject(kind: .userPoint, ident: UserPoint.token(here), coord: here, onRoute: false), at: 0)
@@ -805,6 +825,24 @@ struct ChartMapView: UIViewRepresentable {
         func mapView(_ mv: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
             if let plate = overlay as? PlateImageOverlay { return PlateOverlayRenderer(plate) }
             if let tile = overlay as? MKTileOverlay { return MKTileOverlayRenderer(tileOverlay: tile) }
+            // EONET hazards first — identity-keyed so a hazard polygon is never mistaken for airspace.
+            if let cat = hazardOverlayCategory[ObjectIdentifier(overlay)] {
+                let color = HazardAnnotation.tint(cat)
+                if let poly = overlay as? MKPolygon {
+                    let r = MKPolygonRenderer(polygon: poly)
+                    r.strokeColor = color
+                    r.lineWidth = 1.5
+                    r.fillColor = color.withAlphaComponent(0.12)
+                    return r
+                }
+                if let line = overlay as? MKPolyline {                // storm track — dashed
+                    let r = MKPolylineRenderer(polyline: line)
+                    r.strokeColor = color
+                    r.lineWidth = 2
+                    r.lineDashPattern = [6, 4]
+                    return r
+                }
+            }
             if let poly = overlay as? MKPolygon {
                 let cls = airspaceClass[ObjectIdentifier(poly)] ?? "D"
                 let color = Self.airspaceColor(cls)
@@ -864,6 +902,14 @@ struct ChartMapView: UIViewRepresentable {
                 let v = mv.dequeueReusableAnnotationView(withIdentifier: "tfc") ?? MKAnnotationView(annotation: annotation, reuseIdentifier: "tfc")
                 v.annotation = annotation; v.image = Self.traffic
                 v.transform = CGAffineTransform(rotationAngle: CGFloat((t.track - 90) * .pi / 180))
+                return v
+            case let h as HazardAnnotation:
+                let v = mv.dequeueReusableAnnotationView(withIdentifier: "haz") as? MKMarkerAnnotationView
+                    ?? MKMarkerAnnotationView(annotation: annotation, reuseIdentifier: "haz")
+                v.annotation = annotation
+                v.markerTintColor = HazardAnnotation.tint(h.category)
+                v.glyphImage = UIImage(systemName: h.category.glyph)
+                v.displayPriority = .defaultHigh; v.titleVisibility = .adaptive; v.animatesWhenAdded = false
                 return v
             case is OwnshipAnnotation:
                 let v = mv.dequeueReusableAnnotationView(withIdentifier: "own") ?? MKAnnotationView(annotation: annotation, reuseIdentifier: "own")

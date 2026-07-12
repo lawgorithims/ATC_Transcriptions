@@ -23,14 +23,31 @@ enum Geo {
         let brg = atan2(y, x) * 180 / .pi
         return brg < 0 ? brg + 360 : brg
     }
+
+    /// Even-odd ray-cast point-in-ring test — shared by airspace containment and EONET hazard
+    /// perimeters (lifted from the `Airspace` extension below when hazards arrived).
+    static func pointInRing(_ p: Coord, _ ring: [Coord]) -> Bool {
+        guard ring.count > 2 else { return false }
+        var inside = false
+        var j = ring.count - 1
+        for i in 0..<ring.count {
+            let a = ring[i], b = ring[j]
+            if (a.lat > p.lat) != (b.lat > p.lat) {
+                let xInt = a.lon + (p.lat - a.lat) / (b.lat - a.lat) * (b.lon - a.lon)
+                if p.lon < xInt { inside.toggle() }
+            }
+            j = i
+        }
+        return inside
+    }
 }
 
 // MARK: - Identified map objects (result of a tap)
 
-/// What kind of thing the user tapped. Point features (airport/vor/fix/traffic) rank above the area
-/// feature (airspace) in a disambiguation list.
+/// What kind of thing the user tapped. Point features (airport/vor/fix/traffic/hazard) rank above
+/// the area feature (airspace) in a disambiguation list.
 enum MapObjectKind: String {
-    case airport, vor, fix, airspace, traffic, userPoint
+    case airport, vor, fix, airspace, traffic, userPoint, hazard
 
     /// Lower sorts first: point features before the containing airspace.
     var priority: Int { self == .airspace ? 1 : 0 }
@@ -43,6 +60,7 @@ enum MapObjectKind: String {
         case .airspace:  return "Airspace"
         case .traffic:   return "Traffic"
         case .userPoint: return "Point"
+        case .hazard:    return "Hazard"
         }
     }
 
@@ -55,8 +73,8 @@ enum MapObjectKind: String {
         }
     }
 
-    /// Anything with a location can be filed into the route; airspace/traffic cannot.
-    var isRoutable: Bool { self != .airspace && self != .traffic }
+    /// Anything with a location can be filed into the route; airspace/traffic/hazards cannot.
+    var isRoutable: Bool { self != .airspace && self != .traffic && self != .hazard }
 }
 
 /// A "user waypoint" — an arbitrary point dropped by long-pressing the map. Stored in the route as a
@@ -89,6 +107,7 @@ struct IdentifiedObject: Identifiable {
     let onRoute: Bool                 // already a leg of the filed plan → offer "Remove from route"
     var airspace: Airspace? = nil     // populated when kind == .airspace
     var traffic: Aircraft? = nil      // populated when kind == .traffic
+    var hazard: EONETEvent? = nil     // populated when kind == .hazard
 
     /// Stable across a single probe so `.sheet(item:)` / `ForEach` are well-behaved.
     var id: String { "\(kind.rawValue)|\(ident)|\(coord.lat),\(coord.lon)" }
@@ -144,21 +163,6 @@ enum MapSearch {
 extension Airspace {
     /// True when `c` falls inside any of this airspace's lateral rings (even-odd ray casting).
     func containsCoord(_ c: Coord) -> Bool {
-        rings.contains { Self.pointInRing(c, $0) }
-    }
-
-    private static func pointInRing(_ p: Coord, _ ring: [Coord]) -> Bool {
-        guard ring.count > 2 else { return false }
-        var inside = false
-        var j = ring.count - 1
-        for i in 0..<ring.count {
-            let a = ring[i], b = ring[j]
-            if (a.lat > p.lat) != (b.lat > p.lat) {
-                let xInt = a.lon + (p.lat - a.lat) / (b.lat - a.lat) * (b.lon - a.lon)
-                if p.lon < xInt { inside.toggle() }
-            }
-            j = i
-        }
-        return inside
+        rings.contains { Geo.pointInRing(c, $0) }
     }
 }

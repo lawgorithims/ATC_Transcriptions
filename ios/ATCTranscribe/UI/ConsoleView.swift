@@ -28,6 +28,7 @@ struct ConsoleView: View {
                 if model.showInputBar { InputBar().transition(Self.barTransition) }
                 if let proc = model.previewedProcedure { procedureStrip(proc) }
                 if let sug = model.efbSuggestion { efbSuggestionBanner(sug) }
+                if let hz = model.hazardAlert, !hz.isEmpty { hazardBanner(hz) }
                 homeArea
             }
         }
@@ -187,6 +188,50 @@ struct ConsoleView: View {
         .overlay(alignment: .bottom) { Rectangle().fill(p.accent.opacity(0.5)).frame(height: 1) }
         .transition(Self.barTransition)
         .accessibilityIdentifier("efb-suggestion")
+    }
+
+    /// Satellite-observed hazards near the filed route or ownship (NASA EONET). Details opens the
+    /// hits in the tap-to-identify flow; X mutes exactly these events until the plan changes. NOT a
+    /// NOTAM substitute — the copy says so, and the detail card repeats it.
+    private func hazardBanner(_ hz: HazardAlert) -> some View {
+        let p = model.palette
+        let lead = hz.routeHits.first ?? hz.vicinityHits.first
+        let total = hz.routeHits.count + hz.vicinityHits.count
+        let headline: String = {
+            guard let lead else { return "Hazards nearby" }
+            let place = hz.routeHits.isEmpty ? "within \(Int(HazardCorridor.vicinityNm)) nm of you"
+                                             : "\(Int(lead.distanceNm.rounded())) nm from route"
+            let more = total > 1 ? " (+\(total - 1) more)" : ""
+            return "\(lead.category.label) “\(lead.title)” — \(place)\(more)"
+        }()
+        return HStack(spacing: 10) {
+            Image(systemName: lead?.category.glyph ?? "flame.fill")
+                .font(.callout)
+                .foregroundStyle(Color(uiColor: HazardAnnotation.tint(lead?.category ?? .wildfires)))
+            VStack(alignment: .leading, spacing: 1) {
+                Text(headline).font(.callout.weight(.semibold)).foregroundStyle(p.text).lineLimit(1)
+                Text("Satellite-observed (NASA EONET) · not an official NOTAM")
+                    .font(.caption2).foregroundStyle(p.textDim).lineLimit(1)
+            }
+            Spacer(minLength: 4)
+            Button { Haptics.impact(.light); model.showHazardAlertDetails() } label: {
+                Text("Details").font(.caption.weight(.bold)).foregroundStyle(.white)
+                    .padding(.horizontal, 12).padding(.vertical, 6)
+                    .background(Capsule().fill(p.accent))
+            }
+            .buttonStyle(.plain).accessibilityIdentifier("hazard-details")
+            Button { Haptics.impact(.light); model.dismissHazardAlert() } label: {
+                Image(systemName: "xmark.circle.fill").foregroundStyle(p.textDim)
+            }
+            .buttonStyle(.plain).accessibilityIdentifier("hazard-dismiss")
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(p.surface)
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Color(uiColor: HazardAnnotation.tint(lead?.category ?? .wildfires)).opacity(0.5)).frame(height: 1)
+        }
+        .transition(Self.barTransition)
+        .accessibilityIdentifier("hazard-banner")
     }
 
     /// The live transcript card at the bottom of the compact (iPhone) layout. Standby dimming and the

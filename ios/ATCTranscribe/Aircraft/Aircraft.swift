@@ -1,8 +1,9 @@
 import Foundation
 
 /// A plain lat/lon pair — `Sendable`/`Equatable` so it crosses the `ADSBService` actor boundary
-/// cleanly (unlike `CLLocationCoordinate2D`). Device GPS will produce one of these later too.
-struct Coord: Sendable, Equatable, Hashable {
+/// cleanly (unlike `CLLocationCoordinate2D`). `Codable` so EONET hazard snapshots round-trip
+/// through their disk cache. Device GPS will produce one of these later too.
+struct Coord: Sendable, Equatable, Hashable, Codable {
     var lat: Double
     var lon: Double
 }

@@ -35,6 +35,16 @@ struct CIFPILS: Equatable {
     let coord: Coord?
 }
 
+/// One runway END from the CIFP `runway` table: threshold position + published magnetic bearing +
+/// length. Both ends of a runway are separate rows, so TRUE headings can be derived from the two
+/// threshold coordinates (see `RunwayGeometry.pairs`) without a magnetic-variation model.
+struct CIFPRunway: Equatable, Sendable {
+    let designator: String   // "RW04L"
+    let coord: Coord
+    let bearingMag: Double?
+    let lengthFt: Int?
+}
+
 /// Read-only reader for the bundled `cifp.sqlite` (built by `Tools/build_cifp.py` from the FAA CIFP).
 /// One shared read-only + full-mutex connection, like `MBTilesReader`. Missing DB → empty results.
 enum CIFP {
@@ -105,6 +115,17 @@ enum CIFP {
             return legs(procedureID: p.id)
         }
         return []
+    }
+
+    /// All runway ends for an airport (one row per end; pair them via `RunwayGeometry.pairs`).
+    static func runways(airport: String) -> [CIFPRunway] {
+        query("SELECT designator,lat,lon,bearing_mag,length_ft FROM runway WHERE airport=?1 ORDER BY designator",
+              airport) { st in
+            CIFPRunway(designator: text(st, 0),
+                       coord: Coord(lat: sqlite3_column_double(st, 1), lon: sqlite3_column_double(st, 2)),
+                       bearingMag: sqlite3_column_type(st, 3) != SQLITE_NULL ? sqlite3_column_double(st, 3) : nil,
+                       lengthFt: sqlite3_column_type(st, 4) != SQLITE_NULL ? Int(sqlite3_column_int64(st, 4)) : nil)
+        }
     }
 
     /// Localizer/ILS records for an airport (frequency + course + position).
