@@ -13,8 +13,6 @@ struct PlatesTabView: View {
     @State private var searchActive = false         // drives `.searchable` focus so we can dismiss it on tab-leave
     @State private var showFlightBag = false
 
-    private var bagRunning: Bool { model.plateBag.isRunning }
-
     private var defaultAirport: String? {
         // Derived purely from the filed flight plan; the explicit map/QA hand-off is applied separately
         // (consumed via `platesAirport`), so it isn't re-read here.
@@ -60,13 +58,7 @@ struct PlatesTabView: View {
                         prompt: "Airport — KBOS, or “Logan”")
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button { showFlightBag = true } label: {
-                        Image(systemName: bagRunning ? "briefcase.fill" : "briefcase")
-                    }
-                    .accessibilityIdentifier("flight-bag")
-                    .overlay(alignment: .topTrailing) {
-                        if bagRunning { Circle().fill(model.palette.accent).frame(width: 7, height: 7).offset(x: 3, y: -2) }
-                    }
+                    FlightBagButton(bag: model.plateBag, accent: model.palette.accent) { showFlightBag = true }
                 }
                 if airport != nil, query.isEmpty {
                     ToolbarItem(placement: .topBarTrailing) {
@@ -76,7 +68,7 @@ struct PlatesTabView: View {
                 }
             }
             .sheet(isPresented: $showFlightBag) {
-                FlightBagView(currentAirport: airport).environmentObject(model)
+                FlightBagView(bag: model.plateBag, currentAirport: airport).environmentObject(model)
             }
         }
         .tint(model.palette.accent)
@@ -204,5 +196,24 @@ struct PlatesTabView: View {
                 .font(.caption).foregroundStyle(model.palette.textDim.opacity(0.8)).multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity).padding(40)
+    }
+}
+
+/// The Flight Bag toolbar button. Observes `PlateBag` DIRECTLY so its "running" indicator (filled icon
+/// + accent dot) updates live during a download — a computed `model.plateBag.isRunning` on the parent
+/// view would not, since a nested ObservableObject's changes don't republish the parent (C2).
+private struct FlightBagButton: View {
+    @ObservedObject var bag: PlateBag
+    let accent: Color
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: bag.isRunning ? "briefcase.fill" : "briefcase")
+        }
+        .accessibilityIdentifier("flight-bag")
+        .overlay(alignment: .topTrailing) {
+            if bag.isRunning { Circle().fill(accent).frame(width: 7, height: 7).offset(x: 3, y: -2) }
+        }
     }
 }

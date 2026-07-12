@@ -365,8 +365,11 @@ final class AppModel: ObservableObject {
         guard !airports.isEmpty else { return }
         let sig = airports.sorted().joined(separator: ",")
         guard sig != lastPackedRouteSignature else { return }   // don't re-pack an unchanged route
-        lastPackedRouteSignature = sig
+        // Record the signature only once the download actually launches — otherwise a route change
+        // dropped because another job (e.g. a region bundle) is in flight would be marked "packed" and
+        // never retried on the next didSet (C5).
         guard !plateBag.isRunning else { return }
+        lastPackedRouteSignature = sig
         plateBag.download(airports: airports, label: "Packing flight bag · \(airports.count) airports")
     }
 
@@ -966,7 +969,7 @@ final class AppModel: ObservableObject {
         if let fp = flightPlan {
             context.setFlightPlan(block: fp.contextBlock, vocab: fp.vocabTerms)
             let pr = PlateIndex.priming(for: PlateBag.routeAirports(fp))   // route's chart freqs/fixes
-            context.setPlatePriming(promptLine: pr.promptLine, block: pr.block, vocab: pr.vocab)
+            context.setPlatePriming(promptLine: pr.promptLine, block: pr.block)
         }
         // Seed the traffic epoch into the fresh context so clear-ordering survives the rebuild, then
         // re-seed the last FRESH ADS-B snapshot so a model swap doesn't blank traffic context until
@@ -1207,7 +1210,7 @@ final class AppModel: ObservableObject {
     func pushPlatePriming() {
         let airports = PlateBag.routeAirports(flightPlan)
         let p = PlateIndex.priming(for: airports)
-        session?.setPlatePriming(promptLine: p.promptLine, block: p.block, vocab: p.vocab)
+        session?.setPlatePriming(promptLine: p.promptLine, block: p.block)
     }
 
     // MARK: - EFB command interpreter (Phase 4, suggest-and-confirm; NASA/JPL Power-of-10 style)

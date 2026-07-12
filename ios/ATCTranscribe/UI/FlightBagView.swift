@@ -6,11 +6,12 @@ import SwiftUI
 /// `PlateBag` with a cancellable progress bar.
 struct FlightBagView: View {
     @EnvironmentObject var model: AppModel
+    // Observed DIRECTLY (not through `model`) — a nested ObservableObject's changes don't propagate to
+    // views watching the parent, so the progress/cache readouts would otherwise never refresh (C2).
+    @ObservedObject var bag: PlateBag
     var currentAirport: String?
     @Environment(\.dismiss) private var dismiss
     @State private var confirmRegion: String?
-
-    private var bag: PlateBag { model.plateBag }
 
     var body: some View {
         NavigationStack {

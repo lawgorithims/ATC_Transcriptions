@@ -147,7 +147,10 @@ struct PlateViewer: View {
             Group {
                 if let url {
                     PDFKitView(url: url, georef: georef,
-                               ownship: showTraffic ? model.stratuxGPS?.coordinate : nil,
+                               // Only plot ownship on a VALID fix — Stratux keeps reporting the last
+                               // lat/lon with GPSFixQuality=0 after a GPS loss, and a stale position on an
+                               // approach plate is dangerous (C4).
+                               ownship: (showTraffic && model.stratuxGPS?.hasFix == true) ? model.stratuxGPS?.coordinate : nil,
                                traffic: showTraffic ? trafficMarkers : [],
                                showTraffic: showTraffic)
                         .ignoresSafeArea(edges: .bottom)
@@ -201,7 +204,7 @@ struct PlateViewer: View {
         HStack(spacing: 12) {
             Label("You", systemImage: "circle.fill").foregroundStyle(.blue)
             Label("Traffic", systemImage: "triangle.fill").foregroundStyle(.orange)
-            if model.stratuxGPS?.coordinate == nil { Text("· no GPS fix").foregroundStyle(palette.textDim) }
+            if model.stratuxGPS?.hasFix != true { Text("· no GPS fix").foregroundStyle(palette.textDim) }
         }
         .font(.caption2).padding(.horizontal, 12).padding(.vertical, 6)
         .background(.ultraThinMaterial, in: Capsule())

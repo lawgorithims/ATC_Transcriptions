@@ -12,6 +12,7 @@ final class PlateBag: ObservableObject {
     @Published private(set) var cachedCount: Int = 0
 
     private var task: Task<Void, Never>?
+    private var generation = 0          // bumped on every start/cancel so a stale run's tail writes are ignored
     private static let maxConcurrent = 4
 
     init() { refreshCacheStats() }
@@ -24,23 +25,26 @@ final class PlateBag: ObservableObject {
     }
 
     /// Download all plates for `airports` (deduped). `label` names the job for the UI. No-op while a
-    /// job is already running.
+    /// job is already running. The pending list (flatMap + fileExists over up to thousands of plates for
+    /// a region bundle) is computed OFF the main actor so the UI never freezes on confirm (C6).
     func download(airports: [String], label: String) {
         assert(!label.isEmpty, "download: empty label")
         guard !isRunning else { return }
         let idents = Array(Set(airports.map { $0.trimmingCharacters(in: .whitespaces).uppercased() }))
             .filter { !$0.isEmpty }
-        let pending = idents.flatMap { Procedures.forAirport($0) }.filter { !PlateStore.isCached($0) }
-        guard !pending.isEmpty else {
-            job = Job(label: "\(label) — already downloaded", done: 0, total: 0, running: false)
-            return
+        guard !idents.isEmpty else { return }
+        generation &+= 1
+        let gen = generation
+        job = Job(label: label, done: 0, total: 0, running: true)   // total filled in after the off-main scan
+        task = Task { [weak self] in
+            let pending = await Self.pendingPlates(idents)           // nonisolated → runs off the main actor
+            await self?.beginRun(pending, gen: gen)
         }
-        job = Job(label: label, done: 0, total: pending.count, running: true)
-        task = Task { [weak self] in await self?.run(pending) }
     }
 
     func cancel() {
         task?.cancel(); task = nil
+        generation &+= 1            // invalidate the cancelled run's in-flight progress writes (C9)
         job.running = false
         refreshCacheStats()
     }
@@ -52,9 +56,32 @@ final class PlateBag: ObservableObject {
         job = Job(label: "Cache cleared", done: 0, total: 0, running: false)
     }
 
+    /// Off the main actor: the plates for `idents` not already on disk. `Procedures.forAirport` (load-once
+    /// bundled data) and `PlateStore.isCached` (FileManager) are both thread-safe, so this is safe here.
+    nonisolated private static func pendingPlates(_ idents: [String]) async -> [AirportProcedure] {
+        assert(idents.count < 100_000, "pendingPlates: runaway ident list")
+        var out: [AirportProcedure] = []
+        for icao in idents.prefix(20_000) {
+            for p in Procedures.forAirport(icao) where !PlateStore.isCached(p) { out.append(p) }
+        }
+        return out
+    }
+
+    /// Back on the main actor after the scan: publish the total and run, unless a newer job superseded us.
+    private func beginRun(_ pending: [AirportProcedure], gen: Int) async {
+        guard gen == generation else { return }        // cancelled / superseded while scanning
+        guard !pending.isEmpty else {
+            job = Job(label: "\(job.label) — already downloaded", done: 0, total: 0, running: false)
+            return
+        }
+        job.total = pending.count
+        await run(pending, gen: gen)
+    }
+
     /// Run the pending plates through a bounded-concurrency task group (keep-N-in-flight), updating
-    /// progress on the main actor as each completes.
-    private func run(_ plates: [AirportProcedure]) async {
+    /// progress on the main actor as each completes. All state writes are gated on `gen == generation`
+    /// so a cancelled/superseded run's draining tail never clobbers a newer job (C9).
+    private func run(_ plates: [AirportProcedure], gen: Int) async {
         assert(!plates.isEmpty, "run: no plates")
         var index = 0, done = 0
         await withTaskGroup(of: Void.self) { group in
@@ -67,14 +94,15 @@ final class PlateBag: ObservableObject {
             for await _ in group {
                 assert(done <= plates.count, "run: overran plate count")
                 done += 1
-                job.done = done
-                if done % 8 == 0 { refreshCacheStats() }
+                if gen == generation {                 // only the current job may write progress
+                    job.done = done
+                    if done % 8 == 0 { refreshCacheStats() }
+                }
                 if Task.isCancelled { break }
                 addNext()
             }
         }
-        job.running = false
-        refreshCacheStats()
+        if gen == generation { job.running = false; refreshCacheStats() }
     }
 
     /// Airports referenced by a filed plan: departure / destination / alternate, plus route legs that

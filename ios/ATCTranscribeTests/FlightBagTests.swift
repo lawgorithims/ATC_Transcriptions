@@ -56,8 +56,9 @@ final class FlightBagTests: XCTestCase {
         let p = PlateIndex.priming(for: ["KBOS", "KLAX"])
         XCTAssertTrue(p.promptLine.hasPrefix("Chart fixes:"), "decode-bias line built")
         XCTAssertTrue(p.block.contains("KBOS"), "LLM block names the route airport")
-        XCTAssertFalse(p.vocab.isEmpty, "validator snap targets present")
-        XCTAssertLessThanOrEqual(p.vocab.count, 64, "vocab is capped")
+        // Decode-bias line is capped to 12 fixes (P1 — parity with the vicinity line, protects the budget).
+        let fixCount = p.promptLine.dropFirst("Chart fixes: ".count).split(separator: ",").count
+        XCTAssertLessThanOrEqual(fixCount, 12, "decode-bias fixes are capped")
 
         // No route / unknown airport → empty priming (clears the channel).
         XCTAssertTrue(PlateIndex.priming(for: []).block.isEmpty)
