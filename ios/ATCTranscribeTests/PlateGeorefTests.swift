@@ -36,13 +36,13 @@ final class PlateGeorefTests: XCTestCase {
 
     /// The world→PDF-page mapping used to plot ownship/traffic on a plate: the georef center lands at
     /// the page center; a point far outside the page returns nil.
-    func testPagePointMapsCenterAndRejectsFarPoints() {
+    func testPagePointMapsCenterAndRejectsFarPoints() throws {
         let e = PlateGeorefEntry(centerLat: 42.36, centerLon: -71.01, widthMeters: 30_000,
                                  rotationDeg: 0, rmsMeters: 50, inliers: 4)
         let size = CGSize(width: 600, height: 800)
-        let center = try? XCTUnwrap(e.pagePoint(lat: 42.36, lon: -71.01, pageSize: size))
-        XCTAssertEqual(center??.x ?? -1, 300, accuracy: 0.5, "center world → page center x")
-        XCTAssertEqual(center??.y ?? -1, 400, accuracy: 0.5, "center world → page center y")
+        let center = try XCTUnwrap(e.pagePoint(lat: 42.36, lon: -71.01, pageSize: size))
+        XCTAssertEqual(center.x, 300, accuracy: 0.5, "center world → page center x")
+        XCTAssertEqual(center.y, 400, accuracy: 0.5, "center world → page center y")
         // ~150 km away is well off a 30 km-wide page.
         XCTAssertNil(e.pagePoint(lat: 43.7, lon: -71.01, pageSize: size))
         // An implausible entry never yields a point.

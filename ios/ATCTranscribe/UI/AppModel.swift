@@ -204,7 +204,10 @@ final class AppModel: ObservableObject {
             if let fp = flightPlan { fp.save() } else { FlightPlan.clear() }
             pushFlightPlanContext()
             prefetchRouteCharts()          // pull the FAA packs the filed route crosses in the background
-            if didFinishInit, flightPlan != oldValue { refreshEFBGrounding() }   // L4: plan changed → rebuild grounding
+            if didFinishInit, flightPlan != oldValue {
+                refreshEFBGrounding()          // L4: plan changed → rebuild grounding
+                autoPackFlightBagIfEnabled()   // download the route's plates into the Flight Bag
+            }
             if didFinishInit {                 // a plan is an `eonetActive` input (route hazard alerts)
                 syncEONET()
                 if flightPlan != oldValue { hazardDismissedIDs.removeAll(); refreshHazardAlert() }
@@ -260,6 +263,17 @@ final class AppModel: ObservableObject {
     /// the `--start-tab plates <ICAO>` QA arg); `PlatesTabView` CONSUMES it (applies it, then clears it
     /// back to nil) so a repeat hand-off to the same airport still fires. nil = no pending request.
     @Published var platesAirport: String?
+
+    /// The Flight Bag plate downloader (per-airport / route / region bundle downloads + cache stats).
+    let plateBag = PlateBag()
+    /// Auto-download the filed route's plates when a plan is entered (the "pack your flight bag" flow).
+    @Published var autoPackFlightBag = (UserDefaults.standard.object(forKey: "atc.autoPackBag") as? Bool ?? true) {
+        didSet { UserDefaults.standard.set(autoPackFlightBag, forKey: "atc.autoPackBag") }
+    }
+    private var lastPackedRouteSignature = ""
+    /// QA-arg one-shot: present the Flight Bag when the Plates tab first appears (`--flight-bag`).
+    @Published var showFlightBagOnLaunch = false
+
     /// A coded procedure (approach/SID/STAR) drawn as a georeferenced overlay on the home map; nil = none.
     @Published var previewedProcedure: CIFPProcedure? {
         didSet { if didFinishInit, previewedProcedure?.id != oldValue?.id { resolvePreviewedProcedure() } }
@@ -341,6 +355,20 @@ final class AppModel: ObservableObject {
                                              rotationDeg: 0, opacity: 0.7, autoAligned: false)
         }
     }
+    /// Download the filed route's plates into the Flight Bag (departure/destination/alternate + route
+    /// airports) when enabled and the route changed. Cheap when everything is cached (PlateBag skips
+    /// those), and it won't interrupt a manual/region job in progress.
+    private func autoPackFlightBagIfEnabled() {
+        guard autoPackFlightBag else { return }
+        let airports = PlateBag.routeAirports(flightPlan)
+        guard !airports.isEmpty else { return }
+        let sig = airports.sorted().joined(separator: ",")
+        guard sig != lastPackedRouteSignature else { return }   // don't re-pack an unchanged route
+        lastPackedRouteSignature = sig
+        guard !plateBag.isRunning else { return }
+        plateBag.download(airports: airports, label: "Packing flight bag · \(airports.count) airports")
+    }
+
     func clearPlateOverlay() { plateOverlay = nil }
     func setPlateOpacity(_ v: Double) { plateOverlay?.opacity = min(max(v, 0.05), 1) }
     func setPlateWidth(_ v: Double) { plateOverlay?.widthMeters = PlatePlacement.clampWidthMeters(v) }
@@ -779,6 +807,8 @@ final class AppModel: ObservableObject {
                 }
             }
         }
+        // QA/screenshot: auto-present the Flight Bag on the Plates tab (`--flight-bag`).
+        if args.contains("--flight-bag") { selectedTab = .plates; showFlightBagOnLaunch = true }
         // QA/screenshot: open the app on a specific bottom tab (`--start-tab plates [KBOS]`).
         if let i = args.firstIndex(of: "--start-tab"), i + 1 < args.count,
            let tab = RootTab(rawValue: args[i + 1]) {
