@@ -32,6 +32,30 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 43, version: "1.0", headline: "Plates that place themselves — plus a real Flight Bag",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "scope",
+                    title: "Approach plates that snap onto the map",
+                    detail: "CommSight now reads an approach plate's fixes and georeferences it, so plates drop onto the moving map at the right place, scale, and heading on their own — no dragging to line them up. It's precomputed for 1,097 approaches across 567 US airports (look for the ✛ marker); where it can't align one confidently, you still place it by hand. A visual aid — always fly from the official published chart."),
+                WhatsNewHighlight(
+                    icon: "airplane.circle.fill",
+                    title: "Tap an airport for a full ForeFlight-style card",
+                    detail: "Tapping an airport on the map now opens a card with Info, Weather, Runway, Procedure, and NOTAM tabs. Under Procedure, sub-tabs for Airport, Departure, Arrival, Approach, and Other list every chart — each showing whether it's saved to your device, with a one-tap “Map” button to lay it on the moving map. There's also a Plates tab on the bottom bar to search any airport and browse its charts full-screen."),
+                WhatsNewHighlight(
+                    icon: "briefcase.fill",
+                    title: "A Flight Bag that packs itself",
+                    detail: "Download every plate for your filed route in one tap — or leave “Auto-pack” on and it happens the moment you file a plan. Grab whole regions of the country, see how much you've stored and clear it, and get a heads-up badge when the 28-day chart cycle is about to expire. Open it from the briefcase on the Plates tab."),
+                WhatsNewHighlight(
+                    icon: "location.north.circle.fill",
+                    title: "Your position and traffic, on the plate",
+                    detail: "On a georeferenced approach plate you can now show your own aircraft and nearby ADS-B traffic right on the chart, so you can picture where you are on the approach. Needs a GPS/traffic source (e.g. Stratux); your dot only appears with a valid fix."),
+                WhatsNewHighlight(
+                    icon: "waveform.badge.magnifyingglass",
+                    title: "Sharper transcription on your route",
+                    detail: "When you file a flight plan, CommSight primes its ear to the frequencies and fixes printed on that route's charts, so it recognises them more reliably on frequency."),
+            ]),
+        ReleaseNote(
             build: 42, version: "1.0", headline: "A new flight plan up top — plus plates and weather",
             highlights: [
                 WhatsNewHighlight(
