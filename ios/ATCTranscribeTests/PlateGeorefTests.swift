@@ -34,6 +34,23 @@ final class PlateGeorefTests: XCTestCase {
         XCTAssertNil(PlateGeoref.lookup(pdf: "ZZ_NOT_A_REAL_PLATE_99.PDF"))
     }
 
+    /// The world→PDF-page mapping used to plot ownship/traffic on a plate: the georef center lands at
+    /// the page center; a point far outside the page returns nil.
+    func testPagePointMapsCenterAndRejectsFarPoints() {
+        let e = PlateGeorefEntry(centerLat: 42.36, centerLon: -71.01, widthMeters: 30_000,
+                                 rotationDeg: 0, rmsMeters: 50, inliers: 4)
+        let size = CGSize(width: 600, height: 800)
+        let center = try? XCTUnwrap(e.pagePoint(lat: 42.36, lon: -71.01, pageSize: size))
+        XCTAssertEqual(center??.x ?? -1, 300, accuracy: 0.5, "center world → page center x")
+        XCTAssertEqual(center??.y ?? -1, 400, accuracy: 0.5, "center world → page center y")
+        // ~150 km away is well off a 30 km-wide page.
+        XCTAssertNil(e.pagePoint(lat: 43.7, lon: -71.01, pageSize: size))
+        // An implausible entry never yields a point.
+        let bad = PlateGeorefEntry(centerLat: 42.36, centerLon: -71.01, widthMeters: .nan,
+                                   rotationDeg: 0, rmsMeters: 50, inliers: 4)
+        XCTAssertNil(bad.pagePoint(lat: 42.36, lon: -71.01, pageSize: size))
+    }
+
     /// The runtime plausibility gate (F1): `lookup` must fail closed on any out-of-range / non-finite
     /// stored entry so a corrupted or stale table can never place a mis-scaled/rotated plate. Test the
     /// predicate directly (we can't inject a bad row into the bundled table).

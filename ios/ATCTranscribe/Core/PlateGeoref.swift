@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 
 /// A precomputed georeference for one plate PDF: the placement that lands the plate's plan view on
 /// the map (center of the full page in lat/lon, the geographic width the page spans, and a
@@ -25,6 +26,23 @@ struct PlateGeorefEntry {
         guard rmsMeters >= 0, rmsMeters < 250 else { return false }
         guard inliers >= 3 else { return false }
         return true
+    }
+
+    /// Map a world coordinate onto the plate's PDF page, or nil if it falls outside the page. Uses the
+    /// SAME similarity as the map overlay (`PlateSimilarity`): the plate image center is the georef
+    /// center, the page spans `widthMeters`, rotated `rotationDeg` clockwise-from-north. `pageSize` is
+    /// the PDF mediaBox size (points). Returned point is in PDF page space (origin BOTTOM-left). This is
+    /// what places ownship / ADS-B traffic on a georeferenced plate.
+    func pagePoint(lat: Double, lon: Double, pageSize: CGSize) -> CGPoint? {
+        guard isPlausible, pageSize.width > 1, pageSize.height > 1 else { return nil }
+        let e = (lon - centerLon) * 111_320.0 * cos(centerLat * .pi / 180)   // ENU metres from the center
+        let n = (lat - centerLat) * 111_320.0
+        let pl = PlateSimilarity.Placement(centerEast: 0, centerNorth: 0,
+                                           widthMeters: widthMeters, rotationDeg: rotationDeg)
+        let px = PlateSimilarity.worldToPixel(pl, imageW: Double(pageSize.width), imageH: Double(pageSize.height),
+                                              east: e, north: n)
+        guard px.x >= 0, px.x <= Double(pageSize.width), px.y >= 0, px.y <= Double(pageSize.height) else { return nil }
+        return CGPoint(x: px.x, y: Double(pageSize.height) - px.y)   // image y-down → PDF page y-up
     }
 }
 

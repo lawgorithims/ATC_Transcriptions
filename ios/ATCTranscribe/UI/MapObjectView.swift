@@ -79,6 +79,7 @@ struct MapObjectView: View {
                             plate = nil; onClose()   // dismiss viewer + panel so the map (with the plate) is visible
                         },
                         onClose: { plate = nil })
+                .environmentObject(model)
         }
         .sheet(item: $climateTarget) { target in
             // Pass the palette by value (not the whole model) so the climate sheet isn't re-rendered
