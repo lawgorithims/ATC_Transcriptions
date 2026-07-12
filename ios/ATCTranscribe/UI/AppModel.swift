@@ -204,13 +204,20 @@ final class AppModel: ObservableObject {
             pushFlightPlanContext()
             prefetchRouteCharts()          // pull the FAA packs the filed route crosses in the background
             if didFinishInit, flightPlan != oldValue { refreshEFBGrounding() }   // L4: plan changed → rebuild grounding
+            if didFinishInit {                 // a plan is an `eonetActive` input (route hazard alerts)
+                syncEONET()
+                if flightPlan != oldValue { hazardDismissedIDs.removeAll(); refreshHazardAlert() }
+            }
         }
     }
     @Published var showFlightBag = false
     /// Drives the full-screen route map (`RouteMapSheet`) — the filed route, the selectable FAA chart
     /// layer, and live traffic. Transient (not persisted); opened from the flight-plan strip's Map button
-    /// or the flight-bag editor.
-    @Published var showRouteMap = false
+    /// or the flight-bag editor. An `eonetActive` input (the sheet shows hazards even when the
+    /// home-map background is off).
+    @Published var showRouteMap = false {
+        didSet { if didFinishInit, showRouteMap != oldValue { syncEONET() } }
+    }
 
     /// The chart base layer the user last viewed (VFR sectional / IFR low / standard / satellite) so the
     /// map reopens where they left off; defaults to VFR sectional on first run. Read at view-init time via
@@ -352,15 +359,30 @@ final class AppModel: ObservableObject {
     @Published var showWxRadar = UserDefaults.standard.bool(forKey: "atc.map.wxRadar") {   // stub overlay for now
         didSet { UserDefaults.standard.set(showWxRadar, forKey: "atc.map.wxRadar") }
     }
+    /// NASA EONET natural-hazard overlay (wildfires / storms / dust / volcanoes). OFF by default —
+    /// it's a network feature the pilot opts into from the layers menu. Persisted; flipping it
+    /// reconciles the poller (see `eonetActive`).
+    @Published var showHazards = UserDefaults.standard.bool(forKey: "atc.map.hazards") {
+        didSet {
+            UserDefaults.standard.set(showHazards, forKey: "atc.map.hazards")
+            syncEONET()
+            refreshHazardAlert()               // off → clears the banner; on → recomputes
+        }
+    }
     /// Master switch for the live map background — off shows a plain background instead, saving battery on
     /// hot/old devices. Persisted (default on).
     @Published var mapBackgroundEnabled = (UserDefaults.standard.object(forKey: "atc.map.background") as? Bool) ?? true {
-        didSet { UserDefaults.standard.set(mapBackgroundEnabled, forKey: "atc.map.background") }
+        didSet {
+            UserDefaults.standard.set(mapBackgroundEnabled, forKey: "atc.map.background")
+            syncEONET()                    // the home map is an `eonetActive` input
+        }
     }
     /// True when the device is thermally stressed — the home map pauses so it never starves transcription.
     /// Updated (with exit hysteresis) from `ProcessInfo.thermalStateDidChangeNotification` via
     /// `applyThermal` — see there for why the exit is delayed.
-    @Published var thermalSerious = ProcessInfo.processInfo.thermalState.rawValue >= ProcessInfo.ThermalState.serious.rawValue
+    @Published var thermalSerious = ProcessInfo.processInfo.thermalState.rawValue >= ProcessInfo.ThermalState.serious.rawValue {
+        didSet { if didFinishInit, thermalSerious != oldValue { syncEONET() } }   // hot → pause the EONET poller too
+    }
     /// The single pending "clear thermalSerious" timer (M7). A device hovering at the threshold used
     /// to flip thermalSerious repeatedly, and each flip destroys + rebuilds the whole ChartMapView
     /// (new Coordinator, refetched context, reset framing). Enter is immediate (protect transcription
@@ -511,6 +533,27 @@ final class AppModel: ObservableObject {
     /// Constructed in `init` (IUO so the publish closures can capture a fully-initialized `self`).
     private var adsbService: ADSBService!
 
+    // NASA EONET natural hazards (map overlay; route/vicinity alerts ride the same snapshot).
+    // Polls only while hazard awareness is wanted (see `eonetActive`); the last snapshot is
+    // disk-cached by the service so the layer shows immediately (with an age note) on relaunch.
+    @Published private(set) var hazardEvents: [EONETEvent] = []
+    @Published private(set) var hazardsUpdatedAt: Date?
+    @Published private(set) var eonetStatus: EONETStatus = .idle
+    /// The route/vicinity hazard banner (nil = nothing to show). Recomputed off-main by
+    /// `refreshHazardAlert` on hazard snapshots, plan changes, and ≥5 NM ownship movement.
+    @Published private(set) var hazardAlert: HazardAlert?
+    /// Events the pilot dismissed from the banner. Transient; cleared when the plan changes.
+    private var hazardDismissedIDs: Set<String> = []
+    private var hazardAlertEpoch = 0
+    /// `--demo-hazards` screenshot mode: seed synthetic events and SUPPRESS the live poller so the
+    /// seeded snapshot isn't clobbered by a live fetch (the demo has to work offline and on-screen).
+    private var demoHazardsMode = false
+    /// Ownship position of the last alert recompute — the movement dedup anchor.
+    private var lastHazardAlertCenter: Coord?
+    private static let hazardRecomputeNm: Double = 5
+    /// Built in `init` alongside `adsbService`.
+    private var eonetService: EONETService!
+
     // Stratux receiver: an on-board ADS-B/GPS box (+ a cockpit-audio sidecar on its Pi) reached over
     // its own Wi-Fi. The traffic/GPS link runs whenever `stratuxEnabled` is on and the app is
     // foregrounded — no Start needed (see `stratuxTrafficActive`); cockpit AUDIO additionally requires
@@ -548,6 +591,7 @@ final class AppModel: ObservableObject {
             // `syncGrounding` dedups by distance so a ~1 Hz fix doesn't rescan the nav table every tick).
             guard didFinishInit, stratuxGPS?.coordinate != oldValue?.coordinate else { return }
             syncGrounding()
+            maybeRefreshHazardAlertForMovement()   // vicinity hazard check rides the same movement edge
         }
     }
     @Published private(set) var stratuxStatus: StratuxStatus = .idle
@@ -628,6 +672,15 @@ final class AppModel: ObservableObject {
             onStatus: { [weak self] status in
                 Task { @MainActor in self?.stratuxStatus = status }
             })
+        // NASA EONET natural hazards: same publish-hops-to-main shape as the other services.
+        // Polling is gated by `eonetActive` (layer on + a map to show it, foregrounded, not hot).
+        eonetService = EONETService(
+            onUpdate: { [weak self] events, snapshotAt in
+                Task { @MainActor in self?.applyHazards(events, snapshotAt: snapshotAt) }
+            },
+            onStatus: { [weak self] status in
+                Task { @MainActor in self?.eonetStatus = status }
+            })
 
         let args = CommandLine.arguments
         func value(_ flag: String) -> String? {
@@ -680,6 +733,16 @@ final class AppModel: ObservableObject {
                                                command: ATCCommand(kind: .directTo, target: "BOSOX", qualifier: ""),
                                                source: "commsight 3 4 5 cleared direct bosox")
         }
+        // screenshot/demo: seed synthetic EONET hazards near the demo route and turn the layer on.
+        // `demoHazardsMode` suppresses the live poller (see `syncEONET`) so these seeded events are
+        // NOT overwritten by a live NASA fetch — the demo must render offline and on-screen.
+        if args.contains("--demo-hazards") {
+            demoHazardsMode = true
+            showHazards = true
+            hazardEvents = EONETEvent.demoEvents()
+            hazardsUpdatedAt = Date()
+            refreshHazardAlert()   // observers are inert during init — compute the banner explicitly
+        }
 
         #if targetEnvironment(simulator)
         deviceLabel = "CPU (Simulator)"
@@ -730,6 +793,7 @@ final class AppModel: ObservableObject {
         // else fires an edge on a plain foreground launch (`scenePhaseActive` starts true, making the
         // first `.active` scene-phase change a no-op). Harmless when everything is off.
         syncTraffic()
+        syncEONET()      // same launch edge for a restored hazards toggle
         // Pause the live home map under thermal pressure so it never starves on-device transcription.
         NotificationCenter.default.addObserver(forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
             let hot = ProcessInfo.processInfo.thermalState.rawValue >= ProcessInfo.ThermalState.serious.rawValue
@@ -1362,6 +1426,97 @@ final class AppModel: ObservableObject {
         Task { await service?.sync(host: host, enabled: active) }
     }
 
+    // MARK: NASA EONET natural hazards
+
+    /// Whether the EONET poller should run now: hazard awareness is ON, and there is somewhere for
+    /// it to matter — a live map showing the layer, the full-screen route map, or a filed plan
+    /// (route alerts). Foreground-only and paused under thermal pressure (the map is paused there
+    /// anyway). Everything is gated on `showHazards` so a pilot who never opts in never generates
+    /// NASA traffic.
+    private var eonetActive: Bool {
+        scenePhaseActive && !thermalSerious && showHazards &&
+            (mapBackgroundEnabled || showRouteMap || flightPlan != nil)
+    }
+
+    /// Reconcile the EONET poller (single edge-triggered call — see `EONETService.sync`). In
+    /// `--demo-hazards` screenshot mode the poller is held off so the seeded snapshot survives.
+    func syncEONET() {
+        let active = eonetActive && !demoHazardsMode
+        let service = eonetService
+        Task { await service?.sync(enabled: active) }
+    }
+
+    /// EONET published a snapshot: mirror it into the UI state. The map hosts observe
+    /// `hazardEvents` and diff their overlays; `hazardsUpdatedAt` drives the staleness note.
+    /// Unlike traffic, a late callback is harmless — hazards are context, not corrector input.
+    private func applyHazards(_ events: [EONETEvent], snapshotAt: Date) {
+        hazardEvents = events
+        hazardsUpdatedAt = snapshotAt == .distantPast ? nil : snapshotAt
+        refreshHazardAlert()
+    }
+
+    /// Recompute the route/vicinity hazard banner OFF the main actor (the corridor math scans
+    /// events × route segments and the route resolve hits SQLite), epoch-guarded like
+    /// `syncGrounding` so a superseded recompute that lands late is dropped.
+    func refreshHazardAlert() {
+        hazardAlertEpoch += 1
+        let epoch = hazardAlertEpoch
+        guard showHazards, !hazardEvents.isEmpty else { hazardAlert = nil; return }
+        let events = hazardEvents
+        let ownship: Coord? = (stratuxGPS?.hasFix == true) ? stratuxGPS?.coordinate : nil
+        let dismissed = hazardDismissedIDs
+        let planRoute = flightPlan?.fullRoute ?? []
+        Task.detached(priority: .utility) { [weak self] in
+            let route = planRoute.isEmpty ? [] : RouteResolver.resolve(planRoute).points.map(\.coord)
+            let alert = HazardCorridor.alert(events: events, route: route, ownship: ownship)
+            let filtered = HazardAlert(
+                routeHits: alert.routeHits.filter { !dismissed.contains($0.eventID) },
+                vicinityHits: alert.vicinityHits.filter { !dismissed.contains($0.eventID) })
+            // Publish on main (AppModel is not actor-isolated) — same hop as the service callbacks.
+            Task { @MainActor in self?.applyHazardAlert(filtered, epoch: epoch) }
+        }
+    }
+
+    private func applyHazardAlert(_ alert: HazardAlert, epoch: Int) {
+        guard hazardAlertEpoch == epoch else { return }   // a newer recompute/clear won
+        hazardAlert = alert.isEmpty ? nil : alert
+    }
+
+    /// X on the hazard banner: silence exactly these events until the plan changes (a NEW nearby
+    /// event still alerts — only what the pilot has seen is muted). Bumps the epoch so an in-flight
+    /// `refreshHazardAlert` (which captured the pre-dismiss `hazardDismissedIDs`) can't land and
+    /// republish the banner we just cleared.
+    func dismissHazardAlert() {
+        guard let alert = hazardAlert else { return }
+        for h in alert.routeHits.prefix(HazardCorridor.maxHits) { hazardDismissedIDs.insert(h.eventID) }
+        for h in alert.vicinityHits.prefix(HazardCorridor.maxHits) { hazardDismissedIDs.insert(h.eventID) }
+        hazardAlertEpoch += 1
+        hazardAlert = nil
+    }
+
+    /// "Details" on the hazard banner: open the hits in the tap-to-identify panel (the chooser when
+    /// there are several, straight into the card for one) — the same flow as tapping the map.
+    func showHazardAlertDetails() {
+        guard let alert = hazardAlert else { return }
+        var objects: [IdentifiedObject] = []
+        for h in (alert.routeHits + alert.vicinityHits).prefix(HazardCorridor.maxHits) {
+            guard let ev = hazardEvents.first(where: { $0.id == h.eventID }) else { continue }
+            objects.append(IdentifiedObject(kind: .hazard, ident: ev.title, coord: ev.point,
+                                            onRoute: false, hazard: ev))
+        }
+        guard !objects.isEmpty else { return }
+        widgetStore.mapProbe = MapProbeResult(id: "hazard-\(UUID().uuidString)", objects: objects)
+    }
+
+    /// Ownship moved: recompute the vicinity check once it has moved a meaningful distance (a ~1 Hz
+    /// GPS fix must not rescan 400 events × the route every tick).
+    private func maybeRefreshHazardAlertForMovement() {
+        guard showHazards, let here = stratuxGPS?.coordinate else { return }
+        if let last = lastHazardAlertCenter, Geo.nmBetween(last, here) < Self.hazardRecomputeNm { return }
+        lastHazardAlertCenter = here
+        refreshHazardAlert()
+    }
+
     /// The center for the 30 NM query: the typed airport's coordinate, or nil when blank/unknown (→ no
     /// polling). QW1: no longer defaults to KDFW when blank — pulling Dallas traffic into the correction
     /// prompt of a KBOS (or any) feed injects wrong-facility aircraft, the same wrong-airport bias QW1
@@ -1501,6 +1656,7 @@ final class AppModel: ObservableObject {
             guard !scenePhaseActive else { return }
             scenePhaseActive = true
             syncTraffic()
+            syncEONET()
             prefetchChartsOnLaunch()        // top up charts around the (possibly moved) position
             if backgroundPaused {
                 backgroundPaused = false
@@ -1518,6 +1674,7 @@ final class AppModel: ObservableObject {
             if isRunning { backgroundResumeSource = source; backgroundPaused = true; stop() }
             AudioSessionManager.deactivate()
             syncTraffic()
+            syncEONET()
         case .inactive:
             break                       // transient — don't tear down the feed
         @unknown default:

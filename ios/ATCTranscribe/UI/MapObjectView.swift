@@ -14,6 +14,15 @@ struct MapObjectView: View {
     @State private var picked: IdentifiedObject?
     @State private var confirmDirect: IdentifiedObject?
     @State private var plate: AirportProcedure?    // the FAA plate being viewed full-screen
+    @State private var climateTarget: ClimateTarget?
+
+    /// Sheet payload for the Airport Climate card (`.sheet(item:)` works in both hosts — the
+    /// floating side panel and the compact bottom sheet).
+    private struct ClimateTarget: Identifiable {
+        let ident: String
+        let coord: Coord
+        var id: String { ident }
+    }
 
     /// The object to detail: the pick, else the sole probe hit (a multi-hit probe shows the chooser).
     private var object: IdentifiedObject? { picked ?? (result.objects.count == 1 ? result.objects.first : nil) }
@@ -40,6 +49,11 @@ struct MapObjectView: View {
                             plate = nil; onClose()   // dismiss viewer + panel so the map (with the plate) is visible
                         },
                         onClose: { plate = nil })
+        }
+        .sheet(item: $climateTarget) { target in
+            // Pass the palette by value (not the whole model) so the climate sheet isn't re-rendered
+            // by every live-data publish while it's open.
+            AirportClimateView(palette: model.palette, ident: target.ident, coord: target.coord)
         }
     }
 
@@ -88,6 +102,7 @@ struct MapObjectView: View {
         case .airspace:  return o.airspace.map { "Class \($0.cls)" }
         case .traffic:   return "Traffic"
         case .userPoint: return "Dropped point"
+        case .hazard:    return o.hazard?.category.label ?? "Hazard"
         }
     }
 
@@ -108,8 +123,12 @@ struct MapObjectView: View {
                 }
             }
             infoSection(o)
-            if o.kind == .airport { platesSection(o.ident) }
-            if o.kind == .airport { proceduresSection(o.ident) }
+            if o.kind == .hazard { hazardFooter }
+            if o.kind == .airport {
+                platesSection(o.ident)
+                climateSection(o)
+                proceduresSection(o.ident)
+            }
             actionSection(o)
         }
         .scrollContentBackground(.hidden)
@@ -146,6 +165,30 @@ struct MapObjectView: View {
                     }
                 }
             }
+        }
+    }
+
+    /// Historical winds + density altitude for an airport (NASA POWER climatology) — one row that
+    /// opens the Airport Climate sheet. Fetched on first open, cached forever.
+    private func climateSection(_ o: IdentifiedObject) -> some View {
+        let p = model.palette
+        return Section("Climate") {
+            Button {
+                Haptics.impact(.light)
+                climateTarget = ClimateTarget(ident: o.ident, coord: o.coord)
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "wind").foregroundStyle(p.accent)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Airport Climate").font(.callout).foregroundStyle(p.text)
+                        Text("Historical winds, runways & density altitude")
+                            .font(.caption2).foregroundStyle(p.textDim)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right").font(.caption2).foregroundStyle(p.textDim)
+                }
+            }
+            .buttonStyle(.plain).accessibilityIdentifier("airport-climate")
         }
     }
 
@@ -204,6 +247,7 @@ struct MapObjectView: View {
         case .traffic:   return "Live traffic"
         case .fix:       return "Reporting point / RNAV fix"
         case .userPoint: return "Custom point on the map"
+        case .hazard:    return "Satellite-observed — NASA EONET"
         }
     }
 
@@ -242,10 +286,31 @@ struct MapObjectView: View {
                     if let t = ac.trackDeg { KV("Track", String(format: "%03.0f°T", t)) }
                 }
                 KV("Position", coordText(o.coord))
+            case .hazard:
+                if let ev = o.hazard {
+                    KV("Category", ev.category.label)
+                    if ev.updatedAt > .distantPast {
+                        KV("Last updated", Self.relative.localizedString(for: ev.updatedAt, relativeTo: Date()))
+                    }
+                }
+                KV("Position", coordText(o.coord))
+                bearingRow(o.coord)
             }
         }
         .foregroundStyle(p.text)
     }
+
+    /// EONET events are satellite observations — awareness context, not a briefing product.
+    private var hazardFooter: some View {
+        Section {
+        } footer: {
+            Text("Satellite-observed by NASA EONET. Not a substitute for official NOTAMs, TFRs, or weather briefings.")
+                .font(.caption2)
+                .foregroundStyle(model.palette.textDim)
+        }
+    }
+
+    private static let relative = RelativeDateTimeFormatter()
 
     /// Bearing + distance FROM ownship (Stratux fix) TO the object — omitted when there's no fix.
     @ViewBuilder private func bearingRow(_ c: Coord) -> some View {
@@ -318,6 +383,7 @@ struct MapObjectView: View {
         case .airspace:  return .hex(0x2F6FED)
         case .traffic:   return .orange
         case .userPoint: return .hex(0xFBBF24)
+        case .hazard:    return .hex(0xF97316)
         }
     }
 
@@ -329,6 +395,7 @@ struct MapObjectView: View {
         case .airspace:  return "circle.dashed"
         case .traffic:   return "airplane"
         case .userPoint: return "mappin"
+        case .hazard:    return "flame"
         }
     }
 }
