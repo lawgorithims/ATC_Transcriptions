@@ -129,17 +129,24 @@ struct PlateViewer: View {
     let procedure: AirportProcedure
     let airport: String
     let palette: Palette
+    @ObservedObject var deviceLocation: DeviceLocation      // observed directly (nested-observable, see C2)
     var onSendToMap: ((URL) -> Void)? = nil
     var onClose: () -> Void
 
     @EnvironmentObject var model: AppModel
     @State private var url: URL?
     @State private var loading = true
-    @State private var showTraffic = false
+    @State private var showOverlay = true                  // show ownship/traffic by default on a georef'd plate
 
     private var georef: PlateGeorefEntry? { PlateGeoref.lookup(pdf: procedure.pdf) }
     private var trafficMarkers: [PlateTraffic] {
         model.aircraft.compactMap { ac in ac.coordinate.map { PlateTraffic(coord: $0, track: ac.trackDeg) } }
+    }
+    /// Ownship position: a VALID Stratux fix wins (avoids a stale last-known position, C4), else the
+    /// device's own GPS — so a Stratux-less iPad still shows the pilot on a georeferenced plate.
+    private var ownshipCoord: Coord? {
+        if let g = model.stratuxGPS, g.hasFix { return g.coordinate }
+        return deviceLocation.coord
     }
 
     var body: some View {
@@ -147,14 +154,11 @@ struct PlateViewer: View {
             Group {
                 if let url {
                     PDFKitView(url: url, georef: georef,
-                               // Only plot ownship on a VALID fix — Stratux keeps reporting the last
-                               // lat/lon with GPSFixQuality=0 after a GPS loss, and a stale position on an
-                               // approach plate is dangerous (C4).
-                               ownship: (showTraffic && model.stratuxGPS?.hasFix == true) ? model.stratuxGPS?.coordinate : nil,
-                               traffic: showTraffic ? trafficMarkers : [],
-                               showTraffic: showTraffic)
+                               ownship: showOverlay ? ownshipCoord : nil,
+                               traffic: showOverlay ? trafficMarkers : [],
+                               showTraffic: showOverlay)
                         .ignoresSafeArea(edges: .bottom)
-                        .overlay(alignment: .bottom) { if showTraffic { trafficLegend } }
+                        .overlay(alignment: .bottom) { if showOverlay { trafficLegend } }
                 } else if loading {
                     ProgressView("Downloading plate…").tint(palette.accent)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -174,15 +178,15 @@ struct PlateViewer: View {
                         Text(airport).font(.caption2).foregroundStyle(palette.textDim)
                     }
                 }
-                // Ownship/traffic overlay — only offered for a georeferenced plate.
+                // Ownship + traffic overlay — only possible on a georeferenced plate (needs world→page).
                 if url != nil, georef != nil {
                     ToolbarItem(placement: .primaryAction) {
                         Button {
-                            Haptics.impact(.light); showTraffic.toggle()
+                            Haptics.impact(.light); showOverlay.toggle()
                         } label: {
-                            Label("Traffic", systemImage: showTraffic ? "location.fill.viewfinder" : "location.viewfinder")
+                            Label("My Position", systemImage: showOverlay ? "location.fill" : "location")
                         }
-                        .tint(showTraffic ? palette.accent : palette.textDim)
+                        .tint(showOverlay ? palette.accent : palette.textDim)
                         .accessibilityIdentifier("plate-traffic-toggle")
                     }
                 }
@@ -196,6 +200,10 @@ struct PlateViewer: View {
         }
         .tint(palette.accent)
         .task { await load() }
+        // Run the device GPS only while a GEOREFERENCED plate is open (it's the only kind that can plot
+        // ownship); stop on close so it isn't a background battery drain.
+        .onAppear { if georef != nil { deviceLocation.start() } }
+        .onDisappear { deviceLocation.stop() }
     }
 
     /// A small caption under the chart when the overlay is on — states what the markers are and the
@@ -204,7 +212,7 @@ struct PlateViewer: View {
         HStack(spacing: 12) {
             Label("You", systemImage: "circle.fill").foregroundStyle(.blue)
             Label("Traffic", systemImage: "triangle.fill").foregroundStyle(.orange)
-            if model.stratuxGPS?.hasFix != true { Text("· no GPS fix").foregroundStyle(palette.textDim) }
+            if ownshipCoord == nil { Text("· waiting for GPS").foregroundStyle(palette.textDim) }
         }
         .font(.caption2).padding(.horizontal, 12).padding(.vertical, 6)
         .background(.ultraThinMaterial, in: Capsule())

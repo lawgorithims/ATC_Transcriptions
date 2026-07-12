@@ -73,7 +73,7 @@ struct PlatesTabView: View {
         }
         .tint(model.palette.accent)
         .fullScreenCover(item: $plate) { proc in
-            PlateViewer(procedure: proc, airport: airport ?? "", palette: model.palette,
+            PlateViewer(procedure: proc, airport: airport ?? "", palette: model.palette, deviceLocation: model.deviceLocation,
                         onSendToMap: { url in
                             model.overlayPlate(proc, airport: airport ?? "", pdf: url)
                             model.selectedTab = .map          // jump to the map so the overlay is visible
@@ -85,6 +85,10 @@ struct PlatesTabView: View {
         .onAppear {
             applyPendingOrDefault()
             if model.showFlightBagOnLaunch { showFlightBag = true; model.showFlightBagOnLaunch = false }
+            if let pdf = model.previewPlatePdf, let apt = airport,
+               let proc = Procedures.forAirport(apt).first(where: { $0.pdf == pdf }) {
+                plate = proc; model.previewPlatePdf = nil               // QA: auto-open the full-page viewer
+            }
         }
         .onChange(of: model.platesAirport) { _, _ in applyPendingOrDefault() }
         .onChange(of: model.flightPlan) { _, _ in
