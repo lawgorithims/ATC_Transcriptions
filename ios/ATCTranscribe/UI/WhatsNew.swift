@@ -32,6 +32,26 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 42, version: "1.0", headline: "A new flight plan up top — plus plates and weather",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "airplane",
+                    title: "Your flight plan, right at the top",
+                    detail: "The flight plan moves out of the pop-up and into a strip you open from the top bar, like the feed picker. Type the route in plain text — “KMSP GEP KAMMA KORD” — and CommSight recognises each entry as you go, colour-coding airports, VORs, fixes, and airways. Boxes for your aircraft, cruise altitude, and alternate sit alongside a live trip readout: distance, time enroute, ETA, and fuel. Save the aircraft you fly (tail, type, cruise speed, and burn) and pick one with a tap."),
+                WhatsNewHighlight(
+                    icon: "paperplane.fill",
+                    title: "Send to ForeFlight always matches what you see",
+                    detail: "Edits now apply live as you type, so the “Send to ForeFlight” button hands over exactly the route on screen — no more saving, closing, and reopening first. And if CommSight loads a clearance while you're editing, the clearance wins rather than being quietly overwritten. Still app-to-app on your iPad, so it works with no cell signal and no internet. Always review the route in ForeFlight before using it."),
+                WhatsNewHighlight(
+                    icon: "doc.text.image",
+                    title: "Approach & departure plates, offline",
+                    detail: "View the full FAA approach and departure plate for an airport, cached on first open so it's there when you're off the grid. You can also lay an approach plate over the moving map as a georeferenced reference to picture the procedure in place. A visual aid — fly from the official published chart."),
+                WhatsNewHighlight(
+                    icon: "cloud.sun.bolt.fill",
+                    title: "Weather hazards & airport climate",
+                    detail: "A new hazard layer draws active events — wildfires, severe storms, volcanic activity — from NASA's EONET feed on the map, with a heads-up when one sits near your route or destination. And an Airport Climate card shows the typical wind pattern (windrose), density altitude, and runway crosswind for where you're headed, from NASA POWER climate data. Planning context, not a substitute for a current weather briefing."),
+            ]),
+        ReleaseNote(
             build: 41, version: "1.0", headline: "Send your amended plan to ForeFlight — no internet needed",
             highlights: [
                 WhatsNewHighlight(
