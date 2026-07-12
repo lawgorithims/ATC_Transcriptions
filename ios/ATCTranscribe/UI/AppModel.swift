@@ -314,13 +314,22 @@ final class AppModel: ObservableObject {
     /// so this is never presented as survey-accurate. Rendering page 1 is a one-time cost on this
     /// explicit tap. No-op if the airport has no known reference point or the PDF is unreadable.
     func overlayPlate(_ proc: AirportProcedure, airport: String, pdf: URL) {
-        guard let c = AirportCoordinates.coordinate(icao: airport),
-              let img = PlateImageRenderer.firstPageImage(pdfURL: pdf) else { return }
+        guard let img = PlateImageRenderer.firstPageImage(pdfURL: pdf) else { return }
         let aspect = Double(img.size.width / max(img.size.height, 1))
-        plateOverlay = PlateOverlayState(name: proc.name, airport: airport, image: img, imageAspect: aspect,
-                                         centerLat: c.lat, centerLon: c.lon,
-                                         widthMeters: PlatePlacement.defaultWidthMeters(fixExtentMeters: nil),
-                                         rotationDeg: 0, opacity: 0.7)
+        // Auto-align from the precomputed georeference when the plate has one (OCR'd fixes → CIFP
+        // coords → a solved north-up placement); otherwise fall back to a hand-aligned default
+        // centered on the airport. Either way the pilot can fine-tune — it is a reference aid.
+        if let g = PlateGeoref.lookup(pdf: proc.pdf) {
+            plateOverlay = PlateOverlayState(name: proc.name, airport: airport, image: img, imageAspect: aspect,
+                                             centerLat: g.centerLat, centerLon: g.centerLon,
+                                             widthMeters: g.widthMeters, rotationDeg: g.rotationDeg,
+                                             opacity: 0.7, autoAligned: true)
+        } else if let c = AirportCoordinates.coordinate(icao: airport) {
+            plateOverlay = PlateOverlayState(name: proc.name, airport: airport, image: img, imageAspect: aspect,
+                                             centerLat: c.lat, centerLon: c.lon,
+                                             widthMeters: PlatePlacement.defaultWidthMeters(fixExtentMeters: nil),
+                                             rotationDeg: 0, opacity: 0.7, autoAligned: false)
+        }
     }
     func clearPlateOverlay() { plateOverlay = nil }
     func setPlateOpacity(_ v: Double) { plateOverlay?.opacity = min(max(v, 0.05), 1) }
@@ -738,6 +747,18 @@ final class AppModel: ObservableObject {
         if let i = args.firstIndex(of: "--preview-proc"), i + 1 < args.count {
             previewedProcedure = CIFP.procedures(airport: args[i + 1]).first { $0.kind == "IAP" }
             resolvePreviewedProcedure()   // didSet is inert during init (L8) — resolve the launch preview explicitly
+        }
+        // QA/screenshot: auto-align + overlay a specific plate on the map (`--preview-plate KBOS 00058IL4R.PDF`).
+        // Downloads it, applies the georeference, and frames the map on it so the alignment can be
+        // eyeballed against the chart. No-op if the plate/airport is unknown.
+        if let i = args.firstIndex(of: "--preview-plate"), i + 2 < args.count {
+            let icao = args[i + 1], pdf = args[i + 2]
+            Task { @MainActor [weak self] in
+                guard let self, let proc = Procedures.forAirport(icao).first(where: { $0.pdf == pdf }),
+                      let url = await PlateStore.ensureOnDisk(proc) else { return }
+                self.overlayPlate(proc, airport: icao, pdf: url)
+                if let s = self.plateOverlay { self.mapFocus = Coord(lat: s.centerLat, lon: s.centerLon) }
+            }
         }
         // screenshot/demo: show a sample one-tap EFB suggestion banner (`--demo-efb`).
         if args.contains("--demo-efb") {
