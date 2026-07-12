@@ -24,8 +24,14 @@ import xml.etree.ElementTree as ET
 
 METAFILE = "https://nfdc.faa.gov/webContent/dtpp/current.xml"
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
-# chart_code → the app-facing category we keep. Everything else (MIN/LAH/HOT/DAU/…) is dropped.
-KEEP = {"IAP": "approach", "DP": "departure", "ODP": "departure", "STAR": "arrival", "APD": "diagram"}
+# We keep the RAW FAA chart_code (stored in "c") and let the APP bucket it into the ForeFlight-style
+# tabs — Airport (APD/HOT/LAH), Departure (DP/ODP + takeoff MIN), Arrival (STAR + alternate MIN),
+# Approach (IAP/CVFP), Other (everything else). Keeping the raw code (vs. a pre-collapsed category)
+# is what lets a MIN doc land under Departure or Arrival by its chart name, and fixes STARs being
+# absent from the old build.
+# NOTE: the FAA d-TPP metafile codes arrivals as "STR" (NOT "STAR") — using "STAR" is why the old
+# build silently dropped every arrival. Keep "STR".
+KEEP_CODES = {"IAP", "DP", "ODP", "STR", "APD", "MIN", "LAH", "HOT", "CVFP", "DVA"}
 
 
 def fetch(url):
@@ -53,15 +59,14 @@ def main():
             continue
         procs = []
         for rec in apt.findall("record"):
-            code = (rec.findtext("chart_code") or "").strip()
-            cat = KEEP.get(code)
-            if not cat:
+            code = (rec.findtext("chart_code") or "").strip().upper()
+            if code not in KEEP_CODES:
                 continue
             name = (rec.findtext("chart_name") or "").strip()
             pdf = (rec.findtext("pdf_name") or "").strip()
-            if not name:
+            if not name or not pdf:
                 continue
-            procs.append({"c": cat, "n": name, "f": pdf})
+            procs.append({"c": code, "n": name, "f": pdf})   # "c" is now the RAW FAA chart_code
             n_rec += 1
         if procs:
             airports.setdefault(icao, []).extend(procs)

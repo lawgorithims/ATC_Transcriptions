@@ -1,12 +1,32 @@
 import Foundation
 
-/// One published FAA terminal procedure for an airport (from the bundled d-TPP index).
+/// One published FAA terminal procedure/chart for an airport (from the bundled d-TPP index).
 struct AirportProcedure: Identifiable, Equatable {
-    enum Category: String { case approach, departure, arrival, diagram }
-    let category: Category
-    let name: String        // e.g. "ILS OR LOC RWY 04R", "LOGAN SIX DEPARTURE"
+    /// The ForeFlight-style tab a chart is grouped under.
+    enum Category: String, CaseIterable { case airport, departure, arrival, approach, other }
+
+    let code: String        // raw FAA d-TPP chart_code: IAP/DP/ODP/STR/APD/MIN/LAH/HOT/CVFP/DVA
+    let name: String        // e.g. "ILS OR LOC RWY 04R", "TAKEOFF MINIMUMS", "HOT SPOT"
     let pdf: String         // plate filename, e.g. "00058IL4R.PDF"
-    var id: String { category.rawValue + "|" + name + "|" + pdf }
+    var id: String { code + "|" + name + "|" + pdf }
+
+    /// Bucket the raw FAA chart code into a display tab. The combined MIN booklet is split by its
+    /// chart name — takeoff minimums → Departure, alternate minimums → Arrival, the rest → Other —
+    /// so it appears where a pilot looks for it (matches the user's tab spec).
+    var category: Category {
+        switch code {
+        case "IAP", "CVFP":       return .approach
+        case "DP", "ODP":         return .departure
+        case "STR":               return .arrival
+        case "APD", "HOT", "LAH": return .airport
+        case "MIN":
+            let n = name.uppercased()
+            if n.contains("ALTERNATE") { return .arrival }
+            if n.contains("TAKEOFF") || n.contains("DEPARTURE") { return .departure }
+            return .other
+        default:                  return .other
+        }
+    }
 
     /// The FAA plate PDF for the bundled chart cycle (nil when there's no cycle/plate on file).
     var plateURL: URL? {
@@ -29,12 +49,10 @@ enum Procedures {
     /// The FAA chart cycle the bundled index was built for (e.g. "2607"); "" when missing.
     static var cycle: String { data.cycle }
 
-    /// Published procedures for an airport, in the file's order (FAA groups them by kind already).
+    /// Published charts for an airport, in the file's order (FAA groups them by kind already).
     static func forAirport(_ ident: String) -> [AirportProcedure] {
         let key = ident.trimmingCharacters(in: .whitespaces).uppercased()
-        return (data.airports[key] ?? []).compactMap { r in
-            AirportProcedure.Category(rawValue: r.c).map { AirportProcedure(category: $0, name: r.n, pdf: r.f) }
-        }
+        return (data.airports[key] ?? []).map { AirportProcedure(code: $0.c, name: $0.n, pdf: $0.f) }
     }
 
     /// Test seam / lazy-load probe (0 when the resource is missing).

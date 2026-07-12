@@ -139,7 +139,8 @@ struct PlatesTabView: View {
         let plates = Procedures.forAirport(ident)
         let groups: [(AirportProcedure.Category, String)] = [
             (.approach, "Approaches"), (.departure, "Departures (DPs)"),
-            (.arrival, "Arrivals (STARs)"), (.diagram, "Airport diagram"),
+            (.arrival, "Arrivals (STARs)"), (.airport, "Airport (diagram, hot spots)"),
+            (.other, "Other"),
         ]
         return List {
             if let name = NavMeta.airport(ident)?.name {
