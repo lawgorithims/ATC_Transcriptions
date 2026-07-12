@@ -38,10 +38,10 @@ struct MapObjectView: View {
         case airport, departure, arrival, approach, other
         var id: String { rawValue }
         var label: String { rawValue.prefix(1).uppercased() + rawValue.dropFirst() }
-        var category: AirportProcedure.Category? {
+        var category: AirportProcedure.Category {
             switch self {
-            case .airport: return .diagram; case .departure: return .departure
-            case .arrival: return .arrival; case .approach: return .approach; case .other: return nil
+            case .airport: return .airport; case .departure: return .departure
+            case .arrival: return .arrival; case .approach: return .approach; case .other: return .other
             }
         }
     }
@@ -298,23 +298,12 @@ struct MapObjectView: View {
             .pickerStyle(.segmented)
             .listRowInsets(EdgeInsets(top: 6, leading: 8, bottom: 6, trailing: 8))
         }
-        if let cat = procTab.category {
-            let items = Procedures.forAirport(ident).filter { $0.category == cat }
-            if items.isEmpty {
-                Section { emptyRow("No charts", "No \(procTab.label.lowercased()) charts for \(ident) this cycle.") }
-            } else {
-                Section("\(items.count) chart\(items.count == 1 ? "" : "s")") {
-                    ForEach(items) { procedurePlateRow($0, ident: ident) }
-                }
-            }
+        let items = Procedures.forAirport(ident).filter { $0.category == procTab.category }
+        if items.isEmpty {
+            Section { emptyRow("No charts", "No \(procTab.label.lowercased()) charts for \(ident) this cycle.") }
         } else {
-            let procs = distinct(CIFP.procedures(airport: ident))
-            if procs.isEmpty {
-                Section { emptyRow("No coded procedures", "No CIFP procedures for \(ident).") }
-            } else {
-                Section("Coded procedures — load onto route") {
-                    ForEach(procs) { procedureRow($0) }
-                }
+            Section("\(items.count) chart\(items.count == 1 ? "" : "s")") {
+                ForEach(items) { procedurePlateRow($0, ident: ident) }
             }
         }
     }
@@ -413,38 +402,6 @@ struct MapObjectView: View {
             }
             .buttonStyle(.plain).accessibilityIdentifier("airport-climate")
         }
-    }
-
-    private func procedureRow(_ proc: CIFPProcedure) -> some View {
-        let p = model.palette
-        return HStack(spacing: 8) {
-            // Tap the name to PREVIEW it (a non-committal cyan overlay)…
-            Button {
-                Haptics.impact(.light); model.previewedProcedure = proc; onClose()
-            } label: {
-                HStack(spacing: 6) {
-                    Text(proc.name).font(.callout).foregroundStyle(p.text).lineLimit(1)
-                    Spacer(minLength: 4)
-                    Image(systemName: "eye").font(.caption2).foregroundStyle(p.textDim)
-                }
-            }
-            .buttonStyle(.plain)
-            // …or LOAD it into the flight plan (its legs join the active route + ground the corrector).
-            Button {
-                Haptics.impact(.medium); model.loadProcedure(proc); onClose()
-            } label: {
-                Text("Load").font(.caption.weight(.bold)).foregroundStyle(.white)
-                    .padding(.horizontal, 10).padding(.vertical, 4)
-                    .background(Capsule().fill(p.accent))
-            }
-            .buttonStyle(.plain).accessibilityIdentifier("load-procedure")
-        }
-    }
-
-    /// One entry per procedure identifier (the FAA lists each enroute transition as its own record).
-    private func distinct(_ procs: [CIFPProcedure]) -> [CIFPProcedure] {
-        var seen = Set<String>()
-        return procs.filter { seen.insert($0.ident).inserted }
     }
 
     private func displayName(_ o: IdentifiedObject) -> String? {

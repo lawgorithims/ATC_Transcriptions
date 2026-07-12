@@ -6,7 +6,39 @@ import XCTest
 final class PlateStoreTests: XCTestCase {
 
     private func proc(_ pdf: String, _ cat: AirportProcedure.Category = .approach) -> AirportProcedure {
-        AirportProcedure(category: cat, name: "TEST \(pdf)", pdf: pdf)
+        let code: String
+        switch cat {
+        case .approach: code = "IAP"; case .departure: code = "DP"; case .arrival: code = "STR"
+        case .airport: code = "APD"; case .other: code = "DVA"
+        }
+        return AirportProcedure(code: code, name: "TEST \(pdf)", pdf: pdf)
+    }
+
+    func testChartCodeBuckets() {
+        func cat(_ code: String, _ name: String = "X") -> AirportProcedure.Category {
+            AirportProcedure(code: code, name: name, pdf: "P.PDF").category
+        }
+        XCTAssertEqual(cat("IAP"), .approach)
+        XCTAssertEqual(cat("CVFP"), .approach)
+        XCTAssertEqual(cat("DP"), .departure)
+        XCTAssertEqual(cat("ODP"), .departure)
+        XCTAssertEqual(cat("STR"), .arrival)                 // FAA codes arrivals "STR", not "STAR"
+        XCTAssertEqual(cat("APD"), .airport)
+        XCTAssertEqual(cat("HOT"), .airport)
+        XCTAssertEqual(cat("LAH"), .airport)
+        // The shared MIN booklet is split by its chart name.
+        XCTAssertEqual(cat("MIN", "TAKEOFF MINIMUMS"), .departure)
+        XCTAssertEqual(cat("MIN", "ALTERNATE MINIMUMS"), .arrival)
+        XCTAssertEqual(cat("MIN", "DIVERSE VECTOR AREA"), .other)
+        XCTAssertEqual(cat("DVA"), .other)
+    }
+
+    func testBundledIndexHasArrivalsAndAirportCharts() throws {
+        try XCTSkipIf(Procedures.airportCount == 0, "no bundled d-TPP index in the test host")
+        let bos = Procedures.forAirport("KBOS")
+        try XCTSkipIf(bos.isEmpty, "KBOS not in the bundled index")
+        XCTAssertTrue(bos.contains { $0.category == .arrival }, "KBOS must now publish arrivals (STR)")
+        XCTAssertTrue(bos.contains { $0.category == .airport }, "KBOS must have airport charts (APD)")
     }
 
     func testLocalURLKeysByPdfAndCycle() throws {
