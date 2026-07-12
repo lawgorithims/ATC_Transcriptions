@@ -16,6 +16,7 @@ struct PlateOverlayState {
     var widthMeters: Double        // geographic width the page spans (height follows the aspect)
     var rotationDeg: Double        // clockwise from north
     var opacity: Double
+    var autoAligned: Bool = false  // true when placed from a precomputed georeference (vs hand-placed)
 
     var heightMeters: Double { PlatePlacement.heightMeters(widthMeters: widthMeters, imageAspect: imageAspect) }
     var center: CLLocationCoordinate2D { CLLocationCoordinate2D(latitude: centerLat, longitude: centerLon) }
@@ -108,7 +109,12 @@ struct PlateControlBar: View {
                 Image(systemName: "doc.richtext").foregroundStyle(p.accent)
                 VStack(alignment: .leading, spacing: 0) {
                     Text(state.name).font(.caption.weight(.semibold)).foregroundStyle(p.text).lineLimit(1)
-                    Text("Reference only — align to fit. Not to scale.").font(.caption2).foregroundStyle(p.warn)
+                    if state.autoAligned {
+                        Label("Auto-aligned — verify before use", systemImage: "checkmark.seal")
+                            .font(.caption2).labelStyle(.titleAndIcon).foregroundStyle(p.good)
+                    } else {
+                        Text("Reference only — align to fit. Not to scale.").font(.caption2).foregroundStyle(p.warn)
+                    }
                 }
                 Spacer(minLength: 4)
                 Button { model.recenterPlateOnAirport() } label: { Image(systemName: "scope").font(.callout) }
