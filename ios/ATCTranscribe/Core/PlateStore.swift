@@ -65,6 +65,36 @@ enum PlateStore {
         return head.elementsEqual([0x25, 0x50, 0x44, 0x46])   // "%PDF"
     }
 
+    /// Total bytes of cached plate PDFs on disk (bounded scan). For the Flight Bag cache readout.
+    static func cachedBytes() -> Int64 {
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: [.fileSizeKey]) else { return 0 }
+        var total: Int64 = 0
+        for f in files.prefix(20000) where f.pathExtension.lowercased() == "pdf" {
+            total += Int64((try? f.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
+        }
+        return total
+    }
+
+    /// Number of cached plate PDFs (any cycle).
+    static func cachedCount() -> Int {
+        guard let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
+        else { return 0 }
+        return files.prefix(20000).filter { $0.pathExtension.lowercased() == "pdf" }.count
+    }
+
+    /// Delete every cached plate (all cycles). Returns the number removed.
+    @discardableResult
+    static func clearAll() -> Int {
+        guard let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
+        else { return 0 }
+        var removed = 0
+        for f in files.prefix(20000) where f.pathExtension.lowercased() == "pdf" {
+            if (try? FileManager.default.removeItem(at: f)) != nil { removed += 1 }
+        }
+        return removed
+    }
+
     /// Drop cached plates from OLD chart cycles (keep the current cycle's). Called opportunistically;
     /// bounded scan of the cache dir. Returns the number removed.
     @discardableResult

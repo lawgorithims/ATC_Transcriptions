@@ -41,7 +41,10 @@ struct AirportProcedure: Identifiable, Equatable {
 enum Procedures {
     private struct DTO: Decodable {
         let cycle: String
+        let from: String?          // cycle effective date, ISO "2026-07-09"
+        let to: String?            // cycle expiry date, ISO "2026-08-06"
         let airports: [String: [Rec]]
+        let regions: [String: [String]]?    // region name → [ICAO] for bundle downloads
         struct Rec: Decodable { let c: String; let n: String; let f: String }
     }
     private static let data: DTO = load()
@@ -58,11 +61,40 @@ enum Procedures {
     /// Test seam / lazy-load probe (0 when the resource is missing).
     static var airportCount: Int { data.airports.count }
 
+    // MARK: - Chart cycle validity (28-day d-TPP cycle)
+
+    static var effectiveDate: Date? { Self.parseISO(data.from) }
+    static var expiryDate: Date? { Self.parseISO(data.to) }
+    /// Past the cycle's expiry date? (false when no date is bundled — don't nag without data.)
+    static func isExpired(asOf now: Date = Date()) -> Bool {
+        guard let exp = expiryDate else { return false }
+        return now >= exp
+    }
+    /// Whole days until the cycle expires (negative once expired; nil when unknown).
+    static func daysUntilExpiry(asOf now: Date = Date()) -> Int? {
+        guard let exp = expiryDate else { return nil }
+        return Calendar.current.dateComponents([.day], from: now, to: exp).day
+    }
+
+    // MARK: - Region bundles
+
+    static var regionNames: [String] { (data.regions?.keys).map { $0.sorted() } ?? [] }
+    static func airports(inRegion region: String) -> [String] { data.regions?[region] ?? [] }
+
+    private static func parseISO(_ s: String?) -> Date? {
+        guard let s, !s.isEmpty else { return nil }
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX"); f.timeZone = TimeZone(identifier: "UTC")
+        f.dateFormat = "yyyy-MM-dd"
+        return f.date(from: s)
+    }
+
     private static func load() -> DTO {
         let url = Bundle.main.url(forResource: "procedures", withExtension: "json", subdirectory: "nav")
             ?? Bundle.main.url(forResource: "procedures", withExtension: "json")
         guard let url, let d = try? Data(contentsOf: url),
-              let dto = try? JSONDecoder().decode(DTO.self, from: d) else { return DTO(cycle: "", airports: [:]) }
+              let dto = try? JSONDecoder().decode(DTO.self, from: d)
+        else { return DTO(cycle: "", from: nil, to: nil, airports: [:], regions: nil) }
         return dto
     }
 }

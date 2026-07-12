@@ -11,6 +11,9 @@ struct PlatesTabView: View {
     @State private var plate: AirportProcedure?     // the plate open full-screen
     @State private var userPinned = false           // the pilot chose an airport → stop auto-following the plan
     @State private var searchActive = false         // drives `.searchable` focus so we can dismiss it on tab-leave
+    @State private var showFlightBag = false
+
+    private var bagRunning: Bool { model.plateBag.isRunning }
 
     private var defaultAirport: String? {
         // Derived purely from the filed flight plan; the explicit map/QA hand-off is applied separately
@@ -56,12 +59,24 @@ struct PlatesTabView: View {
                         placement: .navigationBarDrawer(displayMode: .always),
                         prompt: "Airport — KBOS, or “Logan”")
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { showFlightBag = true } label: {
+                        Image(systemName: bagRunning ? "briefcase.fill" : "briefcase")
+                    }
+                    .accessibilityIdentifier("flight-bag")
+                    .overlay(alignment: .topTrailing) {
+                        if bagRunning { Circle().fill(model.palette.accent).frame(width: 7, height: 7).offset(x: 3, y: -2) }
+                    }
+                }
                 if airport != nil, query.isEmpty {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button("Change") { airport = nil; userPinned = true }
                             .accessibilityIdentifier("plate-change-airport")
                     }
                 }
+            }
+            .sheet(isPresented: $showFlightBag) {
+                FlightBagView(currentAirport: airport).environmentObject(model)
             }
         }
         .tint(model.palette.accent)
@@ -75,7 +90,10 @@ struct PlatesTabView: View {
                         onClose: { plate = nil })
                 .environmentObject(model)
         }
-        .onAppear { applyPendingOrDefault() }
+        .onAppear {
+            applyPendingOrDefault()
+            if model.showFlightBagOnLaunch { showFlightBag = true; model.showFlightBagOnLaunch = false }
+        }
         .onChange(of: model.platesAirport) { _, _ in applyPendingOrDefault() }
         .onChange(of: model.flightPlan) { _, _ in
             // Follow a live plan amendment (the app's core flow) unless the pilot pinned an airport.

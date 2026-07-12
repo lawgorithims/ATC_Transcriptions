@@ -33,7 +33,7 @@ final class PlateMarkerAnnotation: PDFAnnotation {
         case .traffic:
             context.translateBy(x: c.x, y: c.y)
             // Page space is y-up (north = +y). Heading is clockwise-from-north → rotate by -heading.
-            if let h = headingDeg { context.rotateBy(angle: -CGFloat(h) * .pi / 180) }
+            if let h = headingDeg { context.rotate(by: -CGFloat(h) * .pi / 180) }
             let s = r
             context.beginPath()
             context.move(to: CGPoint(x: 0, y: s))               // nose (north at 0°)

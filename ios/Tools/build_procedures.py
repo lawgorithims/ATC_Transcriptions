@@ -33,6 +33,28 @@ UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML,
 # build silently dropped every arrival. Keep "STR".
 KEEP_CODES = {"IAP", "DP", "ODP", "STR", "APD", "MIN", "LAH", "HOT", "CVFP", "DVA"}
 
+# ~7 FAA-ish regions (by state) so the app can offer region bundle downloads.
+REGIONS = {
+    "Northeast":     {"ME", "NH", "VT", "MA", "RI", "CT", "NY", "NJ", "PA"},
+    "Southeast":     {"MD", "DE", "DC", "VA", "WV", "NC", "SC", "GA", "FL", "KY", "TN", "AL", "MS", "PR", "VI"},
+    "North Central": {"OH", "MI", "IN", "IL", "WI", "MN", "IA", "MO", "ND", "SD", "NE", "KS"},
+    "South Central": {"TX", "OK", "AR", "LA", "NM"},
+    "Northwest":     {"WA", "OR", "ID", "MT", "WY"},
+    "Southwest":     {"CA", "NV", "UT", "AZ", "CO"},
+    "Alaska":        {"AK"},
+    "Pacific":       {"HI", "GU", "MP", "AS"},
+}
+
+
+def isodate(s):
+    """FAA edate '0901Z  07/09/26' → ISO '2026-07-09' (empty on parse failure)."""
+    try:
+        mdy = s.strip().split()[-1]              # '07/09/26'
+        mm, dd, yy = mdy.split("/")
+        return f"20{yy}-{mm}-{dd}"
+    except Exception:
+        return ""
+
 
 def fetch(url):
     req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "*/*"})
@@ -49,34 +71,48 @@ def main():
     print("fetching d-TPP metafile…", flush=True)
     root = ET.fromstring(fetch(args.metafile))
     cycle = root.get("cycle") or ""
-    print(f"cycle {cycle}", flush=True)
+    eff = isodate(root.get("from_edate"))   # cycle effective / expiry (28-day chart cycle window)
+    exp = isodate(root.get("to_edate"))
+    print(f"cycle {cycle}  {eff}..{exp}", flush=True)
 
-    airports = {}      # ICAO ident → [ {c: category, n: chart_name, f: pdf_name} ]
+    airports = {}      # ICAO ident → [ {c: raw chart_code, n: chart_name, f: pdf_name} ]
+    state_of = {}      # ICAO → 2-letter state code (for region bundles)
     n_apt = n_rec = 0
-    for apt in root.iter("airport_name"):
-        icao = (apt.get("icao_ident") or apt.get("apt_ident") or "").strip().upper()
-        if not icao:
-            continue
-        procs = []
-        for rec in apt.findall("record"):
-            code = (rec.findtext("chart_code") or "").strip().upper()
-            if code not in KEEP_CODES:
+    for state in root.iter("state_code"):
+        sid = (state.get("ID") or "").strip().upper()
+        for apt in state.iter("airport_name"):
+            icao = (apt.get("icao_ident") or apt.get("apt_ident") or "").strip().upper()
+            if not icao:
                 continue
-            name = (rec.findtext("chart_name") or "").strip()
-            pdf = (rec.findtext("pdf_name") or "").strip()
-            if not name or not pdf:
-                continue
-            procs.append({"c": code, "n": name, "f": pdf})   # "c" is now the RAW FAA chart_code
-            n_rec += 1
-        if procs:
-            airports.setdefault(icao, []).extend(procs)
-            n_apt += 1
+            procs = []
+            for rec in apt.findall("record"):
+                code = (rec.findtext("chart_code") or "").strip().upper()
+                if code not in KEEP_CODES:
+                    continue
+                name = (rec.findtext("chart_name") or "").strip()
+                pdf = (rec.findtext("pdf_name") or "").strip()
+                if not name or not pdf:
+                    continue
+                procs.append({"c": code, "n": name, "f": pdf})
+                n_rec += 1
+            if procs:
+                airports.setdefault(icao, []).extend(procs)
+                if sid:
+                    state_of[icao] = sid
+                n_apt += 1
+
+    # Group airports into ~7 FAA-ish regions (by state) so the app can offer region bundle downloads.
+    regions = {name: sorted(i for i in airports if state_of.get(i) in states)
+               for name, states in REGIONS.items()}
+    regions = {k: v for k, v in regions.items() if v}
 
     out = os.path.abspath(args.out)
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "w") as f:
-        json.dump({"cycle": cycle, "airports": airports}, f, separators=(",", ":"), sort_keys=True)
-    print(f"cycle={cycle} airports={n_apt} records={n_rec} bytes={os.path.getsize(out)} -> {out}")
+        json.dump({"cycle": cycle, "from": eff, "to": exp, "airports": airports, "regions": regions},
+                  f, separators=(",", ":"), sort_keys=True)
+    print(f"cycle={cycle} {eff}..{exp} airports={n_apt} records={n_rec} "
+          f"regions={ {k: len(v) for k, v in regions.items()} } bytes={os.path.getsize(out)} -> {out}")
 
     for k in ("KBOS", "KJFK", "KDFW", "KLAX"):
         procs = airports.get(k, [])
