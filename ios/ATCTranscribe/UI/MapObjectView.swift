@@ -74,7 +74,7 @@ struct MapObjectView: View {
         // The full approach/departure plate opens over the whole screen (its own "tab"), with the
         // frequencies, altitudes, minimums, and profile the coded waypoints can't show.
         .fullScreenCover(item: $plate) { proc in
-            PlateViewer(procedure: proc, airport: plateAirport, palette: model.palette,
+            PlateViewer(procedure: proc, airport: plateAirport, palette: model.palette, deviceLocation: model.deviceLocation,
                         onSendToMap: { url in
                             model.overlayPlate(proc, airport: plateAirport, pdf: url)
                             plate = nil; onClose()   // dismiss viewer + panel so the map (with the plate) is visible

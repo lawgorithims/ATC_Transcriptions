@@ -32,6 +32,18 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 44, version: "1.0", headline: "Plate fixes: send-to-map for every airport + your position on the chart",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "map",
+                    title: "Send-to-map now works for every airport",
+                    detail: "“Overlay on map” previously did nothing for airports outside a small built-in list (like KLRU). It now finds the airport from its runway data, drops the plate on the map, and centres the map on it — so the plate always appears, ready to fine-tune."),
+                WhatsNewHighlight(
+                    icon: "location.fill",
+                    title: "Your GPS position on the approach plate",
+                    detail: "On a georeferenced plate, your own aircraft now shows as a blue dot using your device's built-in GPS — no Stratux required. Tap “My Position” in the plate viewer to toggle it (and any ADS-B traffic) on or off."),
+            ]),
+        ReleaseNote(
             build: 43, version: "1.0", headline: "Plates that place themselves — plus a real Flight Bag",
             highlights: [
                 WhatsNewHighlight(

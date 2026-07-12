@@ -267,6 +267,9 @@ final class AppModel: ObservableObject {
 
     /// The Flight Bag plate downloader (per-airport / route / region bundle downloads + cache stats).
     let plateBag = PlateBag()
+    /// Continuous device-GPS ownship (for a Stratux-less iPad) — the plate viewer starts/stops it and
+    /// observes it directly. Preferred fallback after a valid Stratux fix (see `ownshipCoord`).
+    let deviceLocation = DeviceLocation()
     /// Auto-download the filed route's plates when a plan is entered (the "pack your flight bag" flow).
     @Published var autoPackFlightBag = (UserDefaults.standard.object(forKey: "atc.autoPackBag") as? Bool ?? true) {
         didSet { UserDefaults.standard.set(autoPackFlightBag, forKey: "atc.autoPackBag") }
@@ -274,6 +277,8 @@ final class AppModel: ObservableObject {
     private var lastPackedRouteSignature = ""
     /// QA-arg one-shot: present the Flight Bag when the Plates tab first appears (`--flight-bag`).
     @Published var showFlightBagOnLaunch = false
+    /// QA-arg one-shot: a plate PDF to auto-open full-page in the Plates viewer (`--preview-plate-full`).
+    @Published var previewPlatePdf: String?
 
     /// A coded procedure (approach/SID/STAR) drawn as a georeferenced overlay on the home map; nil = none.
     @Published var previewedProcedure: CIFPProcedure? {
@@ -342,19 +347,37 @@ final class AppModel: ObservableObject {
         guard let img = PlateImageRenderer.firstPageImage(pdfURL: pdf) else { return }
         let aspect = Double(img.size.width / max(img.size.height, 1))
         // Auto-align from the precomputed georeference when the plate has one (OCR'd fixes → CIFP
-        // coords → a solved north-up placement); otherwise fall back to a hand-aligned default
-        // centered on the airport. Either way the pilot can fine-tune — it is a reference aid.
+        // coords → a solved north-up placement); otherwise fall back to a hand-aligned default centered
+        // on the airport. Either way the pilot can fine-tune — it is a reference aid.
         if let g = PlateGeoref.lookup(pdf: proc.pdf) {
             plateOverlay = PlateOverlayState(name: proc.name, airport: airport, image: img, imageAspect: aspect,
                                              centerLat: g.centerLat, centerLon: g.centerLon,
                                              widthMeters: g.widthMeters, rotationDeg: g.rotationDeg,
                                              opacity: 0.7, autoAligned: true)
-        } else if let c = AirportCoordinates.coordinate(icao: airport) {
-            plateOverlay = PlateOverlayState(name: proc.name, airport: airport, image: img, imageAspect: aspect,
-                                             centerLat: c.lat, centerLon: c.lon,
-                                             widthMeters: PlatePlacement.defaultWidthMeters(fixExtentMeters: nil),
-                                             rotationDeg: 0, opacity: 0.7, autoAligned: false)
+            mapFocus = Coord(lat: g.centerLat, lon: g.centerLon)   // frame the map on it so it's visible
+            return
         }
+        // Hand-aligned: center on the airport. Resolve the coordinate from the bundled table, else the
+        // CIFP runway centroid (covers ~every airport that publishes a plate), else the current map
+        // focus — so send-to-map NEVER silently no-ops for an off-table airport like KLRU.
+        let center = airportCenter(airport) ?? mapFocus ?? Coord(lat: 39.5, lon: -98.35)
+        plateOverlay = PlateOverlayState(name: proc.name, airport: airport, image: img, imageAspect: aspect,
+                                         centerLat: center.lat, centerLon: center.lon,
+                                         widthMeters: PlatePlacement.defaultWidthMeters(fixExtentMeters: nil),
+                                         rotationDeg: 0, opacity: 0.7, autoAligned: false)
+        mapFocus = center
+    }
+
+    /// Resolve an airport's coordinate for plate centering: the bundled 78-airport table first, then the
+    /// CIFP runway centroid (thousands of airports — any airport with a coded procedure has runways).
+    private func airportCenter(_ icao: String) -> Coord? {
+        let key = icao.trimmingCharacters(in: .whitespaces).uppercased()
+        if let c = AirportCoordinates.coordinate(icao: key) { return c }
+        let coords = CIFP.runways(airport: key).map(\.coord)
+        guard !coords.isEmpty else { return nil }
+        let lat = coords.map(\.lat).reduce(0, +) / Double(coords.count)
+        let lon = coords.map(\.lon).reduce(0, +) / Double(coords.count)
+        return Coord(lat: lat, lon: lon)
     }
     /// Download the filed route's plates into the Flight Bag (departure/destination/alternate + route
     /// airports) when enabled and the route changed. Cheap when everything is cached (PlateBag skips
@@ -810,6 +833,10 @@ final class AppModel: ObservableObject {
                     self?.selectMapObject(IdentifiedObject(kind: .airport, ident: icao, coord: c, onRoute: false))
                 }
             }
+        }
+        // QA/screenshot: open a plate FULL-PAGE in the Plates tab viewer (`--preview-plate-full KATL 00026IL27L.PDF`).
+        if let i = args.firstIndex(of: "--preview-plate-full"), i + 2 < args.count {
+            selectedTab = .plates; platesAirport = args[i + 1].uppercased(); previewPlatePdf = args[i + 2]
         }
         // QA/screenshot: auto-present the Flight Bag on the Plates tab (`--flight-bag`).
         if args.contains("--flight-bag") { selectedTab = .plates; showFlightBagOnLaunch = true }
