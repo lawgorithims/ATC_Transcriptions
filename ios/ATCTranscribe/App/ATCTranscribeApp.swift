@@ -9,7 +9,7 @@ struct ATCTranscribeApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ConsoleView()
+            RootTabView()                               // Map + Plates bottom tabs; the map tab hosts ConsoleView
                 .environmentObject(model)
                 .environmentObject(model.widgetStore)   // isolated widget-layout/probe store (see WidgetStore)
                 .environmentObject(downloads)

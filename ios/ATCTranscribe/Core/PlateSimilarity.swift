@@ -31,15 +31,20 @@ enum PlateSimilarity {
     }
 
     static func apply(_ f: Fit, _ p: SIMD2<Double>) -> SIMD2<Double> {
+        assert(f.scale.isFinite && f.rotationRad.isFinite, "apply: non-finite fit")
+        assert(p.x.isFinite && p.y.isFinite, "apply: non-finite point")
         let c = cos(f.rotationRad), s = sin(f.rotationRad)
         return SIMD2(f.scale * (c * p.x - s * p.y) + f.tx,
                      f.scale * (s * p.x + c * p.y) + f.ty)
     }
 
     /// Umeyama / Horn least-squares proper similarity from `src` to `dst` (equal counts, ≥2 points).
-    /// Returns the fit + RMS residual (in `dst` units), or nil if degenerate (coincident src points).
+    /// Returns the fit + RMS residual (in `dst` units), or nil if degenerate (coincident src points)
+    /// or if any intermediate is non-finite (an Inf/NaN world coordinate). Fails CLOSED: a caller that
+    /// gets a non-nil result can trust every field is finite.
     static func fit(src: [SIMD2<Double>], dst: [SIMD2<Double>]) -> (fit: Fit, rms: Double)? {
-        guard src.count == dst.count, src.count >= 2 else { return nil }
+        assert(src.count == dst.count, "fit: src/dst count mismatch")
+        guard src.count == dst.count, src.count >= 2, src.count <= 100_000 else { return nil }
         let n = Double(src.count)
         var muS = SIMD2<Double>(0, 0), muD = SIMD2<Double>(0, 0)
         for i in src.indices { muS += src[i]; muD += dst[i] }
@@ -53,15 +58,22 @@ enum PlateSimilarity {
             sxx += a.x * b.x; syy += a.y * b.y
             sxy += a.x * b.y; syx += a.y * b.x
         }
-        guard varS > 1e-9 else { return nil }
+        // varS is Σ|centered src|² (src units²). A tiny value means the src points are ~coincident and
+        // the fit is unconstrained; guard it. (This is unit-agnostic here — georeference() adds the
+        // pixel-scale-relative spread gate that catches the near-coincident-but-nonzero case.)
+        guard varS.isFinite, varS > 1e-9 else { return nil }
 
         let alpha = atan2(sxy - syx, sxx + syy)                 // optimal CCW rotation
         let scale = hypot(sxx + syy, sxy - syx) / varS          // optimal uniform scale
-        guard scale > 1e-12 else { return nil }
+        // Fail CLOSED on non-finite intermediates: a finite src (→ finite varS) paired with an Inf/NaN
+        // dst coordinate makes sxx/syy/etc. non-finite → scale/alpha non-finite. Reject rather than
+        // return a garbage placement that a downstream residual check might not catch.
+        guard scale.isFinite, scale > 1e-12, alpha.isFinite else { return nil }
         // t = muD - scale·R·muS
         let c = cos(alpha), s = sin(alpha)
         let rMuS = SIMD2(scale * (c * muS.x - s * muS.y), scale * (s * muS.x + c * muS.y))
         let t = muD - rMuS
+        guard t.x.isFinite, t.y.isFinite else { return nil }
         let f = Fit(scale: scale, rotationRad: alpha, tx: t.x, ty: t.y)
 
         var sq = 0.0
@@ -74,14 +86,36 @@ enum PlateSimilarity {
     /// control-point count, or nil if the fit is degenerate. The pixel y is flipped internally so the
     /// fit is a proper rotation, and the result is expressed in the renderer's clockwise-from-north
     /// convention (verified by the round-trip test against `forwardModel`).
+    ///
+    /// NOTE on confidence: with exactly 2 points a 4-DOF similarity fits EXACTLY (rms ≡ 0) whether or
+    /// not the two correspondences are correct, and 3 points leave only 2 residual DOF — so a small-n
+    /// residual is NOT by itself a confidence signal. The `build_plate_georef` caller layers the real
+    /// discriminators on top (≥3 distinct-ident inliers, airport-in-plan-view, north-up prior).
     static func georeference(pixels: [SIMD2<Double>], world: [SIMD2<Double>],
                              imageW: Double, imageH: Double) -> (placement: Placement, rmsMeters: Double, n: Int)? {
-        guard pixels.count == world.count, pixels.count >= 2, imageW > 1, imageH > 1 else { return nil }
+        assert(pixels.count == world.count, "georeference: pixel/world count mismatch")
+        assert(imageW > 1 && imageH > 1, "georeference: implausible image size")
+        guard pixels.count == world.count, pixels.count >= 2, pixels.count <= 100_000,
+              imageW > 1, imageH > 1, imageW.isFinite, imageH.isFinite else { return nil }
+        // Scale-relative degeneracy gate (F3): reject near-coincident control pixels. The bare varS
+        // guard in fit() is unit-agnostic and only rejects EXACTLY coincident points; two pixels 0.001
+        // px apart would otherwise yield an astronomically-large scale that passes. Require the pixel
+        // cloud to span a meaningful fraction of the page along at least one axis. `max` (not `min`) so
+        // collinear approach-course fixes — legitimately trustable for a uniform-scale similarity — pass.
+        var minX = Double.infinity, maxX = -Double.infinity, minY = Double.infinity, maxY = -Double.infinity
+        for p in pixels {
+            guard p.x.isFinite, p.y.isFinite else { return nil }
+            minX = min(minX, p.x); maxX = max(maxX, p.x); minY = min(minY, p.y); maxY = max(maxY, p.y)
+        }
+        guard max(maxX - minX, maxY - minY) >= 0.005 * min(imageW, imageH) else { return nil }
         let flipped = pixels.map { SIMD2($0.x, imageH - $0.y) }         // → y-up so the fit is a rotation
         guard let (f, rms) = fit(src: flipped, dst: world) else { return nil }
         let center = apply(f, SIMD2(imageW / 2, imageH / 2))            // image center pixel → world
+        let widthMeters = f.scale * imageW
+        // Fail CLOSED on a non-finite placement (belt-and-suspenders over fit()'s own guards).
+        guard center.x.isFinite, center.y.isFinite, widthMeters.isFinite, rms.isFinite else { return nil }
         let placement = Placement(centerEast: center.x, centerNorth: center.y,
-                                  widthMeters: f.scale * imageW,
+                                  widthMeters: widthMeters,
                                   rotationDeg: normalizeDeg(-f.rotationRad * 180 / .pi))  // Rcw(ρ)=Rccw(-ρ)
         return (placement, rms, pixels.count)
     }
@@ -90,7 +124,9 @@ enum PlateSimilarity {
     /// exactly how `PlateOverlayRenderer` draws (center pixel → center; +x → east, +y → south at 0°;
     /// clockwise-from-north rotation). Used to generate synthetic control points in tests.
     static func forwardModel(_ pl: Placement, imageW: Double, imageH: Double, px: Double, py: Double) -> SIMD2<Double> {
-        let k = pl.widthMeters / imageW
+        assert(imageW > 1 && imageH > 1, "forwardModel: implausible image size")
+        assert(pl.widthMeters > 0, "forwardModel: non-positive page width")
+        let k = imageW > 1 ? pl.widthMeters / imageW : pl.widthMeters   // guard the divisor (public API)
         let e0 = k * (px - imageW / 2)          // east at 0° rotation
         let n0 = -k * (py - imageH / 2)         // north at 0° (image-down = south)
         let r = pl.rotationDeg * .pi / 180
@@ -103,7 +139,10 @@ enum PlateSimilarity {
     /// Used to validate a fit — the airport reference point (ENU origin) must land inside the plan
     /// view, or the fit matched the wrong fixes (a low residual over a coincidental cluster).
     static func worldToPixel(_ pl: Placement, imageW: Double, imageH: Double, east: Double, north: Double) -> SIMD2<Double> {
-        let k = pl.widthMeters / imageW
+        assert(imageW > 1 && imageH > 1, "worldToPixel: implausible image size")
+        assert(pl.widthMeters > 0, "worldToPixel: non-positive page width")
+        let kRaw = imageW > 1 ? pl.widthMeters / imageW : pl.widthMeters
+        let k = kRaw > 1e-9 ? kRaw : 1e-9      // guard the divisor below (public API; keep output finite)
         let e = east - pl.centerEast, n = north - pl.centerNorth
         let r = pl.rotationDeg * .pi / 180
         // invert the clockwise-from-north rotation
@@ -113,6 +152,8 @@ enum PlateSimilarity {
     }
 
     static func normalizeDeg(_ deg: Double) -> Double {
+        assert(deg.isFinite, "normalizeDeg: non-finite input")
+        guard deg.isFinite else { return 0 }
         var d = deg.truncatingRemainder(dividingBy: 360)
         if d > 180 { d -= 360 }
         if d <= -180 { d += 360 }

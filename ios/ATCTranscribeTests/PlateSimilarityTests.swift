@@ -82,4 +82,28 @@ final class PlateSimilarityTests: XCTestCase {
         let world = [SIMD2(0.0, 0.0), SIMD2(1.0, 0.0), SIMD2(0.0, 1.0)]
         XCTAssertNil(PlateSimilarity.georeference(pixels: same, world: world, imageW: imageW, imageH: imageH))
     }
+
+    func testNonFiniteWorldFailsClosed() {
+        // A single +Inf/NaN world coordinate (finite pixels) must NOT yield a "confident" garbage
+        // placement — the solver fails closed (F4). Without the guard, finite src + Inf dst → scale=Inf
+        // → a non-nil Placement with Inf width that only luck (a downstream rms<250 check) would catch.
+        let px = [SIMD2(400.0, 500.0), SIMD2(1600.0, 600.0), SIMD2(1000.0, 1500.0)]
+        for bad in [Double.infinity, -Double.infinity, Double.nan] {
+            var world = px.map { PlateSimilarity.forwardModel(
+                .init(centerEast: 0, centerNorth: 0, widthMeters: 20_000, rotationDeg: 0),
+                imageW: imageW, imageH: imageH, px: $0.x, py: $0.y) }
+            world[1] = SIMD2(bad, world[1].y)
+            XCTAssertNil(PlateSimilarity.georeference(pixels: px, world: world, imageW: imageW, imageH: imageH),
+                         "non-finite world \(bad) must fail closed")
+        }
+    }
+
+    func testNearCoincidentPixelsFailClosed() {
+        // Points 0.001 px apart are NOT exactly coincident (so the bare varS>1e-9 guard passes) but are
+        // degenerate — they'd fit an astronomically-large scale. The pixel-scale-relative spread gate
+        // rejects them (F3).
+        let px = [SIMD2(1000.0, 1500.0), SIMD2(1000.001, 1500.0), SIMD2(1000.0, 1500.001)]
+        let world = [SIMD2(0.0, 0.0), SIMD2(1.0, 0.0), SIMD2(0.0, 1.0)]
+        XCTAssertNil(PlateSimilarity.georeference(pixels: px, world: world, imageW: imageW, imageH: imageH))
+    }
 }

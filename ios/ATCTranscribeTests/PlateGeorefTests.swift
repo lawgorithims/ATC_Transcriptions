@@ -34,6 +34,29 @@ final class PlateGeorefTests: XCTestCase {
         XCTAssertNil(PlateGeoref.lookup(pdf: "ZZ_NOT_A_REAL_PLATE_99.PDF"))
     }
 
+    /// The runtime plausibility gate (F1): `lookup` must fail closed on any out-of-range / non-finite
+    /// stored entry so a corrupted or stale table can never place a mis-scaled/rotated plate. Test the
+    /// predicate directly (we can't inject a bad row into the bundled table).
+    func testPlausibilityGateRejectsBadEntries() {
+        func e(lat: Double = 42, lon: Double = -71, w: Double = 30_000, rot: Double = 0,
+               rms: Double = 50, inl: Int = 4) -> PlateGeorefEntry {
+            PlateGeorefEntry(centerLat: lat, centerLon: lon, widthMeters: w, rotationDeg: rot, rmsMeters: rms, inliers: inl)
+        }
+        XCTAssertTrue(e().isPlausible, "a nominal north-up fit is plausible")
+        XCTAssertTrue(e(rot: -11.9).isPlausible)
+        XCTAssertFalse(e(w: .nan).isPlausible, "non-finite width")
+        XCTAssertFalse(e(lat: .infinity).isPlausible, "non-finite lat")
+        XCTAssertFalse(e(lat: 95).isPlausible, "lat out of range")
+        XCTAssertFalse(e(lon: 200).isPlausible, "lon out of range")
+        XCTAssertFalse(e(w: 5_000).isPlausible, "page too small")
+        XCTAssertFalse(e(w: 300_000).isPlausible, "page too large")
+        XCTAssertFalse(e(rot: 25).isPlausible, "not north-up")
+        XCTAssertFalse(e(rot: -30).isPlausible, "not north-up")
+        XCTAssertFalse(e(rms: 400).isPlausible, "residual too high")
+        XCTAssertFalse(e(rms: -1).isPlausible, "negative residual")
+        XCTAssertFalse(e(inl: 2).isPlausible, "too few inliers")
+    }
+
     /// Read the pdf keys straight out of the bundled JSON (independent of the reader under test).
     private func bundledPDFs() -> [String] {
         guard let url = Bundle.main.url(forResource: "plate_georef", withExtension: "json", subdirectory: "nav")
