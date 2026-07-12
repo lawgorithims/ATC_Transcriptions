@@ -22,6 +22,23 @@ final class ATCContextTests: XCTestCase {
         XCTAssertEqual(ctx.recentHistory, [])
     }
 
+    /// Phase 3: the route's plate priming reaches BOTH the Whisper decode prompt and the LLM
+    /// knowledge (block + validator vocab); an empty payload clears it.
+    func testPlatePrimingFlowsIntoPromptAndKnowledge() {
+        let ctx = ATCContext()
+        ctx.setPlatePriming(promptLine: "Chart fixes: WAXEN, IRSEW.",
+                            block: "Charts for KBOS: frequencies 118.25; fixes WAXEN, IRSEW.",
+                            vocab: ["WAXEN", "IRSEW"])
+        XCTAssertTrue(ctx.buildPrompt().contains("Chart fixes: WAXEN, IRSEW."), "decode bias includes chart fixes")
+        let k = ctx.retrieveKnowledge(for: "cleared direct waxen")
+        XCTAssertTrue(k.block.contains("Charts for KBOS"), "LLM block carries the chart priming")
+        XCTAssertTrue(k.vocab.contains("WAXEN"), "validator can snap onto a chart fix")
+
+        ctx.setPlatePriming(promptLine: "", block: "", vocab: [])
+        XCTAssertEqual(ctx.buildPrompt(), "", "cleared priming leaves an empty prompt")
+        XCTAssertFalse(ctx.retrieveKnowledge(for: "x").block.contains("Charts for KBOS"))
+    }
+
     func testStaticPrefixAndVocabFromConfig() throws {
         // Inline config avoids unit-test bundle-resource lookup; exercises the same
         // decode + prefix path the app uses with airport_configs/*.json.

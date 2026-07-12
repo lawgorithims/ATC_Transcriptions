@@ -197,6 +197,13 @@ final class TranscriptionSession: ObservableObject {
         Task { await pipeline.setFlightPlanContext(block: block, vocab: vocab) }
     }
 
+    /// Push the filed route's PLATE priming (chart frequencies/fixes) into the live decode + correction
+    /// context. Safe while a run is active; takes effect on the next transmission.
+    func setPlatePriming(promptLine: String, block: String, vocab: [String]) {
+        let pipeline = self.pipeline
+        Task { await pipeline.setPlatePriming(promptLine: promptLine, block: block, vocab: vocab) }
+    }
+
     /// Push fresh in-range ADS-B traffic into the live correction context (with its read-site
     /// expiry/epoch). Safe while a run is active; takes effect on the next transmission.
     func setTrafficContext(block: String, vocab: [String], expiry: Date, epoch: Int) {

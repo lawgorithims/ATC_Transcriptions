@@ -44,4 +44,23 @@ final class FlightBagTests: XCTestCase {
         // nil plan → empty; the helper only keeps idents that publish plates.
         XCTAssertTrue(PlateBag.routeAirports(nil).isEmpty)
     }
+
+    // MARK: Phase 3 — plate priming
+
+    func testPlateIndexPrimingForRoute() throws {
+        try XCTSkipIf(PlateIndex.count == 0, "no plate index bundled in the test host")
+        let e = try XCTUnwrap(PlateIndex.lookup("KBOS"))
+        XCTAssertFalse(e.freqs.isEmpty, "KBOS charts carry frequencies")
+        XCTAssertFalse(e.fixes.isEmpty, "KBOS charts carry fixes")
+
+        let p = PlateIndex.priming(for: ["KBOS", "KLAX"])
+        XCTAssertTrue(p.promptLine.hasPrefix("Chart fixes:"), "decode-bias line built")
+        XCTAssertTrue(p.block.contains("KBOS"), "LLM block names the route airport")
+        XCTAssertFalse(p.vocab.isEmpty, "validator snap targets present")
+        XCTAssertLessThanOrEqual(p.vocab.count, 64, "vocab is capped")
+
+        // No route / unknown airport → empty priming (clears the channel).
+        XCTAssertTrue(PlateIndex.priming(for: []).block.isEmpty)
+        XCTAssertTrue(PlateIndex.priming(for: ["ZZZZ"]).block.isEmpty)
+    }
 }

@@ -203,6 +203,7 @@ final class AppModel: ObservableObject {
         didSet {
             if let fp = flightPlan { fp.save() } else { FlightPlan.clear() }
             pushFlightPlanContext()
+            pushPlatePriming()             // prime the decode+corrector with the route's chart freqs/fixes
             prefetchRouteCharts()          // pull the FAA packs the filed route crosses in the background
             if didFinishInit, flightPlan != oldValue {
                 refreshEFBGrounding()          // L4: plan changed → rebuild grounding
@@ -962,7 +963,11 @@ final class AppModel: ObservableObject {
         // Seed the filed flight plan (Electronic Flight Bag) before the pipeline starts using the
         // context, so the first transmission's LLM correction already sees the pilot's own callsign,
         // airports, and route. Live edits afterward go through `pushFlightPlanContext`.
-        if let fp = flightPlan { context.setFlightPlan(block: fp.contextBlock, vocab: fp.vocabTerms) }
+        if let fp = flightPlan {
+            context.setFlightPlan(block: fp.contextBlock, vocab: fp.vocabTerms)
+            let pr = PlateIndex.priming(for: PlateBag.routeAirports(fp))   // route's chart freqs/fixes
+            context.setPlatePriming(promptLine: pr.promptLine, block: pr.block, vocab: pr.vocab)
+        }
         // Seed the traffic epoch into the fresh context so clear-ordering survives the rebuild, then
         // re-seed the last FRESH ADS-B snapshot so a model swap doesn't blank traffic context until
         // the next poll (~5s). The read-site expiry self-expires it if the poller doesn't return.
@@ -1043,6 +1048,7 @@ final class AppModel: ObservableObject {
         // session/context; the freshly-built context only has the entry-time snapshot. Re-push the
         // current plan now that the new session + context are committed, so the edit isn't lost.
         pushFlightPlanContext()
+        pushPlatePriming()
 
         if let audioDir { clips = (try? Self.loadClips(audioDir)) ?? [] }
         detail = clips.isEmpty ? "Model ready (no demo clips)." : "Ready — press Start."
@@ -1194,6 +1200,14 @@ final class AppModel: ObservableObject {
     func pushFlightPlanContext() {
         session?.setFlightPlanContext(block: flightPlan?.contextBlock ?? "",
                                       vocab: flightPlan?.vocabTerms ?? [])
+    }
+
+    /// Prime the decode + corrector with the frequencies/fix idents printed on the filed route's plates
+    /// (`PlateIndex`, distilled from the offline OCR corpus). Empty payload clears it when no plan/route.
+    func pushPlatePriming() {
+        let airports = PlateBag.routeAirports(flightPlan)
+        let p = PlateIndex.priming(for: airports)
+        session?.setPlatePriming(promptLine: p.promptLine, block: p.block, vocab: p.vocab)
     }
 
     // MARK: - EFB command interpreter (Phase 4, suggest-and-confirm; NASA/JPL Power-of-10 style)
