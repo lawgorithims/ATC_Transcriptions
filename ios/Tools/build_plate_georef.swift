@@ -442,9 +442,10 @@ if let existing = try? String(contentsOfFile: ocrOutPath, encoding: .utf8) {
 // L1: a crash mid-write can leave a trailing partial line (no newline); appending would concatenate
 // the next record onto it. Truncate the corpus to the last COMPLETE line before we append.
 if let handle = FileHandle(forUpdatingAtPath: ocrOutPath), let all = try? Data(contentsOf: URL(fileURLWithPath: ocrOutPath)) {
-    if let lastNL = all.lastIndex(of: 0x0A), lastNL + 1 < all.count {
-        try? handle.truncate(atOffset: UInt64(lastNL + 1))
-    }
+    // Cut back to just after the last newline. No newline anywhere ⇒ cut = 0 (the whole file is one
+    // partial line from a crash during the very first record) — truncate it entirely.
+    let cut = all.lastIndex(of: 0x0A).map { $0 + 1 } ?? 0
+    if cut < all.count { try? handle.truncate(atOffset: UInt64(cut)) }
     try? handle.close()
 }
 if !FileManager.default.fileExists(atPath: ocrOutPath) { FileManager.default.createFile(atPath: ocrOutPath, contents: nil) }
