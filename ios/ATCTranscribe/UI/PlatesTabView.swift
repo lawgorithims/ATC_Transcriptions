@@ -83,14 +83,19 @@ struct PlatesTabView: View {
     }
 
     /// Consume a pending map/QA hand-off (`platesAirport`) if present; otherwise seed the default
-    /// airport once. Clears `platesAirport` so a repeat hand-off to the same airport re-fires.
+    /// airport once (unless the pilot has pinned one). The one-shot is cleared UNCONDITIONALLY — even
+    /// if it named a chartless airport — so it can't linger and mis-fire later.
     private func applyPendingOrDefault() {
-        if let want = model.platesAirport, !Procedures.forAirport(want).isEmpty {
-            airport = want; userPinned = true; query = ""
-            model.platesAirport = nil        // one-shot consumed
-        } else if airport == nil {
-            airport = defaultAirport
+        if let want = model.platesAirport {
+            model.platesAirport = nil        // one-shot consumed regardless of whether it has charts
+            if !Procedures.forAirport(want).isEmpty {
+                airport = want; userPinned = true; query = ""
+                return
+            }
         }
+        // Seed the default only before the pilot has made a choice — otherwise "Change" (airport=nil,
+        // userPinned=true) would be silently undone on the next tab re-entry.
+        if airport == nil, !userPinned { airport = defaultAirport }
     }
 
     // MARK: airport search
