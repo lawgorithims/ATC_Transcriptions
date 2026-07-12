@@ -23,10 +23,10 @@ final class ATCContext {
     // on the pipeline actor via `LivePipeline.setFlightPlanContext`, so only the actor mutates it.
     private var flightPlanBlock = ""
     private var flightPlanVocab: [String] = []
-    // Route PLATE priming (PlateIndex): decode-bias line + LLM block/vocab of the charts' fixes/freqs.
+    // Route PLATE priming (PlateIndex): a decode-bias fix line + an informational LLM block of the
+    // charts' freqs/fixes. No snap-vocab — see the rationale in `retrieveKnowledge`.
     private var platePromptLine = ""
     private var plateBlock = ""
-    private var plateVocab: [String] = []
 
     // Coded-procedure grounding (CIFP) for the active airport. `groundingIdent` is the resolved airport
     // (curated config code, else the user's typed airport) and — unlike the config-only path — also
@@ -301,8 +301,12 @@ final class ATCContext {
             ctx.vocab += flightPlanVocab   // let the validator snap a near-miss onto a filed term
         }
         if !plateBlock.isEmpty {
+            // Informational LLM context ONLY — deliberately NOT added to `ctx.vocab`, mirroring the
+            // coded-procedures decision above. The plate fix set is large (route-wide), OCR-derived, and
+            // rife with plain-word idents (DEPOT, DEVON, ADORE…); putting it in the validator's snap-set
+            // would let the corrector rewrite a correctly-heard word onto a fabricated fix via the
+            // unanchored `allowed.contains` path. Route fixes bias the DECODE via `platePromptLine`.
             ctx.block = ctx.block.isEmpty ? plateBlock : plateBlock + "\n" + ctx.block
-            ctx.vocab += plateVocab        // the route's chart fixes as validator snap targets
         }
         return ctx
     }
@@ -315,11 +319,11 @@ final class ATCContext {
 
     /// Inject (or clear) the route's PLATE priming — the frequencies/fix idents printed on the filed
     /// route's terminal-procedure charts (`PlateIndex`). `promptLine` biases the Whisper decode toward
-    /// chart fix names; `block`/`vocab` give the corrector the same names to ground on.
-    func setPlatePriming(promptLine: String, block: String, vocab: [String]) {
+    /// chart fix names; `block` is informational LLM context (deliberately NOT snap-vocab — see
+    /// `retrieveKnowledge`).
+    func setPlatePriming(promptLine: String, block: String) {
         platePromptLine = promptLine
         plateBlock = block
-        plateVocab = vocab
     }
 
     /// Inject (or clear, with empty strings) the GPS-vicinity procedures grounding — the soft

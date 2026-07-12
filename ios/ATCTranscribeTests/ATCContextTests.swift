@@ -22,19 +22,19 @@ final class ATCContextTests: XCTestCase {
         XCTAssertEqual(ctx.recentHistory, [])
     }
 
-    /// Phase 3: the route's plate priming reaches BOTH the Whisper decode prompt and the LLM
-    /// knowledge (block + validator vocab); an empty payload clears it.
-    func testPlatePrimingFlowsIntoPromptAndKnowledge() {
+    /// Phase 3: the route's plate priming biases the decode prompt and informs the LLM block, but is
+    /// deliberately NOT added to the corrector's snap-vocab (C1 — a large OCR-derived route-wide fix set
+    /// in the allow-set would let the LLM rewrite a correctly-heard word onto a fabricated chart fix).
+    func testPlatePrimingBiasesDecodeAndInformsLLMButNotSnapVocab() {
         let ctx = ATCContext()
         ctx.setPlatePriming(promptLine: "Chart fixes: WAXEN, IRSEW.",
-                            block: "Charts for KBOS: frequencies 118.25; fixes WAXEN, IRSEW.",
-                            vocab: ["WAXEN", "IRSEW"])
+                            block: "Charts for KBOS: frequencies 118.25; fixes WAXEN, IRSEW.")
         XCTAssertTrue(ctx.buildPrompt().contains("Chart fixes: WAXEN, IRSEW."), "decode bias includes chart fixes")
         let k = ctx.retrieveKnowledge(for: "cleared direct waxen")
         XCTAssertTrue(k.block.contains("Charts for KBOS"), "LLM block carries the chart priming")
-        XCTAssertTrue(k.vocab.contains("WAXEN"), "validator can snap onto a chart fix")
+        XCTAssertFalse(k.vocab.contains("WAXEN"), "chart fixes must NOT enter the validator snap-vocab (C1)")
 
-        ctx.setPlatePriming(promptLine: "", block: "", vocab: [])
+        ctx.setPlatePriming(promptLine: "", block: "")
         XCTAssertEqual(ctx.buildPrompt(), "", "cleared priming leaves an empty prompt")
         XCTAssertFalse(ctx.retrieveKnowledge(for: "x").block.contains("Charts for KBOS"))
     }

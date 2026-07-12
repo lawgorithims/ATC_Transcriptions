@@ -533,8 +533,8 @@ actor LivePipeline {
 
     /// Inject the filed route's PLATE priming (chart frequencies/fixes) into the decode + correction
     /// context. Empty strings clear it. Takes effect on the next transmission.
-    func setPlatePriming(promptLine: String, block: String, vocab: [String]) {
-        context.setPlatePriming(promptLine: promptLine, block: block, vocab: vocab)
+    func setPlatePriming(promptLine: String, block: String) {
+        context.setPlatePriming(promptLine: promptLine, block: block)
     }
 
     /// Inject the fresh in-range ADS-B traffic into the LLM correction context, with its read-site

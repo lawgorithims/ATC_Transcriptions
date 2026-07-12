@@ -25,13 +25,14 @@ enum PlateIndex {
     }
 
     /// Build the priming payload for a set of route airports:
-    ///  - `promptLine`: a capped chart-fixes line that biases the Whisper DECODE toward names on the
-    ///    route's plates (kept small so it doesn't crowd the ~220-token prompt or over-bias).
-    ///  - `block`: an LLM knowledge line naming the route's chart frequencies + fixes (for the corrector).
-    ///  - `vocab`: fix idents the validator may snap a near-miss onto (alphabetic → safe; frequencies are
-    ///    digit-protected by the validator, so they inform the block only, not the snap set).
+    ///  - `promptLine`: a small chart-fixes line that biases the Whisper DECODE toward names on the
+    ///    route's plates. Capped to 12 (parity with the vicinity decode-bias line) so an always-on line
+    ///    can't consume a third of the ~220-token prompt or over-bias toward fixes not on frequency.
+    ///  - `block`: an INFORMATIONAL LLM line naming the route's chart frequencies + fixes.
+    /// No snap-vocab is returned: the fix set is large, route-wide, OCR-derived and word-colliding, so
+    /// feeding it to the corrector's allow-set would widen the false-positive surface (see ATCContext).
     /// Empty when nothing is known for the route.
-    static func priming(for airports: [String]) -> (promptLine: String, block: String, vocab: [String]) {
+    static func priming(for airports: [String]) -> (promptLine: String, block: String) {
         assert(airports.count < 256, "priming: unbounded airport list")
         var freqs = Set<String>(), fixes = Set<String>()
         var named: [String] = []
@@ -41,16 +42,16 @@ enum PlateIndex {
             freqs.formUnion(e.freqs)
             fixes.formUnion(e.fixes)
         }
-        guard !named.isEmpty, !(freqs.isEmpty && fixes.isEmpty) else { return ("", "", []) }
-        let biasFixes = fixes.sorted().prefix(24)   // decode-bias (prompt budget)
-        let vocabFixes = fixes.sorted().prefix(64)  // validator snap targets (not in the prompt)
+        guard !named.isEmpty, !(freqs.isEmpty && fixes.isEmpty) else { return ("", "") }
+        let biasFixes = fixes.sorted().prefix(12)   // decode-bias, capped for the prompt budget
         let freqList = freqs.sorted().prefix(24)
+        let blockFixes = fixes.sorted().prefix(32)
         let promptLine = biasFixes.isEmpty ? "" : "Chart fixes: " + biasFixes.joined(separator: ", ") + "."
         var parts = ["Charts for \(named.joined(separator: ", ")):"]
         if !freqList.isEmpty { parts.append("frequencies " + freqList.joined(separator: ", ")) }
-        if !vocabFixes.isEmpty { parts.append("fixes " + vocabFixes.prefix(32).joined(separator: ", ")) }
+        if !blockFixes.isEmpty { parts.append("fixes " + blockFixes.joined(separator: ", ")) }
         let block = parts.joined(separator: " ") + "."
-        return (promptLine, block, Array(vocabFixes))
+        return (promptLine, block)
     }
 
     private static func load() -> DTO {

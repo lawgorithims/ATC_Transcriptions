@@ -32,8 +32,9 @@ struct MapObjectView: View {
             }
         }
     }
-    /// Procedure sub-tabs. Airport→diagram, the three flavors map to plate categories, Other→coded
-    /// (CIFP vector) procedures that load onto the route.
+    /// Procedure sub-tabs, each mapping to an `AirportProcedure.Category` of PLATE charts: Airport (field
+    /// diagrams), Departure (DPs), Arrival (STARs), Approach, and Other (DVA / hot spots / takeoff &
+    /// alternate minimums / LAHSO). Coded-procedure loading onto the route lives in the voice EFB, not here.
     private enum ProcTab: String, CaseIterable, Identifiable {
         case airport, departure, arrival, approach, other
         var id: String { rawValue }
@@ -289,8 +290,8 @@ struct MapObjectView: View {
     }
 
     /// Procedure = ForeFlight-style sub-tabs. Airport/Departure/Arrival/Approach map to plate categories
-    /// (each row shows saved state + a "Map" send-to-map button + tap-to-open); Other → coded (CIFP
-    /// vector) procedures that load onto the route.
+    /// (each row shows saved state + a "Map" send-to-map button + tap-to-open). Other = the misc plate
+    /// charts (DVA, hot spots, takeoff/alternate minimums, LAHSO).
     @ViewBuilder private func procedureTab(_ ident: String) -> some View {
         Section {
             Picker("Procedure", selection: $procTab) {
@@ -315,7 +316,7 @@ struct MapObjectView: View {
         let p = model.palette
         let cached = PlateStore.isCached(proc)
         let auto = PlateGeoref.lookup(pdf: proc.pdf) != nil
-        let sending = sendingToMap.contains(proc.pdf)
+        let sending = sendingToMap.contains(proc.id)   // per-row id, not proc.pdf (siblings can share a filename)
         return HStack(spacing: 8) {
             Button { Haptics.impact(.light); plate = proc } label: {
                 HStack(spacing: 7) {
@@ -351,10 +352,10 @@ struct MapObjectView: View {
         if PlateStore.isCached(proc), let url = PlateStore.localURL(proc) {
             model.overlayPlate(proc, airport: ident, pdf: url); onClose(); return
         }
-        sendingToMap.insert(proc.pdf)
+        sendingToMap.insert(proc.id)
         Task { @MainActor in
             let url = await PlateStore.ensureOnDisk(proc)
-            sendingToMap.remove(proc.pdf)
+            sendingToMap.remove(proc.id)
             guard let url else { return }              // offline / fetch failed → leave the panel open
             model.overlayPlate(proc, airport: ident, pdf: url); onClose()
         }

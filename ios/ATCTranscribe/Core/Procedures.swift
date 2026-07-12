@@ -63,17 +63,24 @@ enum Procedures {
 
     // MARK: - Chart cycle validity (28-day d-TPP cycle)
 
-    static var effectiveDate: Date? { Self.parseISO(data.from) }
-    static var expiryDate: Date? { Self.parseISO(data.to) }
-    /// Past the cycle's expiry date? (false when no date is bundled — don't nag without data.)
+    /// FAA d-TPP cycles transition at 0901Z on the boundary dates — anchor to that instant, not local
+    /// midnight, so the currency banner flips at the real cutover regardless of the device timezone (C10).
+    private static let cycleBoundary: TimeInterval = 9 * 3600 + 60   // 0901Z
+
+    static var effectiveDate: Date? { Self.parseISO(data.from)?.addingTimeInterval(cycleBoundary) }
+    static var expiryDate: Date? { Self.parseISO(data.to)?.addingTimeInterval(cycleBoundary) }
+    /// Past the cycle's expiry instant? (false when no date is bundled — don't nag without data.)
     static func isExpired(asOf now: Date = Date()) -> Bool {
         guard let exp = expiryDate else { return false }
         return now >= exp
     }
-    /// Whole days until the cycle expires (negative once expired; nil when unknown).
+    /// Whole days until the cycle expires (negative once expired; nil when unknown). Counted in UTC so it
+    /// doesn't drift with the device timezone.
     static func daysUntilExpiry(asOf now: Date = Date()) -> Int? {
         guard let exp = expiryDate else { return nil }
-        return Calendar.current.dateComponents([.day], from: now, to: exp).day
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "UTC") ?? .current
+        return cal.dateComponents([.day], from: now, to: exp).day
     }
 
     // MARK: - Region bundles

@@ -104,6 +104,13 @@ def main():
     # Group airports into ~7 FAA-ish regions (by state) so the app can offer region bundle downloads.
     regions = {name: sorted(i for i in airports if state_of.get(i) in states)
                for name, states in REGIONS.items()}
+    # Sweep any airport not captured by a region (territories with an unlisted state code, or a blank
+    # code) into Pacific, so no airport is silently undownloadable via a region bundle (C7).
+    assigned = set().union(*regions.values()) if regions else set()
+    orphans = sorted(i for i in airports if i not in assigned)
+    if orphans:
+        regions["Pacific"] = sorted(set(regions.get("Pacific", [])) | set(orphans))
+        print(f"swept {len(orphans)} orphan airports into Pacific: {orphans[:12]}")
     regions = {k: v for k, v in regions.items() if v}
 
     out = os.path.abspath(args.out)
