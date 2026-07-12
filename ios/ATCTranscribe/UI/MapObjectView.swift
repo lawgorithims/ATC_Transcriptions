@@ -15,6 +15,36 @@ struct MapObjectView: View {
     @State private var confirmDirect: IdentifiedObject?
     @State private var plate: AirportProcedure?    // the FAA plate being viewed full-screen
     @State private var climateTarget: ClimateTarget?
+    // ForeFlight-style airport card: top tab + the Procedure sub-tab, plus which plates are mid-download
+    // for the inline "Map" (send-to-map) button.
+    @State private var airportTab: AirportTab = .info
+    @State private var procTab: ProcTab = .approach
+    @State private var sendingToMap: Set<String> = []
+
+    /// Top-level airport-card tabs (matches ForeFlight's Info / Weather / Runway / Procedure / NOTAM).
+    private enum AirportTab: String, CaseIterable, Identifiable {
+        case info, weather, runway, procedure, notam
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .info: return "Info"; case .weather: return "Weather"; case .runway: return "Runway"
+            case .procedure: return "Procedure"; case .notam: return "NOTAM"
+            }
+        }
+    }
+    /// Procedure sub-tabs. Airport→diagram, the three flavors map to plate categories, Other→coded
+    /// (CIFP vector) procedures that load onto the route.
+    private enum ProcTab: String, CaseIterable, Identifiable {
+        case airport, departure, arrival, approach, other
+        var id: String { rawValue }
+        var label: String { rawValue.prefix(1).uppercased() + rawValue.dropFirst() }
+        var category: AirportProcedure.Category? {
+            switch self {
+            case .airport: return .diagram; case .departure: return .departure
+            case .arrival: return .arrival; case .approach: return .approach; case .other: return nil
+            }
+        }
+    }
 
     /// Sheet payload for the Airport Climate card (`.sheet(item:)` works in both hosts — the
     /// floating side panel and the compact bottom sheet).
@@ -109,6 +139,15 @@ struct MapObjectView: View {
     // MARK: Detail
 
     @ViewBuilder private func detail(_ o: IdentifiedObject) -> some View {
+        if o.kind == .airport {
+            airportCard(o)
+        } else {
+            nonAirportDetail(o)
+        }
+    }
+
+    /// The original flat layout, kept for non-airport objects (fixes, navaids, airspace, traffic…).
+    @ViewBuilder private func nonAirportDetail(_ o: IdentifiedObject) -> some View {
         let p = model.palette
         List {
             Section {
@@ -124,47 +163,231 @@ struct MapObjectView: View {
             }
             infoSection(o)
             if o.kind == .hazard { hazardFooter }
-            if o.kind == .airport {
-                platesSection(o.ident)
-                climateSection(o)
-                proceduresSection(o.ident)
-            }
             actionSection(o)
         }
         .scrollContentBackground(.hidden)
     }
 
-    /// The FAA terminal-procedure PLATES (the actual charts, from the bundled d-TPP index) — the
-    /// approach/departure/arrival PDFs with frequencies, altitudes, minimums, and profiles the coded
-    /// waypoints can't show. Tapping one opens the full plate. Grouped by category.
-    @ViewBuilder private func platesSection(_ ident: String) -> some View {
+    // MARK: Airport card (ForeFlight-style tabs)
+
+    @ViewBuilder private func airportCard(_ o: IdentifiedObject) -> some View {
         let p = model.palette
-        let plates = Procedures.forAirport(ident)
-        let groups: [(AirportProcedure.Category, String)] = [
-            (.approach, "Approach plates"), (.departure, "Departures (DPs)"),
-            (.arrival, "Arrivals (STARs)"), (.diagram, "Airport diagram"),
-        ]
-        ForEach(groups, id: \.0) { cat, heading in
-            let items = plates.filter { $0.category == cat }
-            if !items.isEmpty {
-                Section("\(heading) (\(items.count))") {
-                    ForEach(items) { proc in
-                        Button { Haptics.impact(.light); plate = proc } label: {
-                            HStack(spacing: 8) {
-                                Image(systemName: "doc.richtext").font(.caption).foregroundStyle(p.accent)
-                                Text(proc.name).font(.callout).foregroundStyle(p.text).lineLimit(1)
-                                Spacer(minLength: 4)
-                                if PlateStore.isCached(proc) {
-                                    Image(systemName: "arrow.down.circle.fill").font(.caption2).foregroundStyle(p.good)
-                                }
-                                Image(systemName: "chevron.right").font(.caption2).foregroundStyle(p.textDim)
-                            }
+        List {
+            Section {
+                HStack(spacing: 12) {
+                    badge(o.kind, large: true)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(title(o))
+                            .font(.system(.title3, design: .monospaced).weight(.semibold)).foregroundStyle(p.text)
+                        if let name = displayName(o) { Text(name).font(.subheadline).foregroundStyle(p.textDim) }
+                    }
+                    Spacer()
+                }
+                airportQuickActions(o)
+            }
+            Section {
+                Picker("View", selection: $airportTab) {
+                    ForEach(AirportTab.allCases) { Text($0.label).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .listRowInsets(EdgeInsets(top: 6, leading: 8, bottom: 6, trailing: 8))
+            }
+            switch airportTab {
+            case .info:      infoSection(o)
+            case .weather:   weatherTab(o)
+            case .runway:    runwayTab(o.ident)
+            case .procedure: procedureTab(o.ident)
+            case .notam:     notamTab(o.ident)
+            }
+        }
+        .scrollContentBackground(.hidden)
+    }
+
+    /// The compact action strip under the header (Direct-To / route endpoints), mirroring ForeFlight's
+    /// "Direct To / Add to Route" buttons.
+    private func airportQuickActions(_ o: IdentifiedObject) -> some View {
+        let p = model.palette
+        return HStack(spacing: 8) {
+            quickAction("Direct-To", "location.north.line") { confirmDirect = o }
+            quickAction("Add", "plus.circle") { model.addToRoute(o.ident); finish() }
+            quickAction("Dep", "airplane.departure") { model.setDeparture(o.ident); finish() }
+            quickAction("Dest", "airplane.arrival") { model.setDestination(o.ident); finish() }
+        }
+        .padding(.top, 2)
+        .foregroundStyle(p.accent)
+    }
+
+    private func quickAction(_ label: String, _ icon: String, _ act: @escaping () -> Void) -> some View {
+        Button { Haptics.impact(.light); act() } label: {
+            VStack(spacing: 3) {
+                Image(systemName: icon).font(.system(size: 15))
+                Text(label).font(.system(size: 10, weight: .medium))
+            }
+            .frame(maxWidth: .infinity).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: Airport-card tabs
+
+    /// Weather = NASA POWER climatology (opens the Climate card) + nearby EONET satellite hazards. No
+    /// live METAR/TAF/NOTAM source is bundled, so that's stated honestly rather than faked.
+    @ViewBuilder private func weatherTab(_ o: IdentifiedObject) -> some View {
+        let p = model.palette
+        climateSection(o)
+        let near = model.hazardEvents
+            .map { ($0, Geo.nmBetween(o.coord, $0.point)) }
+            .filter { $0.1 <= 200 }
+            .sorted { $0.1 < $1.1 }
+            .prefix(5)
+        if !near.isEmpty {
+            Section("Hazards nearby (NASA EONET)") {
+                ForEach(Array(near), id: \.0.id) { ev, nm in
+                    HStack(spacing: 10) {
+                        Image(systemName: ev.category.glyph).foregroundStyle(Color.hex(0xF97316))
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(ev.title).font(.caption).foregroundStyle(p.text).lineLimit(1)
+                            Text(ev.category.label).font(.caption2).foregroundStyle(p.textDim)
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("plate-row")
+                        Spacer()
+                        Text(String(format: "%.0f nm", nm)).font(.caption2).foregroundStyle(p.textDim)
                     }
                 }
             }
+        }
+        Section {} footer: {
+            Text("Live METAR/TAF are not available offline. Airport Climate shows NASA POWER historical winds & density altitude; hazards are satellite-observed (NASA EONET) — not a substitute for an official weather briefing.")
+                .font(.caption2).foregroundStyle(p.textDim)
+        }
+    }
+
+    /// Runway = coded runway pairs (CIFP) with true headings + lengths. Surface type isn't in the data.
+    @ViewBuilder private func runwayTab(_ ident: String) -> some View {
+        let p = model.palette
+        let pairs = RunwayGeometry.pairs(from: CIFP.runways(airport: ident))
+        if pairs.isEmpty {
+            Section { emptyRow("No runway data", "No coded runways for \(ident) in this cycle.") }
+        } else {
+            Section("Runways (\(pairs.count))") {
+                ForEach(pairs) { pair in
+                    HStack(spacing: 10) {
+                        Image(systemName: "airplane")
+                            .rotationEffect(.degrees(pair.a.trueHeadingDeg - 90)).foregroundStyle(p.accent).font(.callout)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("\(RunwayGeometry.label(pair.a.designator)) / \(RunwayGeometry.label(pair.b.designator))")
+                                .font(.callout.weight(.semibold)).foregroundStyle(p.text)
+                            Text(String(format: "%03.0f°T / %03.0f°T", pair.a.trueHeadingDeg, pair.b.trueHeadingDeg))
+                                .font(.caption2).foregroundStyle(p.textDim)
+                        }
+                        Spacer()
+                        if let l = pair.lengthFt { Text("\(l) ft").font(.caption).foregroundStyle(p.textDim) }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Procedure = ForeFlight-style sub-tabs. Airport/Departure/Arrival/Approach map to plate categories
+    /// (each row shows saved state + a "Map" send-to-map button + tap-to-open); Other → coded (CIFP
+    /// vector) procedures that load onto the route.
+    @ViewBuilder private func procedureTab(_ ident: String) -> some View {
+        Section {
+            Picker("Procedure", selection: $procTab) {
+                ForEach(ProcTab.allCases) { Text($0.label).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .listRowInsets(EdgeInsets(top: 6, leading: 8, bottom: 6, trailing: 8))
+        }
+        if let cat = procTab.category {
+            let items = Procedures.forAirport(ident).filter { $0.category == cat }
+            if items.isEmpty {
+                Section { emptyRow("No charts", "No \(procTab.label.lowercased()) charts for \(ident) this cycle.") }
+            } else {
+                Section("\(items.count) chart\(items.count == 1 ? "" : "s")") {
+                    ForEach(items) { procedurePlateRow($0, ident: ident) }
+                }
+            }
+        } else {
+            let procs = distinct(CIFP.procedures(airport: ident))
+            if procs.isEmpty {
+                Section { emptyRow("No coded procedures", "No CIFP procedures for \(ident).") }
+            } else {
+                Section("Coded procedures — load onto route") {
+                    ForEach(procs) { procedureRow($0) }
+                }
+            }
+        }
+    }
+
+    /// One plate row with the inline "Map" (send-to-map) button + saved/auto-align state. Tap the name
+    /// to open the full page; tap Map to overlay it on the map (downloading first if needed).
+    private func procedurePlateRow(_ proc: AirportProcedure, ident: String) -> some View {
+        let p = model.palette
+        let cached = PlateStore.isCached(proc)
+        let auto = PlateGeoref.lookup(pdf: proc.pdf) != nil
+        let sending = sendingToMap.contains(proc.pdf)
+        return HStack(spacing: 8) {
+            Button { Haptics.impact(.light); plate = proc } label: {
+                HStack(spacing: 7) {
+                    Image(systemName: "doc.richtext").font(.caption).foregroundStyle(p.accent)
+                    Text(proc.name).font(.callout).foregroundStyle(p.text).lineLimit(2)
+                    if auto { Image(systemName: "scope").font(.caption2).foregroundStyle(p.good) }  // auto-aligns
+                    Spacer(minLength: 4)
+                    Text(cached ? "SAVED" : "NOT SAVED")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(cached ? p.good : p.textDim)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            Button { sendPlateToMap(proc, ident: ident) } label: {
+                HStack(spacing: 3) {
+                    if sending { ProgressView().controlSize(.mini) }
+                    else { Image(systemName: "square.on.square").font(.caption2) }
+                    Text("Map").font(.caption2.weight(.semibold))
+                }
+                .padding(.horizontal, 9).padding(.vertical, 5)
+                .background(Capsule().fill(p.accent.opacity(0.16)))
+                .foregroundStyle(p.accent)
+            }
+            .buttonStyle(.plain).disabled(sending)
+            .accessibilityIdentifier("plate-send-to-map")
+        }
+    }
+
+    /// Download the plate if needed, overlay it on the map, then dismiss the panel so the map shows it.
+    private func sendPlateToMap(_ proc: AirportProcedure, ident: String) {
+        Haptics.impact(.medium)
+        if PlateStore.isCached(proc), let url = PlateStore.localURL(proc) {
+            model.overlayPlate(proc, airport: ident, pdf: url); onClose(); return
+        }
+        sendingToMap.insert(proc.pdf)
+        Task { @MainActor in
+            let url = await PlateStore.ensureOnDisk(proc)
+            sendingToMap.remove(proc.pdf)
+            guard let url else { return }              // offline / fetch failed → leave the panel open
+            model.overlayPlate(proc, airport: ident, pdf: url); onClose()
+        }
+    }
+
+    /// NOTAM = honest placeholder (no offline NOTAM/TFR source bundled).
+    @ViewBuilder private func notamTab(_ ident: String) -> some View {
+        let p = model.palette
+        Section {
+            VStack(spacing: 10) {
+                Image(systemName: "bell.slash").font(.system(size: 30)).foregroundStyle(p.textDim.opacity(0.7))
+                Text("NOTAMs need a connection").font(.callout).foregroundStyle(p.text)
+                Text("Offline NOTAM/TFR data isn't bundled yet. Check an official source before flight.")
+                    .font(.caption2).foregroundStyle(p.textDim).multilineTextAlignment(.center)
+            }
+            .frame(maxWidth: .infinity).padding(.vertical, 20)
+        }
+    }
+
+    private func emptyRow(_ title: String, _ sub: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title).font(.callout).foregroundStyle(model.palette.text)
+            Text(sub).font(.caption2).foregroundStyle(model.palette.textDim)
         }
     }
 
@@ -189,21 +412,6 @@ struct MapObjectView: View {
                 }
             }
             .buttonStyle(.plain).accessibilityIdentifier("airport-climate")
-        }
-    }
-
-    /// Coded procedures (CIFP) for an airport, grouped by kind; tapping one draws it on the map as a
-    /// georeferenced overlay. One row per procedure identifier (transitions collapsed).
-    @ViewBuilder private func proceduresSection(_ ident: String) -> some View {
-        let procs = CIFP.procedures(airport: ident)
-        let groups: [(String, String)] = [("IAP", "Approaches"), ("SID", "Departures"), ("STAR", "Arrivals")]
-        ForEach(groups, id: \.0) { kind, heading in
-            let items = distinct(procs.filter { $0.kind == kind })
-            if !items.isEmpty {
-                Section("\(heading) (\(items.count))") {
-                    ForEach(items) { proc in procedureRow(proc) }
-                }
-            }
         }
     }
 
