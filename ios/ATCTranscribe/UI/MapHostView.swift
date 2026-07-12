@@ -43,6 +43,7 @@ struct MapHostView: View {
                              },
                              focus: model.mapFocus,
                              restoreCamera: model.lastMapCamera,
+                             plateOverlay: model.plateOverlay,
                              model: model)
             } else {
                 model.palette.bg
@@ -57,6 +58,17 @@ struct MapHostView: View {
             }
         }
         .ignoresSafeArea()
+        // The plate-adjust control bar floats at the bottom while a plate is superimposed (both layouts).
+        .overlay(alignment: .bottom) {
+            if let s = model.plateOverlay {
+                PlateControlBar(state: s, palette: model.palette)
+                    .environmentObject(model)
+                    .padding(.horizontal, 12).padding(.bottom, 10)
+                    .frame(maxWidth: 520)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: model.plateOverlay?.name)
         .task { await buildRoute() }
         .onChange(of: model.flightPlan) { _, _ in Task { await buildRoute() } }      // edits redraw the route
         .onChange(of: model.chartLayer) { _, new in

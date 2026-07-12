@@ -435,6 +435,7 @@ struct ChartMapView: UIViewRepresentable {
     let onTapObjects: ([IdentifiedObject]) -> Void   // tap / long-press → ranked objects there (empty = nothing)
     let focus: Coord?                                // recenter here when it changes (search result)
     var restoreCamera: SavedMapCamera? = nil         // M7: re-frame to the user's last pan/zoom after a thermal rebuild
+    var plateOverlay: PlateOverlayState? = nil       // a hand-aligned approach plate superimposed on the map
     @ObservedObject var model: AppModel
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -525,6 +526,11 @@ struct ChartMapView: UIViewRepresentable {
             c.overlays[rid] = ov
         }
 
+        // Reconcile the superimposed plate. Rebuild the MKOverlay only when the PLACEMENT changes
+        // (opacity-only changes still need a rebuild since the renderer reads it, but the geoKey
+        // guards against churn on unrelated re-renders). Drawn above the chart tiles + route.
+        reconcilePlate(mv, c)
+
         if !c.didFrame {
             // M7: after a thermal teardown rebuilt this view, restore the user's last pan/zoom FIRST
             // (a fresh launch has no saved camera → falls through to route/launch framing; a stale
@@ -561,8 +567,30 @@ struct ChartMapView: UIViewRepresentable {
         c.syncDynamic(mv, aircraft: model.aircraft, ownship: model.stratuxGPS?.coordinate)
     }
 
+    /// Reconcile the superimposed plate overlay. Rebuild the MKOverlay only when the PLACEMENT
+    /// (center/size/rotation) changes — an opacity-only change updates the existing renderer in place,
+    /// so dragging the opacity slider never removes + re-adds the image (which would flicker).
+    private func reconcilePlate(_ mv: MKMapView, _ c: Coordinator) {
+        guard let s = plateOverlay else {
+            if let old = c.plateOverlayObj { mv.removeOverlay(old); c.plateOverlayObj = nil; c.plateKey = nil }
+            return
+        }
+        if c.plateKey != s.geoKey {
+            if let old = c.plateOverlayObj { mv.removeOverlay(old) }
+            let o = PlateImageOverlay(state: s)
+            mv.addOverlay(o, level: .aboveLabels)   // over the chart tiles + route, under the annotation labels
+            c.plateOverlayObj = o
+            c.plateKey = s.geoKey
+        } else if let o = c.plateOverlayObj, o.opacity != s.opacity {
+            o.opacity = s.opacity
+            (mv.renderer(for: o) as? PlateOverlayRenderer)?.setNeedsDisplay()
+        }
+    }
+
     final class Coordinator: NSObject, MKMapViewDelegate, CLLocationManagerDelegate, UIGestureRecognizerDelegate {
         var overlays: [ObjectIdentifier: MBTilesTileOverlay] = [:]
+        var plateOverlayObj: PlateImageOverlay?     // the superimposed plate, if any
+        var plateKey: String?                       // geometry identity — rebuild only when placement changes
         var routeOverlay: MKPolyline?
         var waypointAnnotations: [WaypointAnnotation] = []
         var lastRouteKey: [String] = []
@@ -775,6 +803,7 @@ struct ChartMapView: UIViewRepresentable {
         }
 
         func mapView(_ mv: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
+            if let plate = overlay as? PlateImageOverlay { return PlateOverlayRenderer(plate) }
             if let tile = overlay as? MKTileOverlay { return MKTileOverlayRenderer(tileOverlay: tile) }
             if let poly = overlay as? MKPolygon {
                 let cls = airspaceClass[ObjectIdentifier(poly)] ?? "D"

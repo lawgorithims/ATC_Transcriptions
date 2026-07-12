@@ -231,6 +231,9 @@ final class AppModel: ObservableObject {
 
     /// Recenter the home map here (a search result). Transient.
     @Published var mapFocus: Coord?
+    /// A plate (approach/departure PDF) superimposed on the home map as a hand-aligned REFERENCE
+    /// overlay; nil = none. See `PlateOverlayState` — it is never a precise nav source.
+    @Published var plateOverlay: PlateOverlayState?
     /// A coded procedure (approach/SID/STAR) drawn as a georeferenced overlay on the home map; nil = none.
     @Published var previewedProcedure: CIFPProcedure? {
         didSet { if didFinishInit, previewedProcedure?.id != oldValue?.id { resolvePreviewedProcedure() } }
@@ -282,6 +285,43 @@ final class AppModel: ObservableObject {
     func selectMapObject(_ o: IdentifiedObject) {
         mapFocus = o.coord
         widgetStore.mapProbe = MapProbeResult(id: "sel-\(o.id)", objects: [o])
+    }
+
+    // MARK: - Plate overlay (superimpose an approach plate on the map — reference aid)
+
+    /// Superimpose an approach/departure plate on the home map, auto-placed centered on the airport,
+    /// north-up, at a default scale — then the pilot fine-tunes (size/rotation/position/opacity) via
+    /// the `PlateControlBar`. A REFERENCE aid only: the bundled FAA index carries no georeferencing,
+    /// so this is never presented as survey-accurate. Rendering page 1 is a one-time cost on this
+    /// explicit tap. No-op if the airport has no known reference point or the PDF is unreadable.
+    func overlayPlate(_ proc: AirportProcedure, airport: String, pdf: URL) {
+        guard let c = AirportCoordinates.coordinate(icao: airport),
+              let img = PlateImageRenderer.firstPageImage(pdfURL: pdf) else { return }
+        let aspect = Double(img.size.width / max(img.size.height, 1))
+        plateOverlay = PlateOverlayState(name: proc.name, airport: airport, image: img, imageAspect: aspect,
+                                         centerLat: c.lat, centerLon: c.lon,
+                                         widthMeters: PlatePlacement.defaultWidthMeters(fixExtentMeters: nil),
+                                         rotationDeg: 0, opacity: 0.7)
+    }
+    func clearPlateOverlay() { plateOverlay = nil }
+    func setPlateOpacity(_ v: Double) { plateOverlay?.opacity = min(max(v, 0.05), 1) }
+    func setPlateWidth(_ v: Double) { plateOverlay?.widthMeters = PlatePlacement.clampWidthMeters(v) }
+    func setPlateRotation(_ v: Double) { plateOverlay?.rotationDeg = PlatePlacement.normalizeRotation(v) }
+
+    /// Move the plate's center by a geographic delta (metres east/north) — the nudge pad.
+    func nudgePlate(eastMeters: Double, northMeters: Double) {
+        guard var s = plateOverlay else { return }
+        let m = PlatePlacement.move(centerLat: s.centerLat, centerLon: s.centerLon,
+                                    eastMeters: eastMeters, northMeters: northMeters)
+        s.centerLat = m.lat; s.centerLon = m.lon
+        plateOverlay = s
+    }
+
+    /// Snap the plate back onto the airport reference point (undo an over-nudge).
+    func recenterPlateOnAirport() {
+        guard var s = plateOverlay, let c = AirportCoordinates.coordinate(icao: s.airport) else { return }
+        s.centerLat = c.lat; s.centerLon = c.lon
+        plateOverlay = s
     }
 
     /// Resolve the previewed procedure's legs to plottable coordinates OFF the main actor (L8), then
