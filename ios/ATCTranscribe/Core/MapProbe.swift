@@ -47,10 +47,10 @@ enum Geo {
 /// What kind of thing the user tapped. Point features (airport/vor/fix/traffic/hazard) rank above
 /// the area feature (airspace) in a disambiguation list.
 enum MapObjectKind: String {
-    case airport, vor, fix, airspace, traffic, userPoint, hazard
+    case airport, vor, fix, airspace, traffic, userPoint, hazard, tfr
 
-    /// Lower sorts first: point features before the containing airspace.
-    var priority: Int { self == .airspace ? 1 : 0 }
+    /// Lower sorts first: point features before the containing area features (airspace / TFR).
+    var priority: Int { (self == .airspace || self == .tfr) ? 1 : 0 }
 
     var label: String {
         switch self {
@@ -61,6 +61,7 @@ enum MapObjectKind: String {
         case .traffic:   return "Traffic"
         case .userPoint: return "Point"
         case .hazard:    return "Hazard"
+        case .tfr:       return "TFR"
         }
     }
 
@@ -73,8 +74,8 @@ enum MapObjectKind: String {
         }
     }
 
-    /// Anything with a location can be filed into the route; airspace/traffic/hazards cannot.
-    var isRoutable: Bool { self != .airspace && self != .traffic && self != .hazard }
+    /// Anything with a location can be filed into the route; airspace/traffic/hazards/TFRs cannot.
+    var isRoutable: Bool { self != .airspace && self != .traffic && self != .hazard && self != .tfr }
 }
 
 /// A "user waypoint" — an arbitrary point dropped by long-pressing the map. Stored in the route as a
@@ -108,6 +109,7 @@ struct IdentifiedObject: Identifiable {
     var airspace: Airspace? = nil     // populated when kind == .airspace
     var traffic: Aircraft? = nil      // populated when kind == .traffic
     var hazard: EONETEvent? = nil     // populated when kind == .hazard
+    var tfr: TFR? = nil               // populated when kind == .tfr
 
     /// Stable across a single probe so `.sheet(item:)` / `ForEach` are well-behaved.
     var id: String { "\(kind.rawValue)|\(ident)|\(coord.lat),\(coord.lon)" }

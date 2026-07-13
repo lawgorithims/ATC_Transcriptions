@@ -16,8 +16,20 @@ struct MapLayersMenu: View {
                 ForEach(ChartLayer.allCases) { Text($0.title).tag($0) }
             }
             Divider()
-            Toggle(isOn: $model.showAirspace) { Label("Class B/C/D airspace", systemImage: "hexagon") }
+            Toggle(isOn: $model.showAirspace) { Label("Airspace & special use", systemImage: "hexagon") }
             Toggle(isOn: $model.showNearby) { Label("Nearby navaids & airports", systemImage: "mappin.and.ellipse") }
+            Toggle(isOn: $model.showTFRs) { Label("TFRs (FAA, live)", systemImage: "exclamationmark.octagon") }
+            if model.showTFRs {
+                switch model.tfrStatus {
+                case .error: Text("TFR feed unavailable — check connection")
+                default:
+                    if let at = model.tfrsUpdatedAt {
+                        Text("\(model.tfrs.count) TFRs, updated \(Self.relative.localizedString(for: at, relativeTo: Date()))")
+                    } else {
+                        Text("Loading TFRs…")
+                    }
+                }
+            }
             Toggle(isOn: $model.showHazards) { Label("Natural hazards (NASA)", systemImage: "flame") }
             if model.showHazards, let at = model.hazardsUpdatedAt {
                 Text("Hazards updated \(Self.relative.localizedString(for: at, relativeTo: Date()))")

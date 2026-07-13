@@ -135,6 +135,7 @@ struct MapObjectView: View {
         case .traffic:   return "Traffic"
         case .userPoint: return "Dropped point"
         case .hazard:    return o.hazard?.category.label ?? "Hazard"
+        case .tfr:       return o.tfr?.type.label ?? "TFR"
         }
     }
 
@@ -165,6 +166,7 @@ struct MapObjectView: View {
             }
             infoSection(o)
             if o.kind == .hazard { hazardFooter }
+            if o.kind == .tfr { tfrFooter }
             actionSection(o)
         }
         .scrollContentBackground(.hidden)
@@ -415,6 +417,7 @@ struct MapObjectView: View {
         case .fix:       return "Reporting point / RNAV fix"
         case .userPoint: return "Custom point on the map"
         case .hazard:    return "Satellite-observed — NASA EONET"
+        case .tfr:       return "Temporary Flight Restriction — FAA"
         }
     }
 
@@ -462,6 +465,18 @@ struct MapObjectView: View {
                 }
                 KV("Position", coordText(o.coord))
                 bearingRow(o.coord)
+            case .tfr:
+                if let t = o.tfr {
+                    KV("Type", t.type.label)
+                    KV("Floor", Self.altText(t.floorFt))
+                    KV("Ceiling", Self.altText(t.ceilingFt))
+                    KV("NOTAM", t.id)
+                    if !t.title.isEmpty {
+                        Text(t.title).font(.caption).foregroundStyle(p.textDim)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                bearingRow(o.coord)
             }
         }
         .foregroundStyle(p.text)
@@ -472,6 +487,17 @@ struct MapObjectView: View {
         Section {
         } footer: {
             Text("Satellite-observed by NASA EONET. Not a substitute for official NOTAMs, TFRs, or weather briefings.")
+                .font(.caption2)
+                .foregroundStyle(model.palette.textDim)
+        }
+    }
+
+    /// TFRs are awareness context pulled from tfr.faa.gov — always confirm against an official briefing.
+    private var tfrFooter: some View {
+        Section {
+        } footer: {
+            let stale = model.tfrsUpdatedAt.map { Self.relative.localizedString(for: $0, relativeTo: Date()) }
+            Text("FAA TFR feed\(stale.map { ", updated \($0)" } ?? ""). Boundaries are approximate — confirm against the official NOTAM before flight.")
                 .font(.caption2)
                 .foregroundStyle(model.palette.textDim)
         }
@@ -573,6 +599,7 @@ struct MapObjectView: View {
         case .traffic:   return .orange
         case .userPoint: return .hex(0xFBBF24)
         case .hazard:    return .hex(0xF97316)
+        case .tfr:       return .hex(0xF71433)
         }
     }
 
@@ -585,6 +612,7 @@ struct MapObjectView: View {
         case .traffic:   return "airplane"
         case .userPoint: return "mappin"
         case .hazard:    return "flame"
+        case .tfr:       return "exclamationmark.octagon"
         }
     }
 }
