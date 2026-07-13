@@ -178,6 +178,15 @@ struct ChartCatalog: Decodable {
     let cycle: String
     let sectional: [Entry]
     let ifrLow: [Entry]
+    // Optional so a catalog published before IFR-high packs exist still decodes (the layer just shows
+    // "no charts here" until the `ifrHigh` array lands in index.json).
+    let ifrHighRaw: [Entry]?
+    var ifrHigh: [Entry] { ifrHighRaw ?? [] }
+
+    private enum CodingKeys: String, CodingKey {
+        case cycle, sectional, ifrLow
+        case ifrHighRaw = "ifrHigh"
+    }
 
     struct Entry: Decodable, Identifiable, Hashable {
         let id: String
@@ -241,26 +250,40 @@ struct SavedMapCamera: Equatable {
 /// A selectable base layer. `standard`/`satellite` are Apple's base map; the FAA layers are our
 /// self-hosted raster charts (packs downloaded on demand from HuggingFace, then offline).
 enum ChartLayer: String, CaseIterable, Identifiable {
-    case sectional, ifrLow, standard, satellite
+    case sectional, ifrLow, ifrHigh, standard, satellite
     var id: String { rawValue }
     var short: String {
-        switch self { case .sectional: return "VFR"; case .ifrLow: return "IFR"; case .standard: return "Map"; case .satellite: return "Sat" }
+        switch self {
+        case .sectional: return "VFR"; case .ifrLow: return "IFR-L"; case .ifrHigh: return "IFR-H"
+        case .standard: return "Map"; case .satellite: return "Sat"
+        }
     }
     var title: String {
-        switch self { case .sectional: return "VFR sectional"; case .ifrLow: return "IFR low"; case .standard: return "Standard map"; case .satellite: return "Satellite" }
+        switch self {
+        case .sectional: return "VFR sectional"; case .ifrLow: return "IFR low"; case .ifrHigh: return "IFR high"
+        case .standard: return "Standard map"; case .satellite: return "Satellite"
+        }
     }
     var mapType: MKMapType {
         switch self { case .satellite: return .hybrid; case .standard: return .standard; default: return .mutedStandard }
     }
-    var isRaster: Bool { self == .sectional || self == .ifrLow }
+    var isRaster: Bool { self == .sectional || self == .ifrLow || self == .ifrHigh }
     func entries(_ cat: ChartCatalog?) -> [ChartCatalog.Entry] {
-        switch self { case .sectional: return cat?.sectional ?? []; case .ifrLow: return cat?.ifrLow ?? []; default: return [] }
+        switch self {
+        case .sectional: return cat?.sectional ?? []
+        case .ifrLow:    return cat?.ifrLow ?? []
+        case .ifrHigh:   return cat?.ifrHigh ?? []
+        default:         return []
+        }
     }
-    /// Screenshot/demo: `--chart-layer vfr|ifr|std|sat` opens the chart on that layer.
+    /// Screenshot/demo: `--chart-layer vfr|ifr|ifrh|std|sat` opens the chart on that layer.
     static var launchOverride: ChartLayer? {
         let a = ProcessInfo.processInfo.arguments
         guard let i = a.firstIndex(of: "--chart-layer"), i + 1 < a.count else { return nil }
-        switch a[i + 1] { case "ifr": return .ifrLow; case "sat": return .satellite; case "std": return .standard; case "vfr": return .sectional; default: return nil }
+        switch a[i + 1] {
+        case "ifr": return .ifrLow; case "ifrh": return .ifrHigh; case "sat": return .satellite
+        case "std": return .standard; case "vfr": return .sectional; default: return nil
+        }
     }
     /// Screenshot/demo: `--chart-center lat,lon` opens the chart framed there (tests free-pan loading
     /// with no filed route).
@@ -270,6 +293,13 @@ enum ChartLayer: String, CaseIterable, Identifiable {
         let p = a[i + 1].split(separator: ",").compactMap { Double($0) }
         guard p.count == 2 else { return nil }
         return CLLocationCoordinate2D(latitude: p[0], longitude: p[1])
+    }
+    /// Screenshot/demo: `--chart-span <deg>` opens the chart at that latitude span (e.g. 170 frames the
+    /// whole earth to show the 3D globe on zoom-out). Overrides the default continental-US framing.
+    static var launchSpan: Double? {
+        let a = ProcessInfo.processInfo.arguments
+        guard let i = a.firstIndex(of: "--chart-span"), i + 1 < a.count else { return nil }
+        return Double(a[i + 1])
     }
 }
 
@@ -453,9 +483,33 @@ struct ChartMapView: UIViewRepresentable {
         hold.delegate = context.coordinator
         mv.addGestureRecognizer(hold)
         context.coordinator.requestLocation()
-        mv.setRegion(MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: 39, longitude: -96),
-                                        span: MKCoordinateSpan(latitudeDelta: 42, longitudeDelta: 55)), animated: false)
+        Self.configure(mv, for: layer)
+        context.coordinator.appliedLayer = layer
+        let center = ChartLayer.launchCenter ?? CLLocationCoordinate2D(latitude: 39, longitude: -96)
+        let s = ChartLayer.launchSpan ?? 42
+        mv.setRegion(MKCoordinateRegion(center: center,
+                                        span: MKCoordinateSpan(latitudeDelta: s, longitudeDelta: s * 1.3)), animated: false)
         return mv
+    }
+
+    /// Base-map configuration per layer. Using a `MKMapConfiguration` with an *elevation style* (rather
+    /// than the flat 2D `mapType`) makes MapKit render the earth as a 3D globe when the pilot zooms all
+    /// the way out — which also removes the Mercator edge-stretch a flat world map shows at continental
+    /// zoom. Apple's base layers get realistic 3D terrain; the FAA raster layers keep a muted flat base
+    /// under their tiles (the tiles themselves stay 2D Mercator but drape onto the globe surface).
+    static func configure(_ mv: MKMapView, for layer: ChartLayer) {
+        switch layer {
+        case .satellite:
+            mv.preferredConfiguration = MKHybridMapConfiguration(elevationStyle: .realistic)
+        case .standard:
+            let c = MKStandardMapConfiguration(elevationStyle: .realistic, emphasisStyle: .default)
+            c.pointOfInterestFilter = .excludingAll
+            mv.preferredConfiguration = c
+        case .sectional, .ifrLow, .ifrHigh:
+            let c = MKStandardMapConfiguration(elevationStyle: .flat, emphasisStyle: .muted)
+            c.pointOfInterestFilter = .excludingAll
+            mv.preferredConfiguration = c
+        }
     }
 
     func updateUIView(_ mv: MKMapView, context: Context) {
@@ -464,7 +518,7 @@ struct ChartMapView: UIViewRepresentable {
         c.onTapObjects = onTapObjects
         c.routeLegs = route                               // hit-test source for filed waypoints
         c.routeIdents = Set(route.map { $0.ident })
-        if mv.mapType != layer.mapType { mv.mapType = layer.mapType }
+        if c.appliedLayer != layer { c.appliedLayer = layer; Self.configure(mv, for: layer) }
 
         // Reconcile the route line + waypoint markers whenever the filed route changes (initial resolve,
         // or a tap-to-edit add/insert/remove) — remove the old, draw the new.
@@ -597,6 +651,7 @@ struct ChartMapView: UIViewRepresentable {
 
     final class Coordinator: NSObject, MKMapViewDelegate, CLLocationManagerDelegate, UIGestureRecognizerDelegate {
         var overlays: [ObjectIdentifier: MBTilesTileOverlay] = [:]
+        var appliedLayer: ChartLayer?               // last base config applied — reconfigure only on a real change
         var plateOverlayObj: PlateImageOverlay?     // the superimposed plate, if any
         var plateKey: String?                       // geometry identity — rebuild only when placement changes
         var routeOverlay: MKPolyline?
@@ -678,7 +733,7 @@ struct ChartMapView: UIViewRepresentable {
             Task.detached { [weak self] in
                 let nearby = NavDatabase.nearby(box, types: [0, 1, 2], limit: 40)        // full-table scan — off main
                 let airspaces = wantAir ? NavDatabase.airspaces(intersecting: box).filter { $0.containsCoord(here) } : []
-                await MainActor.run {
+                await MainActor.run { [weak self] in
                     guard let self, self.probeGen == gen else { return }   // a newer tap superseded this one
                     self.rankProbe(pt: pt, here: here, radius: radius, userPoint: userPoint,
                                    nearby: nearby, airspaces: airspaces, in: mv)
