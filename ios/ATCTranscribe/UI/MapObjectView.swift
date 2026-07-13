@@ -461,6 +461,7 @@ struct MapObjectView: View {
             case .hazard:
                 if let ev = o.hazard {
                     KV("Category", ev.category.label)
+                    if let mag = ev.magnitudeText { KV(ev.magnitudeLabel, mag) }
                     if ev.updatedAt > .distantPast {
                         KV("Last updated", Self.relative.localizedString(for: ev.updatedAt, relativeTo: Date()))
                     }
