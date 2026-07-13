@@ -526,6 +526,12 @@ struct ChartMapView: UIViewRepresentable {
             c.overlays[rid] = ov
         }
 
+        // NASA GIBS satellite smoke overlay: translucent, drawn just above the chart tiles and below
+        // the vector overlays (route/airspace/hazards stay crisp on top). Reconciled here so a pack
+        // added/removed on a pan (always inserted at index 0) keeps the chart below the smoke. Gated on
+        // the thermal state like the other network map layers so a hot device stops pulling tiles.
+        c.syncSmoke(mv, on: model.showSmoke && !model.thermalSerious)
+
         // Reconcile the superimposed plate. Rebuild the MKOverlay only when the PLACEMENT changes
         // (opacity-only changes still need a rebuild since the renderer reads it, but the geoKey
         // guards against churn on unrelated re-renders). Drawn above the chart tiles + route.
@@ -626,6 +632,7 @@ struct ChartMapView: UIViewRepresentable {
         var tfrLabelByKey: [String: AirspaceLabelAnnotation] = [:]     // altitude blocks, reusing the airspace annotation
         var tfrOverlayIDs: Set<ObjectIdentifier> = []                  // marks a polygon as a TFR for the renderer
         var tfrByID: [String: TFR] = [:]                              // the full TFR for the tap probe + change detection
+        var smokeOverlay: GIBSTileOverlay?                            // NASA GIBS satellite smoke layer (translucent, above the chart)
         private var nearbyByKey: [String: NearbyAnnotation] = [:]   // keyed by NavPoint.id for the same reason
         private var contextGen = 0                                  // drops stale async refreshes (rapid panning)
         private var probeGen = 0                                    // drops a superseded tap probe (L12) — double-tap debounce
@@ -879,8 +886,32 @@ struct ChartMapView: UIViewRepresentable {
         /// Special-use types get a heavier, filled treatment so they read as restrictions, not class rings.
         static func isSpecialUse(_ cls: String) -> Bool { ["TFR", "R", "P", "W", "A", "MOA"].contains(cls) }
 
+        /// Add/remove the NASA GIBS satellite smoke overlay. Inserted just above the chart tiles (index
+        /// = current chart-tile count) so it draws over the chart yet under the vector overlays. The
+        /// overlay computes its imagery date live per request, fetches its own remote tiles, and fails
+        /// soft offline; `on` is already gated on the thermal state at the call site.
+        func syncSmoke(_ mv: MKMapView, on: Bool) {
+            assert(Thread.isMainThread, "overlay mutation must run on the main thread")
+            if on {
+                guard smokeOverlay == nil else { return }
+                let o = GIBSTileOverlay(layer: .smoke)
+                mv.insertOverlay(o, at: overlays.count, level: .aboveLabels)
+                smokeOverlay = o
+                assert(smokeOverlay != nil, "smoke overlay retained after insert")
+            } else if let o = smokeOverlay {
+                mv.removeOverlay(o)
+                smokeOverlay = nil
+            }
+        }
+
         func mapView(_ mv: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
             if let plate = overlay as? PlateImageOverlay { return PlateOverlayRenderer(plate) }
+            // GIBS satellite smoke — a translucent tile overlay; matched before the opaque chart tiles.
+            if let smoke = overlay as? GIBSTileOverlay {
+                let r = MKTileOverlayRenderer(tileOverlay: smoke)
+                r.alpha = smoke.layer.alpha
+                return r
+            }
             if let tile = overlay as? MKTileOverlay { return MKTileOverlayRenderer(tileOverlay: tile) }
             // EONET hazards first — identity-keyed so a hazard polygon is never mistaken for airspace.
             if let cat = hazardOverlayCategory[ObjectIdentifier(overlay)] {

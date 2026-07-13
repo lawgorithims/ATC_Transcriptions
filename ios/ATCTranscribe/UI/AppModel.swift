@@ -446,6 +446,12 @@ final class AppModel: ObservableObject {
     @Published var showWxRadar = UserDefaults.standard.bool(forKey: "atc.map.wxRadar") {   // stub overlay for now
         didSet { UserDefaults.standard.set(showWxRadar, forKey: "atc.map.wxRadar") }
     }
+    /// NASA GIBS satellite smoke/true-colour overlay (a separate layer from the radar stub above). A
+    /// translucent, prior-day satellite image over the chart — situational context, NOT current weather.
+    /// Pure remote tiles (no poller), opt-in, default off; persisted. Reconciled in `ChartMapView`.
+    @Published var showSmoke = UserDefaults.standard.bool(forKey: "atc.map.smoke") {
+        didSet { UserDefaults.standard.set(showSmoke, forKey: "atc.map.smoke") }
+    }
     /// NASA EONET natural-hazard overlay (wildfires / storms / dust / volcanoes). OFF by default —
     /// it's a network feature the pilot opts into from the layers menu. Persisted; flipping it
     /// reconciles the poller (see `eonetActive`).
