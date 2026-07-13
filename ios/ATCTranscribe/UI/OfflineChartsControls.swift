@@ -18,12 +18,12 @@ struct OfflineChartsControls: View {
         var layers: [ChartLayer] {
             switch self {
             case .vfr:  return [.sectional]
-            case .ifr:  return [.ifrLow]
-            case .both: return [.sectional, .ifrLow]
+            case .ifr:  return [.ifrLow, .ifrHigh]
+            case .both: return [.sectional, .ifrLow, .ifrHigh]
             }
         }
         var noun: String {
-            switch self { case .vfr: return "VFR sectional"; case .ifr: return "IFR-low"; case .both: return "VFR + IFR" }
+            switch self { case .vfr: return "VFR sectional"; case .ifr: return "IFR low + high"; case .both: return "VFR + IFR" }
         }
     }
 
