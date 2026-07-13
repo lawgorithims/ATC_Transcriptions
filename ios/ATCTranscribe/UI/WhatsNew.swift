@@ -32,6 +32,14 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 45, version: "1.0", headline: "Approach plates that align themselves — precisely",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "scope",
+                    title: "Every approach snaps onto the map exactly",
+                    detail: "CommSight now reads the georeferencing the FAA embeds inside each approach chart, so plates drop onto the moving map at exactly the right place, scale and orientation — no dragging to line them up. This jumps from about 1,100 approaches to roughly 9,000 (nearly every US instrument approach), and it's precise, not approximate. Look for the ✛ marker on a plate. Still a visual aid — always fly the official published chart."),
+            ]),
+        ReleaseNote(
             build: 44, version: "1.0", headline: "Plate fixes: send-to-map for every airport + your position on the chart",
             highlights: [
                 WhatsNewHighlight(
