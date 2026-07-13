@@ -32,6 +32,18 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 47, version: "1.0", headline: "Airspace & TFR accuracy refinements",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "scope",
+                    title: "Curved TFR boundaries drawn correctly",
+                    detail: "Some TFRs (notably rocket-launch areas) have curved arc edges. Those arcs are now drawn as true curves instead of being mis-plotted, so the restricted area's shape and extent match the official NOTAM. TFRs also survive a brief network drop now — a hiccup while refreshing no longer blanks the layer or throws away the last known set. Still awareness only; confirm against an official briefing."),
+                WhatsNewHighlight(
+                    icon: "hexagon",
+                    title: "Consistent special-use airspace everywhere",
+                    detail: "The full-screen route map now labels its airspace toggle “Airspace & special use” with a matching legend for Restricted, Prohibited, Warning, Alert, MOA, and TFR — same as the home map — and special-use names read correctly in the tap-to-identify card."),
+            ]),
+        ReleaseNote(
             build: 46, version: "1.0", headline: "Restricted airspace and live TFRs on the map",
             highlights: [
                 WhatsNewHighlight(
