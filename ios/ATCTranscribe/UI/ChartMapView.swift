@@ -612,6 +612,7 @@ struct ChartMapView: UIViewRepresentable {
         private var ownshipAnn: OwnshipAnnotation?
         private var airspaceByKey: [String: MKPolygon] = [:]        // keyed so a settle diffs, never redraws all
         private var airspaceClass: [ObjectIdentifier: String] = [:]
+        private var airspaceLabelByKey: [String: AirspaceLabelAnnotation] = [:]   // altitude blocks, diffed like polygons
         // NASA EONET hazard layer — diffed like airspace/traffic; the reconcile lives in
         // HazardMapLayer.swift (stored properties can't move into the extension).
         var hazardAnnByKey: [String: HazardAnnotation] = [:]
@@ -761,10 +762,14 @@ struct ChartMapView: UIViewRepresentable {
             let gen = contextGen
             Task { [weak self, weak mv] in
                 let out = await Task.detached(priority: .userInitiated) {
-                    () -> (rings: [(key: String, coords: [CLLocationCoordinate2D], cls: String)], near: [NavPoint]) in
+                    () -> (rings: [(key: String, coords: [CLLocationCoordinate2D], cls: String)],
+                           labels: [(key: String, coord: CLLocationCoordinate2D, ceil: String, floor: String, cls: String)],
+                           near: [NavPoint]) in
                     var rings: [(key: String, coords: [CLLocationCoordinate2D], cls: String)] = []
+                    var labels: [(key: String, coord: CLLocationCoordinate2D, ceil: String, floor: String, cls: String)] = []
                     if wantAir {
-                        let order: [String: Int] = ["B": 0, "C": 1, "D": 2]
+                        // Draw the most safety-critical first so the 260-ring cap never drops a P/R area.
+                        let order: [String: Int] = ["TFR": 0, "P": 1, "R": 2, "B": 3, "C": 4, "W": 5, "MOA": 6, "A": 7, "D": 8]
                         let asp = NavDatabase.airspaces(intersecting: bb)
                             .sorted { (order[$0.cls] ?? 9, $0.name) < (order[$1.cls] ?? 9, $1.name) }
                         building: for a in asp {
@@ -775,14 +780,26 @@ struct ChartMapView: UIViewRepresentable {
                                 if rings.count >= 260 { break building }
                             }
                         }
+                        // Altitude blocks only once zoomed in enough to be legible; placed on each area's
+                        // top edge (its northernmost vertex).
+                        if scale < 7 {
+                            for a in asp where labels.count < 140 {
+                                guard let top = a.rings.flatMap({ $0 }).max(by: { $0.lat < $1.lat }) else { continue }
+                                labels.append((key: "\(a.id)",
+                                               coord: CLLocationCoordinate2D(latitude: top.lat, longitude: top.lon),
+                                               ceil: AirspaceLabelAnnotation.altText(a.ceilingFt),
+                                               floor: AirspaceLabelAnnotation.altText(a.floorFt), cls: a.cls))
+                            }
+                        }
                     }
                     let near: [NavPoint] = wantNear
                         ? NavDatabase.nearby(bb, limit: 160).filter { !idents.contains($0.ident) }
                         : []
-                    return (rings, near)
+                    return (rings, labels, near)
                 }.value
                 guard let self, let mv, gen == self.contextGen else { return }   // a newer refresh superseded us
                 self.applyAirspace(out.rings, to: mv)
+                self.applyAirspaceLabels(out.labels, to: mv)
                 self.applyNearby(out.near, to: mv)
             }
         }
@@ -803,6 +820,22 @@ struct ChartMapView: UIViewRepresentable {
             }
         }
 
+        /// Diff the airspace altitude blocks like the polygons — keep in-view ones, add/remove the rest.
+        private func applyAirspaceLabels(
+            _ labels: [(key: String, coord: CLLocationCoordinate2D, ceil: String, floor: String, cls: String)],
+            to mv: MKMapView) {
+            let wanted = Set(labels.map(\.key))
+            let gone = airspaceLabelByKey.filter { !wanted.contains($0.key) }
+            if !gone.isEmpty { mv.removeAnnotations(Array(gone.values)); gone.keys.forEach { airspaceLabelByKey[$0] = nil } }
+            var added: [AirspaceLabelAnnotation] = []
+            for l in labels where airspaceLabelByKey[l.key] == nil {
+                let a = AirspaceLabelAnnotation(coord: l.coord, ceiling: l.ceil, floor: l.floor,
+                                                color: Self.airspaceColor(l.cls))
+                airspaceLabelByKey[l.key] = a; added.append(a)
+            }
+            if !added.isEmpty { mv.addAnnotations(added) }
+        }
+
         /// Same incremental diff for nearby navaids/airports — annotations that stay in view are never
         /// removed/re-added, so they don't blink as you scroll.
         private func applyNearby(_ near: [NavPoint], to mv: MKMapView) {
@@ -816,11 +849,22 @@ struct ChartMapView: UIViewRepresentable {
             if !added.isEmpty { mv.addAnnotations(added) }
         }
 
-        // Sectional-style airspace colours: Class C solid magenta; Class B/D blue (D dashed, drawn thinner).
+        // Airspace colours by class/type. Class B/D blue, C magenta (sectional style); Special Use gets
+        // aeronautical hazard colours — Prohibited/Restricted/Warning red family, MOA purple, Alert amber.
         static func airspaceColor(_ cls: String) -> UIColor {
-            cls == "C" ? UIColor(red: 0.76, green: 0.09, blue: 0.36, alpha: 1)
-                       : UIColor(red: 0.18, green: 0.44, blue: 0.93, alpha: 1)
+            switch cls {
+            case "C":   return UIColor(red: 0.76, green: 0.09, blue: 0.36, alpha: 1)   // Class C magenta
+            case "TFR": return UIColor(red: 0.97, green: 0.08, blue: 0.20, alpha: 1)   // TFR vivid red
+            case "R":   return UIColor(red: 0.86, green: 0.13, blue: 0.13, alpha: 1)   // Restricted red
+            case "P":   return UIColor(red: 0.63, green: 0.00, blue: 0.00, alpha: 1)   // Prohibited dark red
+            case "W":   return UIColor(red: 0.91, green: 0.34, blue: 0.11, alpha: 1)   // Warning red-orange
+            case "A":   return UIColor(red: 0.80, green: 0.60, blue: 0.00, alpha: 1)   // Alert amber
+            case "MOA": return UIColor(red: 0.56, green: 0.22, blue: 0.78, alpha: 1)   // MOA purple
+            default:    return UIColor(red: 0.18, green: 0.44, blue: 0.93, alpha: 1)   // Class B/D blue
+            }
         }
+        /// Special-use types get a heavier, filled treatment so they read as restrictions, not class rings.
+        static func isSpecialUse(_ cls: String) -> Bool { ["TFR", "R", "P", "W", "A", "MOA"].contains(cls) }
 
         func mapView(_ mv: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
             if let plate = overlay as? PlateImageOverlay { return PlateOverlayRenderer(plate) }
@@ -848,9 +892,15 @@ struct ChartMapView: UIViewRepresentable {
                 let color = Self.airspaceColor(cls)
                 let r = MKPolygonRenderer(polygon: poly)
                 r.strokeColor = color
-                r.lineWidth = cls == "D" ? 1.2 : 1.5
-                if cls == "D" { r.lineDashPattern = [4, 3] }
-                r.fillColor = color.withAlphaComponent(0.05)
+                if Self.isSpecialUse(cls) {                        // restrictions: bolder outline + more fill
+                    r.lineWidth = (cls == "R" || cls == "P" || cls == "TFR") ? 2.4 : 1.8
+                    if cls == "MOA" || cls == "A" { r.lineDashPattern = [7, 4] }   // advisory areas dashed
+                    r.fillColor = color.withAlphaComponent((cls == "P" || cls == "TFR") ? 0.18 : 0.10)
+                } else {
+                    r.lineWidth = cls == "D" ? 1.2 : 1.5
+                    if cls == "D" { r.lineDashPattern = [4, 3] }
+                    r.fillColor = color.withAlphaComponent(0.05)
+                }
                 return r
             }
             if let line = overlay as? MKPolyline {
@@ -897,6 +947,12 @@ struct ChartMapView: UIViewRepresentable {
                     ?? NearbyMarkerView(annotation: annotation, reuseIdentifier: "near")
                 v.annotation = annotation
                 v.configure(ident: n.ident, isAirport: n.isAirport)
+                return v
+            case let a as AirspaceLabelAnnotation:
+                let v = mv.dequeueReusableAnnotationView(withIdentifier: "asplbl") as? AirspaceLabelView
+                    ?? AirspaceLabelView(annotation: annotation, reuseIdentifier: "asplbl")
+                v.annotation = annotation
+                v.configure(a)
                 return v
             case let t as TrafficAnnotation:
                 let v = mv.dequeueReusableAnnotationView(withIdentifier: "tfc") ?? MKAnnotationView(annotation: annotation, reuseIdentifier: "tfc")
@@ -1051,6 +1107,52 @@ final class NearbyAnnotation: NSObject, MKAnnotation {
         coordinate = CLLocationCoordinate2D(latitude: np.coord.lat, longitude: np.coord.lon)
         ident = np.ident
         isAirport = np.kind == .airport
+    }
+}
+
+/// The altitude block for an airspace, placed on its top edge — ceiling over floor, in the airspace's
+/// colour (chart convention). Decorative / non-selectable.
+final class AirspaceLabelAnnotation: NSObject, MKAnnotation {
+    let coordinate: CLLocationCoordinate2D
+    let ceiling: String
+    let floor: String
+    let color: UIColor
+    init(coord: CLLocationCoordinate2D, ceiling: String, floor: String, color: UIColor) {
+        self.coordinate = coord; self.ceiling = ceiling; self.floor = floor; self.color = color
+    }
+    /// Feet → the compact chart form: SFC / UNL / hundreds of feet / FLxxx.
+    static func altText(_ ft: Int?) -> String {
+        guard let ft else { return "—" }
+        if ft >= 99_999 { return "UNL" }
+        if ft <= 0 { return "SFC" }
+        if ft >= 18_000 { return "FL\(ft / 100)" }
+        return "\(ft / 100)"
+    }
+}
+
+/// Ceiling-over-floor altitude block on a dark pill, coloured to the airspace type.
+final class AirspaceLabelView: MKAnnotationView {
+    private let label = UILabel()
+    override init(annotation: MKAnnotation?, reuseIdentifier: String?) {
+        super.init(annotation: annotation, reuseIdentifier: reuseIdentifier)
+        frame = CGRect(x: 0, y: 0, width: 46, height: 24)
+        label.frame = bounds
+        label.numberOfLines = 2
+        label.textAlignment = .center
+        label.font = .monospacedDigitSystemFont(ofSize: 8, weight: .bold)
+        label.backgroundColor = UIColor.black.withAlphaComponent(0.6)
+        label.layer.cornerRadius = 3
+        label.layer.masksToBounds = true
+        addSubview(label)
+        displayPriority = .defaultLow      // yields to route waypoints / traffic
+        collisionMode = .circle
+        isEnabled = false
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    func configure(_ a: AirspaceLabelAnnotation) {
+        let s = NSMutableAttributedString(string: "\(a.ceiling)\n\(a.floor)")
+        s.addAttribute(.foregroundColor, value: a.color, range: NSRange(location: 0, length: s.length))
+        label.attributedText = s
     }
 }
 

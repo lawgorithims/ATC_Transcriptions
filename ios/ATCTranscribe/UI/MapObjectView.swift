@@ -131,7 +131,7 @@ struct MapObjectView: View {
         case .airport:   return NavMeta.airport(o.ident)?.name ?? "Airport"
         case .vor:       return NavMeta.navaid(o.ident)?.typeLabel ?? "Navaid"
         case .fix:       return "Fix"
-        case .airspace:  return o.airspace.map { "Class \($0.cls)" }
+        case .airspace:  return o.airspace.map { Self.airspaceTypeName($0.cls) }
         case .traffic:   return "Traffic"
         case .userPoint: return "Dropped point"
         case .hazard:    return o.hazard?.category.label ?? "Hazard"
@@ -442,9 +442,9 @@ struct MapObjectView: View {
                 bearingRow(o.coord)
             case .airspace:
                 if let a = o.airspace {
-                    KV("Class", "Class \(a.cls)")
-                    KV("Floor", a.floorFt.map { $0 == 0 ? "Surface" : "\($0) ft" } ?? "—")
-                    KV("Ceiling", a.ceilingFt.map { "\($0) ft" } ?? "—")
+                    KV("Type", Self.airspaceTypeName(a.cls))
+                    KV("Floor", Self.altText(a.floorFt))
+                    KV("Ceiling", Self.altText(a.ceilingFt))
                 }
             case .traffic:
                 if let ac = model.aircraft.first(where: { ($0.label ?? $0.callsign) == o.ident }) {
@@ -519,6 +519,28 @@ struct MapObjectView: View {
     // MARK: Bits
 
     private func coordText(_ c: Coord) -> String { String(format: "%.4f, %.4f", c.lat, c.lon) }
+
+    /// Friendly name for an airspace class/type code (class airspace + special use + TFR).
+    static func airspaceTypeName(_ cls: String) -> String {
+        switch cls {
+        case "B", "C", "D": return "Class \(cls) airspace"
+        case "R":   return "Restricted Area"
+        case "P":   return "Prohibited Area"
+        case "W":   return "Warning Area"
+        case "A":   return "Alert Area"
+        case "MOA": return "Military Operations Area"
+        case "TFR": return "National Defense TFR"
+        default:    return "Airspace"
+        }
+    }
+    /// Feet → a readable floor/ceiling (Surface / Unlimited / FLxxx / value).
+    static func altText(_ ft: Int?) -> String {
+        guard let ft else { return "—" }
+        if ft >= 99_999 { return "Unlimited" }
+        if ft <= 0 { return "Surface" }
+        if ft >= 18_000 { return "FL\(ft / 100)" }
+        return "\(ft) ft"
+    }
 
     private struct FreqRow { let label: String; let value: String }
     private func freqRows(_ freqs: [String: [Double]]) -> [FreqRow] {
