@@ -566,6 +566,7 @@ struct ChartMapView: UIViewRepresentable {
 
         c.syncDynamic(mv, aircraft: model.aircraft, ownship: model.stratuxGPS?.coordinate)
         c.syncHazards(mv, events: model.showHazards ? model.hazardEvents : [])
+        c.syncTFRs(mv, tfrs: model.showTFRs ? model.tfrs : [])
     }
 
     /// Reconcile the superimposed plate overlay. Rebuild the MKOverlay only when the PLACEMENT
@@ -620,6 +621,11 @@ struct ChartMapView: UIViewRepresentable {
         var hazardTrackByKey: [String: MKPolyline] = [:]
         var hazardOverlayCategory: [ObjectIdentifier: EONETCategory] = [:]
         var hazardEventsByID: [String: EONETEvent] = [:]
+        // Live FAA TFR layer — diffed like the hazard layer; reconcile lives in TFRMapLayer.swift.
+        var tfrPolyByKey: [String: MKPolygon] = [:]
+        var tfrLabelByKey: [String: AirspaceLabelAnnotation] = [:]     // altitude blocks, reusing the airspace annotation
+        var tfrOverlayIDs: Set<ObjectIdentifier> = []                  // marks a polygon as a TFR for the renderer
+        var tfrByID: [String: TFR] = [:]                              // the full TFR for the tap probe + change detection
         private var nearbyByKey: [String: NearbyAnnotation] = [:]   // keyed by NavPoint.id for the same reason
         private var contextGen = 0                                  // drops stale async refreshes (rapid panning)
         private var probeGen = 0                                    // drops a superseded tap probe (L12) — double-tap debounce
@@ -718,6 +724,12 @@ struct ChartMapView: UIViewRepresentable {
                       !results.contains(where: { $0.hazard?.id == ev.id }) else { continue }
                 results.append(IdentifiedObject(kind: .hazard, ident: ev.title, coord: ev.point,
                                                 onRoute: false, hazard: ev))
+            }
+            for t in tfrByID.values where t.polygon.count >= 3 {              // inside a TFR boundary
+                guard Geo.pointInRing(here, t.polygon),
+                      !results.contains(where: { $0.tfr?.id == t.id }) else { continue }
+                results.append(IdentifiedObject(kind: .tfr, ident: t.id, coord: t.labelCoord ?? here,
+                                                onRoute: false, tfr: t))
             }
             if userPoint {   // long-press: offer the exact pressed coordinate as a droppable waypoint, first
                 results.insert(IdentifiedObject(kind: .userPoint, ident: UserPoint.token(here), coord: here, onRoute: false), at: 0)
@@ -886,6 +898,15 @@ struct ChartMapView: UIViewRepresentable {
                     r.lineDashPattern = [6, 4]
                     return r
                 }
+            }
+            // Live TFRs next — identity-keyed like hazards so a TFR polygon is never mistaken for airspace.
+            if tfrOverlayIDs.contains(ObjectIdentifier(overlay)), let poly = overlay as? MKPolygon {
+                let color = Self.airspaceColor("TFR")
+                let r = MKPolygonRenderer(polygon: poly)
+                r.strokeColor = color
+                r.lineWidth = 2.4                                  // bold restriction outline
+                r.fillColor = color.withAlphaComponent(0.18)
+                return r
             }
             if let poly = overlay as? MKPolygon {
                 let cls = airspaceClass[ObjectIdentifier(poly)] ?? "D"

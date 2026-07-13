@@ -211,6 +211,7 @@ final class AppModel: ObservableObject {
             }
             if didFinishInit {                 // a plan is an `eonetActive` input (route hazard alerts)
                 syncEONET()
+                syncTFRs()
                 if flightPlan != oldValue { hazardDismissedIDs.removeAll(); refreshHazardAlert() }
             }
             if flightPlan != oldValue { refreshTripStats() }   // strip's DIST/ETE/ETA/FUEL row
@@ -232,7 +233,7 @@ final class AppModel: ObservableObject {
     /// layer, and live traffic. Transient (not persisted); opened from the flight-plan strip's Map
     /// button. An `eonetActive` input (the sheet shows hazards even when the home-map background is off).
     @Published var showRouteMap = false {
-        didSet { if didFinishInit, showRouteMap != oldValue { syncEONET() } }
+        didSet { if didFinishInit, showRouteMap != oldValue { syncEONET(); syncTFRs() } }
     }
 
     /// The chart base layer the user last viewed (VFR sectional / IFR low / standard / satellite) so the
@@ -455,19 +456,24 @@ final class AppModel: ObservableObject {
             refreshHazardAlert()               // off → clears the banner; on → recomputes
         }
     }
+    /// Live TFR layer toggle (network — opt-in, default off). Gated like the hazard layer.
+    @Published var showTFRs = UserDefaults.standard.bool(forKey: "atc.map.tfrs") {
+        didSet { UserDefaults.standard.set(showTFRs, forKey: "atc.map.tfrs"); syncTFRs() }
+    }
     /// Master switch for the live map background — off shows a plain background instead, saving battery on
     /// hot/old devices. Persisted (default on).
     @Published var mapBackgroundEnabled = (UserDefaults.standard.object(forKey: "atc.map.background") as? Bool) ?? true {
         didSet {
             UserDefaults.standard.set(mapBackgroundEnabled, forKey: "atc.map.background")
             syncEONET()                    // the home map is an `eonetActive` input
+            syncTFRs()
         }
     }
     /// True when the device is thermally stressed — the home map pauses so it never starves transcription.
     /// Updated (with exit hysteresis) from `ProcessInfo.thermalStateDidChangeNotification` via
     /// `applyThermal` — see there for why the exit is delayed.
     @Published var thermalSerious = ProcessInfo.processInfo.thermalState.rawValue >= ProcessInfo.ThermalState.serious.rawValue {
-        didSet { if didFinishInit, thermalSerious != oldValue { syncEONET() } }   // hot → pause the EONET poller too
+        didSet { if didFinishInit, thermalSerious != oldValue { syncEONET(); syncTFRs() } }   // hot → pause the pollers too
     }
     /// The single pending "clear thermalSerious" timer (M7). A device hovering at the threshold used
     /// to flip thermalSerious repeatedly, and each flip destroys + rebuilds the whole ChartMapView
@@ -640,6 +646,12 @@ final class AppModel: ObservableObject {
     /// Built in `init` alongside `adsbService`.
     private var eonetService: EONETService!
 
+    // Live TFR layer (FAA tfr.faa.gov) — the dynamic counterpart to the bundled Special Use Airspace.
+    @Published private(set) var tfrs: [TFR] = []
+    @Published private(set) var tfrsUpdatedAt: Date?
+    @Published private(set) var tfrStatus: TFRStatus = .idle
+    private var tfrService: TFRService!
+
     // Stratux receiver: an on-board ADS-B/GPS box (+ a cockpit-audio sidecar on its Pi) reached over
     // its own Wi-Fi. The traffic/GPS link runs whenever `stratuxEnabled` is on and the app is
     // foregrounded — no Start needed (see `stratuxTrafficActive`); cockpit AUDIO additionally requires
@@ -766,6 +778,14 @@ final class AppModel: ObservableObject {
             },
             onStatus: { [weak self] status in
                 Task { @MainActor in self?.eonetStatus = status }
+            })
+        // Live FAA TFR layer: same publish-hops-to-main shape.
+        tfrService = TFRService(
+            onUpdate: { [weak self] tfrs, at in
+                Task { @MainActor in self?.tfrs = tfrs; self?.tfrsUpdatedAt = at }
+            },
+            onStatus: { [weak self] status in
+                Task { @MainActor in self?.tfrStatus = status }
             })
 
         let args = CommandLine.arguments
@@ -913,6 +933,7 @@ final class AppModel: ObservableObject {
         // first `.active` scene-phase change a no-op). Harmless when everything is off.
         syncTraffic()
         syncEONET()      // same launch edge for a restored hazards toggle
+        syncTFRs()       // and a restored TFR toggle
         refreshTripStats()   // seed the flight-plan strip's stats row from the restored plan
         // Pause the live home map under thermal pressure so it never starves on-device transcription.
         NotificationCenter.default.addObserver(forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
@@ -1678,6 +1699,17 @@ final class AppModel: ObservableObject {
         Task { await service?.sync(enabled: active) }
     }
 
+    /// Poll the live FAA TFR feed while the layer is on + there's a foregrounded map to show it on.
+    private var tfrActive: Bool {
+        scenePhaseActive && !thermalSerious && showTFRs &&
+            (mapBackgroundEnabled || showRouteMap || flightPlan != nil)
+    }
+    func syncTFRs() {
+        let active = tfrActive
+        let service = tfrService
+        Task { await service?.sync(enabled: active) }
+    }
+
     /// EONET published a snapshot: mirror it into the UI state. The map hosts observe
     /// `hazardEvents` and diff their overlays; `hazardsUpdatedAt` drives the staleness note.
     /// Unlike traffic, a late callback is harmless — hazards are context, not corrector input.
@@ -1889,6 +1921,7 @@ final class AppModel: ObservableObject {
             scenePhaseActive = true
             syncTraffic()
             syncEONET()
+            syncTFRs()
             prefetchChartsOnLaunch()        // top up charts around the (possibly moved) position
             if backgroundPaused {
                 backgroundPaused = false
@@ -1907,6 +1940,7 @@ final class AppModel: ObservableObject {
             AudioSessionManager.deactivate()
             syncTraffic()
             syncEONET()
+            syncTFRs()
         case .inactive:
             break                       // transient — don't tear down the feed
         @unknown default:
