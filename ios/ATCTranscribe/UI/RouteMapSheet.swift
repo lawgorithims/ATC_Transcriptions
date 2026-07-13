@@ -98,8 +98,9 @@ struct RouteMapSheet: View {
 
     private var layersMenu: some View {
         Menu {
-            Toggle(isOn: $showAirspace) { Label("Class B/C/D airspace", systemImage: "hexagon") }
+            Toggle(isOn: $showAirspace) { Label("Airspace & special use", systemImage: "hexagon") }
             Toggle(isOn: $showNearby) { Label("Nearby navaids & airports", systemImage: "mappin.and.ellipse") }
+            Toggle(isOn: $model.showTFRs) { Label("TFRs (FAA, live)", systemImage: "exclamationmark.octagon") }
             Divider()
             Button { Haptics.impact(.light); showRouteInfo = true } label: {
                 Label("Route details", systemImage: "list.bullet.rectangle")
@@ -151,9 +152,10 @@ struct RouteMapSheet: View {
 
     // MARK: legend
 
-    // Sectional-style airspace colours (Class C solid magenta; B/D blue) for the legend swatches.
+    // Legend swatch colours — delegate to the map's single source of truth so class + special-use +
+    // TFR swatches always match what the overlay actually draws (Restricted red, MOA purple, …).
     private static func airspaceColor(_ cls: String) -> Color {
-        switch cls { case "C": return .hex(0xC2185B); default: return .hex(0x2F6FED) }
+        Color(uiColor: ChartMapView.Coordinator.airspaceColor(cls))
     }
 
     private func legend(_ p: Palette) -> some View {
@@ -173,6 +175,15 @@ struct RouteMapSheet: View {
                         legendItem(Self.airspaceColor("B"), "Class B", line: true)
                         legendItem(Self.airspaceColor("C"), "Class C", line: true)
                         legendItem(Self.airspaceColor("D"), "Class D", line: true)
+                        legendItem(Self.airspaceColor("R"), "Restricted", line: true)
+                        legendItem(Self.airspaceColor("P"), "Prohibited", line: true)
+                        legendItem(Self.airspaceColor("MOA"), "MOA", line: true)
+                        legendItem(Self.airspaceColor("W"), "Warning", line: true)
+                        legendItem(Self.airspaceColor("A"), "Alert", line: true)
+                    }
+                    if model.showTFRs {
+                        Divider().frame(height: 11)
+                        legendItem(Self.airspaceColor("TFR"), "TFR", line: true)
                     }
                 }
             }

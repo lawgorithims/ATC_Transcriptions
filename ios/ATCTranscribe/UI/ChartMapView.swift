@@ -418,8 +418,8 @@ private func inflated(_ r: MKMapRect, by f: Double) -> MKMapRect {
 // MARK: - MKMapView chart view
 
 /// The unified flight-plan map: the selected base layer (one or more seamless FAA raster packs, or
-/// Apple's map) with the filed route (magenta line + waypoints), Class B/C/D airspace outlines and
-/// nearby navaids/airports (bundled nav DB), your aircraft's live position (device GPS + Stratux), and
+/// Apple's map) with the filed route (magenta line + waypoints), airspace outlines (Class B/C/D + special
+/// use) and nearby navaids/airports (bundled nav DB), your aircraft's live position (device GPS + Stratux), and
 /// ADS-B traffic. As you pan/zoom, `onVisibleRegion` asks the store to load the charts under the new
 /// area (free-pan) and the context layers refresh to what's in view. Uses `MKMapView` (SwiftUI's `Map`
 /// can't host tile overlays).
@@ -667,9 +667,10 @@ struct ChartMapView: UIViewRepresentable {
                            maxLat: ll.latitude + dLat, maxLon: ll.longitude + dLon)
             probeGen &+= 1
             let gen = probeGen
+            let wantAir = showAirspace   // gate airspace/SUA containment on the layer toggle, like hazards/TFRs
             Task.detached { [weak self] in
                 let nearby = NavDatabase.nearby(box, types: [0, 1, 2], limit: 40)        // full-table scan — off main
-                let airspaces = NavDatabase.airspaces(intersecting: box).filter { $0.containsCoord(here) }
+                let airspaces = wantAir ? NavDatabase.airspaces(intersecting: box).filter { $0.containsCoord(here) } : []
                 await MainActor.run {
                     guard let self, self.probeGen == gen else { return }   // a newer tap superseded this one
                     self.rankProbe(pt: pt, here: here, radius: radius, userPoint: userPoint,
@@ -759,7 +760,7 @@ struct ChartMapView: UIViewRepresentable {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
         }
 
-        /// Recompute the in-view context layers (Class B/C/D airspace outlines + nearby navaids/airports)
+        /// Recompute the in-view context layers (airspace outlines [Class B/C/D + special use] + nearby navaids/airports)
         /// off-main for the settled region. Gated on angular scale so a zoomed-out view stays legible, and
         /// count-capped to keep MapKit snappy. Mirrors `RouteMapSheet`'s former overlay refresh.
         func refreshContext(_ mv: MKMapView) {

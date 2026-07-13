@@ -92,6 +92,40 @@ final class TFRParserTests: XCTestCase {
         }
     }
 
+    /// A boundary that mixes GRC vertices with a CWA (clockwise) arc, structured like a real FAA
+    /// space-ops TFR: the CWA <Avx> has NO top-level geoLat — only geoLatArc (centre) + valRadiusArc —
+    /// plus a nested Frd whose geoLat is ALSO the centre. The old first-match parser planted a boundary
+    /// vertex at that centre (a ~radius-NM interior gouge); the arc must instead be tessellated.
+    private let arcXML = """
+    <TFR>
+      <valDistVerUpper>180</valDistVerUpper><uomDistVerUpper>FL</uomDistVerUpper>
+      <valDistVerLower>0</valDistVerLower><uomDistVerLower>FT</uomDistVerLower>
+      <Avx><codeType>GRC</codeType><geoLat>34.16666667N</geoLat><geoLong>118.00000000W</geoLong></Avx>
+      <Avx><codeType>CWA</codeType>
+        <geoLatArc>34.00000000N</geoLatArc><geoLongArc>118.00000000W</geoLongArc>
+        <valRadiusArc>10.0</valRadiusArc><uomRadiusArc>NM</uomRadiusArc>
+        <Frd><FrdUid><DpnUid><geoLat>34.00000000N</geoLat><geoLong>118.00000000W</geoLong></DpnUid></FrdUid>
+          <txtRmk>CENTER FIX</txtRmk></Frd></Avx>
+      <Avx><codeType>GRC</codeType><geoLat>34.00000000N</geoLat><geoLong>117.79880000W</geoLong></Avx>
+      <Avx><codeType>GRC</codeType><geoLat>33.80000000N</geoLat><geoLong>118.00000000W</geoLong></Avx>
+    </TFR>
+    """
+
+    func testCWAArcIsTessellatedNotChordedToCenter() {
+        let tfr = TFRParser.detail(arcXML, stub: .init(id: "6/5192", type: "SPACE OPERATIONS", title: "Launch"))
+        XCTAssertNotNil(tfr)
+        let poly = tfr?.polygon ?? []
+        XCTAssertGreaterThan(poly.count, 4, "the arc adds intermediate vertices beyond the 3 GRC points")
+        // THE REGRESSION GUARD: no boundary vertex may sit at the arc centre (the old ~10 NM gouge).
+        let center = Coord(lat: 34, lon: -118)
+        for p in poly {
+            XCTAssertGreaterThan(Geo.nmBetween(center, p), 1.0, "no vertex at the arc centre \(p)")
+        }
+        // The tessellated arc rides the 10 NM circle; its midpoint should be out near the NE diagonal.
+        let neArc = poly.contains { Geo.nmBetween(center, $0) > 9 && $0.lat > 34.02 && $0.lon > -117.95 }
+        XCTAssertTrue(neArc, "an arc vertex should bulge out toward the NE, not cut a chord")
+    }
+
     func testUnlimitedAltitudeSentinel() {
         let xml = """
         <TFR><valDistVerUpper>-1</valDistVerUpper><uomDistVerUpper>FT</uomDistVerUpper>

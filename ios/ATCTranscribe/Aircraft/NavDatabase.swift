@@ -23,12 +23,13 @@ struct NavPoint: Identifiable {
     var id: String { "\(ident)|\(coord.lat)|\(coord.lon)" }
 }
 
-/// A lateral controlled-airspace outline — FAA NASR Class B / C / D (see `Tools/build_airspace_db.py`
-/// for provenance). `rings` are the polygon boundaries (an airspace can be several concentric shelves);
-/// `floorFt`/`ceilingFt` are the raw NASR values when numeric.
+/// A lateral controlled-airspace outline — FAA NASR Class B/C/D (see `Tools/build_airspace_db.py`) plus
+/// special-use airspace merged in by `Tools/build_sua.py` (R/P/W/A/MOA + National Defense TFR areas).
+/// `rings` are the polygon boundaries (an airspace can be several concentric shelves); `floorFt`/
+/// `ceilingFt` are the raw NASR values when numeric.
 struct Airspace: Identifiable {
     let id: Int
-    let cls: String        // "B" | "C" | "D"
+    let cls: String        // "B"|"C"|"D", or special use: "R"|"P"|"W"|"A"|"MOA"|"TFR"
     let name: String
     let floorFt: Int?
     let ceilingFt: Int?
@@ -42,7 +43,7 @@ struct Airspace: Identifiable {
 /// coordinates `[lat, lon, kind]` (kind: 0=airport, 1=navaid, 2=fix) and `resolve(_:near:)` picks the
 /// one nearest a reference point (the previous resolved leg), so a filed route walks the intended
 /// chain of same-named fixes. Also serves the map's context layers: `nearby(_:)` (navaids/airports in
-/// view) and `airspaces(intersecting:)` (Class B/C/D outlines from the separate `airspace.json`).
+/// view) and `airspaces(intersecting:)` (Class B/C/D + special-use outlines from `airspace.json`).
 ///
 /// Both tables load lazily on first access — keep that OFF the app-launch / main-render path (callers
 /// force the parse on a background task before rendering; see `RouteMapSheet.buildRoute`). Airports
@@ -111,7 +112,7 @@ enum NavDatabase {
         return out
     }
 
-    /// Controlled-airspace outlines (Class B/C/D) whose bounding box overlaps `region`.
+    /// Controlled-airspace + special-use outlines (Class B/C/D, R/P/W/A/MOA/TFR) overlapping `region`.
     static func airspaces(intersecting region: BBox) -> [Airspace] {
         airspaceTable.filter { $0.bb.intersects(region) }
     }
