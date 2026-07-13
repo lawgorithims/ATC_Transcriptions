@@ -10,20 +10,18 @@ final class PlateGeorefTests: XCTestCase {
         XCTAssertFalse(PlateGeoref.cycle.isEmpty, "a loaded table has a chart cycle")
     }
 
-    func testLookupReturnsPlausibleNorthUpPlacement() throws {
+    func testBundledEntriesArePlausible() throws {
         try XCTSkipIf(PlateGeoref.count == 0, "plate_georef.json not bundled")
-        // Any entry in the table is a HIGH-CONFIDENCE fit: north-up (rotation ≈ 0), a sane page width,
-        // and a low residual. Assert those invariants hold for every bundled entry.
-        // (We don't hardcode a specific pdf — the bundled cycle changes.)
+        // Every bundled entry comes from the FAA's embedded transform → it must pass the runtime
+        // corruption guards (finite, sane page width, valid rotation, ≥3 control points).
         var checked = 0
-        for pdf in bundledPDFs().prefix(50) {
+        for pdf in bundledPDFs().prefix(80) {
             guard let g = PlateGeoref.lookup(pdf: pdf) else { continue }
             checked += 1
-            XCTAssertLessThan(abs(PlateSimilarity.normalizeDeg(g.rotationDeg)), 12,
-                              "\(pdf): a bundled georef must be north-up")
-            XCTAssertGreaterThan(g.widthMeters, 8_000, "\(pdf): implausibly small page")
-            XCTAssertLessThan(g.widthMeters, 250_000, "\(pdf): implausibly large page")
-            XCTAssertLessThan(g.rmsMeters, 250, "\(pdf): a bundled georef must be a tight fit")
+            XCTAssertTrue(g.isPlausible, "\(pdf): a bundled georef must be plausible")
+            XCTAssertGreaterThan(g.widthMeters, 5_000, "\(pdf): implausibly small page")
+            XCTAssertLessThan(g.widthMeters, 400_000, "\(pdf): implausibly large page")
+            XCTAssertTrue(g.rotationDeg.isFinite, "\(pdf): finite rotation")
             XCTAssertGreaterThanOrEqual(g.inliers, 3, "\(pdf): needs ≥3 control points")
         }
         try XCTSkipIf(checked == 0, "no bundled pdfs resolved")
@@ -59,17 +57,15 @@ final class PlateGeorefTests: XCTestCase {
                rms: Double = 50, inl: Int = 4) -> PlateGeorefEntry {
             PlateGeorefEntry(centerLat: lat, centerLon: lon, widthMeters: w, rotationDeg: rot, rmsMeters: rms, inliers: inl)
         }
-        XCTAssertTrue(e().isPlausible, "a nominal north-up fit is plausible")
-        XCTAssertTrue(e(rot: -11.9).isPlausible)
+        XCTAssertTrue(e().isPlausible, "a nominal fit is plausible")
+        XCTAssertTrue(e(rot: 35).isPlausible, "a legitimately-rotated (e.g. Alaska) plan view is valid — the FAA transform captures it exactly")
         XCTAssertFalse(e(w: .nan).isPlausible, "non-finite width")
+        XCTAssertFalse(e(rot: .infinity).isPlausible, "non-finite rotation")
         XCTAssertFalse(e(lat: .infinity).isPlausible, "non-finite lat")
         XCTAssertFalse(e(lat: 95).isPlausible, "lat out of range")
         XCTAssertFalse(e(lon: 200).isPlausible, "lon out of range")
-        XCTAssertFalse(e(w: 5_000).isPlausible, "page too small")
-        XCTAssertFalse(e(w: 300_000).isPlausible, "page too large")
-        XCTAssertFalse(e(rot: 25).isPlausible, "not north-up")
-        XCTAssertFalse(e(rot: -30).isPlausible, "not north-up")
-        XCTAssertFalse(e(rms: 400).isPlausible, "residual too high")
+        XCTAssertFalse(e(w: 3_000).isPlausible, "page too small")
+        XCTAssertFalse(e(w: 500_000).isPlausible, "page too large")
         XCTAssertFalse(e(rms: -1).isPlausible, "negative residual")
         XCTAssertFalse(e(inl: 2).isPlausible, "too few inliers")
     }

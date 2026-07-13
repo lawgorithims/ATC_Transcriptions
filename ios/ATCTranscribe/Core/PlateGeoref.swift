@@ -13,17 +13,19 @@ struct PlateGeorefEntry {
     let rmsMeters: Double
     let inliers: Int
 
-    /// The invariants a HIGH-CONFIDENCE fit must satisfy — the exact predicate `build_plate_georef`
-    /// enforces before writing an entry, promoted into the runtime so a corrupted / hand-edited /
-    /// stale table can never place a mis-scaled or rotated plate in front of a pilot. Fails CLOSED:
-    /// anything outside these bounds → treated as "no georeference" → the pilot hand-aligns instead.
+    /// Corruption guards on a bundled georeference — promoted into the runtime so a corrupted /
+    /// hand-edited / stale table can never place a NaN- or wildly-out-of-range plate in front of a
+    /// pilot. Fails CLOSED: anything outside these bounds → treated as "no georeference" → hand-align.
+    ///
+    /// The table is now the FAA's OWN embedded page→ground transform (Tools/build_plate_georef_embedded.py
+    /// reads the geospatial-PDF /GPTS control points) — authoritative and exact, so there is no north-up
+    /// prior or residual gate: legitimately-rotated plan views (Alaska) are captured correctly and valid.
     var isPlausible: Bool {
         guard centerLat.isFinite, centerLon.isFinite, widthMeters.isFinite,
               rotationDeg.isFinite, rmsMeters.isFinite else { return false }
         guard abs(centerLat) <= 90, abs(centerLon) <= 180 else { return false }
-        guard widthMeters > 8_000, widthMeters < 250_000 else { return false }
-        guard abs(PlateSimilarity.normalizeDeg(rotationDeg)) < 12 else { return false }   // north-up prior
-        guard rmsMeters >= 0, rmsMeters < 250 else { return false }
+        guard widthMeters > 5_000, widthMeters < 400_000 else { return false }   // an approach plan view
+        guard rmsMeters >= 0 else { return false }                               // control-point residual (px)
         guard inliers >= 3 else { return false }
         return true
     }
