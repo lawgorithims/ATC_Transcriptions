@@ -27,28 +27,42 @@ struct LiveTFRFetcher: TFRFetching {
         let stubs = TFRParser.list(data)
         guard !stubs.isEmpty else { return [] }
 
-        return await withTaskGroup(of: TFR?.self) { group in
+        let (out, failures) = await withTaskGroup(of: Result<TFR?, Error>.self) { group -> ([TFR], Int) in
             var it = stubs.makeIterator()
             func addNext() { if let s = it.next() { group.addTask { await Self.detail(s) } } }
             for _ in 0..<min(Self.maxConcurrent, stubs.count) { addNext() }
-            var out: [TFR] = []
+            var out: [TFR] = []; var failures = 0
             for await r in group {
-                if let r { out.append(r) }
+                switch r {
+                case .success(let t): if let t { out.append(t) }
+                case .failure:        failures += 1
+                }
                 addNext()
             }
-            return out
+            return (out, failures)
         }
+        // Listed active TFRs but produced NONE while at least one detail transport-failed → treat the whole
+        // fetch as a transient failure and throw, so the poller keeps the last good snapshot (mirrors EONET's
+        // never-clear-on-fail) instead of publishing a false "no TFRs" that wipes the map + disk cache.
+        if out.isEmpty && failures > 0 { throw URLError(.cannotLoadFromNetwork) }
+        return out
     }
 
-    private static func detail(_ s: TFRParser.Stub) async -> TFR? {
+    /// `.failure` = transport/HTTP failure (the caller counts these to distinguish a partial outage from a
+    /// genuinely empty result); `.success(nil)` = a reference-only NOTAM that simply carries no boundary.
+    private static func detail(_ s: TFRParser.Stub) async -> Result<TFR?, Error> {
         guard let u = URL(string: "https://tfr.faa.gov/download/detail_\(TFRParser.detailFile(s.id)).xml")
-        else { return nil }
+        else { return .success(nil) }
         var req = URLRequest(url: u, timeoutInterval: 25)
         req.setValue("CommSight/1.0", forHTTPHeaderField: "User-Agent")
-        guard let (d, resp) = try? await URLSession.shared.data(for: req),
-              (resp as? HTTPURLResponse)?.statusCode == 200,
-              let xml = String(data: d, encoding: .utf8) else { return nil }
-        return TFRParser.detail(xml, stub: s)
+        do {
+            let (d, resp) = try await URLSession.shared.data(for: req)
+            guard (resp as? HTTPURLResponse)?.statusCode == 200, let xml = String(data: d, encoding: .utf8)
+            else { return .failure(URLError(.badServerResponse)) }
+            return .success(TFRParser.detail(xml, stub: s))
+        } catch {
+            return .failure(error)
+        }
     }
 }
 
@@ -92,6 +106,7 @@ actor TFRService {
     }
     private func stop() {
         pollTask?.cancel(); pollTask = nil
+        failureStreak = 0            // a re-enable starts from a fresh 5-min backoff, not inherited stale state
         onStatus?(.idle)
     }
 

@@ -76,25 +76,99 @@ enum TFRParser {
     static func detail(_ xml: String, stub: Stub) -> TFR? {
         let ceil = alt(tag("valDistVerUpper", xml), tag("uomDistVerUpper", xml))
         let floor = alt(tag("valDistVerLower", xml), tag("uomDistVerLower", xml))
-        var pts: [Coord] = []
-        for block in blocks("Avx", xml) {
-            guard let latS = tag("geoLat", block), let lonS = tag("geoLong", block),
-                  let la = coord(latS), let lo = coord(lonS) else { continue }
-            if tag("codeType", block) == "CIR", let rS = tag("valRadiusArc", block), let r = Double(rS) {
-                // circle: centre = the arc centre if present, else this vertex; radius in NM
-                let cy = coord(tag("geoLatArc", block) ?? latS) ?? la
-                let cx = coord(tag("geoLongArc", block) ?? lonS) ?? lo
-                pts.append(contentsOf: circle(centerLat: cy, centerLon: cx, radiusNm: r))
-                continue
-            }
-            pts.append(Coord(lat: la, lon: lo))   // GRC + arc endpoints (arc curvature approximated by its ends)
-        }
+        let pts = tessellate(boundary(xml))
         guard pts.count >= 3 else { return nil }
         return TFR(id: stub.id, type: TFRType(raw: stub.type), title: stub.title,
                    polygon: pts, floorFt: floor, ceilingFt: ceil)
     }
 
+    // MARK: boundary parsing
+
+    /// One `<Avx>` boundary element: a straight-edge vertex (GRC), a full circle (CIR), or a curved arc
+    /// segment (CWA clockwise / CCA counter-clockwise) that spans between its two neighbouring vertices.
+    private enum Boundary { case pt(Coord); case circle(Coord, Double); case arc(center: Coord, radiusNm: Double, cw: Bool) }
+
+    /// Parse the ordered `<Avx>` boundary. A CWA/CCA block carries NO top-level geoLat — only geoLatArc
+    /// (the arc centre) + valRadiusArc — so it is read via the explicit centre, never the first-match
+    /// geoLat (which would grab the nested Frd reference fix and plant a vertex ~radius NM interior).
+    private static func boundary(_ xml: String) -> [Boundary] {
+        var out: [Boundary] = []
+        for block in blocks("Avx", xml) {
+            assert(out.count <= 4096, "Avx element bound")
+            let type = tag("codeType", block) ?? "GRC"
+            if type == "CIR" {
+                if let r = radius(block), let c = arcCenter(block) ?? point(block) { out.append(.circle(c, r)) }
+            } else if type == "CWA" || type == "CCA" {
+                if let r = radius(block), let c = arcCenter(block) { out.append(.arc(center: c, radiusNm: r, cw: type == "CWA")) }
+            } else if let p = point(block) {
+                out.append(.pt(p))                                  // GRC + any straight-edge default
+            }
+        }
+        return out
+    }
+
+    /// Turn boundary elements into a closed vertex ring: points pass through, a lone circle expands to a
+    /// ring, and an arc is tessellated between the previous vertex and the next vertex about its centre.
+    private static func tessellate(_ els: [Boundary]) -> [Coord] {
+        if els.count == 1, case let .circle(c, r) = els[0] { return circle(centerLat: c.lat, centerLon: c.lon, radiusNm: r) }
+        var pts: [Coord] = []
+        for (i, el) in els.enumerated() {
+            assert(i <= 4096, "boundary loop bound")
+            switch el {
+            case .pt(let p):            pts.append(p)
+            case .circle(let c, let r): pts.append(contentsOf: circle(centerLat: c.lat, centerLon: c.lon, radiusNm: r))
+            case .arc(let c, let r, let cw):
+                guard let start = pts.last, let end = nextPoint(els, after: i) else { continue }
+                pts.append(contentsOf: arcBetween(center: c, radiusNm: r, from: start, to: end, cw: cw))
+            }
+        }
+        return pts
+    }
+
+    /// The next straight-edge vertex after `i` (wrapping) — an arc's far endpoint.
+    private static func nextPoint(_ els: [Boundary], after i: Int) -> Coord? {
+        var k = 1
+        while k <= els.count {
+            assert(k <= 4097, "next-point scan bound")
+            if case let .pt(p) = els[(i + k) % els.count] { return p }
+            k += 1
+        }
+        return nil
+    }
+
+    /// Intermediate points of an arc from `s` to `e` about `center` (the endpoints are already in the
+    /// ring), ~10° apart, sweeping clockwise (CWA) or counter-clockwise (CCA). Angle 0 = N, +90 = E.
+    private static func arcBetween(center: Coord, radiusNm: Double, from s: Coord, to e: Coord, cw: Bool) -> [Coord] {
+        let cosLat = max(cos(center.lat * .pi / 180), 0.01)
+        func angle(_ p: Coord) -> Double { atan2((p.lon - center.lon) * cosLat, p.lat - center.lat) }
+        let a0 = angle(s); var a1 = angle(e)
+        if cw { while a1 <= a0 { a1 += 2 * .pi } } else { while a1 >= a0 { a1 -= 2 * .pi } }
+        let dLat = radiusNm / 60.0, sweep = a1 - a0
+        let steps = min(1000, max(1, Int(abs(sweep) / (10 * .pi / 180))))
+        var out: [Coord] = []; var k = 1
+        while k < steps {
+            assert(k <= 1000, "arc step bound")
+            let a = a0 + sweep * Double(k) / Double(steps)
+            out.append(Coord(lat: center.lat + dLat * cos(a), lon: center.lon + (dLat / cosLat) * sin(a)))
+            k += 1
+        }
+        return out
+    }
+
     // MARK: helpers
+
+    private static func point(_ block: String) -> Coord? {
+        guard let la = coord(tag("geoLat", block) ?? ""), let lo = coord(tag("geoLong", block) ?? "") else { return nil }
+        return Coord(lat: la, lon: lo)
+    }
+    private static func arcCenter(_ block: String) -> Coord? {
+        guard let cy = coord(tag("geoLatArc", block) ?? ""), let cx = coord(tag("geoLongArc", block) ?? "") else { return nil }
+        return Coord(lat: cy, lon: cx)
+    }
+    private static func radius(_ block: String) -> Double? {
+        guard let s = tag("valRadiusArc", block), let r = Double(s), r > 0, r < 1000 else { return nil }
+        return r
+    }
 
     private static func alt(_ v: String?, _ uom: String?) -> Int? {
         guard let v, let d = Double(v) else { return nil }

@@ -412,7 +412,9 @@ struct MapObjectView: View {
         switch o.kind {
         case .airport:   return NavMeta.airport(o.ident)?.name
         case .vor:       return NavMeta.navaid(o.ident).flatMap { m in [m.name, m.typeLabel].compactMap { $0 }.joined(separator: " · ") }
-        case .airspace:  return o.airspace?.name.capitalized(with: .current)
+        // Class B/C/D names are airport-derived words ("BOSTON" → "Boston"); SUA names are FAA
+        // identifiers/acronyms ("ABEL EAST MOA", "W-102H") that .capitalized would mangle — keep verbatim.
+        case .airspace:  return o.airspace.map { ["B", "C", "D"].contains($0.cls) ? $0.name.capitalized(with: .current) : $0.name }
         case .traffic:   return "Live traffic"
         case .fix:       return "Reporting point / RNAV fix"
         case .userPoint: return "Custom point on the map"
