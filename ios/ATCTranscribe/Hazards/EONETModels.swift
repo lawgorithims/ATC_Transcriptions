@@ -39,6 +39,18 @@ struct EONETEvent: Sendable, Equatable, Identifiable, Codable {
     let point: Coord          // latest Point, else the polygon ring's centroid
     let polygon: [Coord]      // latest Polygon outer ring, vertex-capped; [] for point events
     let track: [Coord]        // dated storm fixes, oldest→newest, capped; [] for non-storms
+    let magnitudeValue: Double?   // newest geometry's magnitude (fires: acres, storms: kts); nil if none
+    let magnitudeUnit: String?    // the unit STRING exactly as EONET reports it — never assume it, show it
+
+    /// Trailing-defaulted so the demo/test constructors that predate magnitude keep compiling; the
+    /// decoder passes the real values. (Codable synthesis is unaffected by an explicit init.)
+    init(id: String, title: String, category: EONETCategory, updatedAt: Date,
+         point: Coord, polygon: [Coord], track: [Coord],
+         magnitudeValue: Double? = nil, magnitudeUnit: String? = nil) {
+        self.id = id; self.title = title; self.category = category; self.updatedAt = updatedAt
+        self.point = point; self.polygon = polygon; self.track = track
+        self.magnitudeValue = magnitudeValue; self.magnitudeUnit = magnitudeUnit
+    }
 
     static let maxPolygonVertices = 256   // subsample above this (rule 2 — bounded rendering)
     static let maxTrackPoints = 64
@@ -82,7 +94,7 @@ extension EONETEvent {
     private static func decodeOne(_ raw: [String: Any], category: EONETCategory) -> EONETEvent? {
         guard let id = raw["id"] as? String, !id.isEmpty,
               let geoms = raw["geometry"] as? [[String: Any]], !geoms.isEmpty else { return nil }
-        var datedPoints: [(date: Date, coord: Coord)] = []
+        var datedPoints: [(date: Date, coord: Coord, mag: Double?, unit: String?)] = []
         var ring: [Coord] = []
         var ringDate = Date.distantPast
         var newest = Date.distantPast
@@ -92,7 +104,9 @@ extension EONETEvent {
             switch g["type"] as? String {
             case "Point":
                 guard let c = coord(g["coordinates"]) else { continue }
-                datedPoints.append((date, c))
+                // Magnitude is per-geometry (a storm's intensity changes along its track); carry it
+                // so the marker reports the NEWEST value with its real unit — never a bare number.
+                datedPoints.append((date, c, double(g["magnitudeValue"]), g["magnitudeUnit"] as? String))
             case "Polygon":
                 guard date >= ringDate,
                       let rings = g["coordinates"] as? [[Any]],
@@ -106,13 +120,15 @@ extension EONETEvent {
         assert(datedPoints.count <= maxGeometryEntries, "point series bounded by the geometry cap")
         // Defensive sort: the ordering is documented but the marker + track depend on it.
         datedPoints.sort { $0.date < $1.date }
-        guard let point = datedPoints.last?.coord ?? centroid(ring) else { return nil }
+        let marker = datedPoints.last                               // newest fix drives point + magnitude
+        guard let point = marker?.coord ?? centroid(ring) else { return nil }
         assert(ring.count <= maxPolygonVertices, "ring capped by parseRing")
         let track = (category == .severeStorms && datedPoints.count >= 2)
             ? datedPoints.suffix(maxTrackPoints).map(\.coord) : []
         return EONETEvent(id: id, title: (raw["title"] as? String) ?? category.label,
                           category: category, updatedAt: newest,
-                          point: point, polygon: ring, track: track)
+                          point: point, polygon: ring, track: track,
+                          magnitudeValue: marker?.mag, magnitudeUnit: marker?.unit)
     }
 
     /// GeoJSON position → `Coord`. Order is [lon, lat]; longitudes are wrapped once into ±180
@@ -127,7 +143,7 @@ extension EONETEvent {
         return Coord(lat: lat, lon: lon)
     }
 
-    private static func double(_ any: Any) -> Double? {
+    private static func double(_ any: Any?) -> Double? {   // Any? so `double(dict[key])` needs no coercion
         (any as? NSNumber)?.doubleValue
     }
 
@@ -182,13 +198,67 @@ extension EONETEvent {
         return [
             EONETEvent(id: "DEMO_FIRE", title: "Finger Lakes Wildfire (demo)",
                        category: .wildfires, updatedAt: now.addingTimeInterval(-3600),
-                       point: Coord(lat: 42.80, lon: -76.30), polygon: [], track: []),
+                       point: Coord(lat: 42.80, lon: -76.30), polygon: [], track: [],
+                       magnitudeValue: 12_450, magnitudeUnit: "acres"),
             EONETEvent(id: "DEMO_DUST", title: "Western NY Dust Plume (demo)",
                        category: .dustHaze, updatedAt: now.addingTimeInterval(-7200),
                        point: Coord(lat: 42.55, lon: -77.65), polygon: dustRing, track: []),
             EONETEvent(id: "DEMO_STORM", title: "Tropical Storm Demo",
                        category: .severeStorms, updatedAt: now.addingTimeInterval(-1800),
-                       point: Coord(lat: 41.6, lon: -74.1), polygon: [], track: track),
+                       point: Coord(lat: 41.6, lon: -74.1), polygon: [], track: track,
+                       magnitudeValue: 55, magnitudeUnit: "kts"),
         ]
     }
+}
+
+// MARK: - Magnitude presentation (value + its real unit + a plain-English band; never a bare number)
+
+extension EONETEvent {
+    /// Row label for the magnitude, by category — "Size" for a fire, "Intensity" for a storm.
+    var magnitudeLabel: String {
+        switch category {
+        case .wildfires: return "Size"
+        case .severeStorms: return "Intensity"
+        default: return "Magnitude"
+        }
+    }
+
+    /// Human magnitude for the tap card: the value WITH its real EONET unit, plus a plain-English band.
+    /// nil when the event carries no magnitude (dust, volcanoes, …). Deliberately never a bare number —
+    /// "5" is meaningless; "5,000 acres" vs "55 kt" is the whole point.
+    var magnitudeText: String? {
+        guard let v = magnitudeValue, v.isFinite, let unit = magnitudeUnit, !unit.isEmpty else { return nil }
+        assert(v.isFinite, "finite past the guard")
+        assert(!unit.isEmpty, "unit non-empty past the guard")
+        switch unit.lowercased() {
+        case "acres":
+            let word = v.rounded() == 1 ? "acre" : "acres"        // "1 acre", not "1 acres"
+            return Self.grouped(v) + " " + word + (v >= 10_000 ? " · major" : "")
+        case "hectare", "hectares", "ha":
+            return Self.grouped(v) + " ha" + (v >= 4_000 ? " · major" : "")
+        case "kts", "kt", "knots":
+            // Guard the Double→Int conversion: a garbage-but-parseable feed value beyond Int range would
+            // TRAP (crash in release, unlike an assert). Absurd values fall back to a plain, safe render.
+            guard v >= 0, v < 1e9 else { return Self.grouped(v) + " kt" }
+            let kt = Int(v.rounded())
+            let band = kt >= 64 ? "Hurricane force" : kt >= 34 ? "Tropical storm" : "Depression"
+            return "\(band) · \(kt) kt"
+        case "nm^2", "nm2", "nmi^2":
+            return Self.grouped(v) + " NM²"
+        default:
+            return Self.grouped(v) + " " + unit          // unknown unit — value + raw unit, still never bare
+        }
+    }
+
+    /// Thousands-grouped integer rendering of a magnitude (locale decimal style, fraction digits off).
+    private static func grouped(_ v: Double) -> String {
+        assert(v.isFinite, "finite magnitude")
+        let n = v.rounded()
+        assert(abs(n) < 1e15, "within formatter range")
+        // Fallback uses %.0f (never Int(n), which would trap past Int range) so this can't crash.
+        return groupFormatter.string(from: NSNumber(value: n)) ?? String(format: "%.0f", n)
+    }
+    private static let groupFormatter: NumberFormatter = {
+        let f = NumberFormatter(); f.numberStyle = .decimal; f.maximumFractionDigits = 0; return f
+    }()
 }

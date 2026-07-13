@@ -29,6 +29,59 @@ final class EONETModelsTests: XCTestCase {
     ]}
     """.data(using: .utf8)!
 
+    private let magFixture = """
+    { "events": [
+      {"id":"F","title":"Big Fire",
+       "geometry":[{"date":"2026-06-01T00:00:00Z","type":"Point","coordinates":[-120.0,40.0],"magnitudeValue":8000,"magnitudeUnit":"acres"},
+                   {"date":"2026-06-02T00:00:00Z","type":"Point","coordinates":[-120.1,40.1],"magnitudeValue":12450,"magnitudeUnit":"acres"}]}
+    ]}
+    """.data(using: .utf8)!
+
+    private let magStormFixture = """
+    { "events": [
+      {"id":"S","title":"Storm",
+       "geometry":[{"date":"2026-06-01T00:00:00Z","type":"Point","coordinates":[-60.0,15.0],"magnitudeValue":30,"magnitudeUnit":"kts"},
+                   {"date":"2026-06-02T00:00:00Z","type":"Point","coordinates":[-61.0,16.0],"magnitudeValue":55,"magnitudeUnit":"kts"}]}
+    ]}
+    """.data(using: .utf8)!
+
+    /// Magnitude: carried from the NEWEST geometry, formatted with its real unit + band, never bare.
+    func testMagnitudeDecodeAndFormat() throws {
+        let fire = try XCTUnwrap(try XCTUnwrap(EONETEvent.decode(magFixture, category: .wildfires)).first)
+        XCTAssertEqual(fire.magnitudeValue, 12450)                 // newest fix, not the first
+        XCTAssertEqual(fire.magnitudeUnit, "acres")
+        XCTAssertEqual(fire.magnitudeLabel, "Size")
+        // Locale-robust: grouping separator varies, but the tail + digits are fixed.
+        let t = try XCTUnwrap(fire.magnitudeText)
+        XCTAssertTrue(t.hasSuffix(" acres · major"), t)            // ≥10k acres flagged major
+        XCTAssertTrue(t.contains("12") && t.contains("450"), t)
+
+        let storm = try XCTUnwrap(try XCTUnwrap(EONETEvent.decode(magStormFixture, category: .severeStorms)).first)
+        XCTAssertEqual(storm.magnitudeValue, 55)
+        XCTAssertEqual(storm.magnitudeLabel, "Intensity")
+        XCTAssertEqual(storm.magnitudeText, "Tropical storm · 55 kt")   // knots: no grouping, exact
+
+        // An event with no magnitude fields yields nil — never a fabricated "0".
+        let plain = try XCTUnwrap(EONETEvent.decode(fixture, category: .wildfires)).first
+        XCTAssertNil(plain?.magnitudeValue)
+        XCTAssertNil(plain?.magnitudeText)
+    }
+
+    /// Formatting edge cases: singular unit, and a garbage-but-parseable magnitude must never crash.
+    func testMagnitudeFormattingEdges() {
+        let oneAcre = EONETEvent(id: "a", title: "t", category: .wildfires, updatedAt: Date(),
+                                 point: Coord(lat: 40, lon: -100), polygon: [], track: [],
+                                 magnitudeValue: 1, magnitudeUnit: "acres")
+        XCTAssertEqual(oneAcre.magnitudeText, "1 acre")           // singular, not "1 acres"
+
+        // Absurd value (beyond Int range) from a broken feed: renders safely, never traps Int().
+        let absurd = EONETEvent(id: "s", title: "t", category: .severeStorms, updatedAt: Date(),
+                                point: Coord(lat: 15, lon: -60), polygon: [], track: [],
+                                magnitudeValue: 1e30, magnitudeUnit: "kts")
+        XCTAssertNotNil(absurd.magnitudeText)                    // does not crash
+        XCTAssertTrue(absurd.magnitudeText?.hasSuffix("kt") == true)
+    }
+
     func testDecodeFixtureTolerant() throws {
         let events = try XCTUnwrap(EONETEvent.decode(fixture, category: .wildfires))
         // The empty-id and the out-of-range-latitude events are dropped, never thrown.
