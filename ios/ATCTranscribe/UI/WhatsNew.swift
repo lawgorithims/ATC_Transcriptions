@@ -32,6 +32,18 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 46, version: "1.0", headline: "Restricted airspace and live TFRs on the map",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "exclamationmark.triangle.fill",
+                    title: "Special-use airspace, colour-coded",
+                    detail: "The map now draws special-use airspace over the whole country — Restricted, Prohibited, Warning, and Alert areas plus Military Operations Areas (MOAs) — each in its own colour, with a small block on the top edge showing the floor and ceiling (e.g. FL180 over the surface). It's built into the app, so it works with no signal. Toggle it under “Airspace & special use” in the layers menu."),
+                WhatsNewHighlight(
+                    icon: "exclamationmark.octagon.fill",
+                    title: "Live TFRs, refreshed daily",
+                    detail: "Turn on “TFRs (FAA, live)” in the layers menu and CommSight pulls the current Temporary Flight Restrictions from the FAA and draws them in red, with their altitudes on the edge. Tap one to see its type (security, hazard, VIP movement, airshow, space ops…), altitudes, NOTAM number, and description. It caches the last set for offline and shows how fresh it is. Awareness only — always confirm against an official briefing before you fly."),
+            ]),
+        ReleaseNote(
             build: 45, version: "1.0", headline: "Approach plates that align themselves — precisely",
             highlights: [
                 WhatsNewHighlight(
