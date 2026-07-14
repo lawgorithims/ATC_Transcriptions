@@ -26,6 +26,41 @@ struct PowerClimateStats: Codable, Equatable, Sendable {
     let builtAt: Date
 }
 
+extension PowerClimateStats {
+    /// A deterministic synthetic climatology for previews, `--demo-climate`, and the UI test — NO
+    /// network. Winds pick up in spring/fall and in the afternoon; density altitude climbs on summer
+    /// afternoons, so every chart (rose, best-time matrix, seasonal strip, DA) shows a clear gradient.
+    static func demo(ident: String, coord: Coord, fieldElevFt: Int?, now: Date = Date()) -> PowerClimateStats {
+        assert(!ident.trimmingCharacters(in: .whitespaces).isEmpty, "ident required")
+        assert((-90...90).contains(coord.lat) && (-180...180).contains(coord.lon), "coordinate in range")
+        var wind = [UInt16](repeating: 0, count: ClimateMath.windCellCount)
+        var da = [UInt16](repeating: 0, count: ClimateMath.daCellCount)
+        let elev = fieldElevFt ?? 5_000
+        for month in 1...12 {                                        // bounded
+            let dir = (month * 2) % 16                               // prevailing rotates through the year
+            let seasonKt = 8.0 + 6.0 * sin(Double(month - 3) / 12.0 * 2 * .pi)     // windier spring/fall
+            for tod in 0..<4 {
+                let todBoost = [0.0, 2.0, 5.0, 2.5][tod]            // afternoon (tod 2) windiest
+                let meanKt = max(2.0, seasonKt + todBoost)
+                let cls = ClimateMath.classForKt(meanKt)
+                wind[ClimateMath.windIndex(month: month, tod: tod, dir: dir, cls: cls)] = 120
+                wind[ClimateMath.windIndex(month: month, tod: tod, dir: (dir + 1) % 16, cls: max(0, cls - 1))] = 60
+                wind[ClimateMath.windIndex(month: month, tod: tod, dir: ClimateMath.calmDirIndex, cls: 0)] = 40
+                let heatFt = Double(elev) + 1500.0 * max(0, sin(Double(month - 4) / 12.0 * 2 * .pi)) * Double(tod + 1)
+                let bin = ClimateMath.daBin(heatFt)
+                da[ClimateMath.daIndex(month: month, tod: tod, bin: bin)] = 150
+                da[ClimateMath.daIndex(month: month, tod: tod, bin: min(bin + 1, ClimateMath.daBinCount - 1))] = 70
+            }
+        }
+        let total = wind.reduce(0) { $0 + Int($1) }
+        assert(total > 0 && wind.count == ClimateMath.windCellCount, "demo well-formed")
+        return PowerClimateStats(version: PowerClimateStats.currentVersion, ident: ident,
+                                 lat: coord.lat, lon: coord.lon, gridElevationM: Double(elev) * 0.3048,
+                                 fieldElevationFt: elev, years: [2023, 2024, 2025],
+                                 sampleCount: total, windCounts: wind, daCounts: da, builtAt: now)
+    }
+}
+
 /// Mutable fold state while year chunks stream in. Fixed-size arrays (rule 2); UInt16 saturates
 /// (max per cell for 3 years ≈ 558, so overflow needs ~100 years of data).
 struct ClimateAccumulator {
@@ -274,6 +309,71 @@ enum ClimateMath {
             cum += n
         }
         return -2000.0 + Double(bins.count) * 1000.0
+    }
+
+    // MARK: Best-time-of-day + seasonal charts (data for the climate view; all pure + bounded)
+
+    /// Mean surface wind (kt) and sample-hours for ONE month×time-of-day cell. `meanKt` counts calm
+    /// hours as 0 kt, so a calm cell reads low. nil cell = no samples.
+    struct WindCell: Equatable, Sendable { let meanKt: Double; let hours: Int }
+
+    /// The 12×4 (month × time-of-day) grid of typical wind — the data behind the best-time-of-day
+    /// heatmap. Bounded 12×4×17×8 walk, same marginals as `rose`.
+    static func windGrid(stats: PowerClimateStats) -> [[WindCell?]] {
+        assert(stats.windCounts.count == windCellCount, "layout intact")
+        var grid = [[WindCell?]](repeating: [WindCell?](repeating: nil, count: todCount), count: monthCount)
+        for month in 1...monthCount {
+            for tod in 0..<todCount {
+                var ktSum = 0.0, total = 0.0
+                for dir in 0..<dirCount {
+                    for cls in 0..<classCount {
+                        let n = Double(stats.windCounts[windIndex(month: month, tod: tod, dir: dir, cls: cls)])
+                        guard n > 0 else { continue }
+                        total += n
+                        if dir != calmDirIndex { ktSum += n * classMidKt[cls] }   // calm contributes 0 kt
+                    }
+                }
+                if total > 0 { grid[month - 1][tod] = WindCell(meanKt: ktSum / total, hours: Int(total)) }
+            }
+        }
+        assert(grid.count == monthCount && grid[0].count == todCount, "grid is 12×4")
+        return grid
+    }
+
+    /// Per-month mean wind (kt), hours-weighted across the day, from a `windGrid`; nil month = no data.
+    /// Drives the 12-month seasonal strip.
+    static func monthlyMeanKt(_ grid: [[WindCell?]]) -> [Double?] {
+        assert(grid.count == monthCount, "grid is 12 months")
+        assert(grid.allSatisfy { $0.count == todCount }, "each month has 4 tod cells")
+        return grid.map { row in
+            var ktHours = 0.0, hours = 0.0
+            for cell in row where cell != nil {
+                ktHours += cell!.meanKt * Double(cell!.hours)
+                hours += Double(cell!.hours)
+            }
+            return hours > 0 ? ktHours / hours : nil
+        }
+    }
+
+    /// GA wind tier for the heatmap colour ramp: 0 calm (<7), 1 light (7–12), 2 moderate (12–18),
+    /// 3 strong (≥18) kt. Stable thresholds so a tier never flips on a rounding boundary.
+    static func windTier(kt: Double) -> Int {
+        assert(kt.isFinite && kt >= 0, "wind non-negative + finite")
+        let tier = kt < 7 ? 0 : kt < 12 ? 1 : kt < 18 ? 2 : 3
+        assert((0...3).contains(tier), "tier in 0…3")
+        return tier
+    }
+
+    /// Nearest speed-class index (inverse of `classMidKt`) for a kt value — for building synthetic data.
+    static func classForKt(_ kt: Double) -> Int {
+        assert(kt.isFinite && kt >= 0, "wind non-negative + finite")
+        var best = 0, bestDist = Double.greatestFiniteMagnitude
+        for i in 0..<classCount {                                   // bounded 8
+            let d = abs(classMidKt[i] - kt)
+            if d < bestDist { bestDist = d; best = i }
+        }
+        assert((0..<classCount).contains(best), "class in range")
+        return best
     }
 
     // MARK: Runway statistics (Feature D)

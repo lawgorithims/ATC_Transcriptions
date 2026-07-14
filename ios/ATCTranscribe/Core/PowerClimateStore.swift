@@ -33,6 +33,10 @@ actor PowerClimateStore {
         assert(!ident.trimmingCharacters(in: .whitespaces).isEmpty, "ident required")
         assert((-90...90).contains(coord.lat) && (-180...180).contains(coord.lon), "coordinate in range")
         let key = ident.trimmingCharacters(in: .whitespaces).uppercased()
+        // Offline demo/UI-test path: synthetic climatology, no network (mirrors `--demo-hazards`).
+        if CommandLine.arguments.contains("--demo-climate") {
+            return PowerClimateStats.demo(ident: key, coord: coord, fieldElevFt: fieldElevFt)
+        }
         if let hit = memo[key] { return hit }
         if let existing = inFlight[key] { return await existing.value }
         let dir = cacheDirectory

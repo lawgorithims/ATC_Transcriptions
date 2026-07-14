@@ -29,6 +29,64 @@ final class PowerClimateTests: XCTestCase {
         XCTAssertEqual(ClimateMath.speedClass(kt: 80), 7)
     }
 
+    // MARK: Best-time-of-day + seasonal chart data
+
+    func testWindTierThresholds() {
+        XCTAssertEqual(ClimateMath.windTier(kt: 0), 0)
+        XCTAssertEqual(ClimateMath.windTier(kt: 6.99), 0)
+        XCTAssertEqual(ClimateMath.windTier(kt: 7), 1)
+        XCTAssertEqual(ClimateMath.windTier(kt: 11.99), 1)
+        XCTAssertEqual(ClimateMath.windTier(kt: 12), 2)
+        XCTAssertEqual(ClimateMath.windTier(kt: 17.99), 2)
+        XCTAssertEqual(ClimateMath.windTier(kt: 18), 3)
+        XCTAssertEqual(ClimateMath.windTier(kt: 45), 3)
+    }
+
+    func testClassForKt() {
+        XCTAssertEqual(ClimateMath.classForKt(3.5), 0)         // exact class midpoint
+        XCTAssertEqual(ClimateMath.classForKt(0), 0)           // below all → nearest is class 0
+        XCTAssertEqual(ClimateMath.classForKt(30), 7)          // top class midpoint
+        XCTAssertEqual(ClimateMath.classForKt(100), 7)         // above all → clamps to top
+    }
+
+    func testWindGridAndMonthlyFromDemo() {
+        let stats = PowerClimateStats.demo(ident: "KDEN", coord: Coord(lat: 39.86, lon: -104.67), fieldElevFt: 5434)
+        let grid = ClimateMath.windGrid(stats: stats)
+        XCTAssertEqual(grid.count, 12)
+        XCTAssertEqual(grid[0].count, 4)
+        XCTAssertTrue(grid.allSatisfy { $0.allSatisfy { $0 != nil } }, "demo populates every month×tod cell")
+        // The demo makes afternoons windier than nights — the chart must reflect that ordering.
+        let april = grid[3]
+        XCTAssertGreaterThan(april[2]!.meanKt, april[0]!.meanKt, "afternoon windier than night")
+
+        let monthly = ClimateMath.monthlyMeanKt(grid)
+        XCTAssertEqual(monthly.count, 12)
+        XCTAssertTrue(monthly.allSatisfy { ($0 ?? 0) > 0 })
+    }
+
+    func testWindGridEmptyStatsIsAllNil() {
+        let empty = PowerClimateStats(version: 1, ident: "X", lat: 0, lon: 0, gridElevationM: 0,
+                                      fieldElevationFt: nil, years: [], sampleCount: 0,
+                                      windCounts: [UInt16](repeating: 0, count: ClimateMath.windCellCount),
+                                      daCounts: [UInt16](repeating: 0, count: ClimateMath.daCellCount),
+                                      builtAt: Date())
+        let grid = ClimateMath.windGrid(stats: empty)
+        XCTAssertTrue(grid.allSatisfy { $0.allSatisfy { $0 == nil } }, "no samples → no cells")
+        XCTAssertTrue(ClimateMath.monthlyMeanKt(grid).allSatisfy { $0 == nil })
+    }
+
+    func testDemoStatsAreWellFormed() {
+        let s = PowerClimateStats.demo(ident: "KDEN", coord: Coord(lat: 39.86, lon: -104.67), fieldElevFt: 5434)
+        XCTAssertEqual(s.windCounts.count, ClimateMath.windCellCount)
+        XCTAssertEqual(s.daCounts.count, ClimateMath.daCellCount)
+        XCTAssertEqual(s.fieldElevationFt, 5434)
+        XCTAssertEqual(s.years, [2023, 2024, 2025])
+        XCTAssertGreaterThan(s.sampleCount, 0)
+        // Rose + DA percentiles must resolve on the demo (they drive the other charts on the card).
+        XCTAssertGreaterThan(ClimateMath.rose(stats: s, months: [], tods: []).totalHours, 0)
+        XCTAssertNotNil(ClimateMath.daPercentiles(stats: s, months: [], tods: []))
+    }
+
     func testKeyParsingAndTod() {
         XCTAssertNil(ClimateMath.parseKey("2024010"))          // too short
         XCTAssertNil(ClimateMath.parseKey("20240101TT"))       // non-digits

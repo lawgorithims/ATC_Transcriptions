@@ -22,6 +22,10 @@ struct AirportClimateView: View {
     @State private var state: LoadState = .loading(year: 0, of: 0)
     @State private var monthFilter: Int?      // nil = all months (1–12)
     @State private var todFilter: Int?        // nil = all hours (0–3)
+    // The best-time/seasonal charts are filter-INDEPENDENT (they always show the full year), so their
+    // grid is computed ONCE at load and cached here — a month/tod filter tap never re-walks 6,528 cells.
+    @State private var chartGrid: [[ClimateMath.WindCell?]] = []
+    @State private var chartMonthly: [Double?] = []
 
     private var months: Set<Int> { monthFilter.map { [$0] } ?? [] }
     private var tods: Set<Int> { todFilter.map { [$0] } ?? [] }
@@ -56,7 +60,15 @@ struct AirportClimateView: View {
                 if case .loading = state { state = .loading(year: year, of: of) }
             }
         }
-        await MainActor.run { state = stats.map { .loaded($0) } ?? .unavailable }
+        await MainActor.run {
+            if let stats {
+                chartGrid = ClimateMath.windGrid(stats: stats)        // computed once, cached for the sheet's life
+                chartMonthly = ClimateMath.monthlyMeanKt(chartGrid)
+                state = .loaded(stats)
+            } else {
+                state = .unavailable
+            }
+        }
     }
 
     // MARK: Load / empty states
@@ -103,9 +115,14 @@ struct AirportClimateView: View {
                 } else {
                     KV("Prevailing", "calm / no data")
                 }
+                Text(periodCaption(stats))                       // when the data is from (period + download)
+                    .font(.caption2).foregroundStyle(p.textDim)
+                    .accessibilityIdentifier("climate-period")
             } header: {
                 Text(headerLine(stats))
             }
+            bestTimeSection(stats, chartGrid)                     // grid cached at load (filter-independent)
+            seasonalSection(stats, chartMonthly)
             daSection(stats)
             runwaySection(stats)
             Section {
@@ -150,7 +167,133 @@ struct AirportClimateView: View {
         }
     }
 
-    private static let monthNames = Calendar(identifier: .gregorian).monthSymbols
+    // Explicit English names (aviation is English-standard) — NOT Calendar.monthSymbols, which falls
+    // back to the ICU root locale's "M01"…"M12" when the environment's locale is undefined.
+    private static let monthNames = ["January", "February", "March", "April", "May", "June",
+                                     "July", "August", "September", "October", "November", "December"]
+    private static let todShort = ["Night", "Morn", "Aftn", "Eve"]   // matches ClimateMath.todNames order
+
+    /// "When is this data from?" — the period of record plus the on-device download date.
+    private func periodCaption(_ stats: PowerClimateStats) -> String {
+        "NASA POWER climatology · \(yearsLabel(stats)) average · downloaded \(Self.dateFmt.string(from: stats.builtAt))"
+    }
+    private static let dateFmt: DateFormatter = {
+        let f = DateFormatter(); f.dateStyle = .medium; f.timeStyle = .none; return f
+    }()
+
+    // MARK: Best time of day — month × time-of-day wind heatmap
+
+    /// A 12-month × 4-time-of-day grid coloured by typical surface wind: green (calm) → red (strong),
+    /// so a pilot can read off the historically calmest windows at a glance.
+    @ViewBuilder private func bestTimeSection(_ stats: PowerClimateStats, _ grid: [[ClimateMath.WindCell?]]) -> some View {
+        Section {
+            VStack(spacing: 3) {
+                HStack(spacing: 3) {
+                    Text("").frame(width: 30)
+                    ForEach(0..<4, id: \.self) { tod in
+                        Text(Self.todShort[tod]).font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(palette.textDim).frame(maxWidth: .infinity)
+                    }
+                }
+                ForEach(1...12, id: \.self) { month in
+                    HStack(spacing: 3) {
+                        Text(Self.monthNames[month - 1].prefix(3))
+                            .font(.system(size: 9, design: .monospaced)).foregroundStyle(palette.textDim)
+                            .frame(width: 30, alignment: .leading)
+                        ForEach(0..<4, id: \.self) { tod in windCell(grid[month - 1][tod], month: month, tod: tod) }
+                    }
+                }
+            }
+            .padding(.vertical, 2)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("climate-besttime-matrix")
+            .accessibilityLabel("Best time of day wind heatmap")
+            windLegend
+        } header: {
+            Text("Best time of day — typical wind · \(yearsLabel(stats))")
+        }
+    }
+
+    private func windCell(_ cell: ClimateMath.WindCell?, month: Int, tod: Int) -> some View {
+        let kt = cell?.meanKt
+        // Colour by the SAME rounded value shown, so a cell's digit never lands in a different legend
+        // band than its fill (e.g. 6.9 kt → shows "7" and is coloured as the 7–12 band, not <7).
+        let shown = kt.map { Int($0.rounded()) }
+        return RoundedRectangle(cornerRadius: 3)
+            .fill(shown.map { windTierColor(ClimateMath.windTier(kt: Double($0))) } ?? palette.border.opacity(0.35))
+            .frame(height: 20).frame(maxWidth: .infinity)
+            .overlay(Text(shown.map(String.init) ?? "–")
+                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                // Dark digits stay legible on the light green/amber/red ramp in both themes (WCAG AA);
+                // white failed contrast on the calm/moderate fills.
+                .foregroundStyle(shown == nil ? palette.textDim : Color.black.opacity(0.82)))
+            .accessibilityElement()
+            .accessibilityLabel(cellA11y(kt, month: month, tod: tod))
+    }
+
+    /// VoiceOver text for a heatmap cell: month, time of day, wind, and its band.
+    private func cellA11y(_ kt: Double?, month: Int, tod: Int) -> String {
+        let when = "\(Self.monthNames[month - 1]) \(ClimateMath.todNames[tod].lowercased())"
+        guard let kt else { return "\(when), no data" }
+        let band = ["calm", "light", "moderate", "strong"][ClimateMath.windTier(kt: kt.rounded())]
+        return "\(when), \(Int(kt.rounded())) knots, \(band)"
+    }
+
+    private var windLegend: some View {
+        HStack(spacing: 10) {
+            ForEach(0..<4, id: \.self) { tier in
+                HStack(spacing: 4) {
+                    RoundedRectangle(cornerRadius: 2).fill(windTierColor(tier)).frame(width: 10, height: 10)
+                    Text(Self.tierLabel[tier]).font(.system(size: 9)).foregroundStyle(palette.textDim)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+    private static let tierLabel = ["<7", "7–12", "12–18", "18+ kt"]
+
+    /// Fixed calm → strong sequential ramp for the heatmap — a data-viz ramp (NOT the theme accent),
+    /// chosen so the dark in-cell digit keeps WCAG-AA contrast on every tier in light and dark themes.
+    private static let windRamp: [Color] = [
+        Color(red: 0.36, green: 0.80, blue: 0.56),   // calm     <7
+        Color(red: 0.83, green: 0.79, blue: 0.36),   // light    7–12
+        Color(red: 0.92, green: 0.62, blue: 0.28),   // moderate 12–18
+        Color(red: 0.88, green: 0.40, blue: 0.36),   // strong   18+
+    ]
+    private func windTierColor(_ tier: Int) -> Color { Self.windRamp[min(max(tier, 0), 3)] }
+
+    // MARK: Seasonal winds — mean wind by month
+
+    /// Twelve monthly bars of hours-weighted mean wind — the yearly rhythm of calm vs. windy months.
+    @ViewBuilder private func seasonalSection(_ stats: PowerClimateStats, _ monthly: [Double?]) -> some View {
+        let maxKt = max(1.0, monthly.compactMap { $0 }.max() ?? 1.0)
+        Section {
+            HStack(alignment: .bottom, spacing: 5) {
+                ForEach(0..<12, id: \.self) { i in
+                    let shown = monthly[i].map { Int($0.rounded()) }
+                    VStack(spacing: 3) {
+                        Text(shown.map(String.init) ?? "–")
+                            .font(.system(size: 8, design: .monospaced)).foregroundStyle(palette.textDim)
+                        Capsule()
+                            .fill(shown.map { windTierColor(ClimateMath.windTier(kt: Double($0))) } ?? palette.border)
+                            .frame(width: 12, height: max(3, CGFloat((monthly[i] ?? 0) / maxKt) * 66))
+                        Text(Self.monthNames[i].prefix(1))
+                            .font(.system(size: 8)).foregroundStyle(palette.textDim)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .accessibilityElement()
+                    .accessibilityLabel("\(Self.monthNames[i]), \(shown.map { "\($0) knots" } ?? "no data")")
+                }
+            }
+            .frame(height: 96, alignment: .bottom)
+            .padding(.vertical, 2)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("climate-seasonal-strip")
+            .accessibilityLabel("Seasonal winds by month")
+        } header: {
+            Text("Seasonal winds by month · \(yearsLabel(stats))")
+        }
+    }
 
     // MARK: Density altitude
 
