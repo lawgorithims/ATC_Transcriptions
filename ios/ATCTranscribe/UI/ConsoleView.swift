@@ -54,6 +54,9 @@ struct ConsoleView: View {
         .fullScreenCover(isPresented: $model.showRouteMap) {
             RouteMapSheet().environmentObject(model)
         }
+        .sheet(isPresented: $model.showDownloads) {
+            NavigationStack { DownloadsView(bag: model.plateBag).environmentObject(model) }
+        }
         .sheet(isPresented: $model.showMapSearch) {
             MapSearchSheet(onPick: { model.selectMapObject($0); model.showMapSearch = false }, initialQuery: "")
                 .environmentObject(model)

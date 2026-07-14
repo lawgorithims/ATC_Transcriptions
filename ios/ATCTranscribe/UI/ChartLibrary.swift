@@ -26,10 +26,15 @@ final class ChartLibrary: ObservableObject {
     private(set) var cycle = ""
 
     /// Progress of an explicit "download all US charts" run, for the Settings UI.
-    enum BulkDownload: Equatable { case idle, running(done: Int, total: Int), finished(added: Int), failed(String) }
+    enum BulkDownload: Equatable {
+        case idle, running(done: Int, total: Int), finished(added: Int), failed(String)
+        var isRunning: Bool { if case .running = self { return true }; return false }
+    }
     @Published var bulk: BulkDownload = .idle
     /// Total bytes of chart packs currently on disk (drives the "stored on device" readout).
     @Published private(set) var cachedBytes: Int = 0
+    /// Pack ids currently downloading via the per-region Downloads page (drives per-row spinners).
+    @Published private(set) var downloadingIDs: Set<String> = []
 
     private var inFlight: Set<String> = []
     private var warming: Task<Bool, Never>?
@@ -237,6 +242,30 @@ final class ChartLibrary: ObservableObject {
         }
         bulk = .finished(added: added)
         bulkTask = nil
+    }
+
+    // MARK: Per-region (single-pack) offline download — the Downloads page
+
+    /// Whether a pack was deliberately downloaded for offline use (pinned, LRU-exempt) vs incidental cache.
+    func isPinned(_ e: ChartCatalog.Entry) -> Bool { pinned.contains(e.id) }
+
+    /// Download one pack for offline use and pin it (exempt from the LRU cap). Idempotent; safe to call
+    /// on an already-cached pack (just pins it). Returns whether the pack is on disk afterwards.
+    @discardableResult
+    func download(_ e: ChartCatalog.Entry) async -> Bool {
+        guard !downloadingIDs.contains(e.id) else { return isCached(e) }
+        downloadingIDs.insert(e.id)
+        defer { downloadingIDs.remove(e.id) }
+        var ok = isCached(e)
+        if !ok { ok = await ensureOnDisk(e) != nil }
+        if ok { pinned.insert(e.id); savePinned(); refreshCachedBytes() }
+        return ok
+    }
+
+    /// Remove one downloaded pack and unpin it.
+    func remove(_ e: ChartCatalog.Entry) {
+        try? FileManager.default.removeItem(at: localURL(e))
+        pinned.remove(e.id); savePinned(); refreshCachedBytes()
     }
 
     /// Delete every cached pack (incidental + pinned offline downloads) and clear the pins — the
