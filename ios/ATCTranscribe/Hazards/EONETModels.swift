@@ -254,8 +254,10 @@ extension EONETEvent {
     private static func grouped(_ v: Double) -> String {
         assert(v.isFinite, "finite magnitude")
         let n = v.rounded()
-        assert(abs(n) < 1e15, "within formatter range")
-        // Fallback uses %.0f (never Int(n), which would trap past Int range) so this can't crash.
+        // No upper-bound assert: grouped() is the documented safe render for absurd-but-finite feed values
+        // (the "kts"/"acres" paths call it with values up to ~1e30), and both NumberFormatter and the %.0f
+        // fallback handle any finite Double without trapping. An `abs(n) < 1e15` assert here would fire in
+        // test/debug builds on exactly those absurd values the callers deliberately route here.
         return groupFormatter.string(from: NSNumber(value: n)) ?? String(format: "%.0f", n)
     }
     private static let groupFormatter: NumberFormatter = {
