@@ -19,6 +19,7 @@ struct MapObjectView: View {
     // for the inline "Map" (send-to-map) button.
     @State private var airportTab: AirportTab = .info
     @State private var procTab: ProcTab = .approach
+    @State private var wxTab: WxTab = .current
     @State private var sendingToMap: Set<String> = []
 
     /// Top-level airport-card tabs (matches ForeFlight's Info / Weather / Runway / Procedure / NOTAM).
@@ -45,6 +46,15 @@ struct MapObjectView: View {
             case .arrival: return .arrival; case .approach: return .approach; case .other: return .other
             }
         }
+    }
+
+    /// Weather sub-tabs: live observations (METAR/TAF — not bundled yet) vs. NASA POWER historical
+    /// climate (opens the charts). Split so the "current" gap is honest and the historical data is
+    /// clearly separate, not mistaken for now.
+    private enum WxTab: String, CaseIterable, Identifiable {
+        case current, historical
+        var id: String { rawValue }
+        var label: String { self == .current ? "Current" : "Historical" }
     }
 
     /// Sheet payload for the Airport Climate card (`.sheet(item:)` works in both hosts — the
@@ -234,11 +244,39 @@ struct MapObjectView: View {
 
     // MARK: Airport-card tabs
 
-    /// Weather = NASA POWER climatology (opens the Climate card) + nearby EONET satellite hazards. No
-    /// live METAR/TAF/NOTAM source is bundled, so that's stated honestly rather than faked.
+    /// Weather = a Current / Historical split. Current holds live observations (METAR/TAF, not bundled
+    /// yet — stated honestly) plus nearby EONET satellite hazards; Historical opens the NASA POWER
+    /// climate charts. Nothing live is faked.
     @ViewBuilder private func weatherTab(_ o: IdentifiedObject) -> some View {
+        Section {
+            Picker("Weather", selection: $wxTab) {
+                ForEach(WxTab.allCases) { Text($0.label).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .listRowInsets(EdgeInsets(top: 6, leading: 8, bottom: 6, trailing: 8))
+            .accessibilityIdentifier("weather-subtabs")
+        }
+        switch wxTab {
+        case .current:    currentWxSection(o)
+        case .historical: historicalWxSection(o)
+        }
+    }
+
+    /// Current observations: live METAR/TAF aren't bundled yet (shown honestly), plus nearby EONET
+    /// satellite-observed hazards — which ARE current-ish context.
+    @ViewBuilder private func currentWxSection(_ o: IdentifiedObject) -> some View {
         let p = model.palette
-        climateSection(o)
+        Section("Current observations") {
+            HStack(spacing: 10) {
+                Image(systemName: "cloud.sun").font(.title3).foregroundStyle(p.textDim)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Live METAR / TAF — coming soon").font(.callout).foregroundStyle(p.text)
+                    Text("Current observations aren't in the app yet. Check an official source (AWOS/ASOS, aviationweather.gov).")
+                        .font(.caption2).foregroundStyle(p.textDim).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .accessibilityIdentifier("weather-current-comingsoon")
+        }
         let near = model.hazardEvents
             .map { ($0, Geo.nmBetween(o.coord, $0.point)) }
             .filter { $0.1 <= 200 }
@@ -260,7 +298,18 @@ struct MapObjectView: View {
             }
         }
         Section {} footer: {
-            Text("Live METAR/TAF are not available offline. Airport Climate shows NASA POWER historical winds & density altitude; hazards are satellite-observed (NASA EONET) — not a substitute for an official weather briefing.")
+            Text("Live METAR/TAF are not available offline. Hazards are satellite-observed (NASA EONET) — not a substitute for an official weather briefing.")
+                .font(.caption2).foregroundStyle(p.textDim)
+        }
+    }
+
+    /// Historical weather: opens the NASA POWER Airport Climate charts (windrose, best time of day,
+    /// seasonal winds, density altitude) — decades of normals, clearly not current conditions.
+    @ViewBuilder private func historicalWxSection(_ o: IdentifiedObject) -> some View {
+        let p = model.palette
+        climateSection(o)
+        Section {} footer: {
+            Text("NASA POWER historical winds, seasonal normals & density altitude (decades of climatology) — planning context, not current weather. Always check current METAR/TAF.")
                 .font(.caption2).foregroundStyle(p.textDim)
         }
     }
@@ -397,7 +446,7 @@ struct MapObjectView: View {
                     Image(systemName: "wind").foregroundStyle(p.accent)
                     VStack(alignment: .leading, spacing: 1) {
                         Text("Airport Climate").font(.callout).foregroundStyle(p.text)
-                        Text("Historical winds, runways & density altitude")
+                        Text("Windrose · best time of day · seasonal winds · density altitude")
                             .font(.caption2).foregroundStyle(p.textDim)
                     }
                     Spacer()

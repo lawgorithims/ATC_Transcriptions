@@ -895,7 +895,16 @@ final class AppModel: ObservableObject {
         }
         // screenshot/UI-test: present the Airport Climate sheet on a synthetic climatology (the store
         // returns `PowerClimateStats.demo` under `--demo-climate`, so the charts render with no network).
-        if args.contains("--demo-climate") { showDemoClimate = true }
+        // Skipped when `--demo-airport` also presents the airport card (which reaches the charts via its
+        // Weather → Historical sub-tab) so the two demo sheets don't fight.
+        if args.contains("--demo-climate") && !args.contains("--demo-airport") { showDemoClimate = true }
+        // UI-test/demo deep-link: present the KDEN airport card on launch (to exercise the Weather
+        // Current/Historical sub-tabs). Sets the object probe directly — no map-focus side effects.
+        if args.contains("--demo-airport") {
+            let kden = IdentifiedObject(kind: .airport, ident: "KDEN",
+                                        coord: Coord(lat: 39.8617, lon: -104.6731), onRoute: false)
+            widgetStore.mapProbe = MapProbeResult(id: "demo-airport", objects: [kden])
+        }
 
         #if targetEnvironment(simulator)
         deviceLabel = "CPU (Simulator)"
