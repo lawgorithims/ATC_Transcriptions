@@ -32,6 +32,26 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 49, version: "1.0", headline: "IFR high-altitude charts, a Downloads manager, and more weather",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "airplane.circle",
+                    title: "IFR high-altitude enroute charts",
+                    detail: "The map layer switcher now has an IFR-H layer with the FAA high-altitude enroute charts — jet routes and high-altitude fixes — alongside VFR, IFR-low, Map, and Satellite."),
+                WhatsNewHighlight(
+                    icon: "arrow.down.circle",
+                    title: "One place to manage offline downloads",
+                    detail: "A new Downloads screen (Settings → Downloads) groups all offline content: VFR/IFR charts by region and approach plates by area. Every item shows whether it’s downloaded and — using the FAA’s cycle — whether it’s up to date, with per-region or download-all buttons."),
+                WhatsNewHighlight(
+                    icon: "mountain.2",
+                    title: "3D terrain on the base map",
+                    detail: "The Map and Satellite base layers now render realistic terrain relief, so mountains and valleys read at a glance when the FAA chart layers are off."),
+                WhatsNewHighlight(
+                    icon: "smoke",
+                    title: "More weather & hazard detail",
+                    detail: "A wildfire-smoke map layer, real magnitude units when you tap a hazard, and airport weather split into Current and Historical views — including best-time-of-day and seasonal wind charts."),
+            ]),
+        ReleaseNote(
             build: 47, version: "1.0", headline: "Airspace & TFR accuracy refinements",
             highlights: [
                 WhatsNewHighlight(
