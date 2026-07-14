@@ -235,6 +235,9 @@ final class AppModel: ObservableObject {
     @Published var showRouteMap = false {
         didSet { if didFinishInit, showRouteMap != oldValue { syncEONET(); syncTFRs() } }
     }
+    /// Debug/UI-test only: present the Airport Climate sheet on launch with synthetic data
+    /// (`--demo-climate`). Not persisted; never set outside the launch-arg path.
+    @Published var showDemoClimate = false
 
     /// The chart base layer the user last viewed (VFR sectional / IFR low / standard / satellite) so the
     /// map reopens where they left off; defaults to VFR sectional on first run. Read at view-init time via
@@ -888,6 +891,9 @@ final class AppModel: ObservableObject {
             hazardsUpdatedAt = Date()
             refreshHazardAlert()   // observers are inert during init — compute the banner explicitly
         }
+        // screenshot/UI-test: present the Airport Climate sheet on a synthetic climatology (the store
+        // returns `PowerClimateStats.demo` under `--demo-climate`, so the charts render with no network).
+        if args.contains("--demo-climate") { showDemoClimate = true }
 
         #if targetEnvironment(simulator)
         deviceLabel = "CPU (Simulator)"
