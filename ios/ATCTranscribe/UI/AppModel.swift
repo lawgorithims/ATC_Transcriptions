@@ -30,6 +30,25 @@ enum SourceKind: String, CaseIterable, Identifiable {
 /// `--audio-dir <diagnostic_data>`, `--autostart`.
 @MainActor
 final class AppModel: ObservableObject {
+    // FAILSAFE — declared FIRST so its initializer runs before any flight-state property below reads
+    // UserDefaults. If the app was killed mid-test-bench, the persisted `atc.flightPlan` may be a
+    // SANDBOX plan; this rewrites the real blobs from the snapshot breadcrumb before `airport` /
+    // `flightPlan` / `aircraftProfiles` load them, so the sandbox can never surface as the real plan.
+    private let diagnosticRecovered = FlightStateSnapshot.recoverIfInterrupted()
+
+    /// The buried Clearance Test Bench is unlocked (Settings → tap the version 7×). Persisted so it
+    /// stays available once found, but it never surfaces to a user who hasn't deliberately unlocked it.
+    @Published var diagnosticsEnabled = UserDefaults.standard.bool(forKey: "atc.diagnosticsEnabled") {
+        didSet { UserDefaults.standard.set(diagnosticsEnabled, forKey: "atc.diagnosticsEnabled") }
+    }
+    /// A test-bench session is live — drives the TEST MODE banner and gates the sandbox behavior.
+    @Published var diagnosticActive = false
+    /// The in-memory snapshot for a clean exit (the persisted breadcrumb is the crash backstop).
+    private var diagnosticSnapshot: FlightStateSnapshot?
+    /// The pilot's real hazard-banner dismissals, preserved across a bench session (transient
+    /// in-memory state the persisted snapshot doesn't cover).
+    private var diagnosticSavedDismissed: Set<String>?
+
     // UI theme — persisted so the app reopens in the same look (was resetting to cockpit each launch).
     @Published var theme: AppTheme =
         (UserDefaults.standard.string(forKey: "atc.theme").flatMap(AppTheme.init(rawValue:)) ?? .cockpit) {
@@ -204,15 +223,20 @@ final class AppModel: ObservableObject {
             if let fp = flightPlan { fp.save() } else { FlightPlan.clear() }
             pushFlightPlanContext()
             pushPlatePriming()             // prime the decode+corrector with the route's chart freqs/fixes
-            prefetchRouteCharts()          // pull the FAA packs the filed route crosses in the background
+            // The two persistent DOWNLOADS (route chart packs + Flight Bag plates) must not fire for a
+            // SANDBOX plan — a test-bench run would silently cache other airports' content on disk. The
+            // real plan gets them on its normal edits; the bench restores without leaving a trace.
+            if !diagnosticActive { prefetchRouteCharts() }
             if didFinishInit, flightPlan != oldValue {
                 refreshEFBGrounding()          // L4: plan changed → rebuild grounding
-                autoPackFlightBagIfEnabled()   // download the route's plates into the Flight Bag
+                if !diagnosticActive { autoPackFlightBagIfEnabled() }   // download the route's plates
             }
             if didFinishInit {                 // a plan is an `eonetActive` input (route hazard alerts)
                 syncEONET()
                 syncTFRs()
-                if flightPlan != oldValue { hazardDismissedIDs.removeAll(); refreshHazardAlert() }
+                // Skip the dismissal reset in the sandbox — the bench preserves the pilot's real
+                // dismissals across the whole session (see diagnosticBeginBench/EndBench).
+                if flightPlan != oldValue, !diagnosticActive { hazardDismissedIDs.removeAll(); refreshHazardAlert() }
             }
             if flightPlan != oldValue { refreshTripStats() }   // strip's DIST/ETE/ETA/FUEL row
         }
@@ -797,6 +821,10 @@ final class AppModel: ObservableObject {
             onStatus: { [weak self] status in
                 Task { @MainActor in self?.tfrStatus = status }
             })
+
+        if diagnosticRecovered {
+            NSLog("CommSight: restored the real flight plan after an interrupted test bench.")
+        }
 
         let args = CommandLine.arguments
         func value(_ flag: String) -> String? {
@@ -1454,6 +1482,180 @@ final class AppModel: ObservableObject {
         guard let url = ForeFlightExport.url(for: plan) else { return }
         UIApplication.shared.open(url)                                    // backgrounds CommSight; capture
     }                                                                     // pauses/resumes via handleScenePhase
+
+    // MARK: - Clearance Test Bench (buried diagnostic)
+    //
+    // Replays scripted ATC through the REAL detector so the ownship-clearance → amended-plan feature
+    // can be exercised on the bench (no airplane, no live ATC). It edits flight state, so it runs
+    // ONLY inside a snapshot/restore sandbox — see `FlightStateSnapshot` and `diagnosticBeginBench`.
+
+    /// Enter the bench: snapshot the real flight state (+ crash breadcrumb), stop any live capture, and
+    /// switch into a sandbox where the detector is on and ForeFlight auto-launch is off (the bench
+    /// offers an explicit Send-to-ForeFlight instead). Idempotent.
+    func diagnosticBeginBench() {
+        guard !diagnosticActive else { return }
+        if isRunning { stop() }                       // no live audio may drive the sandbox detector
+        let snap = FlightStateSnapshot.capture()
+        snap.persistAsBreadcrumb()                    // survives a kill → restored at next launch
+        diagnosticSnapshot = snap
+        diagnosticSavedDismissed = hazardDismissedIDs // preserve real hazard-banner dismissals
+        diagnosticActive = true
+        efbSuggestion = nil
+        efbSuggestionsEnabled = true                  // the bench needs the detector running
+        foreflightEnabled = false                     // accept must NOT auto-open ForeFlight here
+        assert(diagnosticSnapshot != nil, "bench entered without a snapshot to restore from")
+    }
+
+    /// Leave the bench and restore the real flight state verbatim (in-memory snapshot, falling back to
+    /// the persisted breadcrumb). Reassigning the mirrors re-persists + rewires for the real plan.
+    func diagnosticEndBench() {
+        guard diagnosticActive else { return }
+        let snap = diagnosticSnapshot ?? FlightStateSnapshot.pending() ?? FlightStateSnapshot.capture()
+        snap.restoreBlobs()
+        FlightStateSnapshot.clearBreadcrumb()
+        // Reassign while diagnosticActive is STILL true, so the plan didSet suppresses the sandbox
+        // side effects (chart/plate downloads, hazard-dismissal reset) for the restore too.
+        flightPlan = FlightPlan.load()
+        aircraftProfiles = AircraftStore.load()
+        airport = snap.airport
+        efbSuggestionsEnabled = snap.efbSuggestionsEnabled
+        foreflightEnabled = snap.foreflightEnabled
+        efbGroundingCache = nil
+        lastEFBRecordID = nil
+        efbSuggestion = nil
+        if let saved = diagnosticSavedDismissed { hazardDismissedIDs = saved }   // real dismissals back
+        diagnosticSavedDismissed = nil
+        diagnosticSnapshot = nil
+        diagnosticActive = false
+        refreshHazardAlert()   // reflect the restored real plan + dismissals
+    }
+
+    /// Run one scenario end-to-end (transcript-injection mode): install the sandbox plan/context,
+    /// prime grounding, replay each scripted transmission through the real detector, then — for a
+    /// positive scenario that staged the expected command — accept it and read back the amended plan.
+    func diagnosticRunScenario(_ s: ClearanceScenario) -> ScenarioRunResult {
+        assert(diagnosticActive, "run a scenario only inside the bench (restore depends on it)")
+        assert(!s.script.isEmpty, "a scenario must have at least one transmission")
+        flightPlan = s.seedPlan()
+        airport = s.airport
+        diagnosticPrimeGrounding()
+        let (txResults, staged) = diagnosticReplay(s)
+        return diagnosticEvaluate(s, transmissions: txResults, staged: staged)
+    }
+
+    /// Synchronously build + install the grounding cache for the current sandbox, so the FIRST
+    /// injected clearance can fire (the live path deliberately skips the first post-change line).
+    private func diagnosticPrimeGrounding() {
+        guard let plan = flightPlan else { efbGroundingCache = nil; return }
+        let ident = efbActiveIdent()
+        let routeIdents = plan.fullRoute.prefix(256).map { $0.ident }
+        let grounding = Self.buildEFBGrounding(ident: ident, routeIdents: routeIdents,
+                                               endpointAirports: [plan.departure, plan.destination, plan.alternate])
+        efbGroundingEpoch += 1                         // cancel any in-flight async refresh
+        efbGroundingCache = (ident, plan, grounding)
+        assert(efbGroundingCache != nil, "grounding prime produced no cache")
+    }
+
+    /// Feed each transmission through `interpretForEFB`, recording whether THIS line staged a
+    /// suggestion (`efbSuggestion` is cleared before each line so a result reflects only that line).
+    private func diagnosticReplay(_ s: ClearanceScenario) -> ([TransmissionResult], ATCCommand?) {
+        lastEFBRecordID = nil
+        efbSuggestion = nil
+        var records: [TranscriptRecord] = []
+        var out: [TransmissionResult] = []
+        var staged: ATCCommand?
+        let bound = min(s.script.count, 64)            // rule 2: statically bounded
+        assert(bound >= 1, "replay needs at least one transmission")
+        for i in 0..<bound {
+            let tx = s.script[i]
+            records.append(diagnosticMakeRecord(text: tx.text, role: tx.role))
+            efbSuggestion = nil
+            interpretForEFB(records)
+            let fired = efbSuggestion
+            // A line is correct when it fires iff it SHOULD: only a positive scenario's ownship
+            // target should fire. A fail-safe target — even one addressed to us (a retraction) — must
+            // stay silent, so drive the expectation from the category, not merely "addressed to me".
+            let shouldFire = i == s.targetIndex && s.category.expectsSuggestion && tx.toOwnship
+            let ok = (fired != nil) == shouldFire
+            out.append(TransmissionResult(id: tx.id, text: tx.text, toOwnship: tx.toOwnship,
+                firedSuggestion: fired != nil, commandKind: fired?.command.kind.rawValue,
+                commandTarget: fired?.command.target, asExpected: ok))
+            if i == s.targetIndex { staged = fired?.command }
+        }
+        efbSuggestion = nil
+        return (out, staged)
+    }
+
+    /// Build a synthetic finished transcript line — the exact inputs `interpretForEFB` reads
+    /// (`role`, `display`/`normalizedDisplay`), with the pipeline-timing fields zeroed.
+    private func diagnosticMakeRecord(text: String, role: TurnRole) -> TranscriptRecord {
+        assert(!text.isEmpty, "a scripted transmission needs text")
+        var r = TranscriptRecord(text: text, streamStartS: 0, streamEndS: 0, audioDurationMs: 0,
+            captureToTextMs: 0, transcribeMs: 0, realTimeFactor: 0, prompt: "", corrected: text,
+            corrections: [], timestamp: "")
+        r.role = role
+        return r
+    }
+
+    /// Decide pass/fail and, for a positive scenario that staged the right command, accept it and
+    /// verify the amended plan. Fail-safe scenarios pass iff nothing fired anywhere.
+    private func diagnosticEvaluate(_ s: ClearanceScenario, transmissions: [TransmissionResult],
+                                    staged: ATCCommand?) -> ScenarioRunResult {
+        let noDecoyFired = !transmissions.enumerated()
+            .contains { $0.offset != s.targetIndex && $0.element.firedSuggestion }
+        if !s.category.expectsSuggestion {
+            let clean = transmissions.allSatisfy { !$0.firedSuggestion }
+            return ScenarioRunResult(scenarioID: s.id, title: s.title, passed: clean,
+                summary: clean ? "Correctly ignored — no plan change was staged."
+                               : "FAILED — a suggestion fired that never should have.",
+                transmissions: transmissions, resultingPlanSummary: nil, didAmendPlan: false)
+        }
+        guard let cmd = staged, cmd.kind.rawValue == s.expected.commandKind,
+              (s.expected.target == nil || cmd.target == s.expected.target), noDecoyFired else {
+            return ScenarioRunResult(scenarioID: s.id, title: s.title, passed: false,
+                summary: diagnosticFailSummary(s, staged: staged, noDecoyFired: noDecoyFired),
+                transmissions: transmissions, resultingPlanSummary: nil, didAmendPlan: false)
+        }
+        efbSuggestion = EFBSuggestion.make(id: "diag-\(s.id)", command: cmd, source: s.target?.text ?? "")
+        acceptEFBSuggestion()
+        let planOK = diagnosticPlanMatches(s.expected)
+        return ScenarioRunResult(scenarioID: s.id, title: s.title, passed: planOK,
+            summary: planOK ? "Recognized, staged, and the plan amended as expected."
+                            : "Right clearance staged, but the amended plan didn't match.",
+            transmissions: transmissions, resultingPlanSummary: flightPlan.map(diagnosticPlanSummary),
+            didAmendPlan: true)
+    }
+
+    /// Whether the amended plan matches the scenario's post-accept expectations.
+    private func diagnosticPlanMatches(_ exp: ExpectedOutcome) -> Bool {
+        guard let p = flightPlan else { return false }
+        if let dest = exp.expectDestination, p.destination != dest { return false }
+        if exp.expectRouteCleared, !p.route.isEmpty { return false }
+        switch exp.expectProcedureKind {
+        case "SID":  return p.departureProcedure != nil
+        case "STAR": return p.arrivalProcedure != nil
+        case "IAP":  return p.approachProcedure != nil
+        default:     return true
+        }
+    }
+
+    /// A compact human-readable line for the amended plan (shown in the result + the send-to-FF row).
+    private func diagnosticPlanSummary(_ p: FlightPlan) -> String {
+        var parts: [String] = []
+        let ends = [p.departure, p.destination].filter { !$0.isEmpty }.joined(separator: " → ")
+        if !ends.isEmpty { parts.append(ends) }
+        if !p.route.isEmpty { parts.append("via " + p.route.joined(separator: " ")) }
+        if let sid = p.departureProcedure { parts.append("SID " + sid.ident) }
+        if let star = p.arrivalProcedure { parts.append("STAR " + star.ident) }
+        if let iap = p.approachProcedure { parts.append("APP " + iap.ident) }
+        return parts.isEmpty ? "empty plan" : parts.joined(separator: "  ·  ")
+    }
+
+    private func diagnosticFailSummary(_ s: ClearanceScenario, staged: ATCCommand?, noDecoyFired: Bool) -> String {
+        if !noDecoyFired { return "FAILED — a transmission to another aircraft staged a change." }
+        guard let cmd = staged else { return "FAILED — the clearance to you was not recognized." }
+        return "FAILED — staged \(cmd.kind.rawValue) \(cmd.target); expected \(s.expected.commandKind ?? "none") \(s.expected.target ?? "")."
+    }
 
     /// Write the resolved plan as a Garmin `.fpl` in the temp directory for the share sheet
     /// ("Copy to ForeFlight"), or nil when nothing is filed / nothing resolves. The export is the

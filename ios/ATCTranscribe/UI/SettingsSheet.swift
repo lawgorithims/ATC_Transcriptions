@@ -7,6 +7,10 @@ struct SettingsSheet: View {
     @EnvironmentObject var downloads: ModelDownloadManager
     @Environment(\.dismiss) private var dismiss
 
+    /// Taps on the version row — 7 unlocks the buried test bench. Transient (not persisted); the
+    /// unlock itself persists via `model.diagnosticsEnabled`.
+    @State private var versionTaps = 0
+
     var body: some View {
         let p = model.palette
         NavigationStack {
@@ -203,6 +207,25 @@ struct SettingsSheet: View {
                     Card(title: "About") {
                         VStack(alignment: .leading, spacing: 10) {
                             KV("Version", "\(WhatsNew.currentVersion()) (build \(WhatsNew.currentBuild()))")
+                                .contentShape(Rectangle())
+                                .onTapGesture { revealTestBenchAfterSevenTaps() }
+                                .accessibilityIdentifier("settings-version")
+                            // Buried developer test bench — revealed only after 7 deliberate taps on the
+                            // version, because it edits flight data. Hidden again is impossible by design
+                            // (persisted), but it never surfaces to a user who hasn't gone looking.
+                            if model.diagnosticsEnabled {
+                                NavigationLink {
+                                    ClearanceTestBenchView().environmentObject(model)
+                                } label: {
+                                    HStack {
+                                        Label("Clearance test bench", systemImage: "airplane.circle")
+                                            .font(.caption).foregroundStyle(p.text)
+                                        Spacer()
+                                        Image(systemName: "chevron.right").font(.caption2).foregroundStyle(p.textDim)
+                                    }
+                                }
+                                .accessibilityIdentifier("settings-test-bench")
+                            }
                             NavigationLink {
                                 ScrollView {
                                     WhatsNewContent(entries: WhatsNew.releaseNotes)
@@ -235,6 +258,17 @@ struct SettingsSheet: View {
         }
         .tint(p.accent)
         .preferredColorScheme(model.theme == .day ? .light : .dark)
+    }
+
+    /// Count taps on the version row; the 7th unlocks the clearance test bench (with a firm haptic).
+    /// Once unlocked it stays available — but a user who never taps 7 times never sees it.
+    private func revealTestBenchAfterSevenTaps() {
+        guard !model.diagnosticsEnabled else { return }
+        versionTaps += 1
+        if versionTaps >= 7 {
+            model.diagnosticsEnabled = true
+            Haptics.impact(.rigid)
+        }
     }
 
     private func modelButton(_ id: String, _ label: String) -> some View {
