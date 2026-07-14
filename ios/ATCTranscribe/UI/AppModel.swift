@@ -295,6 +295,7 @@ final class AppModel: ObservableObject {
     private var previewEpoch = 0
     /// Drives the map search sheet (top-bar magnifying glass). Transient.
     @Published var showMapSearch = false
+    @Published var showDownloads = false
 
     // Electronic Flight Bag automation (Phase 4, suggest-and-confirm). A finished CONTROLLER transmission
     // addressed to the pilot's own aircraft is parsed into at most one pending suggestion; NOTHING changes
@@ -837,6 +838,7 @@ final class AppModel: ObservableObject {
         // `--chart-layer ifr|vfr|std|sat` to pick the layer and `--chart-center lat,lon` to frame it.
         if args.contains("--open-chart") { showRouteMap = true }
         if args.contains("--open-settings") { showSettings = true }     // screenshot/demo: open Settings at launch
+        if args.contains("--open-downloads") { showDownloads = true }   // screenshot/demo: open the Downloads page
         // screenshot/demo: draw an airport's first coded approach on the map (`--preview-proc KBOS`).
         if let i = args.firstIndex(of: "--preview-proc"), i + 1 < args.count {
             previewedProcedure = CIFP.procedures(airport: args[i + 1]).first { $0.kind == "IAP" }

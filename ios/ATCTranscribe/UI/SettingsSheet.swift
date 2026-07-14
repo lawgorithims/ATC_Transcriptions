@@ -90,8 +90,22 @@ struct SettingsSheet: View {
                             }
                         }
                     }
-                    Card(title: "Offline charts") {
-                        OfflineChartsControls()
+                    Card(title: "Downloads") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            NavigationLink {
+                                DownloadsView(bag: model.plateBag).environmentObject(model)
+                            } label: {
+                                HStack {
+                                    Label("Manage offline charts & plates", systemImage: "arrow.down.circle")
+                                        .font(.caption).foregroundStyle(p.text)
+                                    Spacer()
+                                    Image(systemName: "chevron.right").font(.caption2).foregroundStyle(p.textDim)
+                                }
+                            }
+                            .accessibilityIdentifier("settings-downloads")
+                            Text("Download VFR & IFR charts by region and approach plates by area for offline use, and see what’s downloaded and up to date.")
+                                .font(.caption2).foregroundStyle(p.textDim)
+                        }
                     }
                     Card(title: "Stratux receiver") {
                         VStack(alignment: .leading, spacing: 10) {
