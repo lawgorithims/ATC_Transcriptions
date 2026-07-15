@@ -644,8 +644,14 @@ struct ChartMapView: UIViewRepresentable {
             c.plateOverlayObj = o
             c.plateKey = s.geoKey
         } else if let o = c.plateOverlayObj, o.opacity != s.opacity {
-            o.opacity = s.opacity
-            (mv.renderer(for: o) as? PlateOverlayRenderer)?.setNeedsDisplay()
+            // Opacity-only change: rebuild the overlay so a FRESH PlateOverlayRenderer is created with
+            // the new alpha (init applies it — the only reliable path; setting alpha or setNeedsDisplay
+            // on the live renderer does NOT recomposite MapKit's cached overlay content). The image is
+            // already decoded on `s`, so the rebuild is cheap; MapKit cross-fades add/remove smoothly.
+            mv.removeOverlay(o)
+            let n = PlateImageOverlay(state: s)
+            mv.addOverlay(n, level: .aboveLabels)
+            c.plateOverlayObj = n
         }
     }
 
