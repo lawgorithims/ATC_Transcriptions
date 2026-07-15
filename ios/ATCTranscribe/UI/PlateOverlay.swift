@@ -50,10 +50,17 @@ final class PlateImageOverlay: NSObject, MKOverlay {
     }
 }
 
-/// Draws the plate image into its geographic rect, rotated + alpha-blended.
+/// Draws the plate image into its geographic rect, rotated. Transparency is applied via the renderer's
+/// compositor-level `alpha` (set in init, updated in place by `reconcilePlate`) — NOT `ctx.setAlpha` in
+/// `draw`, because MapKit caches drawn overlay tiles and `setNeedsDisplay()` does not reliably
+/// invalidate them, which left the opacity slider visually dead. `alpha` composites live, no redraw.
 final class PlateOverlayRenderer: MKOverlayRenderer {
     private let plate: PlateImageOverlay
-    init(_ o: PlateImageOverlay) { plate = o; super.init(overlay: o) }
+    init(_ o: PlateImageOverlay) {
+        plate = o
+        super.init(overlay: o)
+        alpha = CGFloat(o.opacity)     // self-initialize so a renderer created mid-slide is correct
+    }
 
     override func draw(_ mapRect: MKMapRect, zoomScale: MKZoomScale, in ctx: CGContext) {
         guard plate.image.cgImage != nil else { return }
@@ -64,7 +71,6 @@ final class PlateOverlayRenderer: MKOverlayRenderer {
         let wpx = plate.widthMeters * ppm * scale
         let hpx = plate.heightMeters * ppm * scale
         ctx.saveGState()
-        ctx.setAlpha(CGFloat(plate.opacity))
         ctx.translateBy(x: center.x, y: center.y)                  // to the plate's map center
         ctx.rotate(by: CGFloat(plate.rotationDeg * .pi / 180))     // clockwise-from-north rotation
         // Draw the UIImage via a pushed UIKit context so it renders upright (UIImage.draw handles the
