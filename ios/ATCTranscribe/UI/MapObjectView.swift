@@ -382,18 +382,23 @@ struct MapObjectView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            Button { sendPlateToMap(proc, ident: ident) } label: {
-                HStack(spacing: 3) {
-                    if sending { ProgressView().controlSize(.mini) }
-                    else { Image(systemName: "square.on.square").font(.caption2) }
-                    Text("Map").font(.caption2.weight(.semibold))
+            // Send-to-map is georef-only (overlayPlate refuses plates without one): the Map button
+            // simply isn't offered on schematic plates (SIDs/STARs/minimums) — the scope icon above
+            // already marks which plates auto-align.
+            if auto {
+                Button { sendPlateToMap(proc, ident: ident) } label: {
+                    HStack(spacing: 3) {
+                        if sending { ProgressView().controlSize(.mini) }
+                        else { Image(systemName: "square.on.square").font(.caption2) }
+                        Text("Map").font(.caption2.weight(.semibold))
+                    }
+                    .padding(.horizontal, 9).padding(.vertical, 5)
+                    .background(Capsule().fill(p.accent.opacity(0.16)))
+                    .foregroundStyle(p.accent)
                 }
-                .padding(.horizontal, 9).padding(.vertical, 5)
-                .background(Capsule().fill(p.accent.opacity(0.16)))
-                .foregroundStyle(p.accent)
+                .buttonStyle(.plain).disabled(sending)
+                .accessibilityIdentifier("plate-send-to-map")
             }
-            .buttonStyle(.plain).disabled(sending)
-            .accessibilityIdentifier("plate-send-to-map")
         }
     }
 

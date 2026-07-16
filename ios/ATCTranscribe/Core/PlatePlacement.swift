@@ -30,32 +30,6 @@ enum PlatePlacement {
         return MKMapRect(x: c.x - aabbW / 2, y: c.y - aabbH / 2, width: aabbW, height: aabbH)
     }
 
-    /// A sensible DEFAULT geographic width (metres) for an airport's plate plan-view: derived from the
-    /// approach's coded fixes' extent when available (the plan view spans roughly the same area, plus
-    /// margin for the page's non-plan content), else a nominal fallback. The user fine-tunes from here.
-    static func defaultWidthMeters(fixExtentMeters: Double?) -> Double {
-        guard let e = fixExtentMeters, e > 500 else { return 28_000 }   // ~15 NM fallback
-        return min(max(e * 1.8, 8_000), 120_000)                        // clamp 4–65 NM
-    }
-
-    /// Clamp the width to a usable range (prevents pinch from collapsing/exploding the plate).
-    static func clampWidthMeters(_ m: Double) -> Double { min(max(m, 2_000), 300_000) }
-
-    /// Normalize a rotation to (-180, 180].
-    static func normalizeRotation(_ deg: Double) -> Double {
-        var d = deg.truncatingRemainder(dividingBy: 360)
-        if d > 180 { d -= 360 }
-        if d <= -180 { d += 360 }
-        return d
-    }
-
-    /// Offset a center by a geographic delta in metres (east/north) → new (lat, lon). A small-angle
-    /// approximation, fine for the ~tens-of-km an approach plate spans.
-    static func move(centerLat: Double, centerLon: Double, eastMeters: Double, northMeters: Double) -> (lat: Double, lon: Double) {
-        let dLat = northMeters / 111_320.0
-        let lat = centerLat + dLat
-        let cosLat = max(cos(centerLat * .pi / 180), 0.01)
-        let dLon = eastMeters / (111_320.0 * cosLat)
-        return (min(max(lat, -85), 85), centerLon + dLon)
-    }
+    // (The manual-placement helpers — defaultWidthMeters / clampWidthMeters / normalizeRotation /
+    //  move — were removed with the hand-alignment UI: placement is georef-only and not editable.)
 }

@@ -2,10 +2,11 @@ import SwiftUI
 import MapKit
 import PDFKit
 
-/// The live "plate superimposed on the map" placement the pilot is adjusting. It is a REFERENCE aid —
-/// auto-placed on the airport and hand-aligned — never a precise navigation source (the FAA index we
-/// bundle carries no georeferencing, so a plate can't be auto-aligned to survey accuracy). UIImage is
-/// not Equatable, so this type isn't either; `@Published` fires on any assignment, which is all we need.
+/// A plate superimposed on the map, placed exactly from the FAA's embedded georeference (georef-only —
+/// `overlayPlate` refuses plates without one, so there is no hand-placement and no move/scale UI). The
+/// pilot adjusts opacity only; the placement itself is not editable. Still a reference aid — the caption
+/// asks the pilot to verify before use. UIImage is not Equatable, so this type isn't either; `@Published`
+/// fires on any assignment, which is all we need.
 struct PlateOverlayState {
     let name: String
     let airport: String
@@ -16,7 +17,6 @@ struct PlateOverlayState {
     var widthMeters: Double        // geographic width the page spans (height follows the aspect)
     var rotationDeg: Double        // clockwise from north
     var opacity: Double
-    var autoAligned: Bool = false  // true when placed from a precomputed georeference (vs hand-placed)
 
     var heightMeters: Double { PlatePlacement.heightMeters(widthMeters: widthMeters, imageAspect: imageAspect) }
     var center: CLLocationCoordinate2D { CLLocationCoordinate2D(latitude: centerLat, longitude: centerLon) }
@@ -101,8 +101,9 @@ enum PlateImageRenderer {
     }
 }
 
-/// The bottom control bar shown while a plate is overlaid on the map: opacity, size, rotation, a
-/// position nudge pad, and a clear "reference only" caveat. Writes adjustments back through AppModel.
+/// The bottom control bar shown while a plate is overlaid on the map: the plate's name, the
+/// auto-aligned caveat, an opacity slider, and a close button. Placement is exact (FAA embedded
+/// georeference) and deliberately NOT editable — the old move/scale/rotate controls are gone.
 struct PlateControlBar: View {
     @EnvironmentObject var model: AppModel
     let state: PlateOverlayState
@@ -115,26 +116,17 @@ struct PlateControlBar: View {
                 Image(systemName: "doc.richtext").foregroundStyle(p.accent)
                 VStack(alignment: .leading, spacing: 0) {
                     Text(state.name).font(.caption.weight(.semibold)).foregroundStyle(p.text).lineLimit(1)
-                    if state.autoAligned {
-                        Label("Auto-aligned — verify before use", systemImage: "checkmark.seal")
-                            .font(.caption2).labelStyle(.titleAndIcon).foregroundStyle(p.good)
-                    } else {
-                        Text("Reference only — align to fit. Not to scale.").font(.caption2).foregroundStyle(p.warn)
-                    }
+                    Label("Auto-aligned — verify before use", systemImage: "checkmark.seal")
+                        .font(.caption2).labelStyle(.titleAndIcon).foregroundStyle(p.good)
                 }
                 Spacer(minLength: 4)
-                Button { model.recenterPlateOnAirport() } label: { Image(systemName: "scope").font(.callout) }
-                    .buttonStyle(.plain).foregroundStyle(p.accent).accessibilityIdentifier("plate-recenter")
                 Button { model.clearPlateOverlay() } label: { Image(systemName: "xmark.circle.fill").font(.title3) }
                     .buttonStyle(.plain).foregroundStyle(p.textDim).accessibilityIdentifier("plate-remove")
             }
-            HStack(spacing: 12) {
-                nudgePad(p)
-                VStack(spacing: 6) {
-                    labeledSlider("Opacity", "circle.lefthalf.filled", value: opacityBinding, range: 0.1...1, p: p)
-                    labeledSlider("Size", "arrow.up.left.and.arrow.down.right", value: widthBinding, range: 4_000...120_000, p: p)
-                    labeledSlider("Rotate", "rotate.right", value: rotationBinding, range: -180...180, p: p)
-                }
+            HStack(spacing: 6) {
+                Image(systemName: "circle.lefthalf.filled").font(.caption2).foregroundStyle(p.textDim).frame(width: 16)
+                Slider(value: opacityBinding, in: 0.1...1).tint(p.accent)
+                    .accessibilityIdentifier("plate-opacity-slider")
             }
         }
         .padding(12)
@@ -142,44 +134,13 @@ struct PlateControlBar: View {
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(p.border, lineWidth: 1))
         .shadow(color: .black.opacity(0.3), radius: 8, y: 3)
+        // A .contain container: children keep their OWN identifiers (a bare .accessibilityIdentifier
+        // on the VStack would stamp every child, clobbering plate-opacity-slider for UI tests).
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("plate-control-bar")
-    }
-
-    /// A small square; drag the puck to nudge the plate's center (range ≈ ±half the plate width).
-    private func nudgePad(_ p: Palette) -> some View {
-        let side: CGFloat = 78
-        return ZStack {
-            RoundedRectangle(cornerRadius: 10).fill(p.surfaceAlt).frame(width: side, height: side)
-            Image(systemName: "move.3d").font(.caption2).foregroundStyle(p.textDim)
-        }
-        .contentShape(Rectangle())
-        .gesture(
-            DragGesture(minimumDistance: 0)
-                .onChanged { v in
-                    // Map the drag delta (points) to a metres offset scaled by the plate size, so a
-                    // full-pad drag ≈ ±0.5 plate-width. East = +x, North = -y (screen y is down).
-                    let frac = 0.5 / (side / 2)
-                    model.nudgePlate(eastMeters: Double(v.translation.width) * frac * state.widthMeters / 8,
-                                     northMeters: Double(-v.translation.height) * frac * state.widthMeters / 8)
-                }
-        )
-        .accessibilityIdentifier("plate-nudge")
-    }
-
-    private func labeledSlider(_ label: String, _ icon: String, value: Binding<Double>, range: ClosedRange<Double>, p: Palette) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: icon).font(.caption2).foregroundStyle(p.textDim).frame(width: 16)
-            Slider(value: value, in: range).tint(p.accent)
-        }
     }
 
     private var opacityBinding: Binding<Double> {
         Binding(get: { state.opacity }, set: { model.setPlateOpacity($0) })
-    }
-    private var widthBinding: Binding<Double> {
-        Binding(get: { state.widthMeters }, set: { model.setPlateWidth($0) })
-    }
-    private var rotationBinding: Binding<Double> {
-        Binding(get: { state.rotationDeg }, set: { model.setPlateRotation($0) })
     }
 }
