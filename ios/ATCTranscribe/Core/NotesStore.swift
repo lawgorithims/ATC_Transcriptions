@@ -30,36 +30,53 @@ struct Note: Identifiable, Codable, Equatable {
         notes = loadIndex()
     }
 
+    #if canImport(UIKit)
+    private var thumbCache: [String: UIImage] = [:]   // decoded thumbnails — avoids per-render disk read + decode
+    #endif
+
     // MARK: reads
 
     func drawingData(_ id: String) -> Data? { try? Data(contentsOf: drawingURL(id)) }
 
     #if canImport(UIKit)
     func thumbnail(_ id: String) -> UIImage? {
-        guard let data = try? Data(contentsOf: thumbURL(id)) else { return nil }
-        return UIImage(data: data)
+        if let cached = thumbCache[id] { return cached }
+        guard let data = try? Data(contentsOf: thumbURL(id)), let img = UIImage(data: data) else { return nil }
+        thumbCache[id] = img
+        return img
     }
     #endif
 
     // MARK: writes
 
     /// Create-or-update a note: write the drawing + thumbnail, upsert the index (moved to the front by
-    /// updatedAt). `title` empty → a date-stamped default so the library never shows a blank tile.
-    func save(id: String, title: String, drawing: Data, thumbnail: Data?, createdAt: Date, now: Date) {
+    /// updatedAt). `title` empty → a date-stamped default so the library never shows a blank tile. The
+    /// index is upserted ONLY if the drawing actually persisted — never index a note with no backing ink.
+    @discardableResult
+    func save(id: String, title: String, drawing: Data, thumbnail: Data?, createdAt: Date, now: Date) -> Bool {
         assert(!id.isEmpty, "note id must be non-empty")
-        try? drawing.write(to: drawingURL(id), options: .atomic)
+        assert(now >= createdAt, "updatedAt must not precede createdAt")
+        do { try drawing.write(to: drawingURL(id), options: .atomic) }
+        catch { assertionFailure("note drawing write failed: \(error)"); return false }
         if let thumbnail { try? thumbnail.write(to: thumbURL(id), options: .atomic) }
+        #if canImport(UIKit)
+        thumbCache[id] = thumbnail.flatMap(UIImage.init(data:))
+        #endif
         let name = title.trimmingCharacters(in: .whitespacesAndNewlines)
         var next = notes.filter { $0.id != id }
         next.insert(Note(id: id, title: name.isEmpty ? Self.defaultTitle(now) : name,
                          createdAt: createdAt, updatedAt: now), at: 0)
         notes = next
         persistIndex()
+        return true
     }
 
     func delete(_ note: Note) {
         try? FileManager.default.removeItem(at: drawingURL(note.id))
         try? FileManager.default.removeItem(at: thumbURL(note.id))
+        #if canImport(UIKit)
+        thumbCache[note.id] = nil
+        #endif
         notes.removeAll { $0.id == note.id }
         persistIndex()
     }

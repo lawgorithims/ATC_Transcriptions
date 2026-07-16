@@ -58,6 +58,13 @@ enum Procedures {
         return (data.airports[key] ?? []).map { AirportProcedure(code: $0.c, name: $0.n, pdf: $0.f) }
     }
 
+    /// Does the airport publish ANY chart? A cheap membership test (no `[AirportProcedure]` allocation) —
+    /// used by the hot nearby-airport filters that scan up to 120 candidates per GPS update.
+    static func hasAirport(_ ident: String) -> Bool {
+        let key = ident.trimmingCharacters(in: .whitespaces).uppercased()
+        return !(data.airports[key]?.isEmpty ?? true)
+    }
+
     /// Test seam / lazy-load probe (0 when the resource is missing).
     static var airportCount: Int { data.airports.count }
 

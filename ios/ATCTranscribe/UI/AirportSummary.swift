@@ -17,6 +17,22 @@ struct AirportSummary: Equatable {
     /// differ, so it's marked "est." wherever shown).
     var patternAltFt: Int? { elevationFt.map { $0 + 1000 } }
 
+    /// The nearest charted airports to a fix (idents, nearest first). PURE + `nonisolated`-safe — the
+    /// `NavDatabase.nearby` full-table scan is expensive, so callers run this OFF the main actor (via
+    /// `Task.detached`) and behind a movement gate; it must never run per SwiftUI render.
+    static func nearbyCharted(lat: Double, lon: Double, withinNM: Double = 60, limit: Int = 12) -> [String] {
+        assert((-90...90).contains(lat) && (-180...180).contains(lon), "nearbyCharted: fix out of range")
+        assert(withinNM > 0 && limit > 0, "nearbyCharted: bad search bounds")
+        let dLat = withinNM / 60.0
+        let dLon = dLat / max(cos(lat * .pi / 180), 0.1)
+        let box = BBox(minLat: lat - dLat, minLon: lon - dLon, maxLat: lat + dLat, maxLon: lon + dLon)
+        func d2(_ p: Coord) -> Double { let a = p.lat - lat, b = (p.lon - lon) * cos(lat * .pi / 180); return a * a + b * b }
+        return NavDatabase.nearby(box, types: [0], limit: 120)
+            .filter { Procedures.hasAirport($0.ident) }              // cheap membership test (no allocation)
+            .sorted { d2($0.coord) < d2($1.coord) }
+            .prefix(limit).map(\.ident)
+    }
+
     static func make(_ ident: String) -> AirportSummary {
         let id = ident.trimmingCharacters(in: .whitespaces).uppercased()
         let meta = NavMeta.airport(id)
@@ -124,9 +140,8 @@ struct AirportDiagramImage: View {
     private func load() async {
         image = nil; phase = .loading
         guard let apd, let url = await PlateStore.ensureOnDisk(apd) else { phase = .none; return }
-        let pdf = apd.pdf
         let rendered = await Task.detached(priority: .utility) {
-            PlateImageRenderer.northUpFirstPage(pdfURL: url, pdf: pdf, maxDimension: 600)
+            PlateImageRenderer.northUpFirstPage(pdfURL: url, maxDimension: 600)
         }.value
         guard !Task.isCancelled else { return }
         if let rendered { image = rendered; phase = .ready } else { phase = .none }

@@ -765,6 +765,7 @@ final class AppModel: ObservableObject {
     // (the fixer is independent of which speech model is active). Dropped when the backend leaves .local.
     private var cachedLLMEngine: LLMEngine?
     private var cachedLLMBackend: LLMBackend = .off
+    private var llmBuildTask: Task<LLMEngine?, Never>?   // single owner: a concurrent build awaits it, never double-loads
     private var clips: [DiagnosticClip] = []
     private var liveContext: ATCContext?
     private var feedKey: String?
@@ -2209,7 +2210,18 @@ final class AppModel: ObservableObject {
             }.value
         case .local:
             if cachedLLMEngine == nil || cachedLLMBackend != .local {
-                cachedLLMEngine = await Task.detached(priority: .utility) { makeLocalLLMEngine() }.value
+                // Serialize the ~400 MB GGUF load: reuse the in-flight build task so a concurrent caller
+                // awaits it instead of starting a SECOND makeLocalLLMEngine (the deferred-LLM-on-Start path
+                // can now overlap a settings-driven rebuildLLM). Created/read on the main actor before the
+                // await, so a reentrant call finds the same task. Prevents an ~800 MB transient double-load.
+                let task = llmBuildTask ?? {
+                    let t = Task.detached(priority: .utility) { makeLocalLLMEngine() }
+                    llmBuildTask = t
+                    return t
+                }()
+                let engine = await task.value
+                if llmBuildTask == task { llmBuildTask = nil }
+                cachedLLMEngine = engine
                 cachedLLMBackend = .local
             }
             guard let engine = cachedLLMEngine else { return nil }   // GGUF not present yet — retry next build
@@ -2224,7 +2236,7 @@ final class AppModel: ObservableObject {
     private func rebuildLLM() {
         guard liveMode, let context = liveContext else { return }
         // Leaving the on-device backend frees the cached llama.cpp engine (and its ~400 MB).
-        if !(correctionEnabled && llmBackend == .local) { cachedLLMEngine = nil; cachedLLMBackend = .off }
+        if !(correctionEnabled && llmBackend == .local) { cachedLLMEngine = nil; cachedLLMBackend = .off; llmBuildTask = nil }
         let feedKey = self.feedKey
         let knowledge = context.knowledge
         Task { session?.setLLM(await makeLLMCorrector(knowledge: knowledge, feedKey: feedKey)) }
@@ -2234,7 +2246,7 @@ final class AppModel: ObservableObject {
     /// empty cached engine and rebuild the corrector so a running session starts using the fixer now,
     /// rather than only after the next model swap or relaunch.
     func refreshLLMAfterDownload() {
-        cachedLLMEngine = nil; cachedLLMBackend = .off   // force makeLocalLLMEngine to pick up the new GGUF
+        cachedLLMEngine = nil; cachedLLMBackend = .off; llmBuildTask = nil   // force makeLocalLLMEngine to pick up the new GGUF
         rebuildLLM()
     }
 

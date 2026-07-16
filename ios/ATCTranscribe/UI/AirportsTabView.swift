@@ -9,13 +9,15 @@ struct AirportsTabView: View {
     @EnvironmentObject var metars: MetarStore
     @State private var query = ""
     @State private var searchActive = false
+    @State private var nearbyCache: [String] = []    // cached nearby scan (never recomputed per render)
+    @State private var lastNearbyCoord: Coord?       // movement gate for the (off-main) nearby scan
 
     var body: some View {
         Group {
             if model.selectedTab == .airports { content } else { Color.clear }
         }
         .onChange(of: model.selectedTab) { _, tab in
-            if tab == .airports { model.deviceLocation.start(); refreshWeather() }
+            if tab == .airports { model.deviceLocation.start(); refreshNearby(); refreshWeather() }
             else { searchActive = false }
         }
     }
@@ -33,10 +35,10 @@ struct AirportsTabView: View {
         }
         .tint(model.palette.accent)
         .preferredColorScheme(model.theme == .day ? .light : .dark)
-        .onAppear { model.deviceLocation.start(); refreshWeather() }
+        .onAppear { model.deviceLocation.start(); refreshNearby(); refreshWeather() }
         // Defer to the next main-actor hop: @Published fires in willSet, so reading `coord` synchronously
         // here would see the PRE-update (nil) value — the deferred read sees the committed fix.
-        .onReceive(model.deviceLocation.$coord) { _ in Task { @MainActor in refreshWeather() } }
+        .onReceive(model.deviceLocation.$coord) { _ in Task { @MainActor in refreshNearby(); refreshWeather() } }
     }
 
     // MARK: default directory (route + nearby)
@@ -44,7 +46,7 @@ struct AirportsTabView: View {
     private var directory: some View {
         let p = model.palette
         let route = routeIdents
-        let nearby = nearbyIdents.filter { !route.contains($0) }
+        let nearby = nearbyCache.filter { !route.contains($0) }   // cached — no per-render nav scan
         return List {
             if route.isEmpty && nearby.isEmpty {
                 Text("Search for an airport, or file a flight plan to see your route’s fields here.")
@@ -135,17 +137,17 @@ struct AirportsTabView: View {
             .reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }   // dedupe, keep order
     }
 
-    private var nearbyIdents: [String] {
-        guard let c = model.stratuxGPS?.coordinate ?? model.deviceLocation.coord else { return [] }
-        let dLat = 60.0 / 60.0                                    // ~60 NM box
-        let dLon = dLat / max(cos(c.lat * .pi / 180), 0.1)
-        let box = BBox(minLat: c.lat - dLat, minLon: c.lon - dLon, maxLat: c.lat + dLat, maxLon: c.lon + dLon)
-        func d2(_ p: Coord) -> Double { let a = p.lat - c.lat, b = (p.lon - c.lon) * cos(c.lat * .pi / 180); return a * a + b * b }
-        return NavDatabase.nearby(box, types: [0], limit: 120)
-            .filter { !Procedures.forAirport($0.ident).isEmpty }
-            .sorted { d2($0.coord) < d2($1.coord) }
-            .prefix(10).map(\.ident)
+    /// Recompute the cached nearby list — gated on ~0.5 NM of movement and run OFF the main actor (the
+    /// NavDatabase scan walks the full ~90k-ident table, so it must never run per SwiftUI render or GPS tick).
+    private func refreshNearby() {
+        guard let c = model.stratuxGPS?.coordinate ?? model.deviceLocation.coord else { return }
+        if let last = lastNearbyCoord, PlatesTabView.distanceNM(last, c) < 0.5 { return }   // movement gate
+        lastNearbyCoord = c
+        Task { @MainActor in
+            let near = await Task.detached { AirportSummary.nearbyCharted(lat: c.lat, lon: c.lon, limit: 10) }.value
+            if near != nearbyCache { nearbyCache = near; refreshWeather() }
+        }
     }
 
-    private func refreshWeather() { metars.ensure(routeIdents + nearbyIdents) }
+    private func refreshWeather() { metars.ensure(routeIdents + nearbyCache) }
 }

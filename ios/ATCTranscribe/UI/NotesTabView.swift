@@ -16,6 +16,8 @@ struct NotesTabView: View {
     @State private var drawing = PKDrawing()
     #endif
     @State private var confirmDelete: Note?
+    @State private var dirty = false            // the canvas was actually modified this session
+    @State private var clearToken = 0           // bumped by the eraser so updateUIView actually wipes the canvas
 
     /// The note currently open in the editor (a fresh one, or an existing note being re-opened).
     struct EditingNote: Identifiable {
@@ -166,7 +168,7 @@ struct NotesTabView: View {
             Rectangle().fill(p.border).frame(height: 0.5)
 
             // Paper behind the transparent ink canvas so strokes read in any theme.
-            NoteCanvas(drawing: $drawing)
+            NoteCanvas(drawing: $drawing, clearToken: clearToken, onEdited: { dirty = true })
                 .background(Color(red: 0.98, green: 0.97, blue: 0.94))
                 .id(note.id)                                  // rebuild the canvas when switching notes
                 .accessibilityIdentifier("note-canvas")
@@ -176,26 +178,27 @@ struct NotesTabView: View {
     // MARK: actions
 
     private func newNote() {
-        drawing = PKDrawing()
+        drawing = PKDrawing(); dirty = false; clearToken = 0
         editing = EditingNote(id: NotesStore.newID(), createdAt: Date(), title: "", isNew: true)
     }
 
     private func openNote(_ note: Note) {
         drawing = (notes.drawingData(note.id).flatMap { try? PKDrawing(data: $0) }) ?? PKDrawing()
+        dirty = false; clearToken = 0
         editing = EditingNote(id: note.id, createdAt: note.createdAt, title: note.title, isNew: false)
     }
 
-    private func clearCanvas() { drawing = PKDrawing() }
+    private func clearCanvas() { drawing = PKDrawing(); dirty = true; clearToken += 1 }
 
-    private func cancelEdit() {
-        // A brand-new note with no strokes is discarded silently; anything with ink is kept on the way out.
-        if let note = editing, !note.isNew || !drawing.strokes.isEmpty { saveEdit() } else { editing = nil }
-    }
+    private func cancelEdit() { saveEdit() }   // saveEdit guards both empty-new and unmodified-existing
 
     private func saveEdit() {
         guard let note = editing else { return }
-        // Don't persist an empty brand-new note.
+        // Never write over an existing note the pilot didn't modify this session — this is what protects a
+        // note whose ink failed to load (blank fallback canvas) from clobbering the real file. And don't
+        // persist a brand-new note with no strokes.
         if note.isNew, drawing.strokes.isEmpty { editing = nil; return }
+        if !note.isNew, !dirty { editing = nil; return }
         let now = Date()
         let data = drawing.dataRepresentation()
         let thumb = Self.thumbnail(from: drawing).pngData()
@@ -234,6 +237,8 @@ struct NotesTabView: View {
 /// is streamed back into the SwiftUI binding via the delegate so the editor can save it.
 struct NoteCanvas: UIViewRepresentable {
     @Binding var drawing: PKDrawing
+    var clearToken: Int = 0                 // bump to WIPE the visible canvas (the eraser button)
+    var onEdited: () -> Void = {}           // fired when the pilot actually changes the ink (dirty tracking)
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -246,6 +251,7 @@ struct NoteCanvas: UIViewRepresentable {
         canvas.isOpaque = false
         canvas.alwaysBounceVertical = false
         canvas.tool = PKInkingTool(.pen, color: .black, width: 5)
+        context.coordinator.lastClearToken = clearToken
         let picker = context.coordinator.toolPicker
         picker.setVisible(true, forFirstResponder: canvas)
         picker.addObserver(canvas)
@@ -254,16 +260,24 @@ struct NoteCanvas: UIViewRepresentable {
     }
 
     func updateUIView(_ canvas: PKCanvasView, context: Context) {
-        // The canvas owns the live drawing; the binding is written FROM it. `.id(note.id)` in the editor
-        // rebuilds the canvas when switching notes, so we never need to push a new drawing back in here
-        // (PKDrawing isn't Equatable — a blind assign would also clobber in-progress ink).
+        // The canvas owns the live drawing (the binding is written FROM it; `.id(note.id)` rebuilds on a
+        // note switch). The ONE state->canvas push we honour is an explicit eraser wipe, tracked by a token
+        // so a generic re-render can't clobber in-progress ink.
+        if clearToken != context.coordinator.lastClearToken {
+            context.coordinator.lastClearToken = clearToken
+            canvas.drawing = PKDrawing()
+        }
     }
 
     final class Coordinator: NSObject, PKCanvasViewDelegate {
         let parent: NoteCanvas
         let toolPicker = PKToolPicker()
+        var lastClearToken = 0
         init(_ parent: NoteCanvas) { self.parent = parent }
-        func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) { parent.drawing = canvasView.drawing }
+        func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
+            parent.drawing = canvasView.drawing
+            parent.onEdited()
+        }
     }
 }
 #endif
