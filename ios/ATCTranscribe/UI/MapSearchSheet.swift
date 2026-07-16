@@ -50,7 +50,7 @@ struct MapSearchSheet: View {
                 .accessibilityIdentifier("map-search-field")
             if !query.isEmpty {
                 Button { query = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(p.textDim) }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.plainHaptic)
             }
         }
         .padding(10).background(p.surfaceAlt).clipShape(RoundedRectangle(cornerRadius: 10))

@@ -243,7 +243,7 @@ struct MapObjectView: View {
             }
             .frame(maxWidth: .infinity).contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.plainHaptic)
     }
 
     // MARK: Airport-card tabs
@@ -385,7 +385,7 @@ struct MapObjectView: View {
                 }
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.plainHaptic)
             // Send-to-map is georef-only (overlayPlate refuses plates without one): the Map button
             // simply isn't offered on schematic plates (SIDs/STARs/minimums) — the scope icon above
             // already marks which plates auto-align.
@@ -400,7 +400,7 @@ struct MapObjectView: View {
                     .background(Capsule().fill(p.accent.opacity(0.16)))
                     .foregroundStyle(p.accent)
                 }
-                .buttonStyle(.plain).disabled(sending)
+                .buttonStyle(.plainHaptic).disabled(sending)
                 .accessibilityIdentifier("plate-send-to-map")
             }
         }
@@ -462,7 +462,7 @@ struct MapObjectView: View {
                     Image(systemName: "chevron.right").font(.caption2).foregroundStyle(p.textDim)
                 }
             }
-            .buttonStyle(.plain).accessibilityIdentifier("airport-climate")
+            .buttonStyle(.plainHaptic).accessibilityIdentifier("airport-climate")
         }
     }
 
@@ -707,7 +707,7 @@ struct AirportDiagramThumbnail: View {
         if let apd = diagram {
             Section("Airport diagram") {
                 Button { Haptics.impact(.light); onOpen(apd) } label: { thumb }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.plainHaptic)
                     .accessibilityIdentifier("airport-diagram-thumb")
             }
             .task(id: ident) { await load(apd) }

@@ -62,7 +62,7 @@ struct ClearanceTestBenchView: View {
                     .padding(.horizontal, 14).padding(.vertical, 8)
                     .background(Capsule().fill(p.accent))
             }
-            .buttonStyle(.plain).accessibilityIdentifier("test-bench-run-all")
+            .buttonStyle(.plainHaptic).accessibilityIdentifier("test-bench-run-all")
             Spacer()
             if !results.isEmpty {
                 let passed = results.values.filter(\.passed).count
@@ -103,7 +103,7 @@ struct ClearanceTestBenchView: View {
                 } label: {
                     Text("Run").font(.caption2.weight(.bold)).foregroundStyle(p.accent)
                 }
-                .buttonStyle(.plain).accessibilityIdentifier("run-\(s.id)")
+                .buttonStyle(.plainHaptic).accessibilityIdentifier("run-\(s.id)")
             }
             .contentShape(Rectangle())
             .onTapGesture { toggle(s.id) }
@@ -145,7 +145,7 @@ struct ClearanceTestBenchView: View {
                         .padding(.horizontal, 10).padding(.vertical, 6)
                         .background(Capsule().fill(p.accent))
                 }
-                .buttonStyle(.plain).padding(.top, 2).accessibilityIdentifier("send-ff-\(s.id)")
+                .buttonStyle(.plainHaptic).padding(.top, 2).accessibilityIdentifier("send-ff-\(s.id)")
             }
         }
         .padding(10)

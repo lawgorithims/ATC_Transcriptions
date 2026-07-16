@@ -228,7 +228,7 @@ struct PlateViewer: View {
             Text("This plate isn’t cached yet and couldn’t be fetched. Connect to the internet once to download it, then it works offline.")
                 .font(.caption).foregroundStyle(palette.textDim)
                 .multilineTextAlignment(.center).padding(.horizontal, 32)
-            Button("Try again") { Task { loading = true; await load() } }
+            Button("Try again") { Haptics.impact(.light); Task { loading = true; await load() } }
                 .buttonStyle(.borderedProminent).tint(palette.accent)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

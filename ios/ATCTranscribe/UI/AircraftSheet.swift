@@ -51,7 +51,7 @@ struct AircraftSheet: View {
                                 .clipShape(RoundedRectangle(cornerRadius: 10))
                                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(p.border, lineWidth: 1))
                         }
-                        .buttonStyle(.plain).accessibilityIdentifier("aircraft-delete")
+                        .buttonStyle(.plainHaptic).accessibilityIdentifier("aircraft-delete")
                     }
                 }
                 .padding(16)

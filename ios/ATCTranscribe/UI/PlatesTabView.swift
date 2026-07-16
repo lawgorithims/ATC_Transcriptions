@@ -172,7 +172,9 @@ struct PlatesTabView: View {
                             Spacer()
                             Text("\(Procedures.forAirport(o.ident).count) charts").font(.caption2).foregroundStyle(model.palette.textDim)
                         }
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plainHaptic)
                 }
             }
         }
@@ -245,7 +247,7 @@ struct PlatesTabView: View {
                 Image(systemName: "chevron.right").font(.caption2).foregroundStyle(p.textDim)
             }
         }
-        .buttonStyle(.plain).accessibilityIdentifier("plate-row")
+        .buttonStyle(.plainHaptic).accessibilityIdentifier("plate-row")
     }
 
     /// Extract the runway designator from an approach name ("ILS OR LOC RWY 04R" → "04R", "RNAV (GPS)
