@@ -32,6 +32,26 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 57, version: "1.0", headline: "Cooler map rendering, airway altitudes, and transcript controls",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "battery.100.bolt",
+                    title: "The map renders far cheaper",
+                    detail: "FAA chart tiles now render natively instead of being converted one-by-one — the map's biggest remaining battery cost while panning. If chart tiles ever look blank, flip “Compatibility chart rendering” on the Downloads page."),
+                WhatsNewHighlight(
+                    icon: "shield.checkered",
+                    title: "Nothing covers your plate anymore",
+                    detail: "Airspace altitude boxes, navaid markers, and airway labels could draw ON TOP of an overlaid approach plate, masking it even at full opacity. Labels inside the plate's footprint are now hidden while the plate is up and return when you close it."),
+                WhatsNewHighlight(
+                    icon: "list.bullet.rectangle",
+                    title: "Transcript tab, now with controls",
+                    detail: "The Transcript tab carries the full control bar — input source, Start/Stop, flight plan, and settings — so you can run a session without switching to the Map. The tapped-airport card can also be docked to a screen edge as a side panel now, like any other widget."),
+                WhatsNewHighlight(
+                    icon: "arrow.up.and.down",
+                    title: "Airway altitudes",
+                    detail: "Tap an airway and its card now shows the FAA-coded minimum enroute altitude range (it varies segment to segment) and the maximum authorized altitude, alongside its class — Victor, Jet, or RNAV T/Q."),
+            ]),
+        ReleaseNote(
             build: 56, version: "1.0", headline: "Airways on the map, a richer airport card, and big battery savings",
             highlights: [
                 WhatsNewHighlight(
