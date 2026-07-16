@@ -100,9 +100,25 @@ targets:
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
         # ForeFlight hand-off: canOpenURL("foreflightmobile://…") only answers for schemes declared
-        # here (outbound app-to-app only — no CFBundleURLTypes / document types needed).
+        # here (outbound app-to-app).
         LSApplicationQueriesSchemes:
           - foreflightmobile
+        # INBOUND flight-plan import: registering the Garmin .fpl document type puts "Open in CommSight"
+        # in ForeFlight's (and Files') share sheet; ATCTranscribeApp.onOpenURL imports the route.
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Garmin Flight Plan
+            CFBundleTypeRole: Viewer
+            LSHandlerRank: Alternate
+            LSItemContentTypes:
+              - com.commsight.fpl
+        UTImportedTypeDeclarations:
+          - UTTypeIdentifier: com.commsight.fpl
+            UTTypeDescription: Garmin Flight Plan
+            UTTypeConformsTo:
+              - public.xml
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - fpl
         UIBackgroundModes:
           - audio
         UISupportedInterfaceOrientations:

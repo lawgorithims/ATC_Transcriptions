@@ -3,6 +3,35 @@ import MapKit
 import CoreLocation
 import Network
 
+/// One-shot network-path probe for the BACKGROUND prefetchers: bulk chart-pack downloads must not burn
+/// a cellular/hotspot allowance (or the battery) uninvited. On-demand downloads (the pilot opens the
+/// map / taps download) are never gated. Resolves once and cancels the monitor.
+enum NetPath {
+    static func isExpensive() async -> Bool {
+        await withCheckedContinuation { cont in
+            let monitor = NWPathMonitor()
+            let once = OnceFlag()
+            monitor.pathUpdateHandler = { path in
+                guard once.trySet() else { return }        // the handler can fire more than once
+                cont.resume(returning: path.isExpensive || path.isConstrained)
+                monitor.cancel()
+            }
+            monitor.start(queue: .global(qos: .utility))
+        }
+    }
+
+    /// Tiny thread-safe once-latch.
+    private final class OnceFlag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var fired = false
+        func trySet() -> Bool {
+            lock.lock(); defer { lock.unlock() }
+            if fired { return false }
+            fired = true; return true
+        }
+    }
+}
+
 // MARK: - Shared chart cache + prefetch service
 
 /// App-lifetime shared chart cache, owned by `AppModel`. It pulls the catalog fetch, the

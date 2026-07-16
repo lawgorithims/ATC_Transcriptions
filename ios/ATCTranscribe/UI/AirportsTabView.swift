@@ -45,12 +45,20 @@ struct AirportsTabView: View {
 
     private var directory: some View {
         let p = model.palette
-        let route = routeIdents
-        let nearby = nearbyCache.filter { !route.contains($0) }   // cached — no per-render nav scan
+        let favorites = model.favoriteAirports.filter { NavMeta.airport($0) != nil }
+        let recents = model.recentAirports.filter { !favorites.contains($0) && NavMeta.airport($0) != nil }
+        let route = routeIdents.filter { !favorites.contains($0) && !recents.contains($0) }
+        let nearby = nearbyCache.filter { !favorites.contains($0) && !recents.contains($0) && !route.contains($0) }
         return List {
-            if route.isEmpty && nearby.isEmpty {
+            if favorites.isEmpty && recents.isEmpty && route.isEmpty && nearby.isEmpty {
                 Text("Search for an airport, or file a flight plan to see your route’s fields here.")
                     .foregroundStyle(p.textDim)
+            }
+            if !favorites.isEmpty {
+                Section("Favorites") { ForEach(favorites, id: \.self) { row($0) } }
+            }
+            if !recents.isEmpty {
+                Section("Recent") { ForEach(recents, id: \.self) { row($0) } }
             }
             if !route.isEmpty {
                 Section("On your route") { ForEach(route, id: \.self) { row($0) } }
@@ -61,6 +69,7 @@ struct AirportsTabView: View {
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
+        .onAppear { metars.ensure(favorites + recents) }   // weather for the personal sections too
     }
 
     private var searchResults: some View {
@@ -87,6 +96,7 @@ struct AirportsTabView: View {
         let s = AirportSummary.make(ident)
         let metar = metars.metar(ident)
         return Button {
+            model.noteAirportViewed(ident)
             model.platesAirport = ident
             model.selectedTab = .plates
         } label: {
@@ -97,6 +107,15 @@ struct AirportsTabView: View {
                         Text(s.ident).font(.system(.headline, design: .monospaced)).foregroundStyle(p.text)
                         FlightCategoryChip(metar: metar)
                         Spacer(minLength: 4)
+                        Button { Haptics.impact(.light); model.toggleFavoriteAirport(ident) } label: {
+                            Image(systemName: model.isFavoriteAirport(ident) ? "star.fill" : "star")
+                                .font(.callout)
+                                .foregroundStyle(model.isFavoriteAirport(ident) ? Color.hex(0xF5C451) : p.textDim)
+                                .frame(width: 32, height: 28).contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plainHaptic)
+                        .accessibilityIdentifier("airport-favorite")
+                        .accessibilityLabel(model.isFavoriteAirport(ident) ? "Remove favorite" : "Add favorite")
                         Image(systemName: "chevron.right").font(.caption2).foregroundStyle(p.textDim)
                     }
                     if let name = s.name {

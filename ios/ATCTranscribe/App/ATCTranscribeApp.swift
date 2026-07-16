@@ -17,6 +17,11 @@ struct ATCTranscribeApp: App {
                 .environmentObject(downloads)
                 .environmentObject(notes)               // hand-written notes library (PencilKit)
                 .environmentObject(metars)              // live METAR + flight category for airport captions
+                // "Open in CommSight" from ForeFlight's share sheet (a Garmin .fpl) imports the route.
+                .onOpenURL { url in
+                    guard url.isFileURL else { return }
+                    _ = model.importFPL(url)
+                }
         }
     }
 }

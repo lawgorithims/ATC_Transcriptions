@@ -30,8 +30,13 @@ struct MapHostView: View {
     /// `.inactive`, e.g. a permission alert, must NOT blank it) or when the full-screen route map is
     /// covering it (no point running two MKMapViews at once). NOT gated on thermal — the map must never
     /// disappear on the pilot; heat is handled by flattening terrain + pausing network layers instead.
+    ///
+    /// "Live map background" OFF no longer tears the map down when an FAA chart layer is selected — the
+    /// pilot loses only the Apple imagery (the raster replaces the base, see MBTilesTileOverlay), never
+    /// their chart. Only the Apple-only layers (Map/Satellite) fall back to the off placeholder.
     private var live: Bool {
-        model.mapBackgroundEnabled && scenePhase != .background && !model.showRouteMap
+        (model.mapBackgroundEnabled || model.chartLayer.isRaster)
+            && scenePhase != .background && !model.showRouteMap
     }
 
     var body: some View {
@@ -40,6 +45,7 @@ struct MapHostView: View {
                 ChartMapView(layer: model.chartLayer, readers: store.readers, route: route,
                              procedure: model.previewedProcedureLegs,   // resolved once off-main in AppModel (L8)
                              showAirspace: model.showAirspace, showNearby: model.showNearby,
+                             showAirways: model.showAirways,
                              initialCenter: model.stratuxGPS?.coordinate,
                              onVisibleRegion: { rect in
                                  // Remember where the user settled so a thermal rebuild restores it (M7);

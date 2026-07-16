@@ -47,10 +47,13 @@ enum Geo {
 /// What kind of thing the user tapped. Point features (airport/vor/fix/traffic/hazard) rank above
 /// the area feature (airspace) in a disambiguation list.
 enum MapObjectKind: String {
-    case airport, vor, fix, airspace, traffic, userPoint, hazard, tfr
+    case airport, vor, fix, airspace, traffic, userPoint, hazard, tfr, airway
 
-    /// Lower sorts first: point features before the containing area features (airspace / TFR).
-    var priority: Int { (self == .airspace || self == .tfr) ? 1 : 0 }
+    /// Lower sorts first: point features before line features (airways) before the containing areas.
+    var priority: Int {
+        if self == .airway { return 1 }
+        return (self == .airspace || self == .tfr) ? 2 : 0
+    }
 
     var label: String {
         switch self {
@@ -62,6 +65,7 @@ enum MapObjectKind: String {
         case .userPoint: return "Point"
         case .hazard:    return "Hazard"
         case .tfr:       return "TFR"
+        case .airway:    return "Airway"
         }
     }
 
@@ -74,8 +78,11 @@ enum MapObjectKind: String {
         }
     }
 
-    /// Anything with a location can be filed into the route; airspace/traffic/hazards/TFRs cannot.
-    var isRoutable: Bool { self != .airspace && self != .traffic && self != .hazard && self != .tfr }
+    /// Anything with a location can be filed into the route; areas/lines/traffic cannot (an AIRWAY is
+    /// filed by TYPING it between two fixes, not by tapping a spot on it).
+    var isRoutable: Bool {
+        self != .airspace && self != .traffic && self != .hazard && self != .tfr && self != .airway
+    }
 }
 
 /// A "user waypoint" — an arbitrary point dropped by long-pressing the map. Stored in the route as a

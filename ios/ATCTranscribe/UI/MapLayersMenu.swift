@@ -18,6 +18,7 @@ struct MapLayersMenu: View {
             Divider()
             Toggle(isOn: $model.showAirspace) { Label("Airspace & special use", systemImage: "hexagon") }
             Toggle(isOn: $model.showNearby) { Label("Nearby navaids & airports", systemImage: "mappin.and.ellipse") }
+            Toggle(isOn: $model.showAirways) { Label("Airways (V / J routes)", systemImage: "point.topleft.down.to.point.bottomright.curvepath") }
             Toggle(isOn: $model.showTFRs) { Label("TFRs (FAA, live)", systemImage: "exclamationmark.octagon") }
             if model.showTFRs {
                 switch model.tfrStatus {
