@@ -7,8 +7,10 @@ import MapKit
 /// sheet — a sibling in `ConsoleView`'s ZStack). Layer + overlay choices come from persisted `AppModel`
 /// state so the top-bar layers menu and this map stay in sync.
 ///
-/// Battery: the live map is shown only when enabled + foregrounded + not thermally stressed; otherwise a
-/// plain background stands in so MapKit stops rendering and never starves on-device transcription.
+/// Battery: the live map renders only when enabled + foregrounded + not hidden behind the full-screen
+/// route map. It is NEVER torn down for thermal reasons — losing the whole moving map is a dangerous
+/// failure mode in the cockpit. Heat is shed gracefully instead (the terrain flattens under
+/// `thermalSerious`, and the network map layers pause) while the map itself stays up.
 struct MapHostView: View {
     @EnvironmentObject var model: AppModel
     /// Plain reference (NOT observed): the map only WRITES the tapped-object probe here — it must not
@@ -19,9 +21,13 @@ struct MapHostView: View {
     @StateObject private var store = ChartStore(library: ChartLibrary.shared)
     @State private var route: [ResolvedLeg] = []
 
-    /// Show the live map only when it's worth the power — paused only when truly backgrounded or the
-    /// device is hot (a transient `.inactive`, e.g. a permission alert, must NOT blank the map).
-    private var live: Bool { model.mapBackgroundEnabled && scenePhase != .background && !model.thermalSerious }
+    /// Show the live map only when it's worth the power — paused when truly backgrounded (a transient
+    /// `.inactive`, e.g. a permission alert, must NOT blank it) or when the full-screen route map is
+    /// covering it (no point running two MKMapViews at once). NOT gated on thermal — the map must never
+    /// disappear on the pilot; heat is handled by flattening terrain + pausing network layers instead.
+    private var live: Bool {
+        model.mapBackgroundEnabled && scenePhase != .background && !model.showRouteMap
+    }
 
     var body: some View {
         Group {
@@ -45,16 +51,18 @@ struct MapHostView: View {
                              restoreCamera: model.lastMapCamera,
                              plateOverlay: model.plateOverlay,
                              model: model)
-            } else {
+            } else if !model.mapBackgroundEnabled {
+                // The user's own "map background off" toggle — the only non-transient reason to stand
+                // down (backgrounded / route-map-covering just pause rendering with nothing to show).
                 model.palette.bg
                     .overlay {
                         VStack(spacing: 6) {
-                            Image(systemName: model.mapBackgroundEnabled ? "thermometer.high" : "map")
-                                .font(.title2).foregroundStyle(model.palette.textDim)
-                            Text(model.mapBackgroundEnabled ? "Map paused to cool down" : "Map background off")
-                                .font(.caption).foregroundStyle(model.palette.textDim)
+                            Image(systemName: "map").font(.title2).foregroundStyle(model.palette.textDim)
+                            Text("Map background off").font(.caption).foregroundStyle(model.palette.textDim)
                         }
                     }
+            } else {
+                model.palette.bg   // transiently covered (route map / background) — plain, no message
             }
         }
         .ignoresSafeArea()

@@ -54,4 +54,14 @@ final class MapOverlayTests: XCTestCase {
         let farTile = MBTilesTileOverlay.tileRect(z: 2, x: 3, y: 3)      // far SE
         XCTAssertFalse(farTile.intersects(packBounds))
     }
+
+    func testWebPTranscodeDecision() {
+        // WebP transcodes by default (MapKit rendering raw WebP is undocumented) …
+        XCTAssertTrue(MBTilesTileOverlay.shouldTranscode(format: "webp", nativePassthrough: false))
+        // … unless the --webp-native escape hatch is set.
+        XCTAssertFalse(MBTilesTileOverlay.shouldTranscode(format: "webp", nativePassthrough: true))
+        // PNG/JPEG never transcode — MapKit renders them natively.
+        XCTAssertFalse(MBTilesTileOverlay.shouldTranscode(format: "png", nativePassthrough: false))
+        XCTAssertFalse(MBTilesTileOverlay.shouldTranscode(format: "jpg", nativePassthrough: true))
+    }
 }

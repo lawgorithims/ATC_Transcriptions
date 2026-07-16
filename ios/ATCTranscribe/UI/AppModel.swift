@@ -944,11 +944,14 @@ final class AppModel: ObservableObject {
         syncEONET()      // same launch edge for a restored hazards toggle
         syncTFRs()       // and a restored TFR toggle
         refreshTripStats()   // seed the flight-plan strip's stats row from the restored plan
-        // Pause the live home map under thermal pressure so it never starves on-device transcription.
+        // Under thermal pressure the map flattens its terrain + pauses network layers (it is NEVER torn
+        // down). `--thermal` (QA-only, non-persisting) forces the state so the graceful degradation is
+        // verifiable in the simulator, where ProcessInfo.thermalState can't be driven.
         NotificationCenter.default.addObserver(forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
             let hot = ProcessInfo.processInfo.thermalState.rawValue >= ProcessInfo.ThermalState.serious.rawValue
             Task { @MainActor in self?.applyThermal(serious: hot) }
         }
+        if args.contains("--thermal") { thermalSerious = true }
         evaluateWhatsNew()     // decide whether to greet this launch with the "What's new" popup
     }
 
