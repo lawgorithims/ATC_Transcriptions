@@ -13,15 +13,34 @@ struct PlatesTabView: View {
     @State private var searchActive = false         // drives `.searchable` focus so we can dismiss it on tab-leave
     @State private var showFlightBag = false
 
+    /// The best default airport when the pilot hasn't picked one: WHERE THEY ARE (nearest airport with
+    /// plates, from a live GPS/Stratux fix) takes priority over the filed plan — the plate you want is
+    /// almost always your current field, and defaulting to a stale filed destination is what left the
+    /// tab "stuck" on a far-away airport. Falls back to the filed destination/departure, then nothing.
+    /// The explicit map/QA hand-off is applied separately (via `platesAirport`), so it isn't re-read here.
     private var defaultAirport: String? {
-        // Derived purely from the filed flight plan; the explicit map/QA hand-off is applied separately
-        // (consumed via `platesAirport`), so it isn't re-read here.
+        if let c = model.stratuxGPS?.coordinate ?? model.deviceLocation.coord,
+           let near = PlatesTabView.nearestPlateAirport(lat: c.lat, lon: c.lon) {
+            return near
+        }
         guard let fp = model.flightPlan else { return nil }
         let d = fp.destination.trimmingCharacters(in: .whitespaces).uppercased()
         let o = fp.departure.trimmingCharacters(in: .whitespaces).uppercased()
         if !d.isEmpty, !Procedures.forAirport(d).isEmpty { return d }
         if !o.isEmpty, !Procedures.forAirport(o).isEmpty { return o }
         return nil
+    }
+
+    /// The nearest airport that publishes plates within `withinNM` of a position — reuses the bundled
+    /// nav DB's airport index (no new spatial data). nil when none is close.
+    static func nearestPlateAirport(lat: Double, lon: Double, withinNM: Double = 60) -> String? {
+        let dLat = withinNM / 60.0
+        let dLon = dLat / max(cos(lat * .pi / 180), 0.1)
+        let box = BBox(minLat: lat - dLat, minLon: lon - dLon, maxLat: lat + dLat, maxLon: lon + dLon)
+        func d2(_ p: Coord) -> Double { let a = p.lat - lat, b = (p.lon - lon) * cos(lat * .pi / 180); return a * a + b * b }
+        return NavDatabase.nearby(box, types: [0], limit: 120)     // type 0 = airports
+            .filter { !Procedures.forAirport($0.ident).isEmpty }
+            .min { d2($0.coord) < d2($1.coord) }?.ident
     }
 
     var body: some View {
@@ -36,7 +55,12 @@ struct PlatesTabView: View {
             }
         }
         .onChange(of: model.selectedTab) { _, tab in
-            if tab != .plates { searchActive = false }   // drop keyboard focus when leaving (hardware-kbd EFB)
+            if tab == .plates {
+                model.deviceLocation.start()              // get a fix so the default follows the pilot's position
+            } else {
+                searchActive = false                      // drop keyboard focus when leaving (hardware-kbd EFB)
+                if plate == nil { model.deviceLocation.stop() }   // battery: don't run GPS off-tab (viewer owns it if open)
+            }
         }
     }
 
@@ -83,12 +107,20 @@ struct PlatesTabView: View {
                 .environmentObject(model)
         }
         .onAppear {
+            model.deviceLocation.start()                                // start GPS so the position default resolves
             applyPendingOrDefault()
             if model.showFlightBagOnLaunch { showFlightBag = true; model.showFlightBagOnLaunch = false }
             if let pdf = model.previewPlatePdf, let apt = airport,
                let proc = Procedures.forAirport(apt).first(where: { $0.pdf == pdf }) {
                 plate = proc; model.previewPlatePdf = nil               // QA: auto-open the full-page viewer
             }
+        }
+        // A GPS fix usually arrives AFTER onAppear (async + permission), so re-seed the default when it
+        // lands — this is what actually unsticks the tab from a far-away filed destination. Pinning wins.
+        .onReceive(model.deviceLocation.$coord) { c in
+            guard !userPinned, let c,
+                  let near = PlatesTabView.nearestPlateAirport(lat: c.lat, lon: c.lon) else { return }
+            if airport != near { airport = near }
         }
         .onChange(of: model.platesAirport) { _, _ in applyPendingOrDefault() }
         .onChange(of: model.flightPlan) { _, _ in
@@ -152,37 +184,22 @@ struct PlatesTabView: View {
     private func plateList(_ ident: String) -> some View {
         let p = model.palette
         let plates = Procedures.forAirport(ident)
-        let groups: [(AirportProcedure.Category, String)] = [
-            (.approach, "Approaches"), (.departure, "Departures (DPs)"),
-            (.arrival, "Arrivals (STARs)"), (.airport, "Airport (diagram, hot spots)"),
-            (.other, "Other"),
+        let approaches = plates.filter { $0.category == .approach }
+        let otherGroups: [(AirportProcedure.Category, String)] = [
+            (.departure, "Departures (DPs)"), (.arrival, "Arrivals (STARs)"),
+            (.airport, "Airport (diagram, hot spots)"), (.other, "Other"),
         ]
         return List {
             if let name = NavMeta.airport(ident)?.name {
                 Section { Text(name).font(.subheadline).foregroundStyle(p.textDim) }
             }
-            ForEach(groups, id: \.0) { cat, heading in
+            // Approaches are the long list at a big field — group them by RUNWAY (collapsible), so the
+            // pilot jumps straight to the runway in use instead of scanning dozens of rows.
+            if !approaches.isEmpty { approachSection(approaches) }
+            ForEach(otherGroups, id: \.0) { cat, heading in
                 let items = plates.filter { $0.category == cat }
                 if !items.isEmpty {
-                    Section("\(heading) (\(items.count))") {
-                        ForEach(items) { proc in
-                            Button { Haptics.impact(.light); plate = proc } label: {
-                                HStack(spacing: 8) {
-                                    Image(systemName: "doc.richtext").font(.caption).foregroundStyle(p.accent)
-                                    Text(proc.name).font(.callout).foregroundStyle(p.text).lineLimit(1)
-                                    Spacer(minLength: 4)
-                                    if PlateGeoref.lookup(pdf: proc.pdf) != nil {
-                                        Image(systemName: "scope").font(.caption2).foregroundStyle(p.good)   // auto-aligns on the map
-                                    }
-                                    if PlateStore.isCached(proc) {
-                                        Image(systemName: "arrow.down.circle.fill").font(.caption2).foregroundStyle(p.good)
-                                    }
-                                    Image(systemName: "chevron.right").font(.caption2).foregroundStyle(p.textDim)
-                                }
-                            }
-                            .buttonStyle(.plain).accessibilityIdentifier("plate-row")
-                        }
-                    }
+                    Section("\(heading) (\(items.count))") { ForEach(items) { plateRow($0) } }
                 }
             }
             if plates.isEmpty {
@@ -190,6 +207,67 @@ struct PlatesTabView: View {
             }
         }
         .scrollContentBackground(.hidden)
+    }
+
+    /// The Approaches section, sub-grouped by runway. A big airport has many IAPs; a pilot looks for
+    /// "the RWY 22L approaches", so each runway is its own collapsible group (circling/other last).
+    @ViewBuilder private func approachSection(_ approaches: [AirportProcedure]) -> some View {
+        let circlingKey = "Circling / other"
+        let byRunway = Dictionary(grouping: approaches) { Self.runway(of: $0.name) ?? circlingKey }
+        let keys = byRunway.keys.sorted { Self.runwaySortKey($0) < Self.runwaySortKey($1) }
+        Section("Approaches (\(approaches.count))") {
+            ForEach(keys, id: \.self) { key in
+                let items = byRunway[key] ?? []
+                DisclosureGroup {
+                    ForEach(items) { plateRow($0) }
+                } label: {
+                    Text(key == circlingKey ? key : "Runway \(key)")
+                        .font(.callout.weight(.semibold)).foregroundStyle(model.palette.text)
+                    + Text("  (\(items.count))").font(.caption2).foregroundStyle(model.palette.textDim)
+                }
+            }
+        }
+    }
+
+    private func plateRow(_ proc: AirportProcedure) -> some View {
+        let p = model.palette
+        return Button { Haptics.impact(.light); plate = proc } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "doc.richtext").font(.caption).foregroundStyle(p.accent)
+                Text(proc.name).font(.callout).foregroundStyle(p.text).lineLimit(1)
+                Spacer(minLength: 4)
+                if PlateGeoref.lookup(pdf: proc.pdf) != nil {
+                    Image(systemName: "scope").font(.caption2).foregroundStyle(p.good)   // auto-aligns on the map
+                }
+                if PlateStore.isCached(proc) {
+                    Image(systemName: "arrow.down.circle.fill").font(.caption2).foregroundStyle(p.good)
+                }
+                Image(systemName: "chevron.right").font(.caption2).foregroundStyle(p.textDim)
+            }
+        }
+        .buttonStyle(.plain).accessibilityIdentifier("plate-row")
+    }
+
+    /// Extract the runway designator from an approach name ("ILS OR LOC RWY 04R" → "04R", "RNAV (GPS)
+    /// RWY 22L" → "22L", "VOR RWY 15" → "15"). nil for circling-only approaches (e.g. "VOR-A").
+    static func runway(of name: String) -> String? {
+        let up = name.uppercased()
+        guard let r = up.range(of: "RWY ") else { return nil }
+        var digits = "", suffix = ""
+        for ch in up[r.upperBound...] {
+            if ch.isNumber, suffix.isEmpty, digits.count < 2 { digits.append(ch) }
+            else if "LCR".contains(ch), !digits.isEmpty, suffix.isEmpty { suffix = String(ch); break }
+            else { break }
+        }
+        return digits.isEmpty ? nil : digits + suffix
+    }
+
+    /// Sort key so runways order numerically (04 < 15 < 22) with L<C<R, and "Circling / other" last.
+    static func runwaySortKey(_ key: String) -> Int {
+        let digits = key.prefix { $0.isNumber }
+        guard let n = Int(digits) else { return 100_000 }        // circling / other → last
+        let side = key.last.map { "LCR".firstIndex(of: $0).map { "LCR".distance(from: "LCR".startIndex, to: $0) } ?? 3 } ?? 3
+        return n * 10 + side
     }
 
     private var emptyState: some View {
