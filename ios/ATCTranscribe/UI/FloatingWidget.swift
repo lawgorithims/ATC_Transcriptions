@@ -149,7 +149,14 @@ struct WidgetLayout: Codable, Equatable {
     @Published var layout: WidgetLayout { didSet { layout.save() } }
     /// The map object the user tapped on the home map (nil = nothing) — drives the object side panel
     /// (regular width) / bottom sheet (compact). Transient; changes only on a tap, never on the storm.
-    @Published var mapProbe: MapProbeResult?
+    /// Clearing the tap also closes a side pane the object card was docked into (it has no content left).
+    @Published var mapProbe: MapProbeResult? {
+        didSet {
+            guard mapProbe == nil else { return }
+            if leftPane == .objectInfo { leftPane = nil }
+            if rightPane == .objectInfo { rightPane = nil }
+        }
+    }
 
     init() {
         layout = WidgetStore.initialLayout()
@@ -200,9 +207,9 @@ struct WidgetLayout: Codable, Equatable {
     func paneWidth(_ side: PaneSide) -> CGFloat { side == .left ? leftPaneWidth : rightPaneWidth }
 
     /// Dock a widget into a side pane. It stops being a floating card, and any widget already on that side
-    /// is dropped (closed) — "most recent shows, previous closes". objectInfo (tap-driven) never docks.
+    /// is dropped (closed) — "most recent shows, previous closes". objectInfo docks too (its pane lives as
+    /// long as the tapped object; clearing the tap closes the pane, see `mapProbe.didSet`).
     func dockToSide(_ kind: FloatingWidgetKind, _ side: PaneSide) {
-        guard kind != .objectInfo else { return }
         update(kind) { $0.visible = false }
         if leftPane == kind { leftPane = nil }            // moved from the other side
         if rightPane == kind { rightPane = nil }
@@ -217,8 +224,13 @@ struct WidgetLayout: Codable, Equatable {
     }
 
     /// Close a side pane entirely — the widget goes away (it was already `visible = false`). Two-finger
-    /// swipe and the pane's ✕ both call this.
-    func closePane(_ side: PaneSide) { setPane(side, nil) }
+    /// swipe and the pane's ✕ both call this. Closing a docked object card also clears the tap, so the
+    /// card doesn't instantly reappear as a floating widget (its visibility is probe-driven).
+    func closePane(_ side: PaneSide) {
+        let kind = pane(side)
+        setPane(side, nil)
+        if kind == .objectInfo { mapProbe = nil }
+    }
 
     func setPaneWidth(_ side: PaneSide, _ w: CGFloat) {
         switch side { case .left: leftPaneWidth = w; case .right: rightPaneWidth = w }

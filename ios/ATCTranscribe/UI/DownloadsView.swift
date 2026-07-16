@@ -33,6 +33,15 @@ struct DownloadsView: View {
             ForEach(Self.rasterLayers, id: \.self) { chartLayerSection($0) }
             platesSection
             storageSection
+            Section {
+                Toggle(isOn: $model.chartCompatRendering) {
+                    Label("Compatibility chart rendering", systemImage: "wrench.adjustable")
+                }
+                .tint(p.accent)
+                .accessibilityIdentifier("chart-compat-toggle")
+            } footer: {
+                Text("Only turn this on if FAA chart tiles ever render blank. It uses the slower per-tile conversion path, which costs battery.")
+            }
         }
         .scrollContentBackground(.hidden)
         .background(p.bg)

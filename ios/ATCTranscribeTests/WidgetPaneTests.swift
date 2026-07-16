@@ -83,9 +83,21 @@ final class WidgetPaneTests: XCTestCase {
         XCTAssertTrue(s.isVisible(.transcript))
     }
 
-    func testObjectInfoNeverDocks() {
+    func testObjectInfoDocksAndClosingThePaneClearsTheTap() {
         let s = freshStore()
-        s.dockToSide(.objectInfo, .left)            // tap-driven panel — must not dock
+        s.mapProbe = MapProbeResult(id: "t", objects: [])
+        s.dockToSide(.objectInfo, .left)            // the tapped-object card docks like any widget now
+        XCTAssertEqual(s.leftPane, .objectInfo)
+        s.closePane(.left)
         XCTAssertNil(s.leftPane)
+        XCTAssertNil(s.mapProbe, "closing a docked object pane must clear the tap (else the floating card reappears)")
+    }
+
+    func testClearingTheTapClosesADockedObjectPane() {
+        let s = freshStore()
+        s.mapProbe = MapProbeResult(id: "t", objects: [])
+        s.dockToSide(.objectInfo, .right)
+        s.mapProbe = nil                             // tap dismissed elsewhere (e.g. card's own ✕)
+        XCTAssertNil(s.rightPane, "an object pane with no tapped object left must close")
     }
 }
