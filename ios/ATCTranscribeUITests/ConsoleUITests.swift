@@ -105,8 +105,14 @@ final class ConsoleUITests: XCTestCase {
         let app = launch(onboardingDismissed: true)
         XCTAssertTrue(app.buttons["settings-button"].waitForExistence(timeout: 20))
         app.buttons["settings-button"].tap()
-        XCTAssertTrue(app.navigationBars["Model & settings"].waitForExistence(timeout: 5), "settings sheet missing")
+        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5), "settings sheet missing")
         snap(app, "04-settings")
+
+        // Settings is now organized into category sub-pages — the model + correction controls live under
+        // "Transcription & AI". Push into it before exercising them.
+        let transCat = app.buttons["settings-cat-transcription"]
+        XCTAssertTrue(transCat.waitForExistence(timeout: 5), "Transcription category row missing")
+        transCat.tap()
 
         // Models manager renders a download control (Download/Get button) or a Ready badge.
         XCTAssertTrue(app.buttons["Download"].firstMatch.exists
@@ -128,7 +134,9 @@ final class ConsoleUITests: XCTestCase {
         XCTAssertTrue(largeV2.exists, "Large V2 model button missing")
         if largeV2.isEnabled { largeV2.tap() }
 
-        // Enable correction → the AI backend + sensitivity controls become active.
+        // Enable correction → the AI backend + sensitivity controls become active. (The correction
+        // toggle is the "Vocabulary correction" switch on this page; target it by scrolling to the
+        // backend row it gates rather than firstMatch, which is order-dependent.)
         let toggle = app.switches.firstMatch
         XCTAssertTrue(reveal(toggle, app), "correction toggle missing")
         toggle.tap()
@@ -148,7 +156,12 @@ final class ConsoleUITests: XCTestCase {
         let app = launch(onboardingDismissed: true)
         XCTAssertTrue(app.buttons["settings-button"].waitForExistence(timeout: 20))
         app.buttons["settings-button"].tap()
-        XCTAssertTrue(app.navigationBars["Model & settings"].waitForExistence(timeout: 5), "settings sheet missing")
+        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5), "settings sheet missing")
+
+        // Speaker controls now live under the "Audio & speakers" category — push into it first.
+        let audioCat = app.buttons["settings-cat-audio"]
+        XCTAssertTrue(audioCat.waitForExistence(timeout: 5), "Audio category row missing")
+        audioCat.tap()
 
         // The toggle is present and functional. (Its default-OFF is covered by unit tests;
         // UI-test state persists across runs, so assert it FLIPS rather than a fixed initial value.)
