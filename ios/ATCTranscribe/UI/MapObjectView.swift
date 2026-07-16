@@ -207,7 +207,11 @@ struct MapObjectView: View {
                 .listRowInsets(EdgeInsets(top: 6, leading: 8, bottom: 6, trailing: 8))
             }
             switch airportTab {
-            case .info:      infoSection(o)
+            case .info:
+                infoSection(o)
+                if o.kind == .airport {
+                    AirportDiagramThumbnail(ident: o.ident) { apd in openDiagramInPlatesTab(apd, ident: o.ident) }
+                }
             case .weather:   weatherTab(o)
             case .runway:    runwayTab(o.ident)
             case .procedure: procedureTab(o.ident)
@@ -599,6 +603,15 @@ struct MapObjectView: View {
 
     private func finish() { onCommit(); onClose() }
 
+    /// Open the tapped airport's diagram full-page in the Plates tab (the same hand-off `--preview-plate-full`
+    /// uses): pin the airport, queue the plate for the viewer, switch tabs, and dismiss this card.
+    private func openDiagramInPlatesTab(_ apd: AirportProcedure, ident: String) {
+        model.platesAirport = ident
+        model.previewPlatePdf = apd.pdf
+        model.selectedTab = .plates
+        onClose()
+    }
+
     // MARK: Bits
 
     private func coordText(_ c: Coord) -> String { String(format: "%.4f, %.4f", c.lat, c.lon) }
@@ -671,5 +684,71 @@ struct MapObjectView: View {
         case .hazard:    return "flame"
         case .tfr:       return "exclamationmark.octagon"
         }
+    }
+}
+
+// MARK: - Airport-diagram thumbnail
+
+/// The airport-diagram (APD) plate rendered as a tappable thumbnail in the tapped-airport card's Info tab.
+/// Tapping opens that diagram full-page in the Plates tab. Renders nothing when the field publishes no
+/// APD chart; downloads on demand and rasterises off-main, so it never blocks the card from appearing.
+struct AirportDiagramThumbnail: View {
+    @EnvironmentObject var model: AppModel
+    let ident: String
+    var onOpen: (AirportProcedure) -> Void
+
+    @State private var image: UIImage?
+    @State private var phase: Phase = .loading
+    private enum Phase { case loading, ready, failed }
+
+    private var diagram: AirportProcedure? { Procedures.forAirport(ident).first { $0.code == "APD" } }
+
+    var body: some View {
+        if let apd = diagram {
+            Section("Airport diagram") {
+                Button { Haptics.impact(.light); onOpen(apd) } label: { thumb }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("airport-diagram-thumb")
+            }
+            .task(id: ident) { await load(apd) }
+        }
+    }
+
+    private var thumb: some View {
+        let p = model.palette
+        return Group {
+            if let image {
+                Image(uiImage: image).resizable().aspectRatio(contentMode: .fit)
+                    .frame(maxWidth: .infinity).frame(maxHeight: 240)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .overlay(alignment: .bottomTrailing) {
+                        Label("Open", systemImage: "arrow.up.left.and.arrow.down.right")
+                            .font(.caption2.weight(.semibold))
+                            .padding(.horizontal, 8).padding(.vertical, 4)
+                            .background(.ultraThinMaterial, in: Capsule())
+                            .padding(8)
+                    }
+            } else {
+                HStack(spacing: 8) {
+                    if phase == .loading { ProgressView() }
+                    Image(systemName: phase == .failed ? "exclamationmark.triangle" : "doc.richtext")
+                        .foregroundStyle(p.textDim)
+                    Text(phase == .failed ? "Diagram unavailable offline" : "Loading airport diagram…")
+                        .font(.caption).foregroundStyle(p.textDim)
+                }
+                .frame(maxWidth: .infinity, minHeight: 72)
+            }
+        }
+        .contentShape(Rectangle())
+    }
+
+    private func load(_ apd: AirportProcedure) async {
+        image = nil; phase = .loading
+        guard let url = await PlateStore.ensureOnDisk(apd) else { phase = .failed; return }
+        let rendered = await Task.detached(priority: .userInitiated) {
+            PlateImageRenderer.firstPageImage(pdfURL: url, maxDimension: 900)
+        }.value
+        guard !Task.isCancelled else { return }            // a newer airport was tapped
+        if let rendered { image = rendered; phase = .ready } else { phase = .failed }
     }
 }
