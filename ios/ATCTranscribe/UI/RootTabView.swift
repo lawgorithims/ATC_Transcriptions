@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// The app's top-level tabs (a ForeFlight-style bottom bar), left → right.
-enum RootTab: String, Hashable, CaseIterable { case transcript, map, plates, notes }
+enum RootTab: String, Hashable, CaseIterable { case transcript, map, plates, airports, notes }
 
 /// Root view: a ForeFlight-style bottom tab bar under two full-screen tabs — "Map" (the existing
 /// console: transcript, flight plan, floating widgets, live audio) and "Plates" (a searchable FAA
@@ -34,6 +34,11 @@ struct RootTabView: View {
                 .allowsHitTesting(model.selectedTab == .transcript)
                 .accessibilityHidden(model.selectedTab != .transcript)
 
+            AirportsTabView()
+                .opacity(model.selectedTab == .airports ? 1 : 0)
+                .allowsHitTesting(model.selectedTab == .airports)
+                .accessibilityHidden(model.selectedTab != .airports)
+
             NotesTabView()
                 .opacity(model.selectedTab == .notes ? 1 : 0)
                 .allowsHitTesting(model.selectedTab == .notes)
@@ -58,10 +63,12 @@ private struct BottomTabBar: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            item(.transcript, icon: "text.bubble.fill", label: "Transcript")
+            // Angular / geometric glyphs (per feedback — less round).
+            item(.transcript, icon: "list.bullet.rectangle.fill", label: "Transcript")
             item(.map, icon: "map.fill", label: "Map")
-            item(.plates, icon: "doc.text.image", label: "Plates")
-            item(.notes, icon: "pencil.and.scribble", label: "Notes")
+            item(.plates, icon: "books.vertical.fill", label: "Plates")
+            item(.airports, icon: "airplane", label: "Airports")
+            item(.notes, icon: "square.and.pencil", label: "Notes")
         }
         .padding(.top, 7)
         .padding(.bottom, 3)

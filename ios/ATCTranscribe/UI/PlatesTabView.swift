@@ -1,38 +1,18 @@
 import SwiftUI
 
-/// The "Plates" tab: search an airport, browse its FAA approach/departure/arrival charts, open one
-/// full-page, or send it to the map as a georeferenced overlay. Defaults to the NEAREST charted airport
-/// from a live GPS/Stratux fix (the field you're at is almost always the plate you want — defaulting to a
-/// filed destination is what left the tab "stuck" on a far-away airport); WITHOUT a fix it falls back to
-/// the filed/amended flight plan. An explicit search pins an airport and stops the auto-follow. GPS
-/// position always wins over the filed destination.
+/// The "Plates" tab, organised as BINDERS (one per airport, ForeFlight-style): the top level is a list
+/// of airport binders (your route + nearby fields, plus search); opening a binder shows its FAA charts as
+/// LARGE thumbnails you can eyeball, grouped by category (approaches by runway). Tap a thumbnail to open
+/// the plate full-page or send it to the map as a georeferenced overlay.
 struct PlatesTabView: View {
     @EnvironmentObject var model: AppModel
     @State private var query = ""
-    @State private var airport: String?             // the airport whose plates are shown
+    @State private var airport: String?             // the OPEN binder's airport (nil = the binder list)
     @State private var plate: AirportProcedure?     // the plate open full-screen
-    @State private var userPinned = false           // the pilot chose an airport → stop auto-following the plan
+    @State private var userPinned = false           // the pilot opened a specific binder (from search/handoff)
     @State private var searchActive = false         // drives `.searchable` focus so we can dismiss it on tab-leave
     @State private var showFlightBag = false
-    @State private var lastQueriedCoord: Coord?     // movement gate for the GPS-nearest re-seed (below)
-
-    /// The best default airport when the pilot hasn't picked one: WHERE THEY ARE (nearest airport with
-    /// plates, from a live GPS/Stratux fix) takes priority over the filed plan — the plate you want is
-    /// almost always your current field, and defaulting to a stale filed destination is what left the
-    /// tab "stuck" on a far-away airport. Falls back to the filed destination/departure, then nothing.
-    /// The explicit map/QA hand-off is applied separately (via `platesAirport`), so it isn't re-read here.
-    private var defaultAirport: String? {
-        if let c = model.stratuxGPS?.coordinate ?? model.deviceLocation.coord,
-           let near = PlatesTabView.nearestPlateAirport(lat: c.lat, lon: c.lon) {
-            return near
-        }
-        guard let fp = model.flightPlan else { return nil }
-        let d = fp.destination.trimmingCharacters(in: .whitespaces).uppercased()
-        let o = fp.departure.trimmingCharacters(in: .whitespaces).uppercased()
-        if !d.isEmpty, !Procedures.forAirport(d).isEmpty { return d }
-        if !o.isEmpty, !Procedures.forAirport(o).isEmpty { return o }
-        return nil
-    }
+    @State private var nearbyBinders: [String] = []  // nearest charted fields, recomputed as the GPS fix moves
 
     /// The nearest airport that publishes plates within `withinNM` of a position — reuses the bundled
     /// nav DB's airport index (no new spatial data). nil when none is close.
@@ -69,7 +49,7 @@ struct PlatesTabView: View {
         }
         .onChange(of: model.selectedTab) { _, tab in
             if tab == .plates {
-                model.deviceLocation.start()              // get a fix so the default follows the pilot's position
+                model.deviceLocation.start(); refreshNearby()   // get a fix so "Nearby" binders resolve
             } else {
                 searchActive = false                      // drop keyboard focus when leaving (hardware-kbd EFB)
                 if plate == nil { model.deviceLocation.stop() }   // battery: don't run GPS off-tab (viewer owns it if open)
@@ -83,12 +63,12 @@ struct PlatesTabView: View {
                 if !query.isEmpty {
                     airportPicker
                 } else if let apt = airport {
-                    plateList(apt)
+                    binderDetail(apt)
                 } else {
-                    emptyState
+                    binderList
                 }
             }
-            .navigationTitle(query.isEmpty ? (airport ?? "Plates") : "Search")
+            .navigationTitle(query.isEmpty ? (airport ?? "Binders") : "Search")
             .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $query, isPresented: $searchActive,
                         placement: .navigationBarDrawer(displayMode: .always),
@@ -99,7 +79,7 @@ struct PlatesTabView: View {
                 }
                 if airport != nil, query.isEmpty {
                     ToolbarItem(placement: .topBarTrailing) {
-                        Button("Change") { airport = nil; userPinned = true }
+                        Button { airport = nil; userPinned = true } label: { Label("Binders", systemImage: "books.vertical") }
                             .accessibilityIdentifier("plate-change-airport")
                     }
                 }
@@ -124,47 +104,41 @@ struct PlatesTabView: View {
                 .environmentObject(model)
         }
         .onAppear {
-            model.deviceLocation.start()                                // start GPS so the position default resolves
-            applyPendingOrDefault()
+            model.deviceLocation.start(); refreshNearby()               // start GPS so "Nearby" binders resolve
+            applyHandoff()
             if model.showFlightBagOnLaunch { showFlightBag = true; model.showFlightBagOnLaunch = false }
             if let pdf = model.previewPlatePdf, let apt = airport,
                let proc = Procedures.forAirport(apt).first(where: { $0.pdf == pdf }) {
                 plate = proc; model.previewPlatePdf = nil               // QA: auto-open the full-page viewer
             }
         }
-        // A GPS fix usually arrives AFTER onAppear (async + permission), so re-seed the default when it
-        // lands — this is what actually unsticks the tab from a far-away filed destination. Pinning wins.
-        // Movement gate: DeviceLocation republishes ~1 Hz; only re-run the spatial query once the fix has
-        // moved meaningfully, so a parked aircraft's GPS jitter can't burn the main thread every tick or
-        // flip the airport back and forth (which would collapse the runway groups the pilot expanded).
-        .onReceive(model.deviceLocation.$coord) { c in
-            guard !userPinned, let c else { return }
-            if let last = lastQueriedCoord, PlatesTabView.distanceNM(last, c) < 0.25 { return }
-            lastQueriedCoord = c
-            if let near = PlatesTabView.nearestPlateAirport(lat: c.lat, lon: c.lon), airport != near { airport = near }
-        }
-        .onChange(of: model.platesAirport) { _, _ in applyPendingOrDefault() }
-        .onChange(of: model.flightPlan) { _, _ in
-            // Re-seed on a plan amendment (unless pinned). With a GPS fix this stays position-nearest; only
-            // without one does it follow the amended filed plan — GPS position always wins over the plan.
-            if !userPinned { airport = defaultAirport }
-        }
+        // Recompute the "Nearby" binder list as the GPS fix moves. Deferred to the next main-actor hop:
+        // @Published fires in willSet, so a synchronous read of `coord` here would see the pre-update value.
+        .onReceive(model.deviceLocation.$coord) { _ in Task { @MainActor in refreshNearby() } }
+        .onChange(of: model.platesAirport) { _, _ in applyHandoff() }
     }
 
-    /// Consume a pending map/QA hand-off (`platesAirport`) if present; otherwise seed the default
-    /// airport once (unless the pilot has pinned one). The one-shot is cleared UNCONDITIONALLY — even
-    /// if it named a chartless airport — so it can't linger and mis-fire later.
-    private func applyPendingOrDefault() {
-        if let want = model.platesAirport {
-            model.platesAirport = nil        // one-shot consumed regardless of whether it has charts
-            if !Procedures.forAirport(want).isEmpty {
-                airport = want; userPinned = true; query = ""
-                return
-            }
-        }
-        // Seed the default only before the pilot has made a choice — otherwise "Change" (airport=nil,
-        // userPinned=true) would be silently undone on the next tab re-entry.
-        if airport == nil, !userPinned { airport = defaultAirport }
+    /// Open the binder named by a map/QA hand-off (`platesAirport`) if present. The one-shot is cleared
+    /// UNCONDITIONALLY — even for a chartless airport — so it can't linger and mis-fire later.
+    private func applyHandoff() {
+        guard let want = model.platesAirport else { return }
+        model.platesAirport = nil
+        if !Procedures.forAirport(want).isEmpty { airport = want; userPinned = true; query = "" }
+    }
+
+    /// Nearest charted fields for the "Nearby" binder section — gated on ~0.25 NM of movement so a parked
+    /// aircraft's GPS jitter doesn't churn the list (or the off-main spatial query) every tick.
+    private func refreshNearby() {
+        guard let c = model.stratuxGPS?.coordinate ?? model.deviceLocation.coord else { return }
+        let dLat = 1.0                                            // ~60 NM box
+        let dLon = dLat / max(cos(c.lat * .pi / 180), 0.1)
+        let box = BBox(minLat: c.lat - dLat, minLon: c.lon - dLon, maxLat: c.lat + dLat, maxLon: c.lon + dLon)
+        func d2(_ p: Coord) -> Double { let a = p.lat - c.lat, b = (p.lon - c.lon) * cos(c.lat * .pi / 180); return a * a + b * b }
+        let near = NavDatabase.nearby(box, types: [0], limit: 120)
+            .filter { !Procedures.forAirport($0.ident).isEmpty }
+            .sorted { d2($0.coord) < d2($1.coord) }
+            .prefix(12).map(\.ident)
+        if Array(near) != nearbyBinders { nearbyBinders = Array(near) }
     }
 
     // MARK: airport search
@@ -203,73 +177,75 @@ struct PlatesTabView: View {
         .scrollContentBackground(.hidden)
     }
 
-    // MARK: plate list for an airport
+    // MARK: binder detail — a field's charts as LARGE thumbnails
 
-    private func plateList(_ ident: String) -> some View {
+    private func binderDetail(_ ident: String) -> some View {
         let p = model.palette
         let plates = Procedures.forAirport(ident)
         let approaches = plates.filter { $0.category == .approach }
+        let circling = "Circling / other"
+        let byRunway = Dictionary(grouping: approaches) { Self.runway(of: $0.name) ?? circling }
+        let runwayKeys = byRunway.keys.sorted { Self.runwaySortKey($0) < Self.runwaySortKey($1) }
         let otherGroups: [(AirportProcedure.Category, String)] = [
-            (.departure, "Departures (DPs)"), (.arrival, "Arrivals (STARs)"),
-            (.airport, "Airport (diagram, hot spots)"), (.other, "Other"),
+            (.airport, "Airport"), (.departure, "Departures (DPs)"),
+            (.arrival, "Arrivals (STARs)"), (.other, "Other"),
         ]
-        return List {
-            if let name = NavMeta.airport(ident)?.name {
-                Section { Text(name).font(.subheadline).foregroundStyle(p.textDim) }
-            }
-            // Approaches are the long list at a big field — group them by RUNWAY (collapsible), so the
-            // pilot jumps straight to the runway in use instead of scanning dozens of rows.
-            if !approaches.isEmpty { approachSection(approaches) }
-            ForEach(otherGroups, id: \.0) { cat, heading in
-                let items = plates.filter { $0.category == cat }
-                if !items.isEmpty {
-                    Section("\(heading) (\(items.count))") { ForEach(items) { plateRow($0) } }
+        return ScrollView {
+            LazyVStack(alignment: .leading, spacing: 14) {
+                if let name = NavMeta.airport(ident)?.name {
+                    Text(name).font(.subheadline).foregroundStyle(p.textDim).padding(.horizontal, 4)
+                }
+                if plates.isEmpty {
+                    Text("No published charts for \(ident) in this cycle.")
+                        .foregroundStyle(p.textDim).frame(maxWidth: .infinity).padding(.vertical, 40)
+                }
+                // Approaches first (what the pilot reaches for most), grouped by runway; then the airport
+                // diagram, DPs, STARs, and everything else.
+                if !approaches.isEmpty {
+                    sectionHeader("Approaches", approaches.count)
+                    ForEach(runwayKeys, id: \.self) { key in
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(key == circling ? key : "Runway \(key)")
+                                .font(.subheadline.weight(.semibold)).foregroundStyle(p.text).padding(.horizontal, 4)
+                            thumbGrid(byRunway[key] ?? [])
+                        }
+                    }
+                }
+                ForEach(otherGroups, id: \.0) { cat, heading in
+                    let items = plates.filter { $0.category == cat }
+                    if !items.isEmpty { chartGroup(heading, count: items.count, items: items) }
                 }
             }
-            if plates.isEmpty {
-                Text("No published charts for \(ident) in this cycle.").foregroundStyle(p.textDim)
-            }
+            .padding(12)
         }
         .scrollContentBackground(.hidden)
     }
 
-    /// The Approaches section, sub-grouped by runway. A big airport has many IAPs; a pilot looks for
-    /// "the RWY 22L approaches", so each runway is its own collapsible group (circling/other last).
-    @ViewBuilder private func approachSection(_ approaches: [AirportProcedure]) -> some View {
-        let circlingKey = "Circling / other"
-        let byRunway = Dictionary(grouping: approaches) { Self.runway(of: $0.name) ?? circlingKey }
-        let keys = byRunway.keys.sorted { Self.runwaySortKey($0) < Self.runwaySortKey($1) }
-        Section("Approaches (\(approaches.count))") {
-            ForEach(keys, id: \.self) { key in
-                let items = byRunway[key] ?? []
-                DisclosureGroup {
-                    ForEach(items) { plateRow($0) }
-                } label: {
-                    Text(key == circlingKey ? key : "Runway \(key)")
-                        .font(.callout.weight(.semibold)).foregroundStyle(model.palette.text)
-                    + Text("  (\(items.count))").font(.caption2).foregroundStyle(model.palette.textDim)
-                }
-            }
+    @ViewBuilder private func chartGroup(_ heading: String, count: Int, items: [AirportProcedure]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionHeader(heading, count)
+            thumbGrid(items)
         }
     }
 
-    private func plateRow(_ proc: AirportProcedure) -> some View {
+    private func sectionHeader(_ title: String, _ count: Int) -> some View {
         let p = model.palette
-        return Button { Haptics.impact(.light); plate = proc } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "doc.richtext").font(.caption).foregroundStyle(p.accent)
-                Text(proc.name).font(.callout).foregroundStyle(p.text).lineLimit(1)
-                Spacer(minLength: 4)
-                if PlateGeoref.lookup(pdf: proc.pdf) != nil {
-                    Image(systemName: "scope").font(.caption2).foregroundStyle(p.good)   // auto-aligns on the map
-                }
-                if PlateStore.isCached(proc) {
-                    Image(systemName: "arrow.down.circle.fill").font(.caption2).foregroundStyle(p.good)
-                }
-                Image(systemName: "chevron.right").font(.caption2).foregroundStyle(p.textDim)
+        return HStack(spacing: 6) {
+            Text(title).font(.headline).foregroundStyle(p.text)
+            Text("\(count)").font(.caption).foregroundStyle(p.textDim)
+            Spacer()
+        }
+        .padding(.horizontal, 4).padding(.top, 6)
+    }
+
+    /// A lazily-rendered grid of large plate thumbnails (only visible cells download + render, so a big
+    /// binder never renders 70 PDFs at once).
+    private func thumbGrid(_ items: [AirportProcedure]) -> some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 12)], alignment: .leading, spacing: 12) {
+            ForEach(items) { proc in
+                PlateThumb(proc: proc) { plate = proc }.environmentObject(model)
             }
         }
-        .buttonStyle(.plainHaptic).accessibilityIdentifier("plate-row")
     }
 
     /// Extract the runway designator from an approach name ("ILS OR LOC RWY 04R" → "04R", "RNAV (GPS)
@@ -294,14 +270,58 @@ struct PlatesTabView: View {
         return n * 10 + side
     }
 
-    private var emptyState: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "doc.text.magnifyingglass").font(.system(size: 40)).foregroundStyle(model.palette.textDim.opacity(0.7))
-            Text("Search an airport to see its charts").foregroundStyle(model.palette.textDim)
-            Text("Or file a flight plan and your destination's plates appear here.")
-                .font(.caption).foregroundStyle(model.palette.textDim.opacity(0.8)).multilineTextAlignment(.center)
+    // MARK: binder list (the top level)
+
+    private var binderList: some View {
+        let p = model.palette
+        let route = routeIdents
+        let nearby = nearbyBinders.filter { !route.contains($0) }
+        return List {
+            if route.isEmpty && nearby.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "books.vertical").font(.system(size: 40)).foregroundStyle(p.textDim.opacity(0.7))
+                    Text("Search an airport to open its binder").foregroundStyle(p.textDim)
+                    Text("Your route's fields and nearby airports appear here as binders.")
+                        .font(.caption).foregroundStyle(p.textDim.opacity(0.8)).multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity).padding(.vertical, 60).listRowSeparator(.hidden)
+            }
+            if !route.isEmpty { Section("On your route") { ForEach(route, id: \.self) { binderRow($0) } } }
+            if !nearby.isEmpty { Section("Nearby") { ForEach(nearby, id: \.self) { binderRow($0) } } }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity).padding(40)
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+    }
+
+    private func binderRow(_ ident: String) -> some View {
+        let p = model.palette
+        let count = Procedures.forAirport(ident).count
+        return Button { airport = ident; userPinned = true } label: {
+            HStack(spacing: 12) {
+                AirportDiagramImage(ident: ident, height: 84).environmentObject(model)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(ident).font(.system(.headline, design: .monospaced)).foregroundStyle(p.text)
+                    if let n = NavMeta.airport(ident)?.name {
+                        Text(n).font(.caption).foregroundStyle(p.textDim).lineLimit(1)
+                    }
+                    Text("\(count) chart\(count == 1 ? "" : "s")").font(.caption2.weight(.semibold)).foregroundStyle(p.accent)
+                }
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.right").font(.caption).foregroundStyle(p.textDim)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plainHaptic).accessibilityIdentifier("plate-binder")
+    }
+
+    /// The flight plan's airports (departure, destination, alternate) that publish charts — deduped, order
+    /// preserved. These head the binder list as "On your route".
+    private var routeIdents: [String] {
+        guard let fp = model.flightPlan else { return [] }
+        return [fp.departure, fp.destination, fp.alternate]
+            .map { $0.trimmingCharacters(in: .whitespaces).uppercased() }
+            .filter { !$0.isEmpty && !Procedures.forAirport($0).isEmpty }
+            .reduce(into: [String]()) { if !$0.contains($1) { $0.append($1) } }
     }
 }
 
@@ -321,5 +341,63 @@ private struct FlightBagButton: View {
         .overlay(alignment: .topTrailing) {
             if bag.isRunning { Circle().fill(accent).frame(width: 7, height: 7).offset(x: 3, y: -2) }
         }
+    }
+}
+
+/// One large plate thumbnail in a binder: the chart's first page rendered on white, its name beneath, and
+/// the georef/downloaded badges. Renders off the main actor and cancels on scroll-away (only visible cells
+/// in the LazyVGrid ever download + render, so a 70-chart binder never renders all at once). Tap → open.
+struct PlateThumb: View {
+    @EnvironmentObject var model: AppModel
+    let proc: AirportProcedure
+    var onTap: () -> Void
+
+    @State private var image: UIImage?
+    @State private var phase: Phase = .loading
+    private enum Phase { case loading, ready, none }
+
+    var body: some View {
+        let p = model.palette
+        Button { onTap() } label: {
+            VStack(alignment: .leading, spacing: 5) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 7).fill(Color.white)
+                    if let image {
+                        Image(uiImage: image).resizable().aspectRatio(contentMode: .fit).padding(2)
+                    } else if phase == .loading {
+                        ProgressView()
+                    } else {
+                        Image(systemName: "doc.richtext").font(.largeTitle).foregroundStyle(.gray)
+                    }
+                }
+                .frame(height: 200)
+                .frame(maxWidth: .infinity)
+                .clipShape(RoundedRectangle(cornerRadius: 7))
+                .overlay(RoundedRectangle(cornerRadius: 7).stroke(p.border, lineWidth: 0.5))
+                .overlay(alignment: .topTrailing) {
+                    HStack(spacing: 3) {
+                        if PlateGeoref.lookup(pdf: proc.pdf) != nil { Image(systemName: "scope").foregroundStyle(p.good) }
+                        if PlateStore.isCached(proc) { Image(systemName: "arrow.down.circle.fill").foregroundStyle(p.good) }
+                    }
+                    .font(.caption2).padding(5)
+                }
+                Text(proc.name).font(.caption2).foregroundStyle(p.text).lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .buttonStyle(.plainHaptic)
+        .accessibilityIdentifier("plate-thumb")
+        .accessibilityLabel(proc.name)
+        .task(id: proc.pdf) { await load() }
+    }
+
+    private func load() async {
+        image = nil; phase = .loading
+        guard let url = await PlateStore.ensureOnDisk(proc) else { phase = .none; return }
+        let rendered = await Task.detached(priority: .utility) {
+            PlateImageRenderer.firstPageImage(pdfURL: url, maxDimension: 500)
+        }.value
+        guard !Task.isCancelled else { return }
+        if let rendered { image = rendered; phase = .ready } else { phase = .none }
     }
 }

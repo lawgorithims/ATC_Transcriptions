@@ -112,6 +112,22 @@ enum PlateImageRenderer {
         }
     }
 
+    /// The first page rendered UPRIGHT for an airport-diagram thumbnail. Some FAA diagrams sit on a PDF
+    /// page with a `/Rotate` flag (landscape airports), which a naive raster draws on its side. PDFKit's
+    /// `thumbnail(of:for:)` honours the page rotation, so the diagram always reads upright (labels
+    /// horizontal). The canvas is sized to the ROTATED display bounds so it fills without letterboxing.
+    /// (We deliberately DON'T force true-north — that would turn the FAA's readable labels sideways;
+    /// diagrams keep their published orientation with the north arrow intact, as every EFB shows them.)
+    static func northUpFirstPage(pdfURL: URL, pdf: String, maxDimension: CGFloat = 600) -> UIImage? {
+        guard let doc = PDFDocument(url: pdfURL), let page = doc.page(at: 0) else { return nil }
+        let box = page.bounds(for: .mediaBox)
+        let rotated = page.rotation == 90 || page.rotation == 270
+        let display = rotated ? CGSize(width: box.height, height: box.width) : box.size
+        guard display.width > 1, display.height > 1 else { return nil }
+        let s = min(maxDimension / display.width, maxDimension / display.height, 4)
+        return page.thumbnail(of: CGSize(width: display.width * s, height: display.height * s), for: .mediaBox)
+    }
+
     /// Colour-invert a rendered page (black-on-white → white-on-black) for a dark-cockpit night view.
     /// Synchronous CoreImage raster — call OFF the main actor (it's a full-page bitmap). nil on failure.
     static func inverted(_ image: UIImage) -> UIImage? {
