@@ -22,14 +22,23 @@ struct ConsoleView: View {
             // The map is the home screen — always behind everything, with the widgets floating over it.
             MapHostView(widgets: widgets).environmentObject(model)
             VStack(spacing: 0) {
-                TopBar()
-                // The Input strip (source picker + setup) is the one genuinely bar-shaped control; it stays
-                // as a toggleable strip under the top bar. Everything else is now a floating widget.
-                if model.showInputBar { InputBar().transition(Self.barTransition) }
-                if model.showFlightPlanBar { FlightPlanBar().transition(Self.barTransition) }
-                if let proc = model.previewedProcedure { procedureStrip(proc) }
-                if let sug = model.efbSuggestion { efbSuggestionBanner(sug) }
-                if let hz = model.hazardAlert, !hz.isEmpty { hazardBanner(hz) }
+                // The plate menu (dropped from the top) OVERRIDES the console top bar while it's open.
+                if let plate = model.plateOverlay, model.showPlateMenu {
+                    PlateMenuBar(state: plate).environmentObject(model)
+                        .transition(Self.barTransition)
+                        .twoFingerSwipeDown {           // two-finger drag-down also closes the menu
+                            withAnimation(.easeInOut(duration: 0.2)) { model.showPlateMenu = false }
+                        }
+                } else {
+                    TopBar()
+                    // The Input strip (source picker + setup) is the one genuinely bar-shaped control; it stays
+                    // as a toggleable strip under the top bar. Everything else is now a floating widget.
+                    if model.showInputBar { InputBar().transition(Self.barTransition) }
+                    if model.showFlightPlanBar { FlightPlanBar().transition(Self.barTransition) }
+                    if let proc = model.previewedProcedure { procedureStrip(proc) }
+                    if let sug = model.efbSuggestion { efbSuggestionBanner(sug) }
+                    if let hz = model.hazardAlert, !hz.isEmpty { hazardBanner(hz) }
+                }
                 homeArea
             }
         }
@@ -126,6 +135,8 @@ struct ConsoleView: View {
         }
         .opacity(model.standby ? 0.4 : 1)
         .disabled(model.standby)
+        // (The plate ✕ / opacity controls ride the plate itself — annotation views pinned to the
+        //  plate's corners, managed by ChartMapView.reconcilePlate — not this screen-space layer.)
         .overlay { if model.standby { StandbyBanner().environmentObject(model) } }
         .animation(.easeInOut(duration: 0.2), value: model.standby)
     }

@@ -30,6 +30,24 @@ enum PlatePlacement {
         return MKMapRect(x: c.x - aabbW / 2, y: c.y - aabbH / 2, width: aabbW, height: aabbH)
     }
 
+    /// The geographic coordinate of a corner of the (possibly rotated) plate rectangle. `dxSign`/`dySign`
+    /// pick the corner in PLATE-LOCAL axes (+1,+1 = the plate's top-right; -1,+1 = top-left), which is
+    /// then rotated clockwise-from-north with the plate — so the returned point rides the plate's own
+    /// corner, wherever the rotation puts it. Used to pin the on-plate chrome (✕ / opacity control).
+    static func corner(centerLat: Double, centerLon: Double,
+                       widthMeters: Double, heightMeters: Double, rotationDeg: Double,
+                       dxSign: Double, dySign: Double) -> CLLocationCoordinate2D {
+        let dx = dxSign * widthMeters / 2          // plate-local: +x = plate-right
+        let dy = dySign * heightMeters / 2         // plate-local: +y = plate-up
+        let r = rotationDeg * .pi / 180            // clockwise from north
+        let east = dx * cos(r) + dy * sin(r)       // rotate the local offset into geographic east/north
+        let north = -dx * sin(r) + dy * cos(r)
+        let mPerDegLat = 111_320.0
+        let lat = centerLat + north / mPerDegLat
+        let lon = centerLon + east / (mPerDegLat * max(cos(centerLat * .pi / 180), 0.01))
+        return CLLocationCoordinate2D(latitude: lat, longitude: lon)
+    }
+
     // (The manual-placement helpers — defaultWidthMeters / clampWidthMeters / normalizeRotation /
     //  move — were removed with the hand-alignment UI: placement is georef-only and not editable.)
 }

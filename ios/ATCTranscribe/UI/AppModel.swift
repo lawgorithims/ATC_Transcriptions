@@ -2,6 +2,7 @@ import Foundation
 import SwiftUI
 import Combine
 import AVFoundation
+import MapKit
 
 /// Audio source choices in the UI's Source picker.
 enum SourceKind: String, CaseIterable, Identifiable {
@@ -282,9 +283,15 @@ final class AppModel: ObservableObject {
 
     /// Recenter the home map here (a search result). Transient.
     @Published var mapFocus: Coord?
+    /// One-shot "frame this map rect" request (e.g. a plate sent to the map frames the WHOLE plate so
+    /// its corner controls arrive on-screen). Consumed + cleared by `ChartMapView` — never persists,
+    /// so a map rebuild (thermal / route-map dismiss) can't re-frame over the pilot's own pan.
+    @Published var mapFrameRect: MKMapRect?
     /// A plate PDF superimposed on the home map, placed exactly from the FAA's embedded georeference
     /// (georef-only — plates without one can't be overlaid); nil = none. See `PlateOverlayState`.
     @Published var plateOverlay: PlateOverlayState?
+    /// Whether the plate menu (dropped from the top, overriding the console bar) is showing.
+    @Published var showPlateMenu = false
     /// Which bottom-bar tab is showing (Map / Plates). Switched to `.map` when a plate is sent to
     /// the map so the pilot sees the overlay.
     @Published var selectedTab: RootTab = .map
@@ -377,11 +384,19 @@ final class AppModel: ObservableObject {
         // schematic, not to scale) deliberately does NOT overlay; the send-to-map buttons are hidden for
         // those, so this guard is defense in depth — do not add a hand-placed fallback back.
         guard let g = PlateGeoref.lookup(pdf: proc.pdf) else { return }
-        plateOverlay = PlateOverlayState(name: proc.name, airport: airport, image: img, imageAspect: aspect,
+        showPlateMenu = false
+        plateOverlay = PlateOverlayState(name: proc.name, airport: airport, pdf: proc.pdf, image: img,
+                                         imageAspect: aspect,
                                          centerLat: g.centerLat, centerLon: g.centerLon,
                                          widthMeters: g.widthMeters, rotationDeg: g.rotationDeg,
                                          opacity: 0.7)
-        mapFocus = Coord(lat: g.centerLat, lon: g.centerLon)       // frame the map on it so it's visible
+        // Frame the WHOLE plate (not just its center): the gear button rides the plate's top-right
+        // corner, so the plate must arrive fully on-screen for its control to be visible.
+        mapFrameRect = PlatePlacement.boundingMapRect(centerLat: g.centerLat, centerLon: g.centerLon,
+                                                      widthMeters: g.widthMeters,
+                                                      heightMeters: PlatePlacement.heightMeters(
+                                                          widthMeters: g.widthMeters, imageAspect: aspect),
+                                                      rotationDeg: g.rotationDeg)
     }
     /// Download the filed route's plates into the Flight Bag (departure/destination/alternate + route
     /// airports) when enabled and the route changed. Cheap when everything is cached (PlateBag skips
@@ -400,8 +415,37 @@ final class AppModel: ObservableObject {
         plateBag.download(airports: airports, label: "Packing flight bag · \(airports.count) airports")
     }
 
-    func clearPlateOverlay() { plateOverlay = nil }
-    func setPlateOpacity(_ v: Double) { plateOverlay?.opacity = min(max(v, 0.05), 1) }
+    func clearPlateOverlay() { plateOverlay = nil; showPlateMenu = false }
+    /// Floor at `plateMinOpacity` — a plate must never fade to invisible, or the pilot can forget one is
+    /// still overlaid on the map.
+    static let plateMinOpacity = 0.15
+    func setPlateOpacity(_ v: Double) { plateOverlay?.opacity = min(max(v, Self.plateMinOpacity), 1) }
+
+    /// Toggle the plate's colour inversion (dark-cockpit night view). The inverted page is rendered once,
+    /// off the main actor (a full-page CoreImage raster), then cached on the state so later toggles are free.
+    func togglePlateInvert() {
+        guard var s = plateOverlay else { return }
+        if !s.inverted, s.invertedImage == nil {
+            let base = s.image
+            Task { @MainActor [weak self] in
+                let inv = await Task.detached(priority: .userInitiated) { PlateImageRenderer.inverted(base) }.value
+                guard var s2 = self?.plateOverlay, s2.invertedImage == nil else { return }
+                s2.invertedImage = inv; s2.inverted = (inv != nil); self?.plateOverlay = s2
+            }
+            return
+        }
+        s.inverted.toggle(); plateOverlay = s
+    }
+
+    /// "View full page" — hand the overlaid plate off to the Plates tab and open it there (mirrors the
+    /// map airport-card hand-off): seed the airport, mark the plate to auto-open, switch to the tab.
+    func openPlateFullPage() {
+        guard let s = plateOverlay else { return }
+        showPlateMenu = false
+        platesAirport = s.airport
+        previewPlatePdf = s.pdf
+        selectedTab = .plates
+    }
 
     /// Resolve the previewed procedure's legs to plottable coordinates OFF the main actor (L8), then
     /// publish them once — instead of MapHostView re-scanning CIFP on every re-render. Epoch-guarded
@@ -835,11 +879,12 @@ final class AppModel: ObservableObject {
         // georeference (overlayPlate is georef-only): pick a georeferenced IAP/APD for screenshots.
         if let i = args.firstIndex(of: "--preview-plate"), i + 2 < args.count {
             let icao = args[i + 1], pdf = args[i + 2]
+            let openMenu = args.contains("--plate-menu")   // screenshot/demo: also drop the plate menu
             Task { @MainActor [weak self] in
                 guard let self, let proc = Procedures.forAirport(icao).first(where: { $0.pdf == pdf }),
                       let url = await PlateStore.ensureOnDisk(proc) else { return }
-                self.overlayPlate(proc, airport: icao, pdf: url)
-                if let s = self.plateOverlay { self.mapFocus = Coord(lat: s.centerLat, lon: s.centerLon) }
+                self.overlayPlate(proc, airport: icao, pdf: url)   // frames the whole plate via mapFrameRect
+                if openMenu { self.showPlateMenu = true }
             }
         }
         // QA/screenshot: open the tapped-airport card for an airport (`--preview-airport KATL`).
