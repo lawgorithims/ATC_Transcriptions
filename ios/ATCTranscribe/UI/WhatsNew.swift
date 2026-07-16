@@ -32,7 +32,7 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
-            build: 52, version: "1.0", headline: "Plate controls on the map, a smarter Plates tab, and multi-touch",
+            build: 53, version: "1.0", headline: "Plate controls on the map, a smarter Plates tab, and multi-touch",
             highlights: [
                 WhatsNewHighlight(
                     icon: "slider.horizontal.below.rectangle",
