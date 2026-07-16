@@ -111,6 +111,9 @@ targets:
             LSHandlerRank: Alternate
             LSItemContentTypes:
               - com.commsight.fpl
+        # Required companion to CFBundleDocumentTypes (App Store warning 90737). false = the .fpl is
+        # IMPORTED (route copied into the plan), never edited in place.
+        LSSupportsOpeningDocumentsInPlace: false
         UTImportedTypeDeclarations:
           - UTTypeIdentifier: com.commsight.fpl
             UTTypeDescription: Garmin Flight Plan
