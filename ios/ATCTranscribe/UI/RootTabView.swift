@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// The app's top-level tabs (a ForeFlight-style bottom bar).
-enum RootTab: String, Hashable { case map, plates }
+/// The app's top-level tabs (a ForeFlight-style bottom bar), left → right.
+enum RootTab: String, Hashable, CaseIterable { case transcript, map, plates, notes }
 
 /// Root view: a ForeFlight-style bottom tab bar under two full-screen tabs — "Map" (the existing
 /// console: transcript, flight plan, floating widgets, live audio) and "Plates" (a searchable FAA
@@ -16,6 +16,7 @@ struct RootTabView: View {
 
     var body: some View {
         ZStack {
+            // The map/console stays alive at all times (never stop the live session or rebuild the map).
             ConsoleView()
                 .opacity(model.selectedTab == .map ? 1 : 0)
                 .allowsHitTesting(model.selectedTab == .map)
@@ -25,6 +26,18 @@ struct RootTabView: View {
                 .opacity(model.selectedTab == .plates ? 1 : 0)
                 .allowsHitTesting(model.selectedTab == .plates)
                 .accessibilityHidden(model.selectedTab != .plates)
+
+            // Transcript + Notes render their heavy content only while selected (self-gated) so they
+            // cost nothing behind the map — keeps launch cool and memory low.
+            TranscriptTabView()
+                .opacity(model.selectedTab == .transcript ? 1 : 0)
+                .allowsHitTesting(model.selectedTab == .transcript)
+                .accessibilityHidden(model.selectedTab != .transcript)
+
+            NotesTabView()
+                .opacity(model.selectedTab == .notes ? 1 : 0)
+                .allowsHitTesting(model.selectedTab == .notes)
+                .accessibilityHidden(model.selectedTab != .notes)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             BottomTabBar(selection: $model.selectedTab, palette: model.palette)
@@ -45,8 +58,10 @@ private struct BottomTabBar: View {
 
     var body: some View {
         HStack(spacing: 0) {
+            item(.transcript, icon: "text.bubble.fill", label: "Transcript")
             item(.map, icon: "map.fill", label: "Map")
             item(.plates, icon: "doc.text.image", label: "Plates")
+            item(.notes, icon: "pencil.and.scribble", label: "Notes")
         }
         .padding(.top, 7)
         .padding(.bottom, 3)

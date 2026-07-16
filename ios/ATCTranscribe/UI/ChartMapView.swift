@@ -495,9 +495,10 @@ struct ChartMapView: UIViewRepresentable {
         hold.delegate = context.coordinator
         mv.addGestureRecognizer(hold)
         context.coordinator.requestLocation()
-        Self.configure(mv, for: layer, reduceGPU: model.thermalSerious)
+        let realistic = model.terrain3DEnabled && !model.thermalSerious
+        Self.configure(mv, for: layer, realistic: realistic)
         context.coordinator.appliedLayer = layer
-        context.coordinator.appliedReduceGPU = model.thermalSerious
+        context.coordinator.appliedRealistic = realistic
         let center = ChartLayer.launchCenter ?? CLLocationCoordinate2D(latitude: 39, longitude: -96)
         let s = ChartLayer.launchSpan ?? 42
         mv.setRegion(MKCoordinateRegion(center: center,
@@ -509,11 +510,12 @@ struct ChartMapView: UIViewRepresentable {
     /// than the flat 2D `mapType`) gives the Apple base layers realistic 3D terrain; the FAA raster
     /// layers keep a muted flat base under their tiles.
     ///
-    /// `reduceGPU` (set from `thermalSerious`) flattens the Apple layers' terrain — continuous 3D Metal
-    /// terrain rendering is the biggest map-alone heat source, so under thermal pressure we degrade it
-    /// gracefully (terrain goes flat, the map stays up) rather than tearing the whole map down.
-    static func configure(_ mv: MKMapView, for layer: ChartLayer, reduceGPU: Bool) {
-        let elevation: MKMapConfiguration.ElevationStyle = reduceGPU ? .flat : .realistic
+    /// `realistic` requests 3D terrain on the Apple base layers. It's OPT-IN (persisted `terrain3DEnabled`,
+    /// default OFF) and force-disabled under thermal pressure — continuous 3D Metal terrain rendering is
+    /// the biggest map-alone heat source and ran on every launch when it was default-on, so the map now
+    /// opens flat (cool) and the pilot enables terrain from the layers menu if they want it.
+    static func configure(_ mv: MKMapView, for layer: ChartLayer, realistic: Bool) {
+        let elevation: MKMapConfiguration.ElevationStyle = realistic ? .realistic : .flat
         switch layer {
         case .satellite:
             mv.preferredConfiguration = MKHybridMapConfiguration(elevationStyle: elevation)
@@ -535,9 +537,10 @@ struct ChartMapView: UIViewRepresentable {
         c.onPlateAnchors = onPlateAnchors
         c.routeLegs = route                               // hit-test source for filed waypoints
         c.routeIdents = Set(route.map { $0.ident })
-        if c.appliedLayer != layer || c.appliedReduceGPU != model.thermalSerious {
-            c.appliedLayer = layer; c.appliedReduceGPU = model.thermalSerious
-            Self.configure(mv, for: layer, reduceGPU: model.thermalSerious)
+        let realistic = model.terrain3DEnabled && !model.thermalSerious
+        if c.appliedLayer != layer || c.appliedRealistic != realistic {
+            c.appliedLayer = layer; c.appliedRealistic = realistic
+            Self.configure(mv, for: layer, realistic: realistic)
         }
 
         // Reconcile the route line + waypoint markers whenever the filed route changes (initial resolve,
@@ -702,7 +705,7 @@ struct ChartMapView: UIViewRepresentable {
     final class Coordinator: NSObject, MKMapViewDelegate, CLLocationManagerDelegate, UIGestureRecognizerDelegate {
         var overlays: [ObjectIdentifier: MBTilesTileOverlay] = [:]
         var appliedLayer: ChartLayer?               // last base config applied — reconfigure only on a real change
-        var appliedReduceGPU = false                // last thermal-downgrade state applied to the base config
+        var appliedRealistic = false                // last 3D-terrain state applied to the base config (opt-in + thermal)
         var plateOverlayObj: PlateImageOverlay?     // the superimposed plate, if any
         var plateKey: String?                       // geometry identity — rebuild only when placement changes
         var plateCorners: (tl: CLLocationCoordinate2D, tr: CLLocationCoordinate2D)?  // chrome anchor coords

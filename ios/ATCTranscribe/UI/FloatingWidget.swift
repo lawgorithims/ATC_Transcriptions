@@ -151,7 +151,18 @@ struct WidgetLayout: Codable, Equatable {
     /// (regular width) / bottom sheet (compact). Transient; changes only on a tap, never on the storm.
     @Published var mapProbe: MapProbeResult?
 
-    init() { layout = WidgetStore.initialLayout() }
+    init() {
+        layout = WidgetStore.initialLayout()
+        let args = CommandLine.arguments
+        if args.contains("--reset-widgets") { leftPane = nil; rightPane = nil }
+        // QA/screenshot: pre-dock a widget into a side pane (`--dock-left transcript` / `--dock-right stratux`).
+        if let i = args.firstIndex(of: "--dock-left"), i + 1 < args.count, let k = FloatingWidgetKind(rawValue: args[i + 1]) {
+            leftPane = k; layout.update(k) { $0.visible = false }
+        }
+        if let i = args.firstIndex(of: "--dock-right"), i + 1 < args.count, let k = FloatingWidgetKind(rawValue: args[i + 1]) {
+            rightPane = k; layout.update(k) { $0.visible = false }
+        }
+    }
 
     /// First run under the redesign migrates the old `atc.sidebarWidgets` list into a layout; else the
     /// saved layout, else defaults. `--reset-widgets` (UI tests / recovery) forces defaults.
@@ -164,10 +175,72 @@ struct WidgetLayout: Codable, Equatable {
         return .defaults()
     }
 
+    // MARK: side panes (edge-dock split screen)
+    //
+    // Dragging a widget to the LEFT/RIGHT screen edge docks it into a resizable side pane (Windows-snap
+    // style). `leftPane`/`rightPane` hold WHICH widget occupies each side (persisted so it survives a
+    // relaunch); `*PaneWidth` is the remembered pane width in POINTS (0 = "use the default" — one-third of
+    // the portrait width; the same point width reads as a narrower slice in landscape, ≈ the same physical
+    // width, per the brief). A docked widget is `visible = false` as a floating card so it renders ONCE.
+    enum PaneSide { case left, right }
+    @Published var leftPane: FloatingWidgetKind? = FloatingWidgetKind(rawValue: UserDefaults.standard.string(forKey: "atc.pane.left") ?? "") {
+        didSet { UserDefaults.standard.set(leftPane?.rawValue, forKey: "atc.pane.left") }
+    }
+    @Published var rightPane: FloatingWidgetKind? = FloatingWidgetKind(rawValue: UserDefaults.standard.string(forKey: "atc.pane.right") ?? "") {
+        didSet { UserDefaults.standard.set(rightPane?.rawValue, forKey: "atc.pane.right") }
+    }
+    @Published var leftPaneWidth: CGFloat = CGFloat(UserDefaults.standard.double(forKey: "atc.pane.leftW")) {
+        didSet { UserDefaults.standard.set(Double(leftPaneWidth), forKey: "atc.pane.leftW") }
+    }
+    @Published var rightPaneWidth: CGFloat = CGFloat(UserDefaults.standard.double(forKey: "atc.pane.rightW")) {
+        didSet { UserDefaults.standard.set(Double(rightPaneWidth), forKey: "atc.pane.rightW") }
+    }
+
+    func pane(_ side: PaneSide) -> FloatingWidgetKind? { side == .left ? leftPane : rightPane }
+    func paneWidth(_ side: PaneSide) -> CGFloat { side == .left ? leftPaneWidth : rightPaneWidth }
+
+    /// Dock a widget into a side pane. It stops being a floating card, and any widget already on that side
+    /// is dropped (closed) — "most recent shows, previous closes". objectInfo (tap-driven) never docks.
+    func dockToSide(_ kind: FloatingWidgetKind, _ side: PaneSide) {
+        guard kind != .objectInfo else { return }
+        update(kind) { $0.visible = false }
+        if leftPane == kind { leftPane = nil }            // moved from the other side
+        if rightPane == kind { rightPane = nil }
+        switch side { case .left: leftPane = kind; case .right: rightPane = kind }
+    }
+
+    /// Pop a paned widget back out to a floating card (the pane's "↗" button).
+    func undockToWidget(_ side: PaneSide) {
+        guard let kind = pane(side) else { return }
+        setPane(side, nil)
+        show(kind)                                        // visible + brought to front
+    }
+
+    /// Close a side pane entirely — the widget goes away (it was already `visible = false`). Two-finger
+    /// swipe and the pane's ✕ both call this.
+    func closePane(_ side: PaneSide) { setPane(side, nil) }
+
+    func setPaneWidth(_ side: PaneSide, _ w: CGFloat) {
+        switch side { case .left: leftPaneWidth = w; case .right: rightPaneWidth = w }
+    }
+    private func setPane(_ side: PaneSide, _ kind: FloatingWidgetKind?) {
+        switch side { case .left: leftPane = kind; case .right: rightPane = kind }
+    }
+
     func update(_ kind: FloatingWidgetKind, _ mutate: (inout WidgetFrame) -> Void) { layout.update(kind, mutate) }
     func bringToFront(_ kind: FloatingWidgetKind) { layout.bringToFront(kind) }
-    /// Reveal a widget and lift it to the front (top-bar Widgets menu / programmatic show).
-    func show(_ kind: FloatingWidgetKind) { layout.update(kind) { $0.visible = true }; layout.bringToFront(kind) }
+    /// Reveal a widget as a FLOATING card and lift it to the front (top-bar Widgets menu / programmatic
+    /// show). If it was docked in a side pane, showing it pops it back out (so it's never in both places).
+    func show(_ kind: FloatingWidgetKind) {
+        if leftPane == kind { leftPane = nil }
+        if rightPane == kind { rightPane = nil }
+        layout.update(kind) { $0.visible = true }; layout.bringToFront(kind)
+    }
+    func isVisible(_ kind: FloatingWidgetKind) -> Bool { layout.frame(kind)?.visible ?? false }
+    /// Flip a widget's visibility — show+front if hidden, hide if shown (top-bar quick toggles).
+    func toggle(_ kind: FloatingWidgetKind) {
+        if isVisible(kind) { update(kind) { $0.visible = false } } else { show(kind) }
+    }
     func reset() { layout = .defaults() }
 }
 
@@ -232,6 +305,14 @@ enum WidgetGeometry {
     }
 
     static let minSize = CGSize(width: 220, height: 120)
+
+    /// The side pane to dock into when a widget drag ends with the finger inside an edge zone, else nil.
+    /// A generous 56 pt zone so "shove it to the edge" is easy on a bumpy deck. Pure → unit-tested.
+    static func edgeDock(fingerX: CGFloat, container: CGSize, zone: CGFloat = 56) -> WidgetStore.PaneSide? {
+        if fingerX <= zone { return .left }
+        if fingerX >= container.width - zone { return .right }
+        return nil
+    }
 }
 
 // MARK: - Environment: tell an inner `Card` to drop its own surface so the container owns the background
@@ -336,6 +417,11 @@ struct FloatingWidgetContainer<Content: View>: View {
     private func commitTwoFingerMove(_ translation: CGSize) {
         let rect = WidgetGeometry.rect(for: frame, in: container)
         let dropped = CGPoint(x: rect.origin.x + translation.width, y: rect.origin.y + translation.height)
+        // Shoved to an edge (card centre in the outer 16%) → dock into that side pane, mirroring the
+        // header-drag path (two-finger has no finger location, so gate on the card centre instead).
+        let centerX = dropped.x + rect.width / 2
+        if centerX <= container.width * 0.16 { Haptics.impact(.medium); widgets.dockToSide(frame.kind, .left); mtTranslation = .zero; return }
+        if centerX >= container.width * 0.84 { Haptics.impact(.medium); widgets.dockToSide(frame.kind, .right); mtTranslation = .zero; return }
         let snapped = WidgetGeometry.snap(droppedOrigin: dropped, size: rect.size, in: container)
         widgets.update(frame.kind) { $0.anchor = snapped.anchor; $0.offset = snapped.offset }
         mtTranslation = .zero
@@ -430,6 +516,10 @@ struct FloatingWidgetContainer<Content: View>: View {
             .updating($drag) { v, s, _ in s = v.translation }
             .onChanged { _ in if widgets.layout.frame(frame.kind)?.z != widgets.layout.maxZ { widgets.bringToFront(frame.kind) } }
             .onEnded { v in
+                // Dragged the header INTO a screen edge → dock into that side pane (Windows-snap).
+                if let side = WidgetGeometry.edgeDock(fingerX: v.location.x, container: container) {
+                    Haptics.impact(.medium); widgets.dockToSide(frame.kind, side); return
+                }
                 let rect = WidgetGeometry.rect(for: frame, in: container)
                 let dropped = CGPoint(x: rect.origin.x + v.translation.width, y: rect.origin.y + v.translation.height)
                 let snapped = WidgetGeometry.snap(droppedOrigin: dropped, size: rect.size, in: container)

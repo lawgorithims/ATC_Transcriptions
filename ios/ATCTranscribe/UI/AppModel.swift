@@ -214,6 +214,11 @@ final class AppModel: ObservableObject {
     @Published var showStratuxBar = UserDefaults.standard.bool(forKey: "atc.bar.stratux") {
         didSet { UserDefaults.standard.set(showStratuxBar, forKey: "atc.bar.stratux") }
     }
+    /// 3D realistic terrain on the Apple base layers — OPT-IN (default OFF). Default-on continuous 3D
+    /// Metal terrain was the biggest map-alone heat source at launch; off by default keeps the map cool.
+    @Published var terrain3DEnabled = UserDefaults.standard.bool(forKey: "atc.terrain3D") {
+        didSet { UserDefaults.standard.set(terrain3DEnabled, forKey: "atc.terrain3D") }
+    }
 
     // Electronic Flight Bag: the filed flight plan (ForeFlight-style). Persisted as JSON; whenever
     // it changes, its context block is packed into the live correction layer (both LLM backends)
@@ -764,6 +769,7 @@ final class AppModel: ObservableObject {
     private var liveContext: ATCContext?
     private var feedKey: String?
     private var liveMode = false
+    private var llmDeferred = false   // the ~400 MB LLM load was kept off the launch path → build on first Start
 
     // GPS-vicinity corrector grounding (in-cockpit feeds). Resolves the surrounding airports off-main
     // and pushes them to the running session as ownship moves — the analogue of the traffic push.
@@ -1023,7 +1029,8 @@ final class AppModel: ObservableObject {
     /// is only released once the new one is fully built (see `switchModel`'s watchdog + generation).
     @discardableResult
     private func setupLive(models: [String: String], active: String, audioDir: String?, cpuOnly: Bool,
-                           autostart: Bool, preserveHistory: Bool = false, generation: Int? = nil) async -> Bool {
+                           autostart: Bool, preserveHistory: Bool = false, generation: Int? = nil,
+                           deferLLM: Bool = false) async -> Bool {
         guard let modelDir = models[active] else { detail = "Model unavailable."; return false }
         // Snapshot the visible transcript so the new session can adopt it (a swap isn't destructive to
         // history). The OLD session keeps running/loaded until the new model is confirmed loaded.
@@ -1093,7 +1100,9 @@ final class AppModel: ObservableObject {
         // Build/reuse the optional slow-tier LLM off the main actor. The GGUF loads at most once per
         // app run (cached), so a whisper-model swap no longer reloads ~400 MB off disk. (`currentCorrector`
         // reads `self.liveContext` lazily at transcribe time, so building it before the commit is fine.)
-        let llm = await makeLLMCorrector(knowledge: context.knowledge, feedKey: feedKey)
+        // `deferLLM` (cold launch) skips it entirely — nothing transcribes before Start, so the ~400 MB
+        // load is pure launch heat; `start()` builds it via `rebuildLLM` the moment the pilot transcribes.
+        let llm = deferLLM ? nil : await makeLLMCorrector(knowledge: context.knowledge, feedKey: feedKey)
 
         // The experimental "guess speaker by voice" toggle selects the neural ECAPA backend. Load its
         // 80 MB Core ML model OFF the main actor (mirroring makeLLMCorrector) and INJECT it, so the
@@ -1149,6 +1158,7 @@ final class AppModel: ObservableObject {
         self.engine = engine
         self.modelDirs = models
         self.activeModel = active
+        self.llmDeferred = deferLLM   // built lazily on the first Start (kept off the launch path for heat)
         // Stop the old session's source explicitly. `TranscriptionSession` has no deinit and its
         // run-loop Task strongly holds the pipeline + source, so dropping the reference alone would
         // NOT stop a source the user restarted during the watchdog-freed window (leaking a live feed /
@@ -2242,6 +2252,9 @@ final class AppModel: ObservableObject {
                 ?? "Speech model isn't loaded yet. Re-download it in Settings › Models."
             return
         }
+        // Build the LLM now (once) if it was deferred off the launch path — the pilot is about to
+        // transcribe, so the correction tier should come online. Cached after the first build.
+        if llmDeferred { llmDeferred = false; rebuildLLM() }
         // Microphone / USB capture needs an explicit permission grant first — without it
         // AVAudioEngine yields no input and the run just ends ("not activating").
         if source == .microphone || source == .usbAudio {
@@ -2611,7 +2624,8 @@ final class AppModel: ObservableObject {
             if let predecessor { await predecessor.value }
             guard modelSwapGeneration == gen else { return }   // superseded while we queued
             let ok = await setupLive(models: models, active: active, audioDir: audioDir,
-                                     cpuOnly: storedCPUOnly, autostart: autostart, generation: gen)
+                                     cpuOnly: storedCPUOnly, autostart: autostart, generation: gen,
+                                     deferLLM: !autostart)   // cold launch: don't load the LLM until Start
             guard modelSwapGeneration == gen else { return }
             if loadingModel == active { loadingModel = nil }
             if !ok, session == nil {

@@ -6,13 +6,15 @@ import SwiftUI
 struct ATCTranscribeApp: App {
     @StateObject private var model = AppModel()
     @StateObject private var downloads = ModelDownloadManager()
+    @StateObject private var notes = NotesStore()
 
     var body: some Scene {
         WindowGroup {
-            RootTabView()                               // Map + Plates bottom tabs; the map tab hosts ConsoleView
+            RootTabView()                               // Transcript · Map · Plates · Notes bottom tabs
                 .environmentObject(model)
                 .environmentObject(model.widgetStore)   // isolated widget-layout/probe store (see WidgetStore)
                 .environmentObject(downloads)
+                .environmentObject(notes)               // hand-written notes library (PencilKit)
         }
     }
 }
