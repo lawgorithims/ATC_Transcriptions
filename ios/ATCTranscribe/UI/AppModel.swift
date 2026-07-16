@@ -219,6 +219,12 @@ final class AppModel: ObservableObject {
     @Published var terrain3DEnabled = UserDefaults.standard.bool(forKey: "atc.terrain3D") {
         didSet { UserDefaults.standard.set(terrain3DEnabled, forKey: "atc.terrain3D") }
     }
+    /// Compatibility chart rendering (default OFF): forces the old per-tile WebP→PNG transcode instead of
+    /// native WebP pass-through. Escape hatch in case a device ever renders blank FAA charts natively —
+    /// costs battery, so it's off unless needed. The map remounts its tile overlays when this flips.
+    @Published var chartCompatRendering = UserDefaults.standard.bool(forKey: "atc.chartCompat") {
+        didSet { UserDefaults.standard.set(chartCompatRendering, forKey: "atc.chartCompat") }
+    }
 
     // Airport directory personalization: starred favorites + a recently-viewed trail (any surface that
     // opens an airport records it via `noteAirportViewed`). Both bounded and persisted.

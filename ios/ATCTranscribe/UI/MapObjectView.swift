@@ -590,6 +590,14 @@ struct MapObjectView: View {
             case .airway:
                 KV("Route", o.ident)
                 KV("Kind", Self.airwayKindName(o.ident))
+                let alt = Airways.altitudes(of: o.ident)
+                if let lo = alt.meaLow {
+                    // MEA varies by segment — show the coded range across the whole airway.
+                    KV("Minimum enroute alt", alt.meaHigh.map { hi in
+                        hi == lo ? "\(lo.grouped)′" : "\(lo.grouped)–\(hi.grouped)′ (varies by segment)"
+                    } ?? "\(lo.grouped)′")
+                }
+                if let maa = alt.maa { KV("Maximum authorized", Self.altText(maa)) }
                 Text("To file it, type the airway between two of its fixes in the route — e.g. “GDM \(o.ident) ORW”.")
                     .font(.caption).foregroundStyle(p.textDim)
                     .fixedSize(horizontal: false, vertical: true)

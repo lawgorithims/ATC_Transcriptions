@@ -99,7 +99,7 @@ def main():
                        leg_type TEXT, course_mag REAL, alt TEXT);
       CREATE TABLE ils(airport TEXT, runway TEXT, ident TEXT, freq_mhz REAL, course_mag REAL, lat REAL, lon REAL);
       CREATE TABLE runway(airport TEXT, designator TEXT, lat REAL, lon REAL, bearing_mag REAL, length_ft INTEGER);
-      CREATE TABLE airway(ident TEXT, seq INTEGER, fix TEXT, lat REAL, lon REAL);
+      CREATE TABLE airway(area TEXT, ident TEXT, seq INTEGER, fix TEXT, lat REAL, lon REAL, mea INTEGER, maa INTEGER);
       CREATE INDEX ix_proc_apt ON procedure(airport);
       CREATE INDEX ix_leg_proc ON leg(procedure_id);
       CREATE INDEX ix_ils_apt ON ils(airport);
@@ -115,10 +115,13 @@ def main():
         return (int(s) / scale) if s.isdigit() else None
 
     # ---- pass 2b: enroute airways (section E, subsection R) — V/J/T/Q routes as ordered fix chains.
-    # Same empirical layout as the P-section legs: route ident 14-18, sequence 26-29, fix 30-34.
+    # Empirical layout: route ident 14-18, sequence 26-29, fix 30-34, MEA 84-88, MAA 94-98 (both feet).
     nawy = 0
+    def alt(s):
+        s = s.strip()
+        return int(s) if s.isdigit() and int(s) > 0 else None
     for l in lines:
-        if len(l) < 40 or l[4] != "E" or l[5] != "R":
+        if len(l) < 98 or l[4] != "E" or l[5] != "R":
             continue
         ident = l[13:18].strip()
         seq = re.sub(r"\D", "", l[25:29])
@@ -127,8 +130,10 @@ def main():
             continue
         c = fixes.get(fix)
         if c:
-            con.execute("INSERT INTO airway(ident,seq,fix,lat,lon) VALUES(?,?,?,?,?)",
-                        (ident, int(seq), fix, c[0], c[1]))
+            # The AREA code (USA/PAC/…) disambiguates same-ident airways in different regions — the US
+            # East Coast V1 and the Hawaii V1 are DIFFERENT airways; merging them draws bogus lines.
+            con.execute("INSERT INTO airway(area,ident,seq,fix,lat,lon,mea,maa) VALUES(?,?,?,?,?,?,?,?)",
+                        (l[1:4].strip(), ident, int(seq), fix, c[0], c[1], alt(l[83:88]), alt(l[93:98])))
             nawy += 1
 
     for l in lines:

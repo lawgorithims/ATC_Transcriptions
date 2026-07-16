@@ -95,11 +95,16 @@ final class MBTilesTileOverlay: MKTileOverlay {
         return c
     }()
 
-    /// WebP → PNG transcode is a per-tile CPU cost (decode + re-encode) and a candidate map-heat source.
-    /// MapKit *may* render raw WebP tile data natively on iOS 14+, but that isn't documented and there's
-    /// no per-tile render-failure callback — a wrong guess yields invisible charts — so the pass-through
-    /// is behind a default-OFF `--webp-native` flag until it's device-verified. See `shouldTranscode`.
-    static let webpNativePassthrough = ProcessInfo.processInfo.arguments.contains("--webp-native")
+    /// WebP → PNG transcode is a per-tile CPU cost (decode + re-encode) — it was the map's biggest
+    /// remaining per-tile burn. Native pass-through (MapKit decodes WebP via ImageIO, iOS 14+) is now
+    /// DEFAULT ON — A/B verified tile-identical in the sim. Because there's no per-tile render-failure
+    /// callback (a wrong guess = invisible charts), a persisted "compatibility chart rendering" escape
+    /// hatch (`atc.chartCompat`, surfaced on the Downloads page) forces the old transcode path; the
+    /// `--webp-transcode` QA arg does the same for A/B runs.
+    static var webpNativePassthrough: Bool {
+        if ProcessInfo.processInfo.arguments.contains("--webp-transcode") { return false }
+        return !UserDefaults.standard.bool(forKey: "atc.chartCompat")
+    }
 
     /// Whether a tile of `format` needs the WebP→PNG transcode. Pure so it's unit-testable.
     static func shouldTranscode(format: String, nativePassthrough: Bool) -> Bool {
@@ -598,10 +603,13 @@ struct ChartMapView: UIViewRepresentable {
         // Incrementally reconcile the raster overlays to `readers` (they come and go as you pan). Tiles
         // sit at the bottom of the label level so airspace outlines + the route line draw over the chart.
         // With the live map background OFF the FAA raster replaces the Apple base outright (see
-        // MBTilesTileOverlay.init); flipping the toggle remounts the overlays with the new mode.
+        // MBTilesTileOverlay.init); flipping that toggle — or the WebP compatibility toggle, which is
+        // baked in at overlay init — remounts the overlays with the new mode.
         let replacesBase = !model.mapBackgroundEnabled
-        if c.appliedReplacesBase != replacesBase {
+        let nativeWebP = MBTilesTileOverlay.webpNativePassthrough
+        if c.appliedReplacesBase != replacesBase || c.appliedNativeWebP != nativeWebP {
             c.appliedReplacesBase = replacesBase
+            c.appliedNativeWebP = nativeWebP
             for (_, ov) in c.overlays { mv.removeOverlay(ov) }
             c.overlays.removeAll()
         }
@@ -689,6 +697,10 @@ struct ChartMapView: UIViewRepresentable {
         guard let s = plateOverlay else {
             if let old = c.plateOverlayObj { mv.removeOverlay(old); c.plateOverlayObj = nil; c.plateKey = nil }
             if c.plateCorners != nil { c.plateCorners = nil; c.onPlateAnchors(nil) }
+            if c.plateMapRect != nil {
+                c.plateMapRect = nil
+                c.refreshContext(mv)                 // plate cleared → restore the labels it was masking
+            }
             return
         }
 
@@ -700,6 +712,14 @@ struct ChartMapView: UIViewRepresentable {
             mv.addOverlay(n, level: .aboveLabels)   // over the chart tiles + route, under annotation labels
             c.plateOverlayObj = n
             if let old { mv.removeOverlay(old) }    // after the add — overlap, never a gap
+            // SAFETY: annotation views (airspace altitude boxes, nearby markers, airway capsules) render
+            // ABOVE every overlay in MapKit — over the plate too, masking it even at full opacity. Track
+            // the plate's footprint and re-run the context refresh, which suppresses labels inside it.
+            let newRect = n.boundingMapRect
+            if !(c.plateMapRect.map { MKMapRectEqualToRect($0, newRect) } ?? false) {
+                c.plateMapRect = newRect
+                c.refreshContext(mv)
+            }
         }
         if c.plateKey != s.geoKey || c.plateCorners == nil {
             c.plateCorners = (
@@ -719,8 +739,10 @@ struct ChartMapView: UIViewRepresentable {
         var appliedLayer: ChartLayer?               // last base config applied — reconfigure only on a real change
         var appliedRealistic = false                // last 3D-terrain state applied to the base config (opt-in + thermal)
         var appliedReplacesBase = false             // last raster canReplaceMapContent mode (map-background toggle)
+        var appliedNativeWebP = true                // last WebP pass-through mode (compatibility toggle)
         var plateOverlayObj: PlateImageOverlay?     // the superimposed plate, if any
         var plateKey: String?                       // geometry identity — rebuild only when placement changes
+        var plateMapRect: MKMapRect?                // the plate's footprint — context labels inside it are hidden
         var plateCorners: (tl: CLLocationCoordinate2D, tr: CLLocationCoordinate2D)?  // chrome anchor coords
         var onPlateAnchors: ((CGPoint, CGPoint)?) -> Void = { _ in }   // corner screen-points → MapHostView
 
@@ -975,33 +997,54 @@ struct ChartMapView: UIViewRepresentable {
                 }.value
                 guard let self, let mv, gen == self.contextGen else { return }   // a newer refresh superseded us
                 self.applyAirspace(out.rings, to: mv)
-                self.applyAirspaceLabels(out.labels, to: mv)
-                self.applyNearby(out.near, to: mv)
+                // SAFETY: annotation views always render ABOVE map overlays — including an overlaid
+                // approach plate, which they would mask even at full opacity. Suppress context labels
+                // whose anchor falls inside the plate's footprint (the apply diffs remove existing ones).
+                self.applyAirspaceLabels(out.labels.filter { !self.maskedByPlate($0.coord) }, to: mv)
+                self.applyNearby(out.near.filter {
+                    !self.maskedByPlate(CLLocationCoordinate2D(latitude: $0.coord.lat, longitude: $0.coord.lon))
+                }, to: mv)
                 self.applyAirways(out.airways, to: mv)
             }
         }
 
+        /// True when a context label anchored at `c` would sit on top of the overlaid plate.
+        func maskedByPlate(_ c: CLLocationCoordinate2D) -> Bool {
+            guard let r = plateMapRect else { return false }
+            return r.contains(MKMapPoint(c))
+        }
+
         /// Diff the airway polylines + their midpoint ident labels against what's drawn (same
-        /// keep/remove/add pattern as airspace, so panning never redraws in-view airways).
+        /// keep/remove/add pattern as airspace, so panning never redraws in-view airways). The POLYLINE
+        /// renders below the plate (overlay order), but the label is an annotation — masked like the rest.
         private func applyAirways(_ segs: [AirwaySegment], to mv: MKMapView) {
-            let wanted = Set(segs.map(\.ident))
-            for (ident, pl) in airwayByIdent where !wanted.contains(ident) {
-                mv.removeOverlay(pl); airwayByIdent[ident] = nil
+            // Keyed by area|ident (seg.key) — same-ident airways in different ARINC areas are distinct.
+            let wanted = Set(segs.map(\.key))
+            for (key, pl) in airwayByIdent where !wanted.contains(key) {
+                mv.removeOverlay(pl); airwayByIdent[key] = nil
             }
-            for (ident, ann) in airwayLabelByIdent where !wanted.contains(ident) {
-                mv.removeAnnotation(ann); airwayLabelByIdent[ident] = nil
-            }
-            for seg in segs where airwayByIdent[seg.ident] == nil {
+            for seg in segs where airwayByIdent[seg.key] == nil {
                 var coords = seg.points.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) }
                 let pl = AirwayPolyline(coordinates: &coords, count: coords.count)
                 pl.ident = seg.ident
                 mv.insertOverlay(pl, at: 0, level: .aboveLabels)   // under airspace/route, above the chart
-                airwayByIdent[seg.ident] = pl
+                airwayByIdent[seg.key] = pl
+            }
+            // Labels reconciled separately so a plate appearing/disappearing re-evaluates the masking
+            // without touching the polylines.
+            var wantedLabels: [String: (String, CLLocationCoordinate2D)] = [:]
+            for seg in segs {
                 let mid = seg.points[seg.points.count / 2]
-                let ann = AirwayLabelAnnotation(ident: seg.ident,
-                                                coord: CLLocationCoordinate2D(latitude: mid.lat, longitude: mid.lon))
+                let c = CLLocationCoordinate2D(latitude: mid.lat, longitude: mid.lon)
+                if !maskedByPlate(c) { wantedLabels[seg.key] = (seg.ident, c) }
+            }
+            for (key, ann) in airwayLabelByIdent where wantedLabels[key] == nil {
+                mv.removeAnnotation(ann); airwayLabelByIdent[key] = nil
+            }
+            for (key, val) in wantedLabels where airwayLabelByIdent[key] == nil {
+                let ann = AirwayLabelAnnotation(ident: val.0, coord: val.1)
                 mv.addAnnotation(ann)
-                airwayLabelByIdent[seg.ident] = ann
+                airwayLabelByIdent[key] = ann
             }
         }
 

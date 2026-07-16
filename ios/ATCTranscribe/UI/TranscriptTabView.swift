@@ -20,10 +20,17 @@ struct TranscriptTabView: View {
 
     private var content: some View {
         let p = model.palette
-        return TranscriptCard()
-            .environment(\.floatingSurface, true)      // no card chrome — fill the page, we own the bg
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(p.bg.ignoresSafeArea())
-            .preferredColorScheme(model.theme == .day ? .light : .dark)
+        return VStack(spacing: 0) {
+            // The same control surface as the Map tab (source/input strip toggle, flight plan, search,
+            // theme, START/STOP power, settings) — the transcript is where a session is watched, so its
+            // controls must be reachable here without bouncing back to the map.
+            TopBar()
+            if model.showInputBar { InputBar().transition(ConsoleView.barTransition) }
+            TranscriptCard()
+                .environment(\.floatingSurface, true)  // no card chrome — fill the page, we own the bg
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .background(p.bg.ignoresSafeArea())
+        .preferredColorScheme(model.theme == .day ? .light : .dark)
     }
 }
