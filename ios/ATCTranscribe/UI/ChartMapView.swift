@@ -95,9 +95,20 @@ final class MBTilesTileOverlay: MKTileOverlay {
         return c
     }()
 
+    /// WebP → PNG transcode is a per-tile CPU cost (decode + re-encode) and a candidate map-heat source.
+    /// MapKit *may* render raw WebP tile data natively on iOS 14+, but that isn't documented and there's
+    /// no per-tile render-failure callback — a wrong guess yields invisible charts — so the pass-through
+    /// is behind a default-OFF `--webp-native` flag until it's device-verified. See `shouldTranscode`.
+    static let webpNativePassthrough = ProcessInfo.processInfo.arguments.contains("--webp-native")
+
+    /// Whether a tile of `format` needs the WebP→PNG transcode. Pure so it's unit-testable.
+    static func shouldTranscode(format: String, nativePassthrough: Bool) -> Bool {
+        format == "webp" && !nativePassthrough
+    }
+
     init(reader: MBTilesReader) {
         self.reader = reader
-        self.transcode = (reader.format == "webp")
+        self.transcode = Self.shouldTranscode(format: reader.format, nativePassthrough: Self.webpNativePassthrough)
         super.init(urlTemplate: nil)
         canReplaceMapContent = false
         tileSize = CGSize(width: 256, height: 256)
@@ -483,8 +494,9 @@ struct ChartMapView: UIViewRepresentable {
         hold.delegate = context.coordinator
         mv.addGestureRecognizer(hold)
         context.coordinator.requestLocation()
-        Self.configure(mv, for: layer)
+        Self.configure(mv, for: layer, reduceGPU: model.thermalSerious)
         context.coordinator.appliedLayer = layer
+        context.coordinator.appliedReduceGPU = model.thermalSerious
         let center = ChartLayer.launchCenter ?? CLLocationCoordinate2D(latitude: 39, longitude: -96)
         let s = ChartLayer.launchSpan ?? 42
         mv.setRegion(MKCoordinateRegion(center: center,
@@ -493,16 +505,19 @@ struct ChartMapView: UIViewRepresentable {
     }
 
     /// Base-map configuration per layer. Using a `MKMapConfiguration` with an *elevation style* (rather
-    /// than the flat 2D `mapType`) makes MapKit render the earth as a 3D globe when the pilot zooms all
-    /// the way out — which also removes the Mercator edge-stretch a flat world map shows at continental
-    /// zoom. Apple's base layers get realistic 3D terrain; the FAA raster layers keep a muted flat base
-    /// under their tiles (the tiles themselves stay 2D Mercator but drape onto the globe surface).
-    static func configure(_ mv: MKMapView, for layer: ChartLayer) {
+    /// than the flat 2D `mapType`) gives the Apple base layers realistic 3D terrain; the FAA raster
+    /// layers keep a muted flat base under their tiles.
+    ///
+    /// `reduceGPU` (set from `thermalSerious`) flattens the Apple layers' terrain — continuous 3D Metal
+    /// terrain rendering is the biggest map-alone heat source, so under thermal pressure we degrade it
+    /// gracefully (terrain goes flat, the map stays up) rather than tearing the whole map down.
+    static func configure(_ mv: MKMapView, for layer: ChartLayer, reduceGPU: Bool) {
+        let elevation: MKMapConfiguration.ElevationStyle = reduceGPU ? .flat : .realistic
         switch layer {
         case .satellite:
-            mv.preferredConfiguration = MKHybridMapConfiguration(elevationStyle: .realistic)
+            mv.preferredConfiguration = MKHybridMapConfiguration(elevationStyle: elevation)
         case .standard:
-            let c = MKStandardMapConfiguration(elevationStyle: .realistic, emphasisStyle: .default)
+            let c = MKStandardMapConfiguration(elevationStyle: elevation, emphasisStyle: .default)
             c.pointOfInterestFilter = .excludingAll
             mv.preferredConfiguration = c
         case .sectional, .ifrLow, .ifrHigh:
@@ -518,7 +533,10 @@ struct ChartMapView: UIViewRepresentable {
         c.onTapObjects = onTapObjects
         c.routeLegs = route                               // hit-test source for filed waypoints
         c.routeIdents = Set(route.map { $0.ident })
-        if c.appliedLayer != layer { c.appliedLayer = layer; Self.configure(mv, for: layer) }
+        if c.appliedLayer != layer || c.appliedReduceGPU != model.thermalSerious {
+            c.appliedLayer = layer; c.appliedReduceGPU = model.thermalSerious
+            Self.configure(mv, for: layer, reduceGPU: model.thermalSerious)
+        }
 
         // Reconcile the route line + waypoint markers whenever the filed route changes (initial resolve,
         // or a tap-to-edit add/insert/remove) — remove the old, draw the new.
@@ -658,6 +676,7 @@ struct ChartMapView: UIViewRepresentable {
     final class Coordinator: NSObject, MKMapViewDelegate, CLLocationManagerDelegate, UIGestureRecognizerDelegate {
         var overlays: [ObjectIdentifier: MBTilesTileOverlay] = [:]
         var appliedLayer: ChartLayer?               // last base config applied — reconfigure only on a real change
+        var appliedReduceGPU = false                // last thermal-downgrade state applied to the base config
         var plateOverlayObj: PlateImageOverlay?     // the superimposed plate, if any
         var plateKey: String?                       // geometry identity — rebuild only when placement changes
         var routeOverlay: MKPolyline?
