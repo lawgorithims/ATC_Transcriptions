@@ -8,6 +8,7 @@ import SwiftUI
 struct MapObjectView: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var metars: MetarStore
+    @EnvironmentObject var forecasts: ForecastStore
     let result: MapProbeResult
     var onCommit: () -> Void = {}      // called after an edit (the flight-plan change also redraws the map)
     var onClose: () -> Void = {}       // dismiss the panel/sheet after an action
@@ -195,7 +196,18 @@ struct MapObjectView: View {
                 // ForeFlight-style header: the airport-diagram thumbnail (not a generic circle) plus the
                 // critical pilot data — flight category, latest weather, key freqs, procedures, altitudes.
                 HStack(alignment: .top, spacing: 12) {
-                    AirportDiagramImage(ident: o.ident, height: 96).environmentObject(model)
+                    // Tapping the diagram opens the full plate in the Plates tab (same hand-off as the
+                    // Info-tab thumbnail) — the header image is the thing pilots try to tap first.
+                    Button {
+                        if let apd = Procedures.forAirport(o.ident).first(where: { $0.code == "APD" }) {
+                            Haptics.impact(.light)
+                            openDiagramInPlatesTab(apd, ident: o.ident)
+                        }
+                    } label: {
+                        AirportDiagramImage(ident: o.ident, height: 96).environmentObject(model)
+                    }
+                    .buttonStyle(.plainHaptic)
+                    .accessibilityIdentifier("airport-header-diagram")
                     VStack(alignment: .leading, spacing: 3) {
                         HStack(spacing: 8) {
                             Text(title(o))
@@ -244,6 +256,9 @@ struct MapObjectView: View {
             }
         }
         .scrollContentBackground(.hidden)
+        // Flush layout (per feedback): kill the tall default gaps between the header caption, the
+        // Info/Weather/… tab picker, and each tab's first group.
+        .listSectionSpacing(6)
     }
 
     /// Procedures · field elevation · pattern altitude — the header's bottom caption line.
@@ -329,6 +344,32 @@ struct MapObjectView: View {
                 .accessibilityIdentifier("weather-current-loading")
             }
         }
+        // NWS 7-day outlook — day/night periods with temp, wind, and the short forecast.
+        Section("7-day outlook (NWS)") {
+            if let periods = forecasts.forecast(o.ident), !periods.isEmpty {
+                ForEach(Array(periods.enumerated()), id: \.offset) { _, per in
+                    HStack(alignment: .top, spacing: 10) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(per.name).font(.caption.weight(.semibold)).foregroundStyle(p.text)
+                            Text([per.shortForecast, per.windText.isEmpty ? nil : "Wind \(per.windText)"]
+                                    .compactMap { $0 }.joined(separator: " · "))
+                                .font(.caption2).foregroundStyle(p.textDim)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        Spacer(minLength: 4)
+                        Text(per.tempText)
+                            .font(.callout.weight(.semibold).monospaced())
+                            .foregroundStyle(per.isDaytime == true ? p.warn : p.accent)
+                    }
+                }
+            } else {
+                HStack(spacing: 10) {
+                    ProgressView().controlSize(.small)
+                    Text("Fetching the outlook…").font(.caption).foregroundStyle(p.textDim)
+                }
+            }
+        }
+        .onAppear { forecasts.ensure(o.ident, coord: o.coord) }
         let near = model.hazardEvents
             .map { ($0, Geo.nmBetween(o.coord, $0.point)) }
             .filter { $0.1 <= 200 }

@@ -8,6 +8,7 @@ struct ATCTranscribeApp: App {
     @StateObject private var downloads = ModelDownloadManager()
     @StateObject private var notes = NotesStore()
     @StateObject private var metars = MetarStore()
+    @StateObject private var forecasts = ForecastStore()
 
     var body: some Scene {
         WindowGroup {
@@ -17,6 +18,7 @@ struct ATCTranscribeApp: App {
                 .environmentObject(downloads)
                 .environmentObject(notes)               // hand-written notes library (PencilKit)
                 .environmentObject(metars)              // live METAR + flight category for airport captions
+                .environmentObject(forecasts)           // NWS 7-day outlook for the airport weather tab
                 // "Open in CommSight" from ForeFlight's share sheet (a Garmin .fpl) imports the route.
                 .onOpenURL { url in
                     guard url.isFileURL else { return }
