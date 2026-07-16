@@ -32,6 +32,22 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 51, version: "1.0", headline: "Map reliability, cleaner plates, and organized settings",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "thermometer.medium.slash",
+                    title: "The map never blanks out anymore",
+                    detail: "The map used to disappear behind a “paused to cool down” screen when the device got warm — a bad surprise in the cockpit. It now stays up no matter what. Under heat it just eases off quietly (the 3D terrain flattens and background weather layers pause) so it keeps running cooler without ever leaving you without a map."),
+                WhatsNewHighlight(
+                    icon: "doc.richtext",
+                    title: "Approach plates just work on the map",
+                    detail: "Plates you send to the map now place themselves precisely from the FAA’s built-in georeferencing — no more hand-nudging, resizing, or rotating. The only control left is a transparency slider, which now actually fades the plate. The “Send to map” button appears only on plates that can be placed accurately."),
+                WhatsNewHighlight(
+                    icon: "slider.horizontal.3",
+                    title: "Settings, organized",
+                    detail: "Settings is now grouped into clear categories — Transcription & AI, Audio & speakers, Traffic & connections, Charts & downloads, and General — instead of one long list."),
+            ]),
+        ReleaseNote(
             build: 49, version: "1.0", headline: "IFR high-altitude charts, a Downloads manager, and more weather",
             highlights: [
                 WhatsNewHighlight(
