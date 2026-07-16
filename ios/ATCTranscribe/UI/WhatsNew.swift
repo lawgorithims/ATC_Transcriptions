@@ -32,6 +32,26 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 56, version: "1.0", headline: "Airways on the map, a richer airport card, and big battery savings",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "battery.100",
+                    title: "Much easier on the battery",
+                    detail: "The speech model no longer loads when the app opens — it loads on your first Start instead, so launch touches no AI at all. Chart pre-downloads now wait a few seconds and only run on Wi-Fi. And turning “Live map background” off now keeps your FAA chart up (it used to blank the whole map) while completely stopping the Apple base map underneath — a real power saving in flight."),
+                WhatsNewHighlight(
+                    icon: "point.topleft.down.to.point.bottomright.curvepath",
+                    title: "Airways, drawn and tappable",
+                    detail: "Victor and Jet routes (plus RNAV T/Q routes) now draw on the map with their idents, from the FAA's own data. Tap anywhere along one to identify it. Toggle in the map layers menu. Nearby airport and navaid markers are also bolder with black borders, so they pop on any chart."),
+                WhatsNewHighlight(
+                    icon: "airplane.circle",
+                    title: "The airport card shows what matters",
+                    detail: "Tap an airport on the map and the card now leads with its diagram thumbnail, flight-category flag, live weather, key frequencies, approach types, field elevation, and pattern altitude. The Weather tab shows the live METAR too. The Airports tab gains Favorites (star any field) and a Recent list."),
+                WhatsNewHighlight(
+                    icon: "square.and.arrow.down",
+                    title: "Import a ForeFlight plan · notes on black",
+                    detail: "Share a plan from ForeFlight (“Open in CommSight”) or use the Import button in the flight-plan strip to load a .fpl route. Notes now write on a black page with a white pen — strokes were invisible on the old light page in the dark cockpit UI. Also fixed: widgets docking to the screen edge now trigger when the card reaches the edge, and a leftover test aircraft (N8925T) is cleared from the plan."),
+            ]),
+        ReleaseNote(
             build: 55, version: "1.0", headline: "An Airports directory with live weather, and Plates binders",
             highlights: [
                 WhatsNewHighlight(
