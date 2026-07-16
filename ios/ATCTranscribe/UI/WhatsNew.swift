@@ -32,6 +32,18 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 55, version: "1.0", headline: "An Airports directory with live weather, and Plates binders",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "airplane",
+                    title: "New Airports tab",
+                    detail: "Next to Plates: a ForeFlight-style airport directory. Each field shows its airport-diagram thumbnail plus a pilot caption — live weather with a colour-coded flight-category flag (VFR / MVFR / IFR / LIFR), the key frequencies, approach types, field elevation, and pattern altitude. Defaults to your route and nearby fields; search finds any airport."),
+                WhatsNewHighlight(
+                    icon: "books.vertical",
+                    title: "Plates, organised into binders",
+                    detail: "The Plates tab is now a set of binders — one per airport. Open a binder to browse its charts as LARGE thumbnails you can eyeball, grouped by category with approaches split out by runway, instead of a long text list. Airport diagrams render upright and readable."),
+            ]),
+        ReleaseNote(
             build: 54, version: "1.0", headline: "Transcript & Notes tabs, snap-to-side panels, and a cooler app",
             highlights: [
                 WhatsNewHighlight(
