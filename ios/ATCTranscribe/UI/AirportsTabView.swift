@@ -11,6 +11,7 @@ struct AirportsTabView: View {
     @State private var searchActive = false
     @State private var nearbyCache: [String] = []    // cached nearby scan (never recomputed per render)
     @State private var lastNearbyCoord: Coord?       // movement gate for the (off-main) nearby scan
+    @State private var infoProbe: MapProbeResult?    // ⓘ → the full airport card (weather + 7-day outlook)
 
     var body: some View {
         Group {
@@ -35,6 +36,9 @@ struct AirportsTabView: View {
         }
         .tint(model.palette.accent)
         .preferredColorScheme(model.theme == .day ? .light : .dark)
+        .sheet(item: $infoProbe) { probe in
+            MapObjectSheet(result: probe).environmentObject(model)   // full card: weather tab + 7-day outlook
+        }
         .onAppear { model.deviceLocation.start(); refreshNearby(); refreshWeather() }
         // Defer to the next main-actor hop: @Published fires in willSet, so reading `coord` synchronously
         // here would see the PRE-update (nil) value — the deferred read sees the committed fix.
@@ -116,6 +120,23 @@ struct AirportsTabView: View {
                         .buttonStyle(.plainHaptic)
                         .accessibilityIdentifier("airport-favorite")
                         .accessibilityLabel(model.isFavoriteAirport(ident) ? "Remove favorite" : "Add favorite")
+                        // ⓘ opens the FULL airport card (Info/Weather incl. the 7-day outlook/Runway/…)
+                        // without leaving the directory; the row itself still opens the plates binder.
+                        Button {
+                            Haptics.impact(.light)
+                            if let c = AirportCoordinates.coordinate(icao: ident) {
+                                model.noteAirportViewed(ident)
+                                infoProbe = MapProbeResult(id: ident,
+                                                           objects: [IdentifiedObject(kind: .airport, ident: ident,
+                                                                                      coord: c, onRoute: false)])
+                            }
+                        } label: {
+                            Image(systemName: "info.circle").font(.callout).foregroundStyle(p.accent)
+                                .frame(width: 32, height: 28).contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plainHaptic)
+                        .accessibilityIdentifier("airport-info")
+                        .accessibilityLabel("Airport details")
                         Image(systemName: "chevron.right").font(.caption2).foregroundStyle(p.textDim)
                     }
                     if let name = s.name {

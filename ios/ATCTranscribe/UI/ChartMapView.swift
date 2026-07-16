@@ -882,14 +882,16 @@ struct ChartMapView: UIViewRepresentable {
             }
             // Drawn airways — a LINE feature: distance is point-to-nearest-segment in screen points, so
             // tapping anywhere along the leg identifies it (points alone would only hit the fixes).
-            for (ident, pl) in airwayByIdent {
+            // NOTE: the dictionary KEY is the internal "area|ident" — the card must get the polyline's
+            // DISPLAY ident ("V1"), which is also what the altitude lookup expects.
+            for pl in airwayByIdent.values {
                 let pts = (0..<pl.pointCount).map { mv.convert(pl.points()[$0].coordinate, toPointTo: mv) }
                 var best = Double.infinity
                 for i in 1..<max(pts.count, 2) where i < pts.count {              // bounded (rule 2)
                     best = min(best, Self.segmentDist(pt, pts[i - 1], pts[i]))
                 }
                 if best <= radius {
-                    cands.append((IdentifiedObject(kind: .airway, ident: ident, coord: here, onRoute: false), best))
+                    cands.append((IdentifiedObject(kind: .airway, ident: pl.ident, coord: here, onRoute: false), best))
                 }
             }
 

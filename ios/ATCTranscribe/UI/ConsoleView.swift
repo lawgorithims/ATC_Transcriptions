@@ -1520,7 +1520,12 @@ struct FloatingCanvas: View {
         switch kind {
         case .transcript:  TranscriptCard()
         case .flightPlan:  EmptyView()   // retired — the flight plan is the strip under the top bar now
-        case .objectInfo:  if let probe = widgets.mapProbe { MapObjectView(result: probe, onClose: { widgets.mapProbe = nil }) }
+        case .objectInfo:  if let probe = widgets.mapProbe {
+            // .id(probe.id): a NEW map tap must reset the card's internal state (picked object, open
+            // tab) — the card stays mounted in its container (floating or docked pane), so without an
+            // identity change the previous object stays frozen on screen.
+            MapObjectView(result: probe, onClose: { widgets.mapProbe = nil }).id(probe.id)
+        }
         case .proofOfLife: SidebarWidget.proofOfLife.card
         case .stratux:     SidebarWidget.stratux.card
         case .host:        SidebarWidget.host.card

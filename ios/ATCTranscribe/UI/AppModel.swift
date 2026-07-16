@@ -544,7 +544,9 @@ final class AppModel: ObservableObject {
     }
     /// Master switch for the live map background — off shows a plain background instead, saving battery on
     /// hot/old devices. Persisted (default on).
-    @Published var mapBackgroundEnabled = (UserDefaults.standard.object(forKey: "atc.map.background") as? Bool) ?? true {
+    // Default OFF (battery): with an FAA chart selected the raster replaces the Apple base outright, so
+    // the base imagery adds cost without adding chart information. The layers-menu toggle re-enables it.
+    @Published var mapBackgroundEnabled = (UserDefaults.standard.object(forKey: "atc.map.background") as? Bool) ?? false {
         didSet {
             UserDefaults.standard.set(mapBackgroundEnabled, forKey: "atc.map.background")
             syncEONET()                    // the home map is an `eonetActive` input
