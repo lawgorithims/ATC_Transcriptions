@@ -99,10 +99,13 @@ def main():
                        leg_type TEXT, course_mag REAL, alt TEXT);
       CREATE TABLE ils(airport TEXT, runway TEXT, ident TEXT, freq_mhz REAL, course_mag REAL, lat REAL, lon REAL);
       CREATE TABLE runway(airport TEXT, designator TEXT, lat REAL, lon REAL, bearing_mag REAL, length_ft INTEGER);
+      CREATE TABLE airway(ident TEXT, seq INTEGER, fix TEXT, lat REAL, lon REAL);
       CREATE INDEX ix_proc_apt ON procedure(airport);
       CREATE INDEX ix_leg_proc ON leg(procedure_id);
       CREATE INDEX ix_ils_apt ON ils(airport);
       CREATE INDEX ix_rwy_apt ON runway(airport);
+      CREATE INDEX ix_awy_ident ON airway(ident);
+      CREATE INDEX ix_awy_lat ON airway(lat);
     """)
     proc_id = {}   # (airport, sub, ident, transition) → rowid
     nproc = nleg = 0
@@ -110,6 +113,23 @@ def main():
     def num(s, scale=1.0):
         s = s.strip()
         return (int(s) / scale) if s.isdigit() else None
+
+    # ---- pass 2b: enroute airways (section E, subsection R) — V/J/T/Q routes as ordered fix chains.
+    # Same empirical layout as the P-section legs: route ident 14-18, sequence 26-29, fix 30-34.
+    nawy = 0
+    for l in lines:
+        if len(l) < 40 or l[4] != "E" or l[5] != "R":
+            continue
+        ident = l[13:18].strip()
+        seq = re.sub(r"\D", "", l[25:29])
+        fix = l[29:34].strip()
+        if not ident or not fix or not seq:
+            continue
+        c = fixes.get(fix)
+        if c:
+            con.execute("INSERT INTO airway(ident,seq,fix,lat,lon) VALUES(?,?,?,?,?)",
+                        (ident, int(seq), fix, c[0], c[1]))
+            nawy += 1
 
     for l in lines:
         if len(l) < 60 or l[4] != "P":
@@ -158,7 +178,11 @@ def main():
     con.backup(disk)
     disk.execute("VACUUM")
     disk.close()
-    print(f"fixes={len(fixes)} procedures={nproc} legs={nleg} bytes={os.path.getsize(out)} -> {out}")
+    print(f"fixes={len(fixes)} procedures={nproc} legs={nleg} airway_points={nawy} bytes={os.path.getsize(out)} -> {out}")
+    # airway spot-check: V1 and J121 should both exist with ordered geo points
+    for awy in ("V1", "J121"):
+        pts = con.execute("SELECT COUNT(*) FROM airway WHERE ident=?", (awy,)).fetchone()[0]
+        print(f"  airway {awy}: {pts} points")
 
     # sanity spot-check
     for apt in ("KBOS", "KJFK"):

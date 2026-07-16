@@ -306,11 +306,14 @@ enum WidgetGeometry {
 
     static let minSize = CGSize(width: 220, height: 120)
 
-    /// The side pane to dock into when a widget drag ends with the finger inside an edge zone, else nil.
-    /// A generous 56 pt zone so "shove it to the edge" is easy on a bumpy deck. Pure → unit-tested.
-    static func edgeDock(fingerX: CGFloat, container: CGSize, zone: CGFloat = 56) -> WidgetStore.PaneSide? {
-        if fingerX <= zone { return .left }
-        if fingerX >= container.width - zone { return .right }
+    /// The side pane to dock into when a widget drag ends, else nil. Docks when the FINGER is inside a
+    /// generous 56 pt edge zone OR the dropped CARD itself touches/crosses the screen edge — the user
+    /// drags until the card hits the edge, but their finger (on the header) can still be mid-screen, so
+    /// finger-position alone made docking feel broken (the card just snapped back). Pure → unit-tested.
+    static func edgeDock(fingerX: CGFloat, droppedRect: CGRect, container: CGSize,
+                         zone: CGFloat = 56) -> WidgetStore.PaneSide? {
+        if fingerX <= zone || droppedRect.minX <= 0 { return .left }
+        if fingerX >= container.width - zone || droppedRect.maxX >= container.width { return .right }
         return nil
     }
 }
@@ -516,13 +519,16 @@ struct FloatingWidgetContainer<Content: View>: View {
             .updating($drag) { v, s, _ in s = v.translation }
             .onChanged { _ in if widgets.layout.frame(frame.kind)?.z != widgets.layout.maxZ { widgets.bringToFront(frame.kind) } }
             .onEnded { v in
-                // Dragged the header INTO a screen edge → dock into that side pane (Windows-snap).
-                if let side = WidgetGeometry.edgeDock(fingerX: v.location.x, container: container) {
+                let rect = WidgetGeometry.rect(for: frame, in: container)
+                let dropped = CGRect(x: rect.origin.x + v.translation.width,
+                                     y: rect.origin.y + v.translation.height,
+                                     width: rect.width, height: rect.height)
+                // Dragged INTO a screen edge (finger in the zone, or the card itself touching the edge)
+                // → dock into that side pane (Windows-snap).
+                if let side = WidgetGeometry.edgeDock(fingerX: v.location.x, droppedRect: dropped, container: container) {
                     Haptics.impact(.medium); widgets.dockToSide(frame.kind, side); return
                 }
-                let rect = WidgetGeometry.rect(for: frame, in: container)
-                let dropped = CGPoint(x: rect.origin.x + v.translation.width, y: rect.origin.y + v.translation.height)
-                let snapped = WidgetGeometry.snap(droppedOrigin: dropped, size: rect.size, in: container)
+                let snapped = WidgetGeometry.snap(droppedOrigin: dropped.origin, size: rect.size, in: container)
                 widgets.update(frame.kind) { $0.anchor = snapped.anchor; $0.offset = snapped.offset }
             }
     }

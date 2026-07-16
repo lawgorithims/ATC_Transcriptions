@@ -7,6 +7,7 @@ import SwiftUI
 /// for airspace and traffic.
 struct MapObjectView: View {
     @EnvironmentObject var model: AppModel
+    @EnvironmentObject var metars: MetarStore
     let result: MapProbeResult
     var onCommit: () -> Void = {}      // called after an edit (the flight-plan change also redraws the map)
     var onClose: () -> Void = {}       // dismiss the panel/sheet after an action
@@ -146,6 +147,7 @@ struct MapObjectView: View {
         case .userPoint: return "Dropped point"
         case .hazard:    return o.hazard?.category.label ?? "Hazard"
         case .tfr:       return o.tfr?.type.label ?? "TFR"
+        case .airway:    return "Enroute airway"
         }
     }
 
@@ -186,16 +188,37 @@ struct MapObjectView: View {
 
     @ViewBuilder private func airportCard(_ o: IdentifiedObject) -> some View {
         let p = model.palette
+        let summary = AirportSummary.make(o.ident)
+        let metar = metars.metar(o.ident)
         List {
             Section {
-                HStack(spacing: 12) {
-                    badge(o.kind, large: true)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(title(o))
-                            .font(.system(.title3, design: .monospaced).weight(.semibold)).foregroundStyle(p.text)
-                        if let name = displayName(o) { Text(name).font(.subheadline).foregroundStyle(p.textDim) }
+                // ForeFlight-style header: the airport-diagram thumbnail (not a generic circle) plus the
+                // critical pilot data — flight category, latest weather, key freqs, procedures, altitudes.
+                HStack(alignment: .top, spacing: 12) {
+                    AirportDiagramImage(ident: o.ident, height: 96).environmentObject(model)
+                    VStack(alignment: .leading, spacing: 3) {
+                        HStack(spacing: 8) {
+                            Text(title(o))
+                                .font(.system(.title3, design: .monospaced).weight(.semibold)).foregroundStyle(p.text)
+                            FlightCategoryChip(metar: metar)
+                        }
+                        if let name = displayName(o) {
+                            Text(name).font(.caption).foregroundStyle(p.textDim).lineLimit(1)
+                        }
+                        Text(metar?.summary ?? "Latest weather unavailable")
+                            .font(.caption).foregroundStyle(metar == nil ? p.textDim : p.text).lineLimit(2)
+                        if !summary.keyFreqs.isEmpty {
+                            Text(summary.keyFreqs.map { "\($0.label) \($0.value)" }.joined(separator: "  ·  "))
+                                .font(.caption2.monospaced()).foregroundStyle(p.accent).lineLimit(1)
+                        }
+                        Text(airportDetailLine(summary))
+                            .font(.caption2).foregroundStyle(p.textDim).lineLimit(2)
                     }
-                    Spacer()
+                    Spacer(minLength: 0)
+                }
+                .onAppear {
+                    metars.ensure([o.ident])             // header + Weather tab share the observation
+                    model.noteAirportViewed(o.ident)     // feeds the Airports tab's "Recent" section
                 }
                 airportQuickActions(o)
             }
@@ -221,6 +244,15 @@ struct MapObjectView: View {
             }
         }
         .scrollContentBackground(.hidden)
+    }
+
+    /// Procedures · field elevation · pattern altitude — the header's bottom caption line.
+    private func airportDetailLine(_ s: AirportSummary) -> String {
+        var parts: [String] = []
+        if !s.procedureTypes.isEmpty { parts.append(s.procedureTypes.joined(separator: " · ")) }
+        if let e = s.elevationFt { parts.append("Field elevation \(e.grouped)′") }
+        if let tpa = s.patternAltFt { parts.append("Pattern altitude \(tpa.grouped)′ (est)") }
+        return parts.isEmpty ? "No published procedures" : parts.joined(separator: "   ·   ")
     }
 
     /// The compact action strip under the header (Direct-To / route endpoints), mirroring ForeFlight's
@@ -268,20 +300,34 @@ struct MapObjectView: View {
         }
     }
 
-    /// Current observations: live METAR/TAF aren't bundled yet (shown honestly), plus nearby EONET
-    /// satellite-observed hazards — which ARE current-ish context.
+    /// Current observations: the LIVE METAR (same MetarStore the Airports tab uses) — category chip,
+    /// decoded summary, and the raw observation — plus nearby EONET satellite-observed hazards.
     @ViewBuilder private func currentWxSection(_ o: IdentifiedObject) -> some View {
         let p = model.palette
         Section("Current observations") {
-            HStack(spacing: 10) {
-                Image(systemName: "cloud.sun").font(.title3).foregroundStyle(p.textDim)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Live METAR / TAF — coming soon").font(.callout).foregroundStyle(p.text)
-                    Text("Current observations aren't in the app yet. Check an official source (AWOS/ASOS, aviationweather.gov).")
-                        .font(.caption2).foregroundStyle(p.textDim).fixedSize(horizontal: false, vertical: true)
+            if let m = metars.metar(o.ident) {
+                HStack(spacing: 10) {
+                    FlightCategoryChip(metar: m)
+                    Text(m.summary).font(.callout).foregroundStyle(p.text)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
                 }
+                .accessibilityIdentifier("weather-current-metar")
+                if let raw = m.rawOb {
+                    Text(raw).font(.caption2.monospaced()).foregroundStyle(p.textDim)
+                        .textSelection(.enabled)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                if let t = m.obsEpoch {
+                    KV("Observed", Self.relative.localizedString(for: Date(timeIntervalSince1970: TimeInterval(t)), relativeTo: Date()))
+                }
+            } else {
+                HStack(spacing: 10) {
+                    ProgressView().controlSize(.small)
+                    Text("Fetching the latest METAR…").font(.callout).foregroundStyle(p.textDim)
+                }
+                .accessibilityIdentifier("weather-current-loading")
             }
-            .accessibilityIdentifier("weather-current-comingsoon")
         }
         let near = model.hazardEvents
             .map { ($0, Geo.nmBetween(o.coord, $0.point)) }
@@ -304,7 +350,7 @@ struct MapObjectView: View {
             }
         }
         Section {} footer: {
-            Text("Live METAR/TAF are not available offline. Hazards are satellite-observed (NASA EONET) — not a substitute for an official weather briefing.")
+            Text("METAR from aviationweather.gov (requires a connection). Hazards are satellite-observed (NASA EONET). Neither substitutes for an official weather briefing.")
                 .font(.caption2).foregroundStyle(p.textDim)
         }
     }
@@ -480,6 +526,7 @@ struct MapObjectView: View {
         case .userPoint: return "Custom point on the map"
         case .hazard:    return "Satellite-observed — NASA EONET"
         case .tfr:       return "Temporary Flight Restriction — FAA"
+        case .airway:    return "Enroute airway — file it between two of its fixes"
         }
     }
 
@@ -540,9 +587,27 @@ struct MapObjectView: View {
                     }
                 }
                 bearingRow(o.coord)
+            case .airway:
+                KV("Route", o.ident)
+                KV("Kind", Self.airwayKindName(o.ident))
+                Text("To file it, type the airway between two of its fixes in the route — e.g. “GDM \(o.ident) ORW”.")
+                    .font(.caption).foregroundStyle(p.textDim)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .foregroundStyle(p.text)
+    }
+
+    /// Human name for an airway ident's class: V = low-altitude Victor, J = high-altitude Jet,
+    /// T/Q = RNAV (low/high).
+    static func airwayKindName(_ ident: String) -> String {
+        switch ident.first {
+        case "V": return "Victor airway (low altitude)"
+        case "J": return "Jet route (high altitude)"
+        case "Q": return "RNAV Q-route (high altitude)"
+        case "T": return "RNAV T-route (low altitude)"
+        default:  return "Enroute airway"
+        }
     }
 
     /// EONET events are satellite observations — awareness context, not a briefing product.
@@ -672,6 +737,7 @@ struct MapObjectView: View {
         case .userPoint: return .hex(0xFBBF24)
         case .hazard:    return .hex(0xF97316)
         case .tfr:       return .hex(0xF71433)
+        case .airway:    return .hex(0x6B94DB)
         }
     }
 
@@ -685,6 +751,7 @@ struct MapObjectView: View {
         case .userPoint: return "mappin"
         case .hazard:    return "flame"
         case .tfr:       return "exclamationmark.octagon"
+        case .airway:    return "point.topleft.down.to.point.bottomright.curvepath"
         }
     }
 }

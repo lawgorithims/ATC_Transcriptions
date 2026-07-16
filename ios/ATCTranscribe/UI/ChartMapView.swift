@@ -106,11 +106,14 @@ final class MBTilesTileOverlay: MKTileOverlay {
         format == "webp" && !nativePassthrough
     }
 
-    init(reader: MBTilesReader) {
+    init(reader: MBTilesReader, replacesBase: Bool = false) {
         self.reader = reader
         self.transcode = Self.shouldTranscode(format: reader.format, nativePassthrough: Self.webpNativePassthrough)
         super.init(urlTemplate: nil)
-        canReplaceMapContent = false
+        // "Live map background" OFF → the FAA raster REPLACES the Apple base: MapKit stops fetching +
+        // rendering the base tiles underneath entirely (a real network/GPU saving), instead of the old
+        // behavior of tearing the whole map down (which wrongly took the FAA chart with it).
+        canReplaceMapContent = replacesBase
         tileSize = CGSize(width: 256, height: 256)
         minimumZ = reader.minZoom
         maximumZ = min(reader.maxZoom + Self.overzoomLevels, 22)
@@ -471,6 +474,7 @@ struct ChartMapView: UIViewRepresentable {
     var procedure: [ResolvedLeg] = []                // a previewed coded procedure (approach/SID/STAR), georeferenced
     let showAirspace: Bool
     let showNearby: Bool
+    var showAirways: Bool = true     // enroute V/J/T/Q routes as tappable lines (zoom-gated)
     let initialCenter: Coord?        // frame here when there's no filed route (device / Stratux position)
     let onVisibleRegion: (MKMapRect) -> Void
     let onTapObjects: ([IdentifiedObject]) -> Void   // tap / long-press → ranked objects there (empty = nothing)
@@ -593,12 +597,20 @@ struct ChartMapView: UIViewRepresentable {
 
         // Incrementally reconcile the raster overlays to `readers` (they come and go as you pan). Tiles
         // sit at the bottom of the label level so airspace outlines + the route line draw over the chart.
+        // With the live map background OFF the FAA raster replaces the Apple base outright (see
+        // MBTilesTileOverlay.init); flipping the toggle remounts the overlays with the new mode.
+        let replacesBase = !model.mapBackgroundEnabled
+        if c.appliedReplacesBase != replacesBase {
+            c.appliedReplacesBase = replacesBase
+            for (_, ov) in c.overlays { mv.removeOverlay(ov) }
+            c.overlays.removeAll()
+        }
         let want = Set(readers.map(ObjectIdentifier.init))
         for (rid, ov) in c.overlays where !want.contains(rid) { mv.removeOverlay(ov); c.overlays[rid] = nil }
         for r in readers {
             let rid = ObjectIdentifier(r)
             guard c.overlays[rid] == nil else { continue }
-            let ov = MBTilesTileOverlay(reader: r)
+            let ov = MBTilesTileOverlay(reader: r, replacesBase: replacesBase)
             mv.insertOverlay(ov, at: 0, level: .aboveLabels)
             c.overlays[rid] = ov
         }
@@ -635,9 +647,9 @@ struct ChartMapView: UIViewRepresentable {
         }
 
         // Context layers refresh when a toggle changes (region changes refresh via the delegate); the
-        // first pass forces one so airspace/nearby appear without waiting for a pan.
-        if c.showAirspace != showAirspace || c.showNearby != showNearby || !c.didContext {
-            c.showAirspace = showAirspace; c.showNearby = showNearby; c.didContext = true
+        // first pass forces one so airspace/nearby/airways appear without waiting for a pan.
+        if c.showAirspace != showAirspace || c.showNearby != showNearby || c.showAirways != showAirways || !c.didContext {
+            c.showAirspace = showAirspace; c.showNearby = showNearby; c.showAirways = showAirways; c.didContext = true
             c.refreshContext(mv)
         }
 
@@ -706,6 +718,7 @@ struct ChartMapView: UIViewRepresentable {
         var overlays: [ObjectIdentifier: MBTilesTileOverlay] = [:]
         var appliedLayer: ChartLayer?               // last base config applied — reconfigure only on a real change
         var appliedRealistic = false                // last 3D-terrain state applied to the base config (opt-in + thermal)
+        var appliedReplacesBase = false             // last raster canReplaceMapContent mode (map-background toggle)
         var plateOverlayObj: PlateImageOverlay?     // the superimposed plate, if any
         var plateKey: String?                       // geometry identity — rebuild only when placement changes
         var plateCorners: (tl: CLLocationCoordinate2D, tr: CLLocationCoordinate2D)?  // chrome anchor coords
@@ -729,6 +742,7 @@ struct ChartMapView: UIViewRepresentable {
         var didContext = false
         var showAirspace = true
         var showNearby = true
+        var showAirways = true
         var routeLegs: [ResolvedLeg] = []
         var lastFocus: Coord?
         var onVisibleRegion: ((MKMapRect) -> Void)?
@@ -753,6 +767,9 @@ struct ChartMapView: UIViewRepresentable {
         var tfrByID: [String: TFR] = [:]                              // the full TFR for the tap probe + change detection
         var smokeOverlay: GIBSTileOverlay?                            // NASA GIBS satellite smoke layer (translucent, above the chart)
         private var nearbyByKey: [String: NearbyAnnotation] = [:]   // keyed by NavPoint.id for the same reason
+        // Enroute airways — polylines + one midpoint ident label per airway, diffed like the other layers.
+        var airwayByIdent: [String: AirwayPolyline] = [:]
+        var airwayLabelByIdent: [String: AirwayLabelAnnotation] = [:]
         private var contextGen = 0                                  // drops stale async refreshes (rapid panning)
         private var probeGen = 0                                    // drops a superseded tap probe (L12) — double-tap debounce
         private let loc = CLLocationManager()
@@ -841,6 +858,18 @@ struct ChartMapView: UIViewRepresentable {
                                                onRoute: false, hazard: hazardEventsByID[h.eventID]),
                               screenDist(c)))
             }
+            // Drawn airways — a LINE feature: distance is point-to-nearest-segment in screen points, so
+            // tapping anywhere along the leg identifies it (points alone would only hit the fixes).
+            for (ident, pl) in airwayByIdent {
+                let pts = (0..<pl.pointCount).map { mv.convert(pl.points()[$0].coordinate, toPointTo: mv) }
+                var best = Double.infinity
+                for i in 1..<max(pts.count, 2) where i < pts.count {              // bounded (rule 2)
+                    best = min(best, Self.segmentDist(pt, pts[i - 1], pts[i]))
+                }
+                if best <= radius {
+                    cands.append((IdentifiedObject(kind: .airway, ident: ident, coord: here, onRoute: false), best))
+                }
+            }
 
             var results = MapProbe.rank(cands, within: radius)
             for asp in airspaces {   // "you're inside Class B" — containment already filtered off-main
@@ -901,6 +930,7 @@ struct ChartMapView: UIViewRepresentable {
                             region.span.longitudeDelta * cos(region.center.latitude * .pi / 180))
             let wantAir = showAirspace && scale < 14
             let wantNear = showNearby && scale < 5.5
+            let wantAwy = showAirways && scale < 9        // airways clutter a continent-level view
             let bb = BBox(region: region, margin: 0.15)
             let idents = routeIdents
             contextGen &+= 1
@@ -909,7 +939,7 @@ struct ChartMapView: UIViewRepresentable {
                 let out = await Task.detached(priority: .userInitiated) {
                     () -> (rings: [(key: String, coords: [CLLocationCoordinate2D], cls: String)],
                            labels: [(key: String, coord: CLLocationCoordinate2D, ceil: String, floor: String, cls: String)],
-                           near: [NavPoint]) in
+                           near: [NavPoint], airways: [AirwaySegment]) in
                     var rings: [(key: String, coords: [CLLocationCoordinate2D], cls: String)] = []
                     var labels: [(key: String, coord: CLLocationCoordinate2D, ceil: String, floor: String, cls: String)] = []
                     if wantAir {
@@ -940,12 +970,38 @@ struct ChartMapView: UIViewRepresentable {
                     let near: [NavPoint] = wantNear
                         ? NavDatabase.nearby(bb, limit: 160).filter { !idents.contains($0.ident) }
                         : []
-                    return (rings, labels, near)
+                    let airways: [AirwaySegment] = wantAwy ? Airways.inRegion(bb) : []
+                    return (rings, labels, near, airways)
                 }.value
                 guard let self, let mv, gen == self.contextGen else { return }   // a newer refresh superseded us
                 self.applyAirspace(out.rings, to: mv)
                 self.applyAirspaceLabels(out.labels, to: mv)
                 self.applyNearby(out.near, to: mv)
+                self.applyAirways(out.airways, to: mv)
+            }
+        }
+
+        /// Diff the airway polylines + their midpoint ident labels against what's drawn (same
+        /// keep/remove/add pattern as airspace, so panning never redraws in-view airways).
+        private func applyAirways(_ segs: [AirwaySegment], to mv: MKMapView) {
+            let wanted = Set(segs.map(\.ident))
+            for (ident, pl) in airwayByIdent where !wanted.contains(ident) {
+                mv.removeOverlay(pl); airwayByIdent[ident] = nil
+            }
+            for (ident, ann) in airwayLabelByIdent where !wanted.contains(ident) {
+                mv.removeAnnotation(ann); airwayLabelByIdent[ident] = nil
+            }
+            for seg in segs where airwayByIdent[seg.ident] == nil {
+                var coords = seg.points.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) }
+                let pl = AirwayPolyline(coordinates: &coords, count: coords.count)
+                pl.ident = seg.ident
+                mv.insertOverlay(pl, at: 0, level: .aboveLabels)   // under airspace/route, above the chart
+                airwayByIdent[seg.ident] = pl
+                let mid = seg.points[seg.points.count / 2]
+                let ann = AirwayLabelAnnotation(ident: seg.ident,
+                                                coord: CLLocationCoordinate2D(latitude: mid.lat, longitude: mid.lon))
+                mv.addAnnotation(ann)
+                airwayLabelByIdent[seg.ident] = ann
             }
         }
 
@@ -1081,6 +1137,12 @@ struct ChartMapView: UIViewRepresentable {
                 }
                 return r
             }
+            if let awy = overlay as? AirwayPolyline {             // enroute airway — slate-blue, chart-style
+                let r = MKPolylineRenderer(polyline: awy)
+                r.strokeColor = UIColor(red: 0.42, green: 0.58, blue: 0.86, alpha: 0.75)
+                r.lineWidth = 1.6
+                return r
+            }
             if let line = overlay as? MKPolyline {
                 let r = MKPolylineRenderer(polyline: line)
                 if line === procedureOverlay {                    // previewed procedure — cyan dashed
@@ -1125,6 +1187,12 @@ struct ChartMapView: UIViewRepresentable {
                     ?? NearbyMarkerView(annotation: annotation, reuseIdentifier: "near")
                 v.annotation = annotation
                 v.configure(ident: n.ident, isAirport: n.isAirport)
+                return v
+            case let awy as AirwayLabelAnnotation:
+                let v = mv.dequeueReusableAnnotationView(withIdentifier: "awylbl") as? AirwayLabelView
+                    ?? AirwayLabelView(annotation: annotation, reuseIdentifier: "awylbl")
+                v.annotation = annotation
+                v.configure(ident: awy.ident)
                 return v
             case let a as AirspaceLabelAnnotation:
                 let v = mv.dequeueReusableAnnotationView(withIdentifier: "asplbl") as? AirspaceLabelView
@@ -1343,15 +1411,15 @@ final class NearbyMarkerView: MKAnnotationView {
 
     override init(annotation: MKAnnotation?, reuseIdentifier: String?) {
         super.init(annotation: annotation, reuseIdentifier: reuseIdentifier)
-        frame = CGRect(x: 0, y: 0, width: 48, height: 22)
-        shape.frame = CGRect(x: 20, y: 0, width: 8, height: 8)
+        frame = CGRect(x: 0, y: 0, width: 52, height: 27)
+        shape.frame = CGRect(x: 20, y: 0, width: 12, height: 12)
         addSubview(shape)
-        label.frame = CGRect(x: 0, y: 9, width: 48, height: 11)
+        label.frame = CGRect(x: 0, y: 13, width: 52, height: 12)
         label.textAlignment = .center
-        label.font = .monospacedSystemFont(ofSize: 7, weight: .medium)
-        label.textColor = UIColor.white.withAlphaComponent(0.85)
+        label.font = .monospacedSystemFont(ofSize: 8, weight: .semibold)
+        label.textColor = .white
         label.layer.shadowColor = UIColor.black.cgColor
-        label.layer.shadowOpacity = 0.7; label.layer.shadowRadius = 1; label.layer.shadowOffset = .zero
+        label.layer.shadowOpacity = 1; label.layer.shadowRadius = 1.5; label.layer.shadowOffset = .zero
         addSubview(label)
         displayPriority = .defaultLow
         isEnabled = false
@@ -1363,27 +1431,78 @@ final class NearbyMarkerView: MKAnnotationView {
         shape.image = isAirport ? Self.airportImg : Self.navaidImg
     }
 
+    // Bolder, chart-legible glyphs (per pilot feedback): FILLED shapes with a black border so they pop
+    // against both the muted Apple base and a busy sectional, instead of thin dim outlines.
     private static let navaidImg: UIImage = {
-        let d: CGFloat = 8
+        let d: CGFloat = 12
         return UIGraphicsImageRenderer(size: CGSize(width: d, height: d)).image { _ in
-            UIColor(red: 0.20, green: 0.83, blue: 0.60, alpha: 0.9).setStroke()
-            let path = UIBezierPath(); let c = CGPoint(x: d / 2, y: d / 2); let r = d / 2 - 0.75
+            let path = UIBezierPath(); let c = CGPoint(x: d / 2, y: d / 2); let r = d / 2 - 1.25
             for i in 0..<6 {
                 let a = CGFloat(i) * .pi / 3 - .pi / 2
                 let p = CGPoint(x: c.x + r * cos(a), y: c.y + r * sin(a))
                 if i == 0 { path.move(to: p) } else { path.addLine(to: p) }
             }
-            path.close(); path.lineWidth = 1.2; path.stroke()
+            path.close()
+            UIColor(red: 0.20, green: 0.83, blue: 0.60, alpha: 1).setFill(); path.fill()
+            UIColor.black.setStroke(); path.lineWidth = 1.5; path.stroke()
         }
     }()
     private static let airportImg: UIImage = {
-        let d: CGFloat = 8
+        let d: CGFloat = 12
         return UIGraphicsImageRenderer(size: CGSize(width: d, height: d)).image { _ in
-            UIColor(red: 0.91, green: 0.47, blue: 0.98, alpha: 0.9).setStroke()
-            let ring = UIBezierPath(ovalIn: CGRect(x: 0.75, y: 0.75, width: d - 1.5, height: d - 1.5))
-            ring.lineWidth = 1.5; ring.stroke()
+            let ring = UIBezierPath(ovalIn: CGRect(x: 1, y: 1, width: d - 2, height: d - 2))
+            UIColor(red: 0.91, green: 0.47, blue: 0.98, alpha: 1).setFill(); ring.fill()
+            UIColor.black.setStroke(); ring.lineWidth = 1.5; ring.stroke()
         }
     }()
+}
+
+/// An enroute airway polyline — carries its ident so the renderer and the tap probe can identify it.
+final class AirwayPolyline: MKPolyline {
+    var ident = ""
+}
+
+/// The airway's ident label, placed at the geometry's midpoint (one per airway in view).
+final class AirwayLabelAnnotation: NSObject, MKAnnotation {
+    let ident: String
+    let coordinate: CLLocationCoordinate2D
+    init(ident: String, coord: CLLocationCoordinate2D) { self.ident = ident; self.coordinate = coord }
+}
+
+/// Small slate-blue capsule with the airway ident ("V1", "J121") — decorative, yields to everything.
+final class AirwayLabelView: MKAnnotationView {
+    private let label = UILabel()
+    override init(annotation: MKAnnotation?, reuseIdentifier: String?) {
+        super.init(annotation: annotation, reuseIdentifier: reuseIdentifier)
+        frame = CGRect(x: 0, y: 0, width: 44, height: 14)
+        label.frame = bounds
+        label.textAlignment = .center
+        label.font = .monospacedSystemFont(ofSize: 9, weight: .bold)
+        label.textColor = .white
+        label.backgroundColor = UIColor(red: 0.42, green: 0.58, blue: 0.86, alpha: 0.85)
+        label.layer.cornerRadius = 4
+        label.layer.masksToBounds = true
+        label.layer.borderColor = UIColor.black.cgColor
+        label.layer.borderWidth = 0.75
+        addSubview(label)
+        displayPriority = .defaultLow
+        collisionMode = .rectangle
+        isEnabled = false
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+    func configure(ident: String) { label.text = ident }
+}
+
+extension ChartMapView.Coordinator {
+    /// Distance from `p` to the segment a–b in screen points (the airway tap test). Pure.
+    static func segmentDist(_ p: CGPoint, _ a: CGPoint, _ b: CGPoint) -> Double {
+        let abx = Double(b.x - a.x), aby = Double(b.y - a.y)
+        let apx = Double(p.x - a.x), apy = Double(p.y - a.y)
+        let len2 = abx * abx + aby * aby
+        let t = len2 > 0 ? min(max((apx * abx + apy * aby) / len2, 0), 1) : 0
+        let cx = Double(a.x) + t * abx, cy = Double(a.y) + t * aby
+        return hypot(Double(p.x) - cx, Double(p.y) - cy)
+    }
 }
 
 extension BBox {

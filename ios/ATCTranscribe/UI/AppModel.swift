@@ -220,6 +220,34 @@ final class AppModel: ObservableObject {
         didSet { UserDefaults.standard.set(terrain3DEnabled, forKey: "atc.terrain3D") }
     }
 
+    // Airport directory personalization: starred favorites + a recently-viewed trail (any surface that
+    // opens an airport records it via `noteAirportViewed`). Both bounded and persisted.
+    @Published var favoriteAirports: [String] = UserDefaults.standard.stringArray(forKey: "atc.favAirports") ?? [] {
+        didSet { UserDefaults.standard.set(favoriteAirports, forKey: "atc.favAirports") }
+    }
+    @Published var recentAirports: [String] = UserDefaults.standard.stringArray(forKey: "atc.recentAirports") ?? [] {
+        didSet { UserDefaults.standard.set(recentAirports, forKey: "atc.recentAirports") }
+    }
+
+    func isFavoriteAirport(_ ident: String) -> Bool { favoriteAirports.contains(ident.uppercased()) }
+
+    func toggleFavoriteAirport(_ ident: String) {
+        let id = ident.trimmingCharacters(in: .whitespaces).uppercased()
+        guard !id.isEmpty, id.count <= 8 else { return }                     // sanity bound (rule 7)
+        if let i = favoriteAirports.firstIndex(of: id) { favoriteAirports.remove(at: i) }
+        else { favoriteAirports = Array(([id] + favoriteAirports).prefix(50)) }
+    }
+
+    /// Record an airport the pilot actually LOOKED at (binder opened, directory row tapped, map card
+    /// shown) — most recent first, deduped, capped.
+    func noteAirportViewed(_ ident: String) {
+        let id = ident.trimmingCharacters(in: .whitespaces).uppercased()
+        guard !id.isEmpty, id.count <= 8 else { return }                     // sanity bound (rule 7)
+        var r = recentAirports.filter { $0 != id }
+        r.insert(id, at: 0)
+        recentAirports = Array(r.prefix(12))
+    }
+
     // Electronic Flight Bag: the filed flight plan (ForeFlight-style). Persisted as JSON; whenever
     // it changes, its context block is packed into the live correction layer (both LLM backends)
     // and saved. Edited LIVE in the flight-plan strip (`FlightPlanBar`) — there is no Save button,
@@ -479,6 +507,11 @@ final class AppModel: ObservableObject {
     }
     @Published var showNearby = (UserDefaults.standard.object(forKey: "atc.map.nearby") as? Bool) ?? true {
         didSet { UserDefaults.standard.set(showNearby, forKey: "atc.map.nearby") }
+    }
+    /// Enroute airways (V/J/T/Q, from the bundled CIFP) drawn as tappable lines — default ON like the
+    /// other context layers; zoom-gated in the map so a continent view stays clean.
+    @Published var showAirways = (UserDefaults.standard.object(forKey: "atc.map.airways") as? Bool) ?? true {
+        didSet { UserDefaults.standard.set(showAirways, forKey: "atc.map.airways") }
     }
     @Published var showWxRadar = UserDefaults.standard.bool(forKey: "atc.map.wxRadar") {   // stub overlay for now
         didSet { UserDefaults.standard.set(showWxRadar, forKey: "atc.map.wxRadar") }
@@ -771,6 +804,8 @@ final class AppModel: ObservableObject {
     private var feedKey: String?
     private var liveMode = false
     private var llmDeferred = false   // the ~400 MB LLM load was kept off the launch path → build on first Start
+    /// The speech-model load stashed off the launch path (heat) — consumed by the first Start.
+    private var pendingModelLoad: (models: [String: String], active: String, audioDir: String?)?
 
     // GPS-vicinity corrector grounding (in-cockpit feeds). Resolves the surrounding airports off-main
     // and pushes them to the running session as ownship moves — the analogue of the traffic push.
@@ -791,6 +826,17 @@ final class AppModel: ObservableObject {
     private var audioDirPath: String?               // demo clips dir, kept for model re-load on switch
 
     init() {
+        // SANITIZER: the Clearance Test Bench's sandbox ownship (N8925T / "Piper Seneca") must never
+        // masquerade as the pilot's real aircraft. If the persisted plan carries the bench tail but the
+        // pilot never SAVED that aircraft, the callsign/type can only be sandbox residue (a pre-failsafe
+        // leak) — strip it so the aircraft box goes back to its unfilled placeholder.
+        if var fp = flightPlan,
+           fp.callsign.caseInsensitiveCompare(ClearanceScenarioCatalog.ownship.callsign) == .orderedSame,
+           !aircraftProfiles.contains(where: { $0.callsign.caseInsensitiveCompare(fp.callsign) == .orderedSame }) {
+            fp.callsign = ""; fp.aircraftType = ""
+            flightPlan = fp.isEmpty ? nil : fp
+            NSLog("CommSight: stripped test-bench sandbox aircraft from the persisted flight plan.")
+        }
         // Build the ADS-B service first. Its callbacks hop to the main actor: `onUpdate` applies the
         // pruned contacts + re-injects the corrector block with a fresh expiry; `onStatus` surfaces
         // feed health. `[weak self]` is safe — every stored property has a default, so `self` is fully
@@ -983,7 +1029,17 @@ final class AppModel: ObservableObject {
             if value("--source") == nil, UserDefaults.standard.string(forKey: "atc.source") == nil,
                audioDir != nil { source = .replay }
             let autostart = args.contains("--autostart")
-            beginModelLoad(models: models, active: active, audioDir: audioDir, autostart: autostart)
+            if autostart {
+                beginModelLoad(models: models, active: active, audioDir: audioDir, autostart: true)
+            } else {
+                // HEAT: don't touch CoreML at launch. The speech model (potentially a multi-GB compile on
+                // first run, and a real CPU/ANE burst every run) now loads on the FIRST Start — launch is
+                // just UI + map. The stash is consumed by start(); an explicit Settings model swap or a
+                // finished download calls beginModelLoad directly, which clears it.
+                pendingModelLoad = (models, active, audioDir)
+                liveMode = true
+                detail = "Ready — press Start."
+            }
         } else {
             seedSampleData()   // no model yet — populated demo layout behind the download gate
             // Gate the first launch on downloading the required model, unless launched with an
@@ -1772,6 +1828,20 @@ final class AppModel: ObservableObject {
         if airport.isEmpty, let dep = parsed.departure, !dep.isEmpty { airport = dep }
     }
 
+    /// Import a Garmin/ForeFlight `.fpl` file (share-sheet "Open in CommSight" or the strip's Import
+    /// button) — the route replaces the filed departure/enroute/destination; callsign/altitude/aircraft
+    /// are untouched (an FPL carries no aircraft). Returns false when the file isn't a parseable plan.
+    @discardableResult
+    func importFPL(_ url: URL) -> Bool {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        guard let data = try? Data(contentsOf: url),
+              let route = ForeFlightImport.routeString(fromFPL: data) else { return false }
+        commitRouteString(route)
+        detail = "Imported route from \(url.lastPathComponent)."
+        return true
+    }
+
     /// Set the planned cruise altitude from the strip's altitude box (nil clears it).
     func setCruiseAltitude(_ feet: Int?) {
         let bounded = feet.map { min(max($0, 0), 60_000) }                // sanity bound (rule 7)
@@ -1862,6 +1932,7 @@ final class AppModel: ObservableObject {
         guard let legs = flightPlan?.fullRoute, !legs.isEmpty else { return }
         let layers = prefetchChartLayers
         Task {
+            guard await !NetPath.isExpensive() else { return }   // background bulk pull: Wi-Fi only
             let points = await Task.detached(priority: .utility) {
                 _ = NavDatabase.count
                 return RouteResolver.resolve(legs).points
@@ -1878,11 +1949,16 @@ final class AppModel: ObservableObject {
         let layers = prefetchChartLayers
         let stratux = stratuxGPS?.coordinate
         Task {
+            // HEAT/BATTERY: launch prefetch can pull hundreds of MB of packs (around-me + route). Let
+            // the launch settle first, and never do it uninvited on a cellular/hotspot path — the
+            // on-demand path still downloads whatever the map actually needs when the pilot looks.
+            try? await Task.sleep(nanoseconds: 8_000_000_000)
+            guard await !NetPath.isExpensive() else { return }
             if let here = await ChartLibrary.shared.nearestFix(preferring: stratux) {
                 await ChartLibrary.shared.prefetchAround(here, layers: layers)
             }
+            prefetchRouteCharts()
         }
-        prefetchRouteCharts()
     }
 
     // MARK: ADS-B live traffic
@@ -2258,6 +2334,15 @@ final class AppModel: ObservableObject {
         guard liveMode else {           // no model → design/screenshot demo
             status = .live; detail = "Transcribing (demo)."; return
         }
+        // First Start after a cool launch: the speech model was deliberately NOT loaded at launch (heat).
+        // Kick the load off now with autostart, so capture begins the moment the model is ready. The
+        // ModelLoadingView (records empty + loadingModel set) gives live progress meanwhile.
+        if session == nil, let pending = pendingModelLoad {
+            pendingModelLoad = nil
+            beginModelLoad(models: pending.models, active: pending.active,
+                           audioDir: pending.audioDir, autostart: true)
+            return
+        }
         guard let session else {        // live build whose model failed to load
             status = .error
             detail = modelLoadError.map { "Speech model unavailable — \($0)" }
@@ -2604,6 +2689,7 @@ final class AppModel: ObservableObject {
     /// SURFACED — and the download gate re-offered — instead of hanging on "Loading model…" forever.
     /// Shows the model actually being loaded (so the widgets don't keep showing the default "Small").
     private func beginModelLoad(models: [String: String], active: String, audioDir: String?, autostart: Bool) {
+        pendingModelLoad = nil          // an explicit load supersedes the deferred-launch stash
         self.modelDirs = models
         liveMode = true
         loadingModel = active            // `activeModelLabel` now reflects the model being loaded

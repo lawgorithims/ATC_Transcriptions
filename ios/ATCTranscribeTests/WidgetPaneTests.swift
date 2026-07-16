@@ -15,9 +15,23 @@ final class WidgetPaneTests: XCTestCase {
 
     func testEdgeDockZones() {
         let c = CGSize(width: 1000, height: 700)
-        XCTAssertEqual(WidgetGeometry.edgeDock(fingerX: 10, container: c), .left)
-        XCTAssertEqual(WidgetGeometry.edgeDock(fingerX: 995, container: c), .right)
-        XCTAssertNil(WidgetGeometry.edgeDock(fingerX: 500, container: c))       // middle → normal snap
+        let mid = CGRect(x: 350, y: 200, width: 300, height: 200)               // card well away from edges
+        XCTAssertEqual(WidgetGeometry.edgeDock(fingerX: 10, droppedRect: mid, container: c), .left)
+        XCTAssertEqual(WidgetGeometry.edgeDock(fingerX: 995, droppedRect: mid, container: c), .right)
+        XCTAssertNil(WidgetGeometry.edgeDock(fingerX: 500, droppedRect: mid, container: c))   // middle → normal snap
+    }
+
+    func testCardTouchingEdgeDocksEvenWithFingerMidScreen() {
+        // The reported bug: the pilot drags until the CARD hits the edge, but the finger (on the header)
+        // is still mid-screen — that drop must dock, not snap back.
+        let c = CGSize(width: 1000, height: 700)
+        let atLeft = CGRect(x: -40, y: 200, width: 300, height: 200)            // card pushed past the left edge
+        let atRight = CGRect(x: 720, y: 200, width: 300, height: 200)           // maxX = 1020 ≥ width
+        XCTAssertEqual(WidgetGeometry.edgeDock(fingerX: 400, droppedRect: atLeft, container: c), .left)
+        XCTAssertEqual(WidgetGeometry.edgeDock(fingerX: 600, droppedRect: atRight, container: c), .right)
+        // A card merely NEAR the edge (at its normal 12 pt anchor margin) must NOT dock.
+        let anchored = CGRect(x: 12, y: 200, width: 300, height: 200)
+        XCTAssertNil(WidgetGeometry.edgeDock(fingerX: 400, droppedRect: anchored, container: c))
     }
 
     func testDockHidesFloatingCardAndOccupiesSide() {

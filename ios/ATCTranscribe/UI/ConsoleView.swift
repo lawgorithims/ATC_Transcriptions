@@ -639,6 +639,7 @@ struct FlightPlanBar: View {
     @State private var editingAircraft: AircraftProfile?
     @State private var confirmClear = false
     @State private var fplURL: URL?
+    @State private var showFPLImporter = false
     @State private var commitTask: Task<Void, Never>?
     @FocusState private var routeFocused: Bool
     @FocusState private var altitudeFocused: Bool
@@ -866,9 +867,21 @@ struct FlightPlanBar: View {
         }
     }
 
-    /// The small action icons (.fpl share / map / collapse) — shared by both layouts.
+    /// The small action icons (.fpl import/share / map / collapse) — shared by both layouts.
     private func actionIcons(_ p: Palette) -> some View {
         HStack(spacing: 10) {
+            // Import a plan built in ForeFlight (its share sheet exports a Garmin .fpl).
+            Button { Haptics.impact(.light); showFPLImporter = true } label: {
+                Image(systemName: "square.and.arrow.down").font(.caption).foregroundStyle(p.accent)
+            }
+            .buttonStyle(.plainHaptic)
+            .accessibilityIdentifier("plan-import-fpl").accessibilityLabel("Import .fpl plan")
+            .fileImporter(isPresented: $showFPLImporter,
+                          allowedContentTypes: [.xml, .data]) { result in
+                if case .success(let url) = result, !model.importFPL(url) {
+                    model.detail = "Couldn’t read a route from \(url.lastPathComponent)."
+                }
+            }
             if let fplURL {
                 ShareLink(item: fplURL) {
                     Image(systemName: "square.and.arrow.up").font(.caption).foregroundStyle(p.accent)

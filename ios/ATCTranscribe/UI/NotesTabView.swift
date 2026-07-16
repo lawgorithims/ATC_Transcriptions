@@ -110,7 +110,7 @@ struct NotesTabView: View {
                     if let thumb = notes.thumbnail(note.id) {
                         Image(uiImage: thumb).resizable().aspectRatio(contentMode: .fill)
                     } else {
-                        Rectangle().fill(Color(red: 0.98, green: 0.97, blue: 0.94))
+                        Rectangle().fill(Color(uiColor: NotesTabView.paper))
                     }
                 }
                 .frame(height: 150).frame(maxWidth: .infinity).clipped()
@@ -167,9 +167,10 @@ struct NotesTabView: View {
             .background(p.surface)
             Rectangle().fill(p.border).frame(height: 0.5)
 
-            // Paper behind the transparent ink canvas so strokes read in any theme.
+            // BLACK page behind the transparent ink canvas — a white page in the dark cockpit UI made
+            // PencilKit's dynamic ink render white-on-white (invisible). Black page + white default pen.
             NoteCanvas(drawing: $drawing, clearToken: clearToken, onEdited: { dirty = true })
-                .background(Color(red: 0.98, green: 0.97, blue: 0.94))
+                .background(Color(uiColor: NotesTabView.paper))
                 .id(note.id)                                  // rebuild the canvas when switching notes
                 .accessibilityIdentifier("note-canvas")
         }
@@ -211,16 +212,24 @@ struct NotesTabView: View {
         Binding(get: { confirmDelete != nil }, set: { if !$0 { confirmDelete = nil } })
     }
 
-    /// A library thumbnail from a drawing: the ink's content box fit onto a paper card (blank paper when
-    /// there are no strokes yet). Rendered off the live canvas so it survives closing the editor.
+    /// The note page colour — BLACK. A light page in the dark cockpit UI triggered PencilKit's dynamic
+    /// ink adjustment (black ink drawn as white) → invisible strokes. Dark page + dark trait renders the
+    /// ink exactly as picked (default pen: white).
+    static let paper = UIColor.black
+
+    /// A library thumbnail from a drawing: the ink's content box fit onto a page card (blank page when
+    /// there are no strokes yet). Rendered under a DARK trait so PencilKit's dynamic ink colours match
+    /// what the editor showed on the black page.
     static func thumbnail(from drawing: PKDrawing, target: CGSize = CGSize(width: 480, height: 340)) -> UIImage {
-        let paper = UIColor(red: 0.98, green: 0.97, blue: 0.94, alpha: 1)
         let renderer = UIGraphicsImageRenderer(size: target)
         return renderer.image { ctx in
-            paper.setFill(); ctx.fill(CGRect(origin: .zero, size: target))
+            Self.paper.setFill(); ctx.fill(CGRect(origin: .zero, size: target))
             let content = drawing.bounds
             guard content.width > 1, content.height > 1 else { return }
-            let ink = drawing.image(from: content, scale: 2)
+            var ink = UIImage()
+            UITraitCollection(userInterfaceStyle: .dark).performAsCurrent {
+                ink = drawing.image(from: content, scale: 2)
+            }
             let pad: CGFloat = 16
             let box = CGRect(origin: .zero, size: target).insetBy(dx: pad, dy: pad)
             let s = min(box.width / content.width, box.height / content.height, 3)
@@ -250,7 +259,10 @@ struct NoteCanvas: UIViewRepresentable {
         canvas.backgroundColor = .clear
         canvas.isOpaque = false
         canvas.alwaysBounceVertical = false
-        canvas.tool = PKInkingTool(.pen, color: .black, width: 5)
+        // Pin the DARK trait: the page behind the canvas is black, and PencilKit adjusts ink colours per
+        // interface style — without this a "black" pen stroke could render invisibly on the black page.
+        canvas.overrideUserInterfaceStyle = .dark
+        canvas.tool = PKInkingTool(.pen, color: .white, width: 5)   // white default pen on the black page
         context.coordinator.lastClearToken = clearToken
         let picker = context.coordinator.toolPicker
         picker.setVisible(true, forFirstResponder: canvas)

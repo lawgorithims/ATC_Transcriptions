@@ -124,7 +124,10 @@ struct PlatesTabView: View {
     private func applyHandoff() {
         guard let want = model.platesAirport else { return }
         model.platesAirport = nil
-        if !Procedures.forAirport(want).isEmpty { airport = want; userPinned = true; query = "" }
+        if !Procedures.forAirport(want).isEmpty {
+            airport = want; userPinned = true; query = ""
+            model.noteAirportViewed(want)
+        }
     }
 
     /// Nearest charted fields for the "Nearby" binder section. Gated on ~0.5 NM of movement (a parked
@@ -295,7 +298,7 @@ struct PlatesTabView: View {
     private func binderRow(_ ident: String) -> some View {
         let p = model.palette
         let count = Procedures.forAirport(ident).count
-        return Button { airport = ident; userPinned = true } label: {
+        return Button { airport = ident; userPinned = true; model.noteAirportViewed(ident) } label: {
             HStack(spacing: 12) {
                 AirportDiagramImage(ident: ident, height: 84).environmentObject(model)
                 VStack(alignment: .leading, spacing: 2) {
