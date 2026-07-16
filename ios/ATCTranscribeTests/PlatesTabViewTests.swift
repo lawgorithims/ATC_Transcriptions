@@ -41,4 +41,19 @@ final class PlatesTabViewTests: XCTestCase {
         // Mid-North-Atlantic — nothing within range.
         XCTAssertNil(PlatesTabView.nearestPlateAirport(lat: 35.0, lon: -45.0))
     }
+
+    // MARK: movement-gate distance
+
+    func testDistanceNMIsZeroForSamePointAndScalesWithLatitude() {
+        let kbos = Coord(lat: 42.3656, lon: -71.0096)
+        XCTAssertEqual(PlatesTabView.distanceNM(kbos, kbos), 0, accuracy: 1e-9)
+        // 1° of latitude ≈ 60 NM anywhere.
+        XCTAssertEqual(PlatesTabView.distanceNM(Coord(lat: 42, lon: -71), Coord(lat: 43, lon: -71)), 60, accuracy: 0.5)
+        // 1° of longitude at ~42°N ≈ 60·cos(42°) ≈ 44.6 NM (well under a degree of latitude).
+        let dLon = PlatesTabView.distanceNM(Coord(lat: 42, lon: -71), Coord(lat: 42, lon: -70))
+        XCTAssertEqual(dLon, 44.6, accuracy: 1.0)
+        // A ~0.2 NM jitter stays under the 0.25 NM movement gate; ~0.4 NM exceeds it.
+        XCTAssertLessThan(PlatesTabView.distanceNM(kbos, Coord(lat: 42.3656 + 0.0033, lon: -71.0096)), 0.25)
+        XCTAssertGreaterThan(PlatesTabView.distanceNM(kbos, Coord(lat: 42.3656 + 0.0075, lon: -71.0096)), 0.25)
+    }
 }
