@@ -30,14 +30,26 @@ struct ConsoleView: View {
                             withAnimation(.easeInOut(duration: 0.2)) { model.showPlateMenu = false }
                         }
                 } else {
-                    TopBar()
-                    // The Input strip (source picker + setup) is the one genuinely bar-shaped control; it stays
-                    // as a toggleable strip under the top bar. Everything else is now a floating widget.
-                    if model.showInputBar { InputBar().transition(Self.barTransition) }
-                    if model.showFlightPlanBar { FlightPlanBar().transition(Self.barTransition) }
-                    if let proc = model.previewedProcedure { procedureStrip(proc) }
-                    if let sug = model.efbSuggestion { efbSuggestionBanner(sug) }
-                    if let hz = model.hazardAlert, !hz.isEmpty { hazardBanner(hz) }
+                    VStack(spacing: 0) {
+                        TopBar()
+                        // The Input strip (source picker + setup) is the one genuinely bar-shaped control; it stays
+                        // as a toggleable strip under the top bar. Everything else is now a floating widget.
+                        if model.showInputBar { InputBar().transition(Self.barTransition) }
+                        if model.showFlightPlanBar { FlightPlanBar().transition(Self.barTransition) }
+                        if let proc = model.previewedProcedure { procedureStrip(proc) }
+                        if let sug = model.efbSuggestion { efbSuggestionBanner(sug) }
+                        if let hz = model.hazardAlert, !hz.isEmpty { hazardBanner(hz) }
+                    }
+                    // Two-finger drag UP over the top bars collapses the expandable strips (TopBar's toggles
+                    // reopen them). Single-finger interaction with the strips is unaffected.
+                    .twoFingerSwipeUp {
+                        guard model.showInputBar || model.showFlightPlanBar else { return }
+                        Haptics.impact(.light)
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            model.showInputBar = false
+                            model.showFlightPlanBar = false
+                        }
+                    }
                 }
                 homeArea
             }
