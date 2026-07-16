@@ -8,6 +8,11 @@ import QuartzCore
 /// (a bumpy flight deck benefits from feeling a tap land). Each call is a no-op where UIKit/Taptic
 /// isn't available (e.g. a macOS build) and is silent in the Simulator. This is UI-only; nothing here
 /// touches the transcription pipeline.
+///
+/// HARDWARE NOTE: no iPad (including iPad Pro) has a Taptic Engine, so `UIImpactFeedbackGenerator` is a
+/// SILENT no-op on iPad regardless of this code — button haptics are only felt on iPhone. The generators
+/// below are persistent + kept warm because a freshly-created generator often misses the FIRST tap
+/// (prepare() warms the engine asynchronously); reusing a pre-prepared one fires reliably on iPhone.
 @MainActor
 enum Haptics {
     /// How firm the tap feels. `.light` for the toggle/menu icons and every button, `.medium` for the
@@ -15,6 +20,20 @@ enum Haptics {
     enum Style { case light, medium, rigid }
 
     private static var lastLight: CFTimeInterval = 0
+
+    #if canImport(UIKit)
+    // Long-lived generators (one per firmness) so the Taptic engine stays warm between taps.
+    private static let lightGen  = UIImpactFeedbackGenerator(style: .light)
+    private static let mediumGen = UIImpactFeedbackGenerator(style: .medium)
+    private static let rigidGen  = UIImpactFeedbackGenerator(style: .rigid)
+    #endif
+
+    /// Warm the engine ahead of the first tap (call at launch / on foreground). Cheap; no-op on iPad.
+    static func prepare() {
+        #if canImport(UIKit)
+        lightGen.prepare(); mediumGen.prepare(); rigidGen.prepare()
+        #endif
+    }
 
     static func impact(_ style: Style) {
         #if canImport(UIKit)
@@ -26,15 +45,14 @@ enum Haptics {
             if now - lastLight < 0.15 { return }
             lastLight = now
         }
-        let uiStyle: UIImpactFeedbackGenerator.FeedbackStyle
+        let generator: UIImpactFeedbackGenerator
         switch style {
-        case .light:  uiStyle = .light
-        case .medium: uiStyle = .medium
-        case .rigid:  uiStyle = .rigid
+        case .light:  generator = lightGen
+        case .medium: generator = mediumGen
+        case .rigid:  generator = rigidGen
         }
-        let generator = UIImpactFeedbackGenerator(style: uiStyle)
-        generator.prepare()
         generator.impactOccurred()
+        generator.prepare()          // re-arm so the NEXT tap is instant and doesn't miss
         #endif
     }
 }

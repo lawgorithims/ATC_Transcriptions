@@ -88,6 +88,7 @@ struct ConsoleView: View {
         }
         .animation(.easeInOut(duration: 0.25), value: model.theme)
         .onAppear {
+            Haptics.prepare()   // warm the Taptic engine so the first button tap is felt (iPhone only)
             // Bridge a finished download back to the model so it can load a model that wasn't
             // present at launch (lean TestFlight build → first-run download → live console).
             downloads.onReady = { entry in
@@ -1168,6 +1169,8 @@ struct StratuxBar: View {
 /// source. Nothing here changes the capture pipeline — same bindings as before.
 struct InputBar: View {
     @EnvironmentObject var model: AppModel
+    @EnvironmentObject var widgets: WidgetStore
+    @Environment(\.horizontalSizeClass) private var hSize
     static let freqs = ["auto", "approach", "departure", "tower", "ground", "clearance", "center", "ctaf"]
 
     var body: some View {
@@ -1192,6 +1195,24 @@ struct InputBar: View {
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(p.border, lineWidth: 1))
 
                 Spacer(minLength: 0)
+
+                // Open/close the live transcript widget right from the input controls (regular width —
+                // on compact the transcript is a fixed bottom card, not a floating widget).
+                if hSize == .regular {
+                    Button {
+                        Haptics.impact(.light)
+                        withAnimation(.easeInOut(duration: 0.2)) { widgets.toggle(.transcript) }
+                    } label: {
+                        Image(systemName: widgets.isVisible(.transcript) ? "captions.bubble.fill" : "captions.bubble")
+                            .font(.system(size: 15))
+                            .foregroundStyle(widgets.isVisible(.transcript) ? p.accent : p.textDim)
+                            .frame(width: 30, height: 26)
+                    }
+                    .buttonStyle(.plainHaptic)
+                    .accessibilityIdentifier("transcript-widget-toggle")
+                    .accessibilityLabel("Transcript widget")
+                    .accessibilityAddTraits(widgets.isVisible(.transcript) ? [.isSelected] : [])
+                }
 
                 // Listen to the live feed / Stratux cockpit audio through the speakers (verify it's
                 // arriving). Feed/Stratux only — mic/USB would feed back.
@@ -1442,7 +1463,10 @@ struct FloatingCanvas: View {
     let palette: Palette
 
     private var frames: [WidgetFrame] {
-        widgets.layout.items.filter { $0.kind == .objectInfo ? (widgets.mapProbe != nil) : $0.visible }
+        widgets.layout.items.filter {
+            guard $0.kind != widgets.leftPane, $0.kind != widgets.rightPane else { return false }   // docked in a side pane
+            return $0.kind == .objectInfo ? (widgets.mapProbe != nil) : $0.visible
+        }
     }
 
     var body: some View {
@@ -1460,6 +1484,20 @@ struct FloatingCanvas: View {
             // an oscillation most visible when the finger is nearly still. This canvas space doesn't
             // move, so the translation is the pure finger delta and the card tracks 1:1.
             .coordinateSpace(.named(Self.dragSpace))
+            // Docked side panes (a widget dragged to the edge) ride ABOVE the floating cards, flush to
+            // the screen edge, full height.
+            .overlay(alignment: .leading) {
+                if let kind = widgets.leftPane {
+                    SidePane(side: .left, kind: kind, container: geo.size, palette: palette, widgets: widgets) { widget(kind) }
+                }
+            }
+            .overlay(alignment: .trailing) {
+                if let kind = widgets.rightPane {
+                    SidePane(side: .right, kind: kind, container: geo.size, palette: palette, widgets: widgets) { widget(kind) }
+                }
+            }
+            .animation(.easeInOut(duration: 0.22), value: widgets.leftPane)
+            .animation(.easeInOut(duration: 0.22), value: widgets.rightPane)
         }
     }
 

@@ -208,10 +208,12 @@ struct MapObjectView: View {
             }
             switch airportTab {
             case .info:
-                infoSection(o)
+                // Diagram FIRST so it's visible the moment the card opens (the compact card otherwise
+                // buries it below the Details rows, where the pilot never scrolls to find it).
                 if o.kind == .airport {
                     AirportDiagramThumbnail(ident: o.ident) { apd in openDiagramInPlatesTab(apd, ident: o.ident) }
                 }
+                infoSection(o)
             case .weather:   weatherTab(o)
             case .runway:    runwayTab(o.ident)
             case .procedure: procedureTab(o.ident)

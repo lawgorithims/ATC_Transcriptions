@@ -41,6 +41,10 @@ struct MapLayersMenu: View {
             Toggle(isOn: $model.showWxRadar) { Label("Weather radar — coming soon", systemImage: "cloud.rain") }
                 .disabled(true)
             Divider()
+            Toggle(isOn: $model.terrain3DEnabled) { Label("3D terrain (Map/Satellite)", systemImage: "mountain.2") }
+            if model.terrain3DEnabled {
+                Text("Realistic 3D relief on the Apple base maps. Uses more power — turn off if the device warms up.")
+            }
             Toggle(isOn: $model.mapBackgroundEnabled) { Label("Live map background", systemImage: "map") }
         } label: {
             Image(systemName: "square.3.layers.3d")
