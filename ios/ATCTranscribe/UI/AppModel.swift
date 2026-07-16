@@ -282,8 +282,8 @@ final class AppModel: ObservableObject {
 
     /// Recenter the home map here (a search result). Transient.
     @Published var mapFocus: Coord?
-    /// A plate (approach/departure PDF) superimposed on the home map as a hand-aligned REFERENCE
-    /// overlay; nil = none. See `PlateOverlayState` — it is never a precise nav source.
+    /// A plate PDF superimposed on the home map, placed exactly from the FAA's embedded georeference
+    /// (georef-only — plates without one can't be overlaid); nil = none. See `PlateOverlayState`.
     @Published var plateOverlay: PlateOverlayState?
     /// Which bottom-bar tab is showing (Map / Plates). Switched to `.map` when a plate is sent to
     /// the map so the pilot sees the overlay.
@@ -364,49 +364,24 @@ final class AppModel: ObservableObject {
 
     // MARK: - Plate overlay (superimpose an approach plate on the map — reference aid)
 
-    /// Superimpose an approach/departure plate on the home map. When the plate has a precomputed,
-    /// plausibility-checked georeference (`PlateGeoref.lookup` — OCR'd fixes → CIFP coords → a solved
-    /// north-up placement), it auto-aligns to scale/position/rotation; otherwise it falls back to a
-    /// hand-aligned default centered on the airport. Either way it is a REFERENCE aid the pilot then
-    /// fine-tunes (size/rotation/position/opacity) via the `PlateControlBar` — never presented as
-    /// survey-accurate, and the auto-align caption asks the pilot to verify before use. Rendering
-    /// page 1 is a one-time cost on this explicit tap. No-op if neither a georeference nor an airport
-    /// reference point is known, or the PDF is unreadable.
+    /// Superimpose a plate on the home map, auto-aligned to scale/position/rotation from its FAA
+    /// embedded georeference (`PlateGeoref.lookup`). The pilot can only adjust opacity via the
+    /// `PlateControlBar` — the caption still asks them to verify before use. Rendering page 1 is a
+    /// one-time cost on this explicit tap. No-op if the plate has no georeference (schematic
+    /// SIDs/STARs/minimums — their send-to-map buttons are hidden) or the PDF is unreadable.
     func overlayPlate(_ proc: AirportProcedure, airport: String, pdf: URL) {
         guard let img = PlateImageRenderer.firstPageImage(pdfURL: pdf) else { return }
         let aspect = Double(img.size.width / max(img.size.height, 1))
-        // Auto-align from the precomputed georeference when the plate has one (OCR'd fixes → CIFP
-        // coords → a solved north-up placement); otherwise fall back to a hand-aligned default centered
-        // on the airport. Either way the pilot can fine-tune — it is a reference aid.
-        if let g = PlateGeoref.lookup(pdf: proc.pdf) {
-            plateOverlay = PlateOverlayState(name: proc.name, airport: airport, image: img, imageAspect: aspect,
-                                             centerLat: g.centerLat, centerLon: g.centerLon,
-                                             widthMeters: g.widthMeters, rotationDeg: g.rotationDeg,
-                                             opacity: 0.7, autoAligned: true)
-            mapFocus = Coord(lat: g.centerLat, lon: g.centerLon)   // frame the map on it so it's visible
-            return
-        }
-        // Hand-aligned: center on the airport. Resolve the coordinate from the bundled table, else the
-        // CIFP runway centroid (covers ~every airport that publishes a plate), else the current map
-        // focus — so send-to-map NEVER silently no-ops for an off-table airport like KLRU.
-        let center = airportCenter(airport) ?? mapFocus ?? Coord(lat: 39.5, lon: -98.35)
+        // Georef-only by design: placement comes from the FAA's embedded georeference (exact), and the
+        // manual move/scale UI was removed with it. A plate with no georef entry (SIDs/STARs/minimums —
+        // schematic, not to scale) deliberately does NOT overlay; the send-to-map buttons are hidden for
+        // those, so this guard is defense in depth — do not add a hand-placed fallback back.
+        guard let g = PlateGeoref.lookup(pdf: proc.pdf) else { return }
         plateOverlay = PlateOverlayState(name: proc.name, airport: airport, image: img, imageAspect: aspect,
-                                         centerLat: center.lat, centerLon: center.lon,
-                                         widthMeters: PlatePlacement.defaultWidthMeters(fixExtentMeters: nil),
-                                         rotationDeg: 0, opacity: 0.7, autoAligned: false)
-        mapFocus = center
-    }
-
-    /// Resolve an airport's coordinate for plate centering: the bundled 78-airport table first, then the
-    /// CIFP runway centroid (thousands of airports — any airport with a coded procedure has runways).
-    private func airportCenter(_ icao: String) -> Coord? {
-        let key = icao.trimmingCharacters(in: .whitespaces).uppercased()
-        if let c = AirportCoordinates.coordinate(icao: key) { return c }
-        let coords = CIFP.runways(airport: key).map(\.coord)
-        guard !coords.isEmpty else { return nil }
-        let lat = coords.map(\.lat).reduce(0, +) / Double(coords.count)
-        let lon = coords.map(\.lon).reduce(0, +) / Double(coords.count)
-        return Coord(lat: lat, lon: lon)
+                                         centerLat: g.centerLat, centerLon: g.centerLon,
+                                         widthMeters: g.widthMeters, rotationDeg: g.rotationDeg,
+                                         opacity: 0.7)
+        mapFocus = Coord(lat: g.centerLat, lon: g.centerLon)       // frame the map on it so it's visible
     }
     /// Download the filed route's plates into the Flight Bag (departure/destination/alternate + route
     /// airports) when enabled and the route changed. Cheap when everything is cached (PlateBag skips
@@ -427,24 +402,6 @@ final class AppModel: ObservableObject {
 
     func clearPlateOverlay() { plateOverlay = nil }
     func setPlateOpacity(_ v: Double) { plateOverlay?.opacity = min(max(v, 0.05), 1) }
-    func setPlateWidth(_ v: Double) { plateOverlay?.widthMeters = PlatePlacement.clampWidthMeters(v) }
-    func setPlateRotation(_ v: Double) { plateOverlay?.rotationDeg = PlatePlacement.normalizeRotation(v) }
-
-    /// Move the plate's center by a geographic delta (metres east/north) — the nudge pad.
-    func nudgePlate(eastMeters: Double, northMeters: Double) {
-        guard var s = plateOverlay else { return }
-        let m = PlatePlacement.move(centerLat: s.centerLat, centerLon: s.centerLon,
-                                    eastMeters: eastMeters, northMeters: northMeters)
-        s.centerLat = m.lat; s.centerLon = m.lon
-        plateOverlay = s
-    }
-
-    /// Snap the plate back onto the airport reference point (undo an over-nudge).
-    func recenterPlateOnAirport() {
-        guard var s = plateOverlay, let c = AirportCoordinates.coordinate(icao: s.airport) else { return }
-        s.centerLat = c.lat; s.centerLon = c.lon
-        plateOverlay = s
-    }
 
     /// Resolve the previewed procedure's legs to plottable coordinates OFF the main actor (L8), then
     /// publish them once — instead of MapHostView re-scanning CIFP on every re-render. Epoch-guarded
@@ -457,7 +414,7 @@ final class AppModel: ObservableObject {
             let legs = CIFP.legs(procedureID: procID).prefix(256).compactMap { leg in
                 leg.coord.map { ResolvedLeg(ident: leg.fix, kind: .waypoint, coord: $0) }
             }
-            await MainActor.run {
+            await MainActor.run { [weak self] in
                 guard let self, self.previewEpoch == epoch else { return }
                 self.previewedProcedureLegs = Array(legs)
             }
@@ -874,7 +831,8 @@ final class AppModel: ObservableObject {
         }
         // QA/screenshot: auto-align + overlay a specific plate on the map (`--preview-plate KBOS 00058IL4R.PDF`).
         // Downloads it, applies the georeference, and frames the map on it so the alignment can be
-        // eyeballed against the chart. No-op if the plate/airport is unknown.
+        // eyeballed against the chart. No-op if the plate/airport is unknown — or if the plate has NO
+        // georeference (overlayPlate is georef-only): pick a georeferenced IAP/APD for screenshots.
         if let i = args.firstIndex(of: "--preview-plate"), i + 2 < args.count {
             let icao = args[i + 1], pdf = args[i + 2]
             Task { @MainActor [weak self] in
@@ -1363,7 +1321,7 @@ final class AppModel: ObservableObject {
         let endpoints = [plan.departure, plan.destination, plan.alternate]
         Task.detached { [weak self] in
             let grounding = Self.buildEFBGrounding(ident: ident, routeIdents: routeIdents, endpointAirports: endpoints)
-            await MainActor.run {
+            await MainActor.run { [weak self] in
                 guard let self, self.efbGroundingEpoch == epoch, let plan = self.flightPlan else { return }
                 self.efbGroundingCache = (ident, plan, grounding)
             }

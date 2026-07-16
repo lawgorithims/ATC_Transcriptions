@@ -190,7 +190,9 @@ struct PlateViewer: View {
                         .accessibilityIdentifier("plate-traffic-toggle")
                     }
                 }
-                if let onSendToMap, let url {
+                // Overlay-on-map is georef-only (placement is exact + not manually adjustable), so the
+                // action is hidden for schematic plates (SIDs/STARs/minimums) with no georeference.
+                if let onSendToMap, let url, georef != nil {
                     ToolbarItem(placement: .primaryAction) {
                         Button { onSendToMap(url) } label: { Label("Overlay on map", systemImage: "map") }
                             .accessibilityIdentifier("plate-overlay-map")
