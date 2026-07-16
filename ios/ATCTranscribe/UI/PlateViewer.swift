@@ -203,9 +203,11 @@ struct PlateViewer: View {
         .tint(palette.accent)
         .task { await load() }
         // Run the device GPS only while a GEOREFERENCED plate is open (it's the only kind that can plot
-        // ownship); stop on close so it isn't a background battery drain.
+        // ownship); stop on close so it isn't a background battery drain. The stop is SYMMETRIC with the
+        // guarded start — a non-georef plate never started GPS, so it must not stop the SHARED
+        // DeviceLocation that the Plates tab now also drives for its nearest-field follow.
         .onAppear { if georef != nil { deviceLocation.start() } }
-        .onDisappear { deviceLocation.stop() }
+        .onDisappear { if georef != nil { deviceLocation.stop() } }
     }
 
     /// A small caption under the chart when the overlay is on — states what the markers are and the

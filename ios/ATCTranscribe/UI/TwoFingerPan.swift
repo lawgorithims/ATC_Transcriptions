@@ -12,26 +12,43 @@ import UIKit
 /// (which receives every touch in the hierarchy) and only claims gestures whose centroid starts within
 /// this view's own bounds. A marker view that is transparent to ALL touches (`point(inside:) == false`)
 /// gives the position reference without blocking any button, slider, or scroll underneath.
+///
+/// `priority` breaks ties when several regions overlap the same two-finger centroid (e.g. two stacked
+/// widgets, or a widget docked over the top-bar swipe zone): only the highest-priority region claims the
+/// gesture, so the front-most card moves and the ones behind it (and the top-bar swipe) stay put.
 struct TwoFingerPan: UIViewRepresentable {
+    var priority: Int = 0
     var onChanged: (CGSize) -> Void = { _ in }
     var onEnded: (CGSize) -> Void = { _ in }
 
-    func makeCoordinator() -> Coordinator { Coordinator(onChanged: onChanged, onEnded: onEnded) }
+    func makeCoordinator() -> Coordinator { Coordinator(priority: priority, onChanged: onChanged, onEnded: onEnded) }
 
     func makeUIView(context: Context) -> UIView {
         let v = Marker()
-        v.onWindow = { window in context.coordinator.attach(to: window, marker: v) }
+        // [weak v] is REQUIRED: without it the Marker self-retains through its own stored closure, pinning
+        // the Coordinator (and its captured store closures) forever — a per-instance leak on every widget /
+        // top-bar / plate-menu region.
+        v.onWindow = { [weak v] window in
+            guard let v else { return }
+            context.coordinator.attach(to: window, marker: v)
+        }
         return v
     }
 
     func updateUIView(_ uiView: UIView, context: Context) {
+        context.coordinator.priority = priority
         context.coordinator.onChanged = onChanged
         context.coordinator.onEnded = onEnded
     }
 
-    static func dismantleUIView(_ uiView: UIView, coordinator: Coordinator) { coordinator.detach() }
+    static func dismantleUIView(_ uiView: UIView, coordinator: Coordinator) {
+        (uiView as? Marker)?.onWindow = nil
+        coordinator.detach()
+    }
 
+    @MainActor
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var priority: Int
         var onChanged: (CGSize) -> Void
         var onEnded: (CGSize) -> Void
         private weak var pan: UIPanGestureRecognizer?
@@ -39,8 +56,12 @@ struct TwoFingerPan: UIViewRepresentable {
         private weak var marker: UIView?
         private var active = false
 
-        init(onChanged: @escaping (CGSize) -> Void, onEnded: @escaping (CGSize) -> Void) {
-            self.onChanged = onChanged; self.onEnded = onEnded
+        // All attached coordinators, weakly, so overlapping regions can arbitrate by priority at .began.
+        private struct Weak { weak var c: Coordinator? }
+        private static var live: [Weak] = []
+
+        init(priority: Int, onChanged: @escaping (CGSize) -> Void, onEnded: @escaping (CGSize) -> Void) {
+            self.priority = priority; self.onChanged = onChanged; self.onEnded = onEnded
         }
 
         func attach(to window: UIWindow?, marker: UIView) {
@@ -53,17 +74,20 @@ struct TwoFingerPan: UIViewRepresentable {
             p.delegate = self
             window.addGestureRecognizer(p)
             self.pan = p; self.window = window; self.marker = marker
+            Coordinator.live.removeAll { $0.c == nil }
+            Coordinator.live.append(Weak(c: self))
         }
 
         func detach() {
             if let p = pan, let w = window { w.removeGestureRecognizer(p) }
             pan = nil
+            Coordinator.live.removeAll { $0.c == nil || $0.c === self }
         }
 
         @objc private func handle(_ g: UIPanGestureRecognizer) {
             switch g.state {
             case .began:
-                active = markerContains(g.location(in: g.view))   // only our widget's region
+                active = winsArbitration(at: g.location(in: g.view))   // only the front-most region claims it
             case .changed:
                 guard active else { return }
                 let t = g.translation(in: g.view)
@@ -75,6 +99,15 @@ struct TwoFingerPan: UIViewRepresentable {
                 onEnded(CGSize(width: t.x, height: t.y))
             default: break
             }
+        }
+
+        /// True iff this region contains the centroid AND no higher-priority live region also contains it
+        /// (ties broken by registration order, so exactly one region ever claims a gesture).
+        private func winsArbitration(at pointInWindow: CGPoint) -> Bool {
+            guard markerContains(pointInWindow) else { return false }
+            let contenders = Coordinator.live.compactMap { $0.c }.filter { $0.markerContains(pointInWindow) }
+            let top = contenders.map(\.priority).max()
+            return contenders.first { $0.priority == top } === self
         }
 
         private func markerContains(_ pointInWindow: CGPoint) -> Bool {

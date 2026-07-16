@@ -1,9 +1,11 @@
 import SwiftUI
 
 /// The "Plates" tab: search an airport, browse its FAA approach/departure/arrival charts, open one
-/// full-page, or send it to the map as a georeferenced overlay. Defaults to the filed flight plan's
-/// destination so the plate you need is one tap away, and FOLLOWS a live flight-plan amendment (e.g.
-/// ATC re-clears the destination) unless the pilot has explicitly pinned an airport.
+/// full-page, or send it to the map as a georeferenced overlay. Defaults to the NEAREST charted airport
+/// from a live GPS/Stratux fix (the field you're at is almost always the plate you want — defaulting to a
+/// filed destination is what left the tab "stuck" on a far-away airport); WITHOUT a fix it falls back to
+/// the filed/amended flight plan. An explicit search pins an airport and stops the auto-follow. GPS
+/// position always wins over the filed destination.
 struct PlatesTabView: View {
     @EnvironmentObject var model: AppModel
     @State private var query = ""
@@ -12,6 +14,7 @@ struct PlatesTabView: View {
     @State private var userPinned = false           // the pilot chose an airport → stop auto-following the plan
     @State private var searchActive = false         // drives `.searchable` focus so we can dismiss it on tab-leave
     @State private var showFlightBag = false
+    @State private var lastQueriedCoord: Coord?     // movement gate for the GPS-nearest re-seed (below)
 
     /// The best default airport when the pilot hasn't picked one: WHERE THEY ARE (nearest airport with
     /// plates, from a live GPS/Stratux fix) takes priority over the filed plan — the plate you want is
@@ -34,6 +37,8 @@ struct PlatesTabView: View {
     /// The nearest airport that publishes plates within `withinNM` of a position — reuses the bundled
     /// nav DB's airport index (no new spatial data). nil when none is close.
     static func nearestPlateAirport(lat: Double, lon: Double, withinNM: Double = 60) -> String? {
+        assert((-90...90).contains(lat) && (-180...180).contains(lon), "nearestPlateAirport: fix out of range")
+        assert(withinNM > 0, "nearestPlateAirport: search radius must be positive")
         let dLat = withinNM / 60.0
         let dLon = dLat / max(cos(lat * .pi / 180), 0.1)
         let box = BBox(minLat: lat - dLat, minLon: lon - dLon, maxLat: lat + dLat, maxLon: lon + dLon)
@@ -41,6 +46,14 @@ struct PlatesTabView: View {
         return NavDatabase.nearby(box, types: [0], limit: 120)     // type 0 = airports
             .filter { !Procedures.forAirport($0.ident).isEmpty }
             .min { d2($0.coord) < d2($1.coord) }?.ident
+    }
+
+    /// Great-circle-ish distance in nautical miles between two fixes (flat-earth good enough at the sub-NM
+    /// scale this gates on). 1° latitude = 60 NM; longitude scaled by cos(mean latitude).
+    static func distanceNM(_ a: Coord, _ b: Coord) -> Double {
+        let dLat = (b.lat - a.lat) * 60.0
+        let dLon = (b.lon - a.lon) * 60.0 * cos((a.lat + b.lat) / 2 * .pi / 180)
+        return (dLat * dLat + dLon * dLon).squareRoot()
     }
 
     var body: some View {
@@ -96,7 +109,11 @@ struct PlatesTabView: View {
             }
         }
         .tint(model.palette.accent)
-        .fullScreenCover(item: $plate) { proc in
+        // A georef'd plate's viewer stops the SHARED DeviceLocation on close; re-arm it here (after the
+        // viewer's onDisappear) so the tab's nearest-field follow keeps working. start() is idempotent.
+        .fullScreenCover(item: $plate, onDismiss: {
+            if model.selectedTab == .plates { model.deviceLocation.start() }
+        }) { proc in
             PlateViewer(procedure: proc, airport: airport ?? "", palette: model.palette, deviceLocation: model.deviceLocation,
                         onSendToMap: { url in
                             model.overlayPlate(proc, airport: airport ?? "", pdf: url)
@@ -117,14 +134,19 @@ struct PlatesTabView: View {
         }
         // A GPS fix usually arrives AFTER onAppear (async + permission), so re-seed the default when it
         // lands — this is what actually unsticks the tab from a far-away filed destination. Pinning wins.
+        // Movement gate: DeviceLocation republishes ~1 Hz; only re-run the spatial query once the fix has
+        // moved meaningfully, so a parked aircraft's GPS jitter can't burn the main thread every tick or
+        // flip the airport back and forth (which would collapse the runway groups the pilot expanded).
         .onReceive(model.deviceLocation.$coord) { c in
-            guard !userPinned, let c,
-                  let near = PlatesTabView.nearestPlateAirport(lat: c.lat, lon: c.lon) else { return }
-            if airport != near { airport = near }
+            guard !userPinned, let c else { return }
+            if let last = lastQueriedCoord, PlatesTabView.distanceNM(last, c) < 0.25 { return }
+            lastQueriedCoord = c
+            if let near = PlatesTabView.nearestPlateAirport(lat: c.lat, lon: c.lon), airport != near { airport = near }
         }
         .onChange(of: model.platesAirport) { _, _ in applyPendingOrDefault() }
         .onChange(of: model.flightPlan) { _, _ in
-            // Follow a live plan amendment (the app's core flow) unless the pilot pinned an airport.
+            // Re-seed on a plan amendment (unless pinned). With a GPS fix this stays position-nearest; only
+            // without one does it follow the amended filed plan — GPS position always wins over the plan.
             if !userPinned { airport = defaultAirport }
         }
     }
@@ -256,7 +278,7 @@ struct PlatesTabView: View {
         let up = name.uppercased()
         guard let r = up.range(of: "RWY ") else { return nil }
         var digits = "", suffix = ""
-        for ch in up[r.upperBound...] {
+        for ch in up[r.upperBound...].prefix(3) {          // bounded (Power-of-10 rule 2): ≤2 digits + 1 side
             if ch.isNumber, suffix.isEmpty, digits.count < 2 { digits.append(ch) }
             else if "LCR".contains(ch), !digits.isEmpty, suffix.isEmpty { suffix = String(ch); break }
             else { break }

@@ -427,9 +427,12 @@ final class AppModel: ObservableObject {
         guard var s = plateOverlay else { return }
         if !s.inverted, s.invertedImage == nil {
             let base = s.image
-            Task { @MainActor [weak self] in
+            let pdf = s.pdf                              // pin the plate identity: a DIFFERENT plate may be
+            let geoKey = s.geoKey                        // overlaid before this off-main raster finishes —
+            Task { @MainActor [weak self] in            // if so, drop the stale result (don't paint plate
                 let inv = await Task.detached(priority: .userInitiated) { PlateImageRenderer.inverted(base) }.value
-                guard var s2 = self?.plateOverlay, s2.invertedImage == nil else { return }
+                guard var s2 = self?.plateOverlay, s2.pdf == pdf, s2.geoKey == geoKey,   // A's raster onto B)
+                      s2.invertedImage == nil else { return }
                 s2.invertedImage = inv; s2.inverted = (inv != nil); self?.plateOverlay = s2
             }
             return

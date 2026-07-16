@@ -260,16 +260,22 @@ struct FloatingWidgetContainer<Content: View>: View {
     @GestureState private var drag: CGSize = .zero
     @GestureState private var resize: CGSize = .zero
     @State private var showControls = false
-    // Live two-finger MOVE + pinch RESIZE (committed to the store on gesture end). @State (not @GestureState)
-    // because the transform is driven by a UIKit recognizer bridge, not a SwiftUI gesture.
+    // Live two-finger MOVE (UIKit pan bridge → plain @State, reset on commit) and pinch RESIZE.
+    // mtScale is @GestureState so it AUTO-resets to 1 on gesture end AND on cancel/interruption — a plain
+    // @State would stay stuck at the last preview scale if the pinch were pre-empted (system edge gesture,
+    // stray third finger, arbitration loss), freezing the card oversized with its spring disabled.
     @State private var mtTranslation: CGSize = .zero
-    @State private var mtScale: CGFloat = 1
+    @GestureState private var mtScale: CGFloat = 1
 
     var body: some View {
         let p = palette
         let rect = WidgetGeometry.rect(for: frame, in: container)
         let w = clampW(rect.width * mtScale + resize.width)
         let h = clampH(rect.height * mtScale + resize.height)
+        // Resolve the on-screen center against the LIVE (scaled/resized) size so the card grows away from
+        // its anchored edge instead of about its old center — otherwise it visibly slides by ~half the size
+        // delta the instant the pinch/grip is released (the anchor re-resolves for the committed size).
+        let posCenter = liveCenter(width: w, height: h)
         VStack(spacing: 0) {
             header(p)
             content
@@ -284,12 +290,15 @@ struct FloatingWidgetContainer<Content: View>: View {
         .overlay(alignment: .bottomTrailing) { if !frame.pinned { resizeGrip(p) } }
         // Two-finger MOVE anywhere on the card via the window-attached pan (single-finger passes through to
         // the header drag / content scroll / corner grip). Only when unpinned — a pinned card is locked.
-        .overlay { if !frame.pinned { TwoFingerPan(onChanged: onTwoFingerMove, onEnded: commitTwoFingerMove) } }
+        // priority frame.z+1 so, when two unpinned cards overlap (or a card sits over the top-bar swipe
+        // zone), only the FRONT-most card claims a two-finger move — the ones behind (and the top-bar
+        // swipe, priority 0) stay put.
+        .overlay { if !frame.pinned { TwoFingerPan(priority: frame.z + 1, onChanged: onTwoFingerMove, onEnded: commitTwoFingerMove) } }
         // Pinch to RESIZE — SwiftUI's native two-finger magnify, which coexists cleanly with single-finger
         // gestures and never blocks them (no UIKit hit-test games needed).
         .simultaneousGesture(pinchResize)
         .shadow(color: .black.opacity(0.35), radius: 10, y: 4)
-        .position(x: rect.midX + drag.width + mtTranslation.width, y: rect.midY + drag.height + mtTranslation.height)
+        .position(x: posCenter.x + drag.width + mtTranslation.width, y: posCenter.y + drag.height + mtTranslation.height)
         .zIndex(Double(frame.z))
         // While a drag/resize is live, disable the implicit spring: otherwise the bring-to-front z-bump in
         // the drag's onChanged mutates `frame` (WidgetFrame.Equatable includes z), arming the spring
@@ -309,6 +318,15 @@ struct FloatingWidgetContainer<Content: View>: View {
         if widgets.layout.frame(frame.kind)?.z != widgets.layout.maxZ { widgets.bringToFront(frame.kind) }
     }
 
+    /// The card's center resolved against the LIVE (scaled/resized) size, so a pinch/grip grows the card
+    /// away from its anchored edge and the committed size lands with zero positional jump.
+    private func liveCenter(width: CGFloat, height: CGFloat) -> CGPoint {
+        var lf = frame
+        lf.size = CGSize(width: width, height: height)
+        let r = WidgetGeometry.rect(for: lf, in: container)
+        return CGPoint(x: r.midX, y: r.midY)
+    }
+
     private func onTwoFingerMove(_ translation: CGSize) {
         mtTranslation = translation
         bringToFrontIfNeeded()
@@ -323,18 +341,20 @@ struct FloatingWidgetContainer<Content: View>: View {
     }
 
     private var pinchResize: some Gesture {
+        // .updating drives mtScale (@GestureState) so it auto-resets on end AND cancel; .onEnded commits the
+        // new size to the store. bringToFront lives in .onChanged so .updating stays a pure transform write.
         MagnificationGesture()
-            .onChanged { s in
+            .updating($mtScale) { value, state, _ in
                 guard !frame.pinned else { return }
-                mtScale = max(s, 0.2); bringToFrontIfNeeded()                  // clampW/H bound the render
+                state = max(value, 0.2)                                        // clampW/H bound the render
             }
+            .onChanged { _ in guard !frame.pinned else { return }; bringToFrontIfNeeded() }
             .onEnded { s in
                 guard !frame.pinned else { return }
                 let rect = WidgetGeometry.rect(for: frame, in: container)
                 let newSize = CGSize(width: clampW(rect.width * max(s, 0.2)),
                                      height: clampH(rect.height * max(s, 0.2)))
                 widgets.update(frame.kind) { $0.size = newSize }
-                mtScale = 1
             }
     }
 

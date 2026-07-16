@@ -87,11 +87,19 @@ struct MapHostView: View {
         // A single gear button rides the plate's top-right corner; tapping it opens the plate menu (in
         // ConsoleView, dropping from the top). SwiftUI-layered over the map so its tap never fights
         // MapKit's pan recognizer; hidden while the menu is open (the menu carries the controls).
-        .overlay(alignment: .topLeading) {
-            if let s = model.plateOverlay, let a = plateAnchors, !model.showPlateMenu {
-                PlateCornerSettingsButton(opacity: s.opacity)
-                    .environmentObject(model)
-                    .position(x: a.tr.x - 24, y: a.tr.y + 24)      // tucked inside the plate's top-right
+        .overlay {
+            // CLAMP the gear into the viewport: it's the ONLY way to reach the plate menu (dim / invert /
+            // hide / remove), so if the plate's top-right corner pans or zooms off-screen the gear must
+            // still be tappable — it pins to the nearest edge instead of vanishing. Gated on `live` so it
+            // isn't stranded over a blank background at stale anchor coords when the map is off.
+            if live, let s = model.plateOverlay, let a = plateAnchors, !model.showPlateMenu {
+                GeometryReader { geo in
+                    let x = min(max(a.tr.x - 24, 36), geo.size.width - 36)
+                    let y = min(max(a.tr.y + 24, 130), geo.size.height - 96)   // clear top bars + bottom tab bar
+                    PlateCornerSettingsButton(opacity: s.opacity)
+                        .environmentObject(model)
+                        .position(x: x, y: y)
+                }
             }
         }
         .task { await buildRoute() }
