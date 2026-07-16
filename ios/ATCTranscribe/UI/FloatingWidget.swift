@@ -304,12 +304,12 @@ struct FloatingWidgetContainer<Content: View>: View {
             Button { showControls = true } label: {
                 Image(systemName: "slider.horizontal.3").font(.caption2).padding(5).contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.plainHaptic)
             .popover(isPresented: $showControls, arrowEdge: .top) { controls(p) }
             Button { close() } label: {
                 Image(systemName: "xmark").font(.caption2).padding(5).contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.plainHaptic)
         }
         .foregroundStyle(p.text)
         .padding(.horizontal, 10).padding(.vertical, 7)

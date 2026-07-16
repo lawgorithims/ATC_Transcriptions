@@ -149,7 +149,7 @@ struct DownloadsView: View {
                 Spacer()
             }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.plainHaptic)
         .disabled(allDone || library.bulk.isRunning)
         .accessibilityIdentifier("downloads-\(layer.rawValue)-all")
     }
@@ -177,7 +177,7 @@ struct DownloadsView: View {
                 Button { Task { await library.download(e) } } label: {
                     Image(systemName: "arrow.down.circle").font(.body).foregroundStyle(p.accent)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.plainHaptic)
                 .accessibilityIdentifier("downloads-chart-\(e.id)")
             }
         }
@@ -246,7 +246,7 @@ struct DownloadsView: View {
                 Button { confirmRegion = r } label: {
                     Image(systemName: "arrow.down.circle").font(.body).foregroundStyle(p.accent)
                 }
-                .buttonStyle(.plain).disabled(bag.isRunning)
+                .buttonStyle(.plainHaptic).disabled(bag.isRunning)
                 .accessibilityIdentifier("downloads-plates-\(r)")
             }
         }

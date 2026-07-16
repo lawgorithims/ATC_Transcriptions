@@ -157,7 +157,7 @@ struct ConsoleView: View {
             Button { Haptics.impact(.light); model.previewedProcedure = nil } label: {
                 Image(systemName: "xmark.circle.fill").foregroundStyle(p.textDim)
             }
-            .buttonStyle(.plain).accessibilityIdentifier("clear-procedure")
+            .buttonStyle(.plainHaptic).accessibilityIdentifier("clear-procedure")
         }
         .padding(.horizontal, 12).padding(.vertical, 7)
         .background(p.surface)
@@ -180,13 +180,13 @@ struct ConsoleView: View {
                 Text("Dismiss").font(.caption.weight(.semibold)).foregroundStyle(p.textDim)
                     .padding(.horizontal, 10).padding(.vertical, 6).contentShape(Rectangle())
             }
-            .buttonStyle(.plain).accessibilityIdentifier("efb-dismiss")
+            .buttonStyle(.plainHaptic).accessibilityIdentifier("efb-dismiss")
             Button { model.acceptEFBSuggestion() } label: {
                 Text("Accept").font(.caption.weight(.bold)).foregroundStyle(.white)
                     .padding(.horizontal, 14).padding(.vertical, 6)
                     .background(Capsule().fill(p.accent))
             }
-            .buttonStyle(.plain).accessibilityIdentifier("efb-accept")
+            .buttonStyle(.plainHaptic).accessibilityIdentifier("efb-accept")
             // One-tap hand-off: accept the amendment AND load the amended route into ForeFlight
             // (offline URL scheme). Only offered when the integration is on and ForeFlight is
             // installed; skipped when accepting turns out not to change the plan.
@@ -196,7 +196,7 @@ struct ConsoleView: View {
                         .padding(.horizontal, 12).padding(.vertical, 6)
                         .background(Capsule().fill(p.accent))
                 }
-                .buttonStyle(.plain).accessibilityIdentifier("efb-accept-foreflight")
+                .buttonStyle(.plainHaptic).accessibilityIdentifier("efb-accept-foreflight")
             }
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
@@ -235,11 +235,11 @@ struct ConsoleView: View {
                     .padding(.horizontal, 12).padding(.vertical, 6)
                     .background(Capsule().fill(p.accent))
             }
-            .buttonStyle(.plain).accessibilityIdentifier("hazard-details")
+            .buttonStyle(.plainHaptic).accessibilityIdentifier("hazard-details")
             Button { Haptics.impact(.light); model.dismissHazardAlert() } label: {
                 Image(systemName: "xmark.circle.fill").foregroundStyle(p.textDim)
             }
-            .buttonStyle(.plain).accessibilityIdentifier("hazard-dismiss")
+            .buttonStyle(.plainHaptic).accessibilityIdentifier("hazard-dismiss")
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
         .background(p.surface)
@@ -331,7 +331,7 @@ struct TopBar: View {
                 .background(on ? p.accent.opacity(0.16) : .clear)
                 .clipShape(RoundedRectangle(cornerRadius: 7))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.plainHaptic)
         .accessibilityIdentifier(id)
         .accessibilityLabel(label)
         .accessibilityAddTraits(on ? [.isSelected] : [])
@@ -349,7 +349,7 @@ struct TopBar: View {
                 .frame(width: hit.width, height: hit.height)
                 .foregroundStyle(p.textDim)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.plainHaptic)
         .accessibilityIdentifier(id)
         .accessibilityLabel(label)
     }
@@ -375,7 +375,7 @@ struct TopBar: View {
                     }
                 }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.plainHaptic)
         .accessibilityIdentifier("flight-bag-button")
         .accessibilityLabel("Flight plan")
         .accessibilityAddTraits(on ? [.isSelected] : [])
@@ -396,7 +396,7 @@ struct TopBar: View {
                 .background(on ? p.accent.opacity(0.16) : .clear)
                 .clipShape(RoundedRectangle(cornerRadius: 7))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.plainHaptic)
         .accessibilityIdentifier("stratux-toggle")
         .accessibilityLabel("Stratux strip")
         .accessibilityAddTraits(on ? [.isSelected] : [])
@@ -793,7 +793,7 @@ struct FlightPlanBar: View {
                         Button { Haptics.impact(.light); confirmClear = true } label: {  // altitude/procedures remain
                             Image(systemName: "xmark.circle.fill").font(.caption).foregroundStyle(p.textDim)
                         }
-                        .buttonStyle(.plain).accessibilityIdentifier("plan-clear")
+                        .buttonStyle(.plainHaptic).accessibilityIdentifier("plan-clear")
                     }
                 }
             }
@@ -828,7 +828,7 @@ struct FlightPlanBar: View {
                             Button { Haptics.impact(.light); model.clearLoadedProcedure(kind: proc.kind) } label: {
                                 Image(systemName: "xmark.circle.fill").font(.caption2)
                             }
-                            .buttonStyle(.plain).accessibilityIdentifier("clear-loaded-\(proc.kind)")
+                            .buttonStyle(.plainHaptic).accessibilityIdentifier("clear-loaded-\(proc.kind)")
                         }
                         .foregroundStyle(p.accent)
                         .padding(.horizontal, 6).padding(.vertical, 2)
@@ -860,12 +860,12 @@ struct FlightPlanBar: View {
                 ShareLink(item: fplURL) {
                     Image(systemName: "square.and.arrow.up").font(.caption).foregroundStyle(p.accent)
                 }
-                .buttonStyle(.plain).accessibilityIdentifier("plan-share-fpl")
+                .buttonStyle(.plainHaptic).accessibilityIdentifier("plan-share-fpl")
             }
             Button { Haptics.impact(.light); model.showRouteMap = true } label: {
                 Image(systemName: "map").font(.caption).foregroundStyle(p.accent)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.plainHaptic)
             .accessibilityIdentifier("flight-plan-map").accessibilityLabel("View route on map")
             Button {
                 Haptics.impact(.light)
@@ -874,7 +874,7 @@ struct FlightPlanBar: View {
             } label: {
                 Image(systemName: "checkmark").font(.caption.weight(.semibold)).foregroundStyle(p.accent)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.plainHaptic)
             .accessibilityIdentifier("plan-bar-done").accessibilityLabel("Collapse flight plan")
         }
     }
@@ -893,7 +893,7 @@ struct FlightPlanBar: View {
                 .padding(.horizontal, 12).padding(.vertical, 6)
                 .background(Capsule().fill(enabled ? p.accent : p.surfaceAlt))
         }
-        .buttonStyle(.plain).disabled(!enabled)
+        .buttonStyle(.plainHaptic).disabled(!enabled)
         .accessibilityIdentifier("plan-send-foreflight")
     }
 
@@ -1193,7 +1193,7 @@ struct InputBar: View {
                             .foregroundStyle(model.monitorEnabled ? p.accent : p.textDim)
                             .frame(width: 30, height: 26)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.plainHaptic)
                     .accessibilityIdentifier("monitor-toggle")
                     .accessibilityLabel("Listen to feed")
                 }
@@ -1206,7 +1206,7 @@ struct InputBar: View {
                     Image(systemName: "checkmark").font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(p.accent).frame(width: 30, height: 26)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.plainHaptic)
                 .accessibilityIdentifier("input-bar-done")
                 .accessibilityLabel("Collapse input")
             }
@@ -1289,7 +1289,7 @@ struct StandbyBanner: View {
                         .background(p.accent).foregroundStyle(p.bg)
                         .clipShape(Capsule())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.plainHaptic)
                 .accessibilityIdentifier("standby-resume")
             }
             .padding(20)
@@ -1394,7 +1394,7 @@ struct SquelchControls: View {
                 Label("Calibrate microphone…", systemImage: "mic.badge.plus")
                     .font(.caption.weight(.semibold)).foregroundStyle(p.accent)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.plainHaptic)
             .accessibilityIdentifier("calibrate-mic-button")
             if !model.squelchAuto, model.calibratedGateRMS != nil {
                 Label("Calibrated to your mic — move the slider to override.", systemImage: "checkmark.seal.fill")

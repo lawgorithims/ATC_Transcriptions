@@ -62,7 +62,7 @@ struct SidebarColumn: View {
                         .background(p.accent).foregroundStyle(p.bg)
                         .clipShape(RoundedRectangle(cornerRadius: 10))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.plainHaptic)
                 .accessibilityIdentifier("widgets-done")
             }
         }
@@ -79,7 +79,7 @@ struct SidebarColumn: View {
                             .font(.title3).symbolRenderingMode(.palette)
                             .foregroundStyle(model.palette.bg, model.palette.bad)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.plainHaptic)
                     .offset(x: 7, y: -7)
                     .accessibilityIdentifier("widget-remove-\(widget.rawValue)")
                 }
@@ -258,7 +258,7 @@ struct ProofOfLifeCard: View {
                 .clipShape(RoundedRectangle(cornerRadius: 8))
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(p.border, lineWidth: 1))
             }
-            .buttonStyle(.plain).foregroundStyle(p.text)
+            .buttonStyle(.plainHaptic).foregroundStyle(p.text)
             .disabled(model.polRunning)
             .accessibilityIdentifier("proof-of-life-button")
             .padding(.top, 2)

@@ -151,7 +151,7 @@ struct PlateCornerSettingsButton: View {
                 .padding(14)                        // invisible hit halo — cockpit-friendly target
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.plainHaptic)
         .opacity(max(opacity, 0.4))
         .accessibilityIdentifier("plate-settings-button")
     }
@@ -181,7 +181,7 @@ struct PlateMenuBar: View {
                     Image(systemName: "chevron.up").font(.body.weight(.semibold)).foregroundStyle(p.textDim)
                         .frame(width: 34, height: 34).contentShape(Rectangle())
                 }
-                .buttonStyle(.plain).accessibilityIdentifier("plate-menu-close")
+                .buttonStyle(.plainHaptic).accessibilityIdentifier("plate-menu-close")
             }
             // Actions
             HStack(spacing: 8) {
@@ -227,7 +227,7 @@ struct PlateMenuBar: View {
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .overlay(RoundedRectangle(cornerRadius: 10).stroke(p.border, lineWidth: 1))
         }
-        .buttonStyle(.plain).accessibilityIdentifier(id)
+        .buttonStyle(.plainHaptic).accessibilityIdentifier(id)
     }
 
     private var opacityBinding: Binding<Double> {

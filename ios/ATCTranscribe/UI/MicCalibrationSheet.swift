@@ -121,7 +121,7 @@ struct MicCalibrationSheet: View {
                 .foregroundStyle(enabled ? p.bg : p.textDim)
                 .clipShape(RoundedRectangle(cornerRadius: 9))
         }
-        .buttonStyle(.plain).disabled(!enabled)
+        .buttonStyle(.plainHaptic).disabled(!enabled)
         .accessibilityIdentifier("mic-calibration-action")
     }
 }

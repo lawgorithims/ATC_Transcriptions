@@ -74,7 +74,7 @@ struct SettingsSheet: View {
             .clipShape(RoundedRectangle(cornerRadius: 12))
             .overlay(RoundedRectangle(cornerRadius: 12).stroke(p.border, lineWidth: 1))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.plainHaptic)
         .accessibilityIdentifier(id)
     }
 
@@ -355,7 +355,7 @@ struct SettingsSheet: View {
             .clipShape(RoundedRectangle(cornerRadius: 8))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(p.border, lineWidth: 1))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.plainHaptic)
         // Any in-flight compile locks the WHOLE picker: WhisperKit/CoreML compiles are heavy and
         // non-interruptible, and stacking picks mid-compile risked two multi-GB models resident at
         // once (OOM kill). This never wedges — `loadingModel` is cleared by the 30 s swap watchdog,
@@ -376,7 +376,7 @@ struct SettingsSheet: View {
                 .clipShape(RoundedRectangle(cornerRadius: 8))
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(p.border, lineWidth: 1))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.plainHaptic)
     }
 
     private func sensitivityButton(_ s: GateSensitivity, _ label: String) -> some View {
@@ -389,6 +389,6 @@ struct SettingsSheet: View {
                 .clipShape(RoundedRectangle(cornerRadius: 8))
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(p.border, lineWidth: 1))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.plainHaptic)
     }
 }

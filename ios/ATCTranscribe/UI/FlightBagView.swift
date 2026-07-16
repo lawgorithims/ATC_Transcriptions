@@ -142,7 +142,7 @@ struct FlightBagView: View {
                         Image(systemName: "arrow.down.circle").font(.caption).foregroundStyle(model.palette.accent)
                     }
                 }
-                .buttonStyle(.plain).disabled(bag.isRunning)
+                .buttonStyle(.plainHaptic).disabled(bag.isRunning)
             }
         } header: { Text("Region bundles") } footer: {
             Text("Region bundles cover hundreds of airports — large downloads, best done on Wi-Fi.")

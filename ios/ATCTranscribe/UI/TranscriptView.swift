@@ -23,7 +23,7 @@ struct TranscriptCard: View {
                 if model.transcribing { TranscribingIndicator() }
                 if model.isRunning {
                     Button { showSquelch = true } label: { InputLevelMeter() }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.plainHaptic)
                         .accessibilityIdentifier("input-level-meter")
                         .accessibilityLabel("Input level / squelch")
                         .popover(isPresented: $showSquelch) {
@@ -39,7 +39,7 @@ struct TranscriptCard: View {
                     }
                     .font(.caption2.weight(.semibold))
                 }
-                .buttonStyle(.plain).foregroundStyle(p.textDim)
+                .buttonStyle(.plainHaptic).foregroundStyle(p.textDim)
                 .accessibilityIdentifier("transcript-sort")
                 .accessibilityLabel(model.transcriptNewestFirst ? "Newest first" : "Newest last")
                 // When the sidebar is empty it's hidden (transcript fills the width), so offer the
@@ -54,12 +54,12 @@ struct TranscriptCard: View {
                     } label: {
                         Image(systemName: "rectangle.stack.badge.plus").font(.caption)
                     }
-                    .buttonStyle(.plain).foregroundStyle(p.textDim)
+                    .buttonStyle(.plainHaptic).foregroundStyle(p.textDim)
                     .accessibilityIdentifier("transcript-add-widget")
                     .accessibilityLabel("Add widget")
                 }
                 Button("Clear") { model.clear() }
-                    .font(.caption).foregroundStyle(p.textDim).buttonStyle(.plain)
+                    .font(.caption).foregroundStyle(p.textDim).buttonStyle(.plainHaptic)
             }
             .padding(14)
             Rectangle().fill(p.border).frame(height: 1)
@@ -151,7 +151,7 @@ struct TranscriptListSection: View, Equatable {
                             .font(.caption).foregroundStyle(p.textDim)
                     Spacer(minLength: 4)
                     Button("Clear") { onClearFilter() }
-                        .font(.caption.weight(.semibold)).foregroundStyle(p.accent).buttonStyle(.plain)
+                        .font(.caption.weight(.semibold)).foregroundStyle(p.accent).buttonStyle(.plainHaptic)
                         .accessibilityIdentifier("callsign-filter-clear")
                 }
                 .foregroundStyle(p.accent)
@@ -211,7 +211,7 @@ struct TranscriptListSection: View, Equatable {
                 .clipShape(Circle())
                 .shadow(color: .black.opacity(0.25), radius: 6, y: 2)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.plainHaptic)
         .padding(12)
         .accessibilityIdentifier("transcript-jump-newest")
         .accessibilityLabel("Jump to newest")
@@ -224,7 +224,7 @@ struct TranscriptListSection: View, Equatable {
             Image(systemName: "airplane.circle").font(.system(size: 30)).foregroundStyle(p.textDim.opacity(0.7))
             Text("No messages for \(callsignFilter ?? "this aircraft") yet.").foregroundStyle(p.textDim)
             Button("Clear filter") { onClearFilter() }
-                .font(.caption.weight(.semibold)).foregroundStyle(p.accent).buttonStyle(.plain)
+                .font(.caption.weight(.semibold)).foregroundStyle(p.accent).buttonStyle(.plainHaptic)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity).padding(40)
     }
@@ -282,7 +282,7 @@ struct TranscriptRow: View {
                             .foregroundStyle(on ? p.bg : color)
                             .clipShape(Capsule())
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(.plainHaptic)
                         .accessibilityIdentifier("callsign-chip")
                     }
                     Text(record.timestamp).font(.caption2.monospaced()).foregroundStyle(p.accent)

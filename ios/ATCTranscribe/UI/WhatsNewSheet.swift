@@ -27,7 +27,7 @@ struct WhatsNewSheet: View {
                         .background(p.accent).foregroundStyle(p.bg)
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.plainHaptic)
                 .padding(.horizontal, 16).padding(.bottom, 10)
                 .accessibilityIdentifier("whats-new-dismiss")
             }

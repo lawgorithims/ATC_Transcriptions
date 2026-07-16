@@ -67,7 +67,7 @@ struct OnboardingDownloadView: View {
                             .foregroundStyle(primaryEnabled ? p.bg : p.textDim)
                             .clipShape(RoundedRectangle(cornerRadius: 10))
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.plainHaptic)
                     .disabled(!primaryEnabled)
                     .accessibilityIdentifier("gate-primary")
 
@@ -188,7 +188,7 @@ struct ModelDownloadRow: View {
             case .downloading:
                 Button("Cancel") { downloads.cancel(entry) }
                     .font(.caption.weight(.semibold)).foregroundStyle(p.bad)
-                    .buttonStyle(.plain)
+                    .buttonStyle(.plainHaptic)
             case .notDownloaded, .failed:
                 Button { downloads.download(entry) } label: {
                     Text("Download")
@@ -197,7 +197,7 @@ struct ModelDownloadRow: View {
                         .background(p.accent).foregroundStyle(p.bg)
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.plainHaptic)
             }
         }
     }

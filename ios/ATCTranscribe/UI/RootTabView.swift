@@ -72,7 +72,7 @@ private struct BottomTabBar: View {
             .frame(maxWidth: .infinity)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.plainHaptic)
         .accessibilityIdentifier("tab-\(tab.rawValue)")
         .accessibilityAddTraits(active ? [.isButton, .isSelected] : .isButton)
     }
