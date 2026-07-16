@@ -32,6 +32,26 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 52, version: "1.0", headline: "Plate controls on the map, a smarter Plates tab, and multi-touch",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "slider.horizontal.below.rectangle",
+                    title: "Adjust or hide a plate right on the map",
+                    detail: "Tap the small gear in the corner of a plate you’ve sent to the map and a menu drops down from the top: fade it with a transparency slider (which now genuinely lets the chart show through), flip it to night colors, open it full-page, or hide it. A plate can never go fully invisible, and the gear stays reachable even if you pan the plate toward the edge of the screen."),
+                WhatsNewHighlight(
+                    icon: "location.magnifyingglass",
+                    title: "The Plates tab finds your airport",
+                    detail: "The Plates tab now opens on the airport you’re actually at — using GPS — instead of a far-off filed destination, and it follows you as you fly. Search jumps to any field instantly. Approaches are grouped into tidy, collapsible per-runway sections instead of one long scroll."),
+                WhatsNewHighlight(
+                    icon: "map",
+                    title: "Tap an airport to see its diagram",
+                    detail: "Tapping an airport on the map now shows its airport diagram as a thumbnail in the info card. Tap the thumbnail to open the full plate in the Plates tab."),
+                WhatsNewHighlight(
+                    icon: "hand.draw",
+                    title: "Move and resize with two fingers",
+                    detail: "Drag a floating widget with two fingers to move it anywhere, pinch to resize it, and swipe up with two fingers to tuck away the top bars. Every button now gives a subtle tap you can feel — a small thing that makes the whole app feel more solid in the cockpit."),
+            ]),
+        ReleaseNote(
             build: 51, version: "1.0", headline: "Map reliability, cleaner plates, and organized settings",
             highlights: [
                 WhatsNewHighlight(

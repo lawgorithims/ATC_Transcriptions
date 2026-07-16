@@ -101,11 +101,15 @@ struct TwoFingerPan: UIViewRepresentable {
             }
         }
 
-        /// True iff this region contains the centroid AND no higher-priority live region also contains it
-        /// (ties broken by registration order, so exactly one region ever claims a gesture).
+        /// True iff this region contains the centroid AND no higher-priority live region IN THE SAME WINDOW
+        /// also contains it (ties broken by registration order, so exactly one region ever claims a gesture).
+        /// Same-window scoping matters on iPadOS: a second scene (Split View / Stage Manager) is a separate
+        /// UIWindow whose coordinators share this static registry, and both windows' spaces start at (0,0),
+        /// so an unscoped compare could let a card in window B win — and thus DENY — a gesture in window A.
         private func winsArbitration(at pointInWindow: CGPoint) -> Bool {
             guard markerContains(pointInWindow) else { return false }
-            let contenders = Coordinator.live.compactMap { $0.c }.filter { $0.markerContains(pointInWindow) }
+            let contenders = Coordinator.live.compactMap { $0.c }
+                .filter { $0.window === self.window && $0.markerContains(pointInWindow) }
             let top = contenders.map(\.priority).max()
             return contenders.first { $0.priority == top } === self
         }

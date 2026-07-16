@@ -272,10 +272,11 @@ struct FloatingWidgetContainer<Content: View>: View {
         let rect = WidgetGeometry.rect(for: frame, in: container)
         let w = clampW(rect.width * mtScale + resize.width)
         let h = clampH(rect.height * mtScale + resize.height)
-        // Resolve the on-screen center against the LIVE (scaled/resized) size so the card grows away from
-        // its anchored edge instead of about its old center — otherwise it visibly slides by ~half the size
-        // delta the instant the pinch/grip is released (the anchor re-resolves for the committed size).
-        let posCenter = liveCenter(width: w, height: h)
+        // Resolve the on-screen center against the LIVE size ONLY during a pinch, so the card grows from its
+        // anchored edge with no post-release slide. The corner GRIP keeps the old center-resolution: routing
+        // it through liveCenter would pin the grip's own corner (it coincides with the anchored edge for the
+        // common trailing/bottom docks), freezing the handle instead of tracking the finger.
+        let posCenter = mtScale != 1 ? liveCenter(width: w, height: h) : CGPoint(x: rect.midX, y: rect.midY)
         VStack(spacing: 0) {
             header(p)
             content
