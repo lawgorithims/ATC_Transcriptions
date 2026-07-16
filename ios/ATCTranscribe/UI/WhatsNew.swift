@@ -32,6 +32,26 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 54, version: "1.0", headline: "Transcript & Notes tabs, snap-to-side panels, and a cooler app",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "rectangle.split.2x1",
+                    title: "Snap a widget to the side",
+                    detail: "Drag any floating widget (with one finger on its title bar, or two fingers anywhere) to the left or right screen edge and it docks as a resizable side panel — like snapping a window on a computer. Drag the panel's inner edge to resize it (it remembers the width), tap the ↗ button to pop it back out to a floating widget, and close it with the ✕ or a two-finger swipe. Drop a second widget on the same side and it takes over."),
+                WhatsNewHighlight(
+                    icon: "text.bubble",
+                    title: "New Transcript and Notes tabs",
+                    detail: "The bottom bar now has a Transcript tab on the far left (the live ATC transcript, full screen) and a Notes tab on the far right — hand-write notes with your finger or Apple Pencil and keep them in a library. There's also a quick transcript-widget on/off button in the input controls."),
+                WhatsNewHighlight(
+                    icon: "thermometer.snowflake",
+                    title: "Runs much cooler on launch",
+                    detail: "The app no longer heats up the moment you open it. Realistic 3D terrain is now an opt-in choice (turn it on in the Map layers menu) so the map opens flat and cool, and the AI-correction model now loads when you press Start instead of at startup."),
+                WhatsNewHighlight(
+                    icon: "doc.richtext",
+                    title: "Airport diagram, front and center",
+                    detail: "Tapping an airport on the map now shows its airport-diagram chart as a thumbnail right at the top of the info card. Tap the thumbnail to open the full plate in the Plates tab."),
+            ]),
+        ReleaseNote(
             build: 53, version: "1.0", headline: "Plate controls on the map, a smarter Plates tab, and multi-touch",
             highlights: [
                 WhatsNewHighlight(
