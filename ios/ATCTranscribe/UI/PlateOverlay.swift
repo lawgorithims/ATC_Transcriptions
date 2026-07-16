@@ -118,7 +118,7 @@ enum PlateImageRenderer {
     /// horizontal). The canvas is sized to the ROTATED display bounds so it fills without letterboxing.
     /// (We deliberately DON'T force true-north — that would turn the FAA's readable labels sideways;
     /// diagrams keep their published orientation with the north arrow intact, as every EFB shows them.)
-    static func northUpFirstPage(pdfURL: URL, pdf: String, maxDimension: CGFloat = 600) -> UIImage? {
+    static func northUpFirstPage(pdfURL: URL, maxDimension: CGFloat = 600) -> UIImage? {
         guard let doc = PDFDocument(url: pdfURL), let page = doc.page(at: 0) else { return nil }
         let box = page.bounds(for: .mediaBox)
         let rotated = page.rotation == 90 || page.rotation == 270

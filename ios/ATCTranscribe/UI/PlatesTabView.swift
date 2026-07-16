@@ -13,6 +13,7 @@ struct PlatesTabView: View {
     @State private var searchActive = false         // drives `.searchable` focus so we can dismiss it on tab-leave
     @State private var showFlightBag = false
     @State private var nearbyBinders: [String] = []  // nearest charted fields, recomputed as the GPS fix moves
+    @State private var lastNearbyCoord: Coord?       // movement gate for the (off-main) nearby scan
 
     /// The nearest airport that publishes plates within `withinNM` of a position — reuses the bundled
     /// nav DB's airport index (no new spatial data). nil when none is close.
@@ -126,19 +127,17 @@ struct PlatesTabView: View {
         if !Procedures.forAirport(want).isEmpty { airport = want; userPinned = true; query = "" }
     }
 
-    /// Nearest charted fields for the "Nearby" binder section — gated on ~0.25 NM of movement so a parked
-    /// aircraft's GPS jitter doesn't churn the list (or the off-main spatial query) every tick.
+    /// Nearest charted fields for the "Nearby" binder section. Gated on ~0.5 NM of movement (a parked
+    /// aircraft's GPS jitter must not churn the list) AND run OFF the main actor — `NavDatabase.nearby`
+    /// walks the full ~90k-ident table, so it must never run on the main thread per GPS tick.
     private func refreshNearby() {
         guard let c = model.stratuxGPS?.coordinate ?? model.deviceLocation.coord else { return }
-        let dLat = 1.0                                            // ~60 NM box
-        let dLon = dLat / max(cos(c.lat * .pi / 180), 0.1)
-        let box = BBox(minLat: c.lat - dLat, minLon: c.lon - dLon, maxLat: c.lat + dLat, maxLon: c.lon + dLon)
-        func d2(_ p: Coord) -> Double { let a = p.lat - c.lat, b = (p.lon - c.lon) * cos(c.lat * .pi / 180); return a * a + b * b }
-        let near = NavDatabase.nearby(box, types: [0], limit: 120)
-            .filter { !Procedures.forAirport($0.ident).isEmpty }
-            .sorted { d2($0.coord) < d2($1.coord) }
-            .prefix(12).map(\.ident)
-        if Array(near) != nearbyBinders { nearbyBinders = Array(near) }
+        if let last = lastNearbyCoord, PlatesTabView.distanceNM(last, c) < 0.5 { return }   // movement gate
+        lastNearbyCoord = c
+        Task { @MainActor in
+            let near = await Task.detached { AirportSummary.nearbyCharted(lat: c.lat, lon: c.lon) }.value
+            if near != nearbyBinders { nearbyBinders = near }
+        }
     }
 
     // MARK: airport search

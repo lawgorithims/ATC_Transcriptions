@@ -122,7 +122,14 @@ extension Int {
     private func load(_ icaos: [String]) async {
         let result = await Self.download(icaos)
         let now = Date()
-        for id in icaos { inFlight.remove(id); fetchedAt[id] = now }
+        for id in icaos { inFlight.remove(id) }
+        guard let result else {
+            // Transport/decode failure → short backoff (retry in ~30 s), NOT the full 10-min TTL, so a
+            // transient blip doesn't leave every airport "unavailable" for ten minutes.
+            for id in icaos { fetchedAt[id] = now.addingTimeInterval(30 - ttl) }
+            return
+        }
+        for id in icaos { fetchedAt[id] = now }        // success (incl. non-reporting fields) → full TTL
         for (id, m) in result { metars[id] = m }
     }
 
@@ -130,15 +137,17 @@ extension Int {
         ident.trimmingCharacters(in: .whitespaces).uppercased()
     }
 
-    nonisolated private static func download(_ icaos: [String]) async -> [String: Metar] {
-        guard var comps = URLComponents(string: "https://aviationweather.gov/api/data/metar") else { return [:] }
+    /// Returns nil on a TRANSPORT/decode failure (so the caller can retry soon) vs an empty-but-non-nil
+    /// dictionary on a successful response that simply had no reporting stations (full TTL).
+    nonisolated private static func download(_ icaos: [String]) async -> [String: Metar]? {
+        guard var comps = URLComponents(string: "https://aviationweather.gov/api/data/metar") else { return nil }
         comps.queryItems = [URLQueryItem(name: "ids", value: icaos.joined(separator: ",")),
                             URLQueryItem(name: "format", value: "json")]
-        guard let url = comps.url else { return [:] }
+        guard let url = comps.url else { return nil }
         var req = URLRequest(url: url); req.timeoutInterval = 12
         guard let (data, resp) = try? await URLSession.shared.data(for: req),
               (resp as? HTTPURLResponse)?.statusCode == 200,
-              let list = try? JSONDecoder().decode([Metar].self, from: data) else { return [:] }
+              let list = try? JSONDecoder().decode([Metar].self, from: data) else { return nil }
         return Dictionary(list.filter { !$0.icaoId.isEmpty }.map { ($0.icaoId.uppercased(), $0) },
                           uniquingKeysWith: { a, _ in a })
     }
