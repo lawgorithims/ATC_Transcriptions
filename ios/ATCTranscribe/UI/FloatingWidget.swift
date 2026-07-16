@@ -260,12 +260,16 @@ struct FloatingWidgetContainer<Content: View>: View {
     @GestureState private var drag: CGSize = .zero
     @GestureState private var resize: CGSize = .zero
     @State private var showControls = false
+    // Live two-finger MOVE + pinch RESIZE (committed to the store on gesture end). @State (not @GestureState)
+    // because the transform is driven by a UIKit recognizer bridge, not a SwiftUI gesture.
+    @State private var mtTranslation: CGSize = .zero
+    @State private var mtScale: CGFloat = 1
 
     var body: some View {
         let p = palette
         let rect = WidgetGeometry.rect(for: frame, in: container)
-        let w = clampW(rect.width + resize.width)
-        let h = clampH(rect.height + resize.height)
+        let w = clampW(rect.width * mtScale + resize.width)
+        let h = clampH(rect.height * mtScale + resize.height)
         VStack(spacing: 0) {
             header(p)
             content
@@ -278,8 +282,14 @@ struct FloatingWidgetContainer<Content: View>: View {
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(p.border.opacity(0.7), lineWidth: 1))
         .overlay(alignment: .bottomTrailing) { if !frame.pinned { resizeGrip(p) } }
+        // Two-finger MOVE anywhere on the card via the window-attached pan (single-finger passes through to
+        // the header drag / content scroll / corner grip). Only when unpinned — a pinned card is locked.
+        .overlay { if !frame.pinned { TwoFingerPan(onChanged: onTwoFingerMove, onEnded: commitTwoFingerMove) } }
+        // Pinch to RESIZE — SwiftUI's native two-finger magnify, which coexists cleanly with single-finger
+        // gestures and never blocks them (no UIKit hit-test games needed).
+        .simultaneousGesture(pinchResize)
         .shadow(color: .black.opacity(0.35), radius: 10, y: 4)
-        .position(x: rect.midX + drag.width, y: rect.midY + drag.height)
+        .position(x: rect.midX + drag.width + mtTranslation.width, y: rect.midY + drag.height + mtTranslation.height)
         .zIndex(Double(frame.z))
         // While a drag/resize is live, disable the implicit spring: otherwise the bring-to-front z-bump in
         // the drag's onChanged mutates `frame` (WidgetFrame.Equatable includes z), arming the spring
@@ -287,10 +297,45 @@ struct FloatingWidgetContainer<Content: View>: View {
         // the .zIndex reorder in the same pass (grab "flicker"). Nil animation while gesturing → the card
         // tracks the finger 1:1 and the z-lift is instant. Restored when idle (both gesture states .zero,
         // which includes the release commit) so the snap-to-anchor + opacity/pin/size changes still spring.
-        .animation((drag == .zero && resize == .zero)
+        .animation((drag == .zero && resize == .zero && mtTranslation == .zero && mtScale == 1)
                    ? .interactiveSpring(response: 0.3, dampingFraction: 0.82)
                    : nil,
                    value: frame)
+    }
+
+    // MARK: two-finger move + pinch resize
+
+    private func bringToFrontIfNeeded() {
+        if widgets.layout.frame(frame.kind)?.z != widgets.layout.maxZ { widgets.bringToFront(frame.kind) }
+    }
+
+    private func onTwoFingerMove(_ translation: CGSize) {
+        mtTranslation = translation
+        bringToFrontIfNeeded()
+    }
+
+    private func commitTwoFingerMove(_ translation: CGSize) {
+        let rect = WidgetGeometry.rect(for: frame, in: container)
+        let dropped = CGPoint(x: rect.origin.x + translation.width, y: rect.origin.y + translation.height)
+        let snapped = WidgetGeometry.snap(droppedOrigin: dropped, size: rect.size, in: container)
+        widgets.update(frame.kind) { $0.anchor = snapped.anchor; $0.offset = snapped.offset }
+        mtTranslation = .zero
+    }
+
+    private var pinchResize: some Gesture {
+        MagnificationGesture()
+            .onChanged { s in
+                guard !frame.pinned else { return }
+                mtScale = max(s, 0.2); bringToFrontIfNeeded()                  // clampW/H bound the render
+            }
+            .onEnded { s in
+                guard !frame.pinned else { return }
+                let rect = WidgetGeometry.rect(for: frame, in: container)
+                let newSize = CGSize(width: clampW(rect.width * max(s, 0.2)),
+                                     height: clampH(rect.height * max(s, 0.2)))
+                widgets.update(frame.kind) { $0.size = newSize }
+                mtScale = 1
+            }
     }
 
     // MARK: header (drag handle + controls)
