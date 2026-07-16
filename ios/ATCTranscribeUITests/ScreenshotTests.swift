@@ -100,7 +100,7 @@ final class ScreenshotTests: XCTestCase {
         // 6. Settings — models manager + the two-tier correction controls.
         if app.buttons["settings-button"].waitForExistence(timeout: 5) {
             app.buttons["settings-button"].tap()
-            if app.navigationBars["Model & settings"].waitForExistence(timeout: 5) {
+            if app.navigationBars["Settings"].waitForExistence(timeout: 5) {
                 snap(app, "settings")
                 if app.buttons["Done"].exists { app.buttons["Done"].tap() }
             }
