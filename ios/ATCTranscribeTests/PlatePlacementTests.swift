@@ -6,20 +6,19 @@ import UIKit
 /// Pure georeferencing math for the plate-on-map overlay.
 final class PlatePlacementTests: XCTestCase {
 
-    /// The opacity slider works through the renderer's compositor-level `alpha` (MapKit caches drawn
-    /// overlay tiles, so a `setNeedsDisplay()` content redraw is unreliable). Pin that the renderer
-    /// self-initializes its alpha from the overlay state — the "created mid-slide" case.
-    func testRendererAlphaTracksOverlayOpacity() {
+    /// Opacity is BAKED INTO THE DRAW (`ctx.setAlpha`), never the compositor-level renderer `alpha`:
+    /// real devices ignore `MKOverlayRenderer.alpha` for custom renderers (the sim honors it, which
+    /// once masked a dead slider on hardware). Pin the regression: the renderer must leave compositor
+    /// alpha at 1 (anything else double-fades in the sim), while the overlay carries the draw opacity.
+    func testOpacityIsCarriedByOverlayNotCompositorAlpha() {
         let img = UIGraphicsImageRenderer(size: CGSize(width: 1, height: 1)).image { _ in }
-        let state = PlateOverlayState(name: "ILS RWY 4R", airport: "KBOS", image: img, imageAspect: 0.77,
-                                      centerLat: 42.36, centerLon: -71.0,
+        let state = PlateOverlayState(name: "ILS RWY 4R", airport: "KBOS", pdf: "00058IL4R.PDF", image: img,
+                                      imageAspect: 0.77, centerLat: 42.36, centerLon: -71.0,
                                       widthMeters: 20_000, rotationDeg: 0, opacity: 0.35)
         let overlay = PlateImageOverlay(state: state)
-        XCTAssertEqual(PlateOverlayRenderer(overlay).alpha, 0.35, accuracy: 1e-6)
-        // An opacity-only reconcile mutates the overlay + renderer alpha in place.
-        overlay.opacity = 0.8
-        let r = PlateOverlayRenderer(overlay)
-        XCTAssertEqual(r.alpha, 0.8, accuracy: 1e-6)
+        XCTAssertEqual(overlay.opacity, 0.35, accuracy: 1e-6)                    // draw() reads this
+        XCTAssertEqual(PlateOverlayRenderer(overlay).alpha, 1.0, accuracy: 1e-6) // compositor untouched
+        XCTAssertFalse(overlay.inverted)                                        // default not inverted
     }
 
     func testHeightFollowsAspect() {

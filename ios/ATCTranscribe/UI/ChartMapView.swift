@@ -476,7 +476,8 @@ struct ChartMapView: UIViewRepresentable {
     let onTapObjects: ([IdentifiedObject]) -> Void   // tap / long-press → ranked objects there (empty = nothing)
     let focus: Coord?                                // recenter here when it changes (search result)
     var restoreCamera: SavedMapCamera? = nil         // M7: re-frame to the user's last pan/zoom after a thermal rebuild
-    var plateOverlay: PlateOverlayState? = nil       // a hand-aligned approach plate superimposed on the map
+    var plateOverlay: PlateOverlayState? = nil       // a georeferenced approach plate superimposed on the map
+    var onPlateAnchors: ((CGPoint, CGPoint)?) -> Void = { _ in }   // plate top-corner screen-points → host chrome
     @ObservedObject var model: AppModel
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -531,6 +532,7 @@ struct ChartMapView: UIViewRepresentable {
         let c = context.coordinator
         c.onVisibleRegion = onVisibleRegion
         c.onTapObjects = onTapObjects
+        c.onPlateAnchors = onPlateAnchors
         c.routeLegs = route                               // hit-test source for filed waypoints
         c.routeIdents = Set(route.map { $0.ident })
         if c.appliedLayer != layer || c.appliedReduceGPU != model.thermalSerious {
@@ -642,35 +644,59 @@ struct ChartMapView: UIViewRepresentable {
                                             span: MKCoordinateSpan(latitudeDelta: 0.5, longitudeDelta: 0.5)), animated: true)
         }
 
+        // One-shot frame request (a plate sent to the map frames the WHOLE plate so its corner controls
+        // are on-screen). Consumed immediately — cleared outside the view update to avoid re-publishing.
+        if let r = model.mapFrameRect {
+            // Top padding clears the console header (the map extends full-screen beneath it) so the
+            // plate's top corners — where its ✕/opacity controls ride — land visibly below the bars.
+            mv.setVisibleMapRect(r, edgePadding: UIEdgeInsets(top: 250, left: 40, bottom: 80, right: 40),
+                                 animated: true)
+            c.didFrame = true                          // claims the initial-framing slot, like a procedure preview
+            let m = model
+            Task { @MainActor in m.mapFrameRect = nil }
+        }
+
         c.syncDynamic(mv, aircraft: model.aircraft, ownship: model.stratuxGPS?.coordinate)
         c.syncHazards(mv, events: model.showHazards ? model.hazardEvents : [])
         c.syncTFRs(mv, tfrs: model.showTFRs ? model.tfrs : [])
     }
 
-    /// Reconcile the superimposed plate overlay. Rebuild the MKOverlay only when the PLACEMENT
-    /// (center/size/rotation) changes — an opacity-only change updates the existing renderer in place,
-    /// so dragging the opacity slider never removes + re-adds the image (which would flicker).
+    /// Reconcile the superimposed plate overlay. ANY change (placement or opacity) rebuilds the overlay:
+    /// a fresh renderer is the only way to get a fresh draw — MapKit caches drawn overlay content, and
+    /// neither `setNeedsDisplay()` nor compositor `alpha` reliably updates it on device (alpha is baked
+    /// into the draw; see `PlateOverlayRenderer`). The new overlay is ADDED BEFORE the old is removed so
+    /// the plate never blanks for a frame mid-slide.
+    ///
+    /// The plate's corner CONTROLS are SwiftUI views hosted by MapHostView; this reconcile just keeps
+    /// the coordinator's corner coordinates current and streams their screen-points up (`emitPlateAnchors`
+    /// — also called continuously from the region-change delegate so the controls ride the plate).
     private func reconcilePlate(_ mv: MKMapView, _ c: Coordinator) {
         guard let s = plateOverlay else {
             if let old = c.plateOverlayObj { mv.removeOverlay(old); c.plateOverlayObj = nil; c.plateKey = nil }
+            if c.plateCorners != nil { c.plateCorners = nil; c.onPlateAnchors(nil) }
             return
         }
-        if c.plateKey != s.geoKey {
-            if let old = c.plateOverlayObj { mv.removeOverlay(old) }
-            let o = PlateImageOverlay(state: s)
-            mv.addOverlay(o, level: .aboveLabels)   // over the chart tiles + route, under the annotation labels
-            c.plateOverlayObj = o
-            c.plateKey = s.geoKey
-        } else if let o = c.plateOverlayObj, o.opacity != s.opacity {
-            // Opacity-only change: rebuild the overlay so a FRESH PlateOverlayRenderer is created with
-            // the new alpha (init applies it — the only reliable path; setting alpha or setNeedsDisplay
-            // on the live renderer does NOT recomposite MapKit's cached overlay content). The image is
-            // already decoded on `s`, so the rebuild is cheap; MapKit cross-fades add/remove smoothly.
-            mv.removeOverlay(o)
+
+        // Overlay image — rebuild on placement, opacity, OR invert change.
+        if c.plateKey != s.geoKey || c.plateOverlayObj?.opacity != s.opacity
+            || c.plateOverlayObj?.inverted != s.inverted {
+            let old = c.plateOverlayObj
             let n = PlateImageOverlay(state: s)
-            mv.addOverlay(n, level: .aboveLabels)
+            mv.addOverlay(n, level: .aboveLabels)   // over the chart tiles + route, under annotation labels
             c.plateOverlayObj = n
+            if let old { mv.removeOverlay(old) }    // after the add — overlap, never a gap
         }
+        if c.plateKey != s.geoKey || c.plateCorners == nil {
+            c.plateCorners = (
+                PlatePlacement.corner(centerLat: s.centerLat, centerLon: s.centerLon,
+                                      widthMeters: s.widthMeters, heightMeters: s.heightMeters,
+                                      rotationDeg: s.rotationDeg, dxSign: -1, dySign: 1),
+                PlatePlacement.corner(centerLat: s.centerLat, centerLon: s.centerLon,
+                                      widthMeters: s.widthMeters, heightMeters: s.heightMeters,
+                                      rotationDeg: s.rotationDeg, dxSign: 1, dySign: 1))
+        }
+        c.plateKey = s.geoKey
+        c.emitPlateAnchors(mv)
     }
 
     final class Coordinator: NSObject, MKMapViewDelegate, CLLocationManagerDelegate, UIGestureRecognizerDelegate {
@@ -679,6 +705,16 @@ struct ChartMapView: UIViewRepresentable {
         var appliedReduceGPU = false                // last thermal-downgrade state applied to the base config
         var plateOverlayObj: PlateImageOverlay?     // the superimposed plate, if any
         var plateKey: String?                       // geometry identity — rebuild only when placement changes
+        var plateCorners: (tl: CLLocationCoordinate2D, tr: CLLocationCoordinate2D)?  // chrome anchor coords
+        var onPlateAnchors: ((CGPoint, CGPoint)?) -> Void = { _ in }   // corner screen-points → MapHostView
+
+        /// Stream the plate's top-corner SCREEN points to the SwiftUI chrome (called on every region
+        /// change tick so the ✕ / opacity controls ride the plate through pans and zooms).
+        func emitPlateAnchors(_ mv: MKMapView) {
+            guard let corners = plateCorners else { return }
+            onPlateAnchors((mv.convert(corners.tl, toPointTo: mv),
+                            mv.convert(corners.tr, toPointTo: mv)))
+        }
         var routeOverlay: MKPolyline?
         var waypointAnnotations: [WaypointAnnotation] = []
         var lastRouteKey: [String] = []
@@ -845,6 +881,12 @@ struct ChartMapView: UIViewRepresentable {
             }
             regionDebounce = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+            emitPlateAnchors(mv)
+        }
+
+        /// Fires continuously DURING a pan/zoom — keeps the plate's corner controls glued to the plate.
+        func mapViewDidChangeVisibleRegion(_ mv: MKMapView) {
+            emitPlateAnchors(mv)
         }
 
         /// Recompute the in-view context layers (airspace outlines [Class B/C/D + special use] + nearby navaids/airports)

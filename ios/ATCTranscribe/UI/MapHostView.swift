@@ -20,6 +20,11 @@ struct MapHostView: View {
 
     @StateObject private var store = ChartStore(library: ChartLibrary.shared)
     @State private var route: [ResolvedLeg] = []
+    /// The overlaid plate's top-corner screen-points (streamed from the map's region callbacks) — the
+    /// SwiftUI ✕ / opacity controls are positioned here so they ride the plate itself.
+    @State private var plateAnchors: PlateAnchors?
+
+    struct PlateAnchors: Equatable { var tl: CGPoint; var tr: CGPoint }
 
     /// Show the live map only when it's worth the power — paused when truly backgrounded (a transient
     /// `.inactive`, e.g. a permission alert, must NOT blank it) or when the full-screen route map is
@@ -50,6 +55,15 @@ struct MapHostView: View {
                              focus: model.mapFocus,
                              restoreCamera: model.lastMapCamera,
                              plateOverlay: model.plateOverlay,
+                             onPlateAnchors: { pts in
+                                 // Most emissions arrive from inside updateUIView (a view-update
+                                 // context) where SwiftUI DISCARDS state writes — defer a tick, and
+                                 // only publish real changes so a static map doesn't re-render.
+                                 let mapped = pts.map { PlateAnchors(tl: $0.0, tr: $0.1) }
+                                 Task { @MainActor in
+                                     if plateAnchors != mapped { plateAnchors = mapped }
+                                 }
+                             },
                              model: model)
             } else if !model.mapBackgroundEnabled {
                 // The user's own "map background off" toggle — the only non-transient reason to stand
@@ -66,17 +80,20 @@ struct MapHostView: View {
             }
         }
         .ignoresSafeArea()
-        // The plate-adjust control bar floats at the bottom while a plate is superimposed (both layouts).
-        .overlay(alignment: .bottom) {
-            if let s = model.plateOverlay {
-                PlateControlBar(state: s, palette: model.palette)
+        // The plate's ✕ / opacity controls ride the PLATE's own top corners (screen-points streamed
+        // from the map's region callbacks). SwiftUI-layered — not annotation subviews — so their
+        // gestures never fight MapKit's pan recognizer (which cancels UIControl tracking inside
+        // annotation views and made a UISlider there feel dead).
+        // A single gear button rides the plate's top-right corner; tapping it opens the plate menu (in
+        // ConsoleView, dropping from the top). SwiftUI-layered over the map so its tap never fights
+        // MapKit's pan recognizer; hidden while the menu is open (the menu carries the controls).
+        .overlay(alignment: .topLeading) {
+            if let s = model.plateOverlay, let a = plateAnchors, !model.showPlateMenu {
+                PlateCornerSettingsButton(opacity: s.opacity)
                     .environmentObject(model)
-                    .padding(.horizontal, 12).padding(.bottom, 10)
-                    .frame(maxWidth: 520)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .position(x: a.tr.x - 24, y: a.tr.y + 24)      // tucked inside the plate's top-right
             }
         }
-        .animation(.easeInOut(duration: 0.2), value: model.plateOverlay?.name)
         .task { await buildRoute() }
         .onChange(of: model.flightPlan) { _, _ in Task { await buildRoute() } }      // edits redraw the route
         .onChange(of: model.chartLayer) { _, new in
