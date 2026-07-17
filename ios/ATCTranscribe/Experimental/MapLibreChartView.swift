@@ -47,6 +47,7 @@ struct MapLibreChartView: UIViewRepresentable {
         let server: MBTilesHTTPServer
         private var routeCoords: [CLLocationCoordinate2D]
         private weak var map: MLNMapView?
+        private var overlayGen = 0                 // drops stale async overlay refreshes (mirrors contextGen)
 
         init(store: ChartStore, routeCoords: [CLLocationCoordinate2D]) {
             self.store = store
@@ -88,13 +89,116 @@ struct MapLibreChartView: UIViewRepresentable {
         }
 
         func mapView(_ mapView: MLNMapView, didFinishLoading style: MLNStyle) {
-            updateRoute(routeCoords, on: mapView)
+            setupOverlayLayers(style)            // airways + airspace layers (empty; filled per region)
+            updateRoute(routeCoords, on: mapView)   // route added last → sits above airspace
             ensureVisiblePacks(mapView)
+            refreshOverlays(mapView)
         }
 
         /// Load the chart packs under the region the user settles on (as MapHostView does), so panning the
-        /// globe pulls in coverage. Runs off-main inside ChartStore.
-        func mapView(_ mapView: MLNMapView, regionDidChangeAnimated animated: Bool) { ensureVisiblePacks(mapView) }
+        /// globe pulls in coverage; and refresh the vector overlays for the new region.
+        func mapView(_ mapView: MLNMapView, regionDidChangeAnimated animated: Bool) {
+            ensureVisiblePacks(mapView)
+            refreshOverlays(mapView)
+        }
+
+        // MARK: airspace + airways overlays (milestone 2)
+
+        /// Create the persistent overlay sources + layers ONCE (empty). Per-region refresh only mutates
+        /// `source.shape` — so we never remove a source a layer still uses (MapLibre would throw). Stacking:
+        /// airways below airspace below route, all above the FAA/OSM rasters.
+        private func setupOverlayLayers(_ style: MLNStyle) {
+            let awySrc = MLNShapeSource(identifier: "airways", shape: nil, options: nil)
+            style.addSource(awySrc)
+            let awy = MLNLineStyleLayer(identifier: "airways-line", source: awySrc)
+            awy.lineColor = NSExpression(forConstantValue: UIColor(red: 0.42, green: 0.58, blue: 0.86, alpha: 0.75))
+            awy.lineWidth = NSExpression(forConstantValue: 1.6)
+            awy.lineCap = NSExpression(forConstantValue: "round"); awy.lineJoin = NSExpression(forConstantValue: "round")
+            awy.minimumZoomLevel = 4.5              // the scale<9 gate
+            style.addLayer(awy)
+
+            let aspSrc = MLNShapeSource(identifier: "airspace", shape: nil, options: nil)
+            style.addSource(aspSrc)
+            let fill = MLNFillStyleLayer(identifier: "airspace-fill", source: aspSrc)
+            fill.fillColor = Self.aspColorExpr()
+            fill.fillOpacity = Self.aspOpacityExpr()
+            fill.minimumZoomLevel = 4.0
+            style.addLayer(fill)
+            let outline = MLNLineStyleLayer(identifier: "airspace-outline", source: aspSrc)
+            outline.lineColor = Self.aspColorExpr()
+            outline.lineWidth = Self.aspWidthExpr()
+            outline.lineCap = NSExpression(forConstantValue: "round"); outline.lineJoin = NSExpression(forConstantValue: "round")
+            outline.minimumZoomLevel = 4.0
+            style.addLayer(outline)
+        }
+
+        /// Query airspace + airways for the settled region OFF-MAIN (gated on angular scale, exactly like
+        /// refreshContext), then set the features on the persistent sources on the main actor.
+        private func refreshOverlays(_ mapView: MLNMapView) {
+            let b = mapView.visibleCoordinateBounds
+            guard b.ne.latitude > b.sw.latitude, b.ne.longitude > b.sw.longitude else { return }   // antimeridian/degenerate
+            let scale = b.ne.latitude - b.sw.latitude          // latitude span in degrees (matches the MK gate)
+            let m = 0.15
+            let dLat = (b.ne.latitude - b.sw.latitude) * m, dLon = (b.ne.longitude - b.sw.longitude) * m
+            let bb = BBox(minLat: b.sw.latitude - dLat, minLon: b.sw.longitude - dLon,
+                          maxLat: b.ne.latitude + dLat, maxLon: b.ne.longitude + dLon)
+            let wantAir = scale < 14, wantAwy = scale < 9
+            overlayGen += 1
+            let gen = overlayGen
+            Task { @MainActor in
+                let feats = await Task.detached(priority: .userInitiated) { () -> ([MLNPolygonFeature], [MLNPolylineFeature]) in
+                    var asp: [MLNPolygonFeature] = []
+                    if wantAir {
+                        let order: [String: Int] = ["TFR": 0, "P": 1, "R": 2, "B": 3, "C": 4, "W": 5, "MOA": 6, "A": 7, "D": 8]
+                        let list = NavDatabase.airspaces(intersecting: bb)
+                            .sorted { (order[$0.cls] ?? 9, $0.name) < (order[$1.cls] ?? 9, $1.name) }
+                        building: for a in list {
+                            for ring in a.rings {                          // bounded by the 260 cap below
+                                var c = ring.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) }
+                                let f = MLNPolygonFeature(coordinates: &c, count: UInt(c.count))
+                                f.attributes = ["cls": a.cls]              // drives fill/line color, opacity, width
+                                asp.append(f)
+                                if asp.count >= 260 { break building }
+                            }
+                        }
+                    }
+                    var awy: [MLNPolylineFeature] = []
+                    if wantAwy {
+                        for seg in Airways.inRegion(bb) where seg.points.count >= 2 {   // already split into runs
+                            var c = seg.points.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) }
+                            let f = MLNPolylineFeature(coordinates: &c, count: UInt(c.count))
+                            f.attributes = ["ident": seg.ident, "area": seg.area]       // for the future tap card
+                            awy.append(f)
+                        }
+                    }
+                    return (asp, awy)
+                }.value
+                guard gen == overlayGen, let style = mapView.style else { return }
+                (style.source(withIdentifier: "airspace") as? MLNShapeSource)?.shape = MLNShapeCollectionFeature(shapes: feats.0)
+                (style.source(withIdentifier: "airways") as? MLNShapeSource)?.shape = MLNShapeCollectionFeature(shapes: feats.1)
+            }
+        }
+
+        /// "#RRGGBB" from the app's canonical `airspaceColor` (reused verbatim — no hand-typed hex).
+        private static func hex(_ cls: String) -> String {
+            var r: CGFloat = 0, g: CGFloat = 0, bl: CGFloat = 0, a: CGFloat = 0
+            ChartMapView.Coordinator.airspaceColor(cls).getRed(&r, green: &g, blue: &bl, alpha: &a)
+            return String(format: "#%02X%02X%02X", Int(r * 255), Int(g * 255), Int(bl * 255))
+        }
+        // Data-driven paint props keyed on the "cls" feature attribute (default covers B & D — chart blue).
+        private static func aspColorExpr() -> NSExpression {
+            NSExpression(mglJSONObject: ["match", ["get", "cls"],
+                "C", hex("C"), "TFR", hex("TFR"), "R", hex("R"), "P", hex("P"),
+                "W", hex("W"), "A", hex("A"), "MOA", hex("MOA"), hex("B")])
+        }
+        private static func aspOpacityExpr() -> NSExpression {
+            NSExpression(mglJSONObject: ["match", ["get", "cls"],
+                "P", 0.18, "TFR", 0.18, "R", 0.10, "W", 0.10, "A", 0.10, "MOA", 0.10, 0.05])
+        }
+        private static func aspWidthExpr() -> NSExpression {
+            NSExpression(mglJSONObject: ["match", ["get", "cls"],
+                "R", 2.4, "P", 2.4, "TFR", 2.4, "W", 1.8, "A", 1.8, "MOA", 1.8, "B", 1.5, "C", 1.5, 1.2])
+        }
 
         private func ensureVisiblePacks(_ mapView: MLNMapView) {
             let b = mapView.visibleCoordinateBounds
