@@ -115,7 +115,7 @@ def main():
         return (int(s) / scale) if s.isdigit() else None
 
     # ---- pass 2b: enroute airways (section E, subsection R) — V/J/T/Q routes as ordered fix chains.
-    # Empirical layout: route ident 14-18, sequence 26-29, fix 30-34, MEA 84-88, MAA 94-98 (both feet).
+    # Empirical layout: route ident 14-18, sequence 26-29, fix 30-34, MEA 84-88, MEA-2 89-93, MAA 94-98.
     nawy = 0
     def alt(s):
         s = s.strip()
@@ -132,8 +132,13 @@ def main():
         if c:
             # The AREA code (USA/PAC/…) disambiguates same-ident airways in different regions — the US
             # East Coast V1 and the Hawaii V1 are DIFFERENT airways; merging them draws bogus lines.
+            # ARINC ER records carry two directional minimum-enroute altitudes (cols 84-88 and 89-93,
+            # used when the MEA differs by direction of flight). Store the HIGHER so the card's floor is
+            # never optimistically low for the opposite direction.
+            mea1, mea2 = alt(l[83:88]), alt(l[88:93])
+            mea = max(x for x in (mea1, mea2) if x is not None) if (mea1 or mea2) else None
             con.execute("INSERT INTO airway(area,ident,seq,fix,lat,lon,mea,maa) VALUES(?,?,?,?,?,?,?,?)",
-                        (l[1:4].strip(), ident, int(seq), fix, c[0], c[1], alt(l[83:88]), alt(l[93:98])))
+                        (l[1:4].strip(), ident, int(seq), fix, c[0], c[1], mea, alt(l[93:98])))
             nawy += 1
 
     for l in lines:

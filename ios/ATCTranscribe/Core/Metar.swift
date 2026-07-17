@@ -102,11 +102,27 @@ extension Int {
 /// touches the transcription pipeline.
 @MainActor final class MetarStore: ObservableObject {
     @Published private(set) var metars: [String: Metar] = [:]
+    /// Idents for which a fetch COMPLETED (whether or not that field reports) — lets a caption show a
+    /// terminal "no current METAR" instead of spinning forever for a non-reporting airport.
+    @Published private(set) var checked: Set<String> = []
+    /// Idents whose last fetch was a transport failure — a terminal "weather unavailable" (retryable via
+    /// the 30 s backoff on the next `ensure`) rather than an eternal spinner.
+    @Published private(set) var failed: Set<String> = []
     private var fetchedAt: [String: Date] = [:]
     private var inFlight: Set<String> = []
     private let ttl: TimeInterval = 600
 
     func metar(_ ident: String) -> Metar? { metars[Self.key(ident)] }
+
+    /// Terminal fetch state for one ident (nil = still loading / never requested).
+    enum Fetch { case ok, noReport, failed }
+    func state(_ ident: String) -> Fetch? {
+        let id = Self.key(ident)
+        if metars[id] != nil { return .ok }
+        if failed.contains(id) { return .failed }
+        if checked.contains(id) { return .noReport }
+        return nil
+    }
 
     /// Fetch any of `idents` that are missing or older than the TTL (deduped against in-flight requests).
     func ensure(_ idents: [String], now: Date = Date()) {
@@ -125,11 +141,18 @@ extension Int {
         for id in icaos { inFlight.remove(id) }
         guard let result else {
             // Transport/decode failure → short backoff (retry in ~30 s), NOT the full 10-min TTL, so a
-            // transient blip doesn't leave every airport "unavailable" for ten minutes.
-            for id in icaos { fetchedAt[id] = now.addingTimeInterval(30 - ttl) }
+            // transient blip doesn't leave every airport "unavailable" for ten minutes. Mark failed so the
+            // caption shows a terminal state (only when we don't already hold a good obs to keep showing).
+            for id in icaos {
+                fetchedAt[id] = now.addingTimeInterval(30 - ttl)
+                if metars[id] == nil { failed.insert(id) }
+            }
             return
         }
-        for id in icaos { fetchedAt[id] = now }        // success (incl. non-reporting fields) → full TTL
+        for id in icaos {
+            fetchedAt[id] = now                        // success (incl. non-reporting fields) → full TTL
+            failed.remove(id); checked.insert(id)      // fetch completed → terminal "reported"/"no report"
+        }
         for (id, m) in result { metars[id] = m }
     }
 

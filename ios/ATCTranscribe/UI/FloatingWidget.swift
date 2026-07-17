@@ -190,10 +190,17 @@ struct WidgetLayout: Codable, Equatable {
     // the portrait width; the same point width reads as a narrower slice in landscape, ≈ the same physical
     // width, per the brief). A docked widget is `visible = false` as a floating card so it renders ONCE.
     enum PaneSide { case left, right }
-    @Published var leftPane: FloatingWidgetKind? = FloatingWidgetKind(rawValue: UserDefaults.standard.string(forKey: "atc.pane.left") ?? "") {
+    /// The objectInfo pane is backed by the TRANSIENT `mapProbe` (nil at every launch), so a persisted
+    /// objectInfo pane would restore as an empty full-height "Selected" panel. Drop it on restore — a fresh
+    /// map tap re-docks it (M10/L19).
+    private static func restoredPane(_ key: String) -> FloatingWidgetKind? {
+        let k = FloatingWidgetKind(rawValue: UserDefaults.standard.string(forKey: key) ?? "")
+        return k == .objectInfo ? nil : k
+    }
+    @Published var leftPane: FloatingWidgetKind? = WidgetStore.restoredPane("atc.pane.left") {
         didSet { UserDefaults.standard.set(leftPane?.rawValue, forKey: "atc.pane.left") }
     }
-    @Published var rightPane: FloatingWidgetKind? = FloatingWidgetKind(rawValue: UserDefaults.standard.string(forKey: "atc.pane.right") ?? "") {
+    @Published var rightPane: FloatingWidgetKind? = WidgetStore.restoredPane("atc.pane.right") {
         didSet { UserDefaults.standard.set(rightPane?.rawValue, forKey: "atc.pane.right") }
     }
     @Published var leftPaneWidth: CGFloat = CGFloat(UserDefaults.standard.double(forKey: "atc.pane.leftW")) {

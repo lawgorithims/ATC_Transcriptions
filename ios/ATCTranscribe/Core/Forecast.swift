@@ -26,15 +26,30 @@ struct ForecastPeriod: Decodable, Equatable, Sendable {
 /// gets a short backoff (mirrors `MetarStore`). UI-only; nothing here touches the transcription pipeline.
 @MainActor final class ForecastStore: ObservableObject {
     @Published private(set) var forecasts: [String: [ForecastPeriod]] = [:]
+    /// Idents whose fetch COMPLETED (even with an empty outlook) — a terminal "no outlook" instead of an
+    /// eternal spinner. `failed` = last fetch was a transport failure (retryable via the 30 s backoff).
+    @Published private(set) var checked: Set<String> = []
+    @Published private(set) var failed: Set<String> = []
     private var fetchedAt: [String: Date] = [:]
     private var inFlight: Set<String> = []
     private let ttl: TimeInterval = 3600
 
     func forecast(_ ident: String) -> [ForecastPeriod]? { forecasts[Self.key(ident)] }
 
+    /// Terminal fetch state for one ident (nil = still loading / never requested).
+    enum Fetch { case ok, empty, failed }
+    func state(_ ident: String) -> Fetch? {
+        let id = Self.key(ident)
+        if let f = forecasts[id] { return f.isEmpty ? .empty : .ok }
+        if failed.contains(id) { return .failed }
+        if checked.contains(id) { return .empty }
+        return nil
+    }
+
     /// Fetch the outlook for an airport if missing/stale (deduped against in-flight requests).
     func ensure(_ ident: String, coord: Coord, now: Date = Date()) {
         assert((-90...90).contains(coord.lat) && (-180...180).contains(coord.lon), "ensure: coord out of range")
+        assert(ttl > 0, "ensure: non-positive TTL would refetch every call")
         let id = Self.key(ident)
         guard !id.isEmpty, !inFlight.contains(id) else { return }
         if let at = fetchedAt[id], now.timeIntervalSince(at) <= ttl { return }
@@ -45,9 +60,11 @@ struct ForecastPeriod: Decodable, Equatable, Sendable {
             let stamp = Date()
             guard let result else {
                 fetchedAt[id] = stamp.addingTimeInterval(30 - ttl)   // transport failure → retry in ~30 s
+                if forecasts[id] == nil { failed.insert(id) }        // terminal "unavailable" (no stale data)
                 return
             }
             fetchedAt[id] = stamp
+            failed.remove(id); checked.insert(id)                    // fetch completed (empty is valid — L9)
             forecasts[id] = result
         }
     }

@@ -117,6 +117,7 @@ struct IdentifiedObject: Identifiable {
     var traffic: Aircraft? = nil      // populated when kind == .traffic
     var hazard: EONETEvent? = nil     // populated when kind == .hazard
     var tfr: TFR? = nil               // populated when kind == .tfr
+    var airwayArea: String? = nil     // populated when kind == .airway — the ARINC area for the MEA lookup
 
     /// Stable across a single probe so `.sheet(item:)` / `ForEach` are well-behaved.
     var id: String { "\(kind.rawValue)|\(ident)|\(coord.lat),\(coord.lon)" }

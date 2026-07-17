@@ -124,6 +124,13 @@ final class MBTilesTileOverlay: MKTileOverlay {
         maximumZ = min(reader.maxZoom + Self.overzoomLevels, 22)
     }
 
+    /// Constrain the base-map replacement to what this pack actually covers. Without this, MKTileOverlay's
+    /// default boundingMapRect is the WHOLE WORLD, so with `canReplaceMapContent` on (the battery default)
+    /// mounting any pack suppresses the Apple base EVERYWHERE — leaving the map blank outside the pack's
+    /// region and below its min zoom. Scoping it to `reader.bounds` means the base still fills the fringe,
+    /// so the user never loses the whole map (the exact bug they reported for the background toggle).
+    override var boundingMapRect: MKMapRect { reader.bounds }
+
     override func loadTile(at path: MKTileOverlayPath, result: @escaping (Data?, Error?) -> Void) {
         // Fast reject: this pack covers only its own region, but with many packs mounted (Issue 2)
         // MapKit asks every overlay for every visible tile. Skip a SQLite hit for tiles outside our
@@ -131,7 +138,10 @@ final class MBTilesTileOverlay: MKTileOverlay {
         guard Self.tileRect(z: path.z, x: path.x, y: path.y).intersects(reader.bounds) else {
             result(nil, nil); return
         }
-        let key = "\(reader.packID)/\(path.z)/\(path.x)/\(path.y)" as NSString
+        // Mode is part of the key: native passthrough caches raw WebP bytes, compat caches transcoded
+        // PNG bytes. Without the mode tag, flipping the compatibility toggle would serve the other mode's
+        // stale bytes out of the process-wide cache until eviction.
+        let key = "\(reader.packID)/\(transcode ? "t" : "n")/\(path.z)/\(path.x)/\(path.y)" as NSString
         if let hit = Self.tileCache.object(forKey: key) { result(hit as Data, nil); return }
 
         let data: Data?
@@ -880,20 +890,7 @@ struct ChartMapView: UIViewRepresentable {
                                                onRoute: false, hazard: hazardEventsByID[h.eventID]),
                               screenDist(c)))
             }
-            // Drawn airways — a LINE feature: distance is point-to-nearest-segment in screen points, so
-            // tapping anywhere along the leg identifies it (points alone would only hit the fixes).
-            // NOTE: the dictionary KEY is the internal "area|ident" — the card must get the polyline's
-            // DISPLAY ident ("V1"), which is also what the altitude lookup expects.
-            for pl in airwayByIdent.values {
-                let pts = (0..<pl.pointCount).map { mv.convert(pl.points()[$0].coordinate, toPointTo: mv) }
-                var best = Double.infinity
-                for i in 1..<max(pts.count, 2) where i < pts.count {              // bounded (rule 2)
-                    best = min(best, Self.segmentDist(pt, pts[i - 1], pts[i]))
-                }
-                if best <= radius {
-                    cands.append((IdentifiedObject(kind: .airway, ident: pl.ident, coord: here, onRoute: false), best))
-                }
-            }
+            cands.append(contentsOf: airwayCandidates(pt: pt, here: here, radius: radius, in: mv))
 
             var results = MapProbe.rank(cands, within: radius)
             for asp in airspaces {   // "you're inside Class B" — containment already filtered off-main
@@ -915,6 +912,28 @@ struct ChartMapView: UIViewRepresentable {
                 results.insert(IdentifiedObject(kind: .userPoint, ident: UserPoint.token(here), coord: here, onRoute: false), at: 0)
             }
             onTapObjects?(results)
+        }
+
+        /// Drawn airways as tap candidates — a LINE feature: distance is point-to-nearest-segment in
+        /// screen points, so tapping anywhere along the leg identifies it (points alone would only hit the
+        /// fixes). The dictionary KEY is the internal "area|ident"; the card gets the polyline's DISPLAY
+        /// ident ("V1") plus its area for the region-correct MEA lookup. (Extracted to keep rankProbe ≤60.)
+        private func airwayCandidates(pt: CGPoint, here: Coord, radius: Double,
+                                      in mv: MKMapView) -> [(object: IdentifiedObject, distance: Double)] {
+            assert(radius >= 0, "airwayCandidates: negative radius")
+            var out: [(object: IdentifiedObject, distance: Double)] = []
+            for pl in airwayByIdent.values {
+                let pts = (0..<pl.pointCount).map { mv.convert(pl.points()[$0].coordinate, toPointTo: mv) }
+                var best = Double.infinity
+                for i in 1..<max(pts.count, 2) where i < pts.count {              // bounded (rule 2)
+                    best = min(best, Self.segmentDist(pt, pts[i - 1], pts[i]))
+                }
+                if best <= radius {
+                    out.append((IdentifiedObject(kind: .airway, ident: pl.ident, coord: here,
+                                                 onRoute: false, airwayArea: pl.area), best))
+                }
+            }
+            return out
         }
 
         /// With no filed route to frame, center on the device GPS fix once it arrives (Stratux, when
@@ -1026,16 +1045,21 @@ struct ChartMapView: UIViewRepresentable {
                 mv.removeOverlay(pl); airwayByIdent[key] = nil
             }
             for seg in segs where airwayByIdent[seg.key] == nil {
+                guard seg.points.count >= 2 else { continue }   // producer guarantees this; defend the index below
                 var coords = seg.points.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) }
                 let pl = AirwayPolyline(coordinates: &coords, count: coords.count)
                 pl.ident = seg.ident
-                mv.insertOverlay(pl, at: 0, level: .aboveLabels)   // under airspace/route, above the chart
+                pl.area = seg.area
+                // ABOVE the raster tile block (inserted at 0…overlays.count) but below airspace/route, so
+                // airways aren't hidden under an opaque FAA chart. Index 0 (the old value) is the BOTTOM of
+                // the level — under the rasters.
+                mv.insertOverlay(pl, at: overlays.count, level: .aboveLabels)
                 airwayByIdent[seg.key] = pl
             }
             // Labels reconciled separately so a plate appearing/disappearing re-evaluates the masking
             // without touching the polylines.
             var wantedLabels: [String: (String, CLLocationCoordinate2D)] = [:]
-            for seg in segs {
+            for seg in segs where seg.points.count >= 2 {
                 let mid = seg.points[seg.points.count / 2]
                 let c = CLLocationCoordinate2D(latitude: mid.lat, longitude: mid.lon)
                 if !maskedByPlate(c) { wantedLabels[seg.key] = (seg.ident, c) }
@@ -1505,6 +1529,7 @@ final class NearbyMarkerView: MKAnnotationView {
 /// An enroute airway polyline — carries its ident so the renderer and the tap probe can identify it.
 final class AirwayPolyline: MKPolyline {
     var ident = ""
+    var area = "USA"       // ARINC area — carried to the tap card so the MEA lookup is region-correct
 }
 
 /// The airway's ident label, placed at the geometry's midpoint (one per airway in view).
