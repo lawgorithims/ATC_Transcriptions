@@ -998,6 +998,17 @@ final class AppModel: ObservableObject {
             hazardsUpdatedAt = Date()
             refreshHazardAlert()   // observers are inert during init — compute the banner explicitly
         }
+        // UI-test/demo: present a seeded TFR's detail card (verifies the tap→card path off-network).
+        if args.contains("--demo-tfr") {
+            let poly = [Coord(lat: 41.3, lon: -71.5), Coord(lat: 41.3, lon: -71.0),
+                        Coord(lat: 41.7, lon: -71.0), Coord(lat: 41.7, lon: -71.5)]
+            let tfr = TFR(id: "6/6409", type: .hazards, title: "10NM SW BLOCK ISLAND, RI — wildfire suppression.",
+                          polygon: poly, floorFt: 0, ceilingFt: 8000, facility: "ZBW", state: "RI",
+                          effective: Date(timeIntervalSinceNow: -3600), expires: Date(timeIntervalSinceNow: 86_400))
+            let obj = IdentifiedObject(kind: .tfr, ident: tfr.id, coord: tfr.labelCoord ?? Coord(lat: 41.5, lon: -71.25),
+                                       onRoute: false, tfr: tfr)
+            widgetStore.mapProbe = MapProbeResult(id: "demo-tfr", objects: [obj])
+        }
         // screenshot/UI-test: present the Airport Climate sheet on a synthetic climatology (the store
         // returns `PowerClimateStats.demo` under `--demo-climate`, so the charts render with no network).
         // Skipped when `--demo-airport` also presents the airport card (which reaches the charts via its

@@ -1023,7 +1023,16 @@ struct ChartMapView: UIViewRepresentable {
                         ? NavDatabase.nearby(bb, types: [0, 1], limit: 160).filter { !idents.contains($0.ident) }
                         : []
                     if showFixes {
-                        near += NavDatabase.nearby(bb, types: [2], limit: 90).filter { !idents.contains($0.ident) }
+                        // Enroute RNAV fixes + CIFP terminal/approach fixes (SID/STAR/approach waypoints),
+                        // deduped by ident so an approach fix that's also an enroute fix isn't plotted twice.
+                        var seen = Set(near.map(\.ident))
+                        seen.formUnion(idents)
+                        for np in NavDatabase.nearby(bb, types: [2], limit: 90) where seen.insert(np.ident).inserted {
+                            near.append(np)
+                        }
+                        for np in CIFP.terminalFixes(inRegion: bb, limit: 120) where seen.insert(np.ident).inserted {
+                            near.append(np)
+                        }
                     }
                     let airways: [AirwaySegment] = wantAwy ? Airways.inRegion(bb) : []
                     return (rings, labels, near, airways)
@@ -1520,25 +1529,86 @@ final class NearbyMarkerView: MKAnnotationView {
         label.text = ident
         switch glyph {
         case .airport: shape.image = Self.airportImg; displayPriority = MKFeatureDisplayPriority(rawValue: 260)
-        case .navaid:  shape.image = Self.navaidImg;  displayPriority = MKFeatureDisplayPriority(rawValue: 255)
-        case .fix:     shape.image = Self.fixImg;     displayPriority = MKFeatureDisplayPriority(rawValue: 250)  // yields to airports/navaids in collision
+        case .navaid:  // pick the FAA symbol from the navaid's real type (VOR / VORTAC / VOR-DME / NDB)
+            shape.image = Self.navaidGlyph(NavMeta.navaid(ident)?.type ?? "VOR")
+            displayPriority = MKFeatureDisplayPriority(rawValue: 255)
+        case .fix:     shape.image = Self.fixImg; displayPriority = MKFeatureDisplayPriority(rawValue: 250)  // yields to airports/navaids in collision
         }
     }
 
-    // Bolder, chart-legible glyphs (per pilot feedback): FILLED shapes with a black border so they pop
-    // against both the muted Apple base and a busy sectional, instead of thin dim outlines.
-    private static let navaidImg: UIImage = {
+    // FAA sectional/IFR chart symbology (bold-filled with a black border so they pop on the muted base or a
+    // busy sectional): VOR = blue hexagon + white centre; VORTAC = hexagon + solid corner "ears"; VOR-DME =
+    // hexagon in a box; NDB = magenta stippled circle; RNAV fix = blue triangle; airport = magenta circle.
+    private static let vorBlue = UIColor(red: 0.17, green: 0.36, blue: 0.75, alpha: 1)
+    private static let ndbMagenta = UIColor(red: 0.78, green: 0.22, blue: 0.62, alpha: 1)
+
+    static func navaidGlyph(_ type: String) -> UIImage {
+        let t = type.uppercased()
+        if t.contains("NDB")    { return ndbImg }
+        if t.contains("VORTAC") || t == "TACAN" { return vortacImg }
+        if t.contains("DME")    { return vordmeImg }
+        return vorImg
+    }
+
+    /// A regular hexagon path (flat-ish top, point up) inset in a `d`×`d` box.
+    private static func hexPath(_ d: CGFloat, inset: CGFloat) -> UIBezierPath {
+        let path = UIBezierPath(); let c = CGPoint(x: d / 2, y: d / 2); let r = d / 2 - inset
+        for i in 0..<6 {
+            let a = CGFloat(i) * .pi / 3 - .pi / 2
+            let p = CGPoint(x: c.x + r * cos(a), y: c.y + r * sin(a))
+            if i == 0 { path.move(to: p) } else { path.addLine(to: p) }
+        }
+        path.close(); return path
+    }
+    private static func drawHexBase(_ d: CGFloat) {
+        let hex = hexPath(d, inset: 1.5)
+        vorBlue.setFill(); hex.fill()
+        UIColor.black.setStroke(); hex.lineWidth = 1.5; hex.stroke()
+        let dot = UIBezierPath(ovalIn: CGRect(x: d / 2 - 1.4, y: d / 2 - 1.4, width: 2.8, height: 2.8))
+        UIColor.white.setFill(); dot.fill()                              // the station dot at the hexagon centre
+    }
+    private static let vorImg: UIImage = {
+        let d = glyphSize
+        return UIGraphicsImageRenderer(size: CGSize(width: d, height: d)).image { _ in drawHexBase(d) }
+    }()
+    private static let vortacImg: UIImage = {
         let d = glyphSize
         return UIGraphicsImageRenderer(size: CGSize(width: d, height: d)).image { _ in
-            let path = UIBezierPath(); let c = CGPoint(x: d / 2, y: d / 2); let r = d / 2 - 1.5
-            for i in 0..<6 {
-                let a = CGFloat(i) * .pi / 3 - .pi / 2
+            drawHexBase(d)
+            // Three small solid "ears" on alternating hexagon edges — the TACAN component.
+            UIColor.black.setFill()
+            let c = CGPoint(x: d / 2, y: d / 2), r = d / 2 - 1.5, e: CGFloat = 2.4
+            for i in stride(from: 0, to: 6, by: 2) {
+                let a = (CGFloat(i) + 0.5) * .pi / 3 - .pi / 2
                 let p = CGPoint(x: c.x + r * cos(a), y: c.y + r * sin(a))
-                if i == 0 { path.move(to: p) } else { path.addLine(to: p) }
+                UIBezierPath(rect: CGRect(x: p.x - e / 2, y: p.y - e / 2, width: e, height: e)).fill()
             }
-            path.close()
-            UIColor(red: 0.20, green: 0.83, blue: 0.60, alpha: 1).setFill(); path.fill()
-            UIColor.black.setStroke(); path.lineWidth = 1.5; path.stroke()
+        }
+    }()
+    private static let vordmeImg: UIImage = {
+        let d = glyphSize
+        return UIGraphicsImageRenderer(size: CGSize(width: d, height: d)).image { _ in
+            let box = UIBezierPath(roundedRect: CGRect(x: 0.75, y: 0.75, width: d - 1.5, height: d - 1.5), cornerRadius: 1.5)
+            UIColor.black.setStroke(); box.lineWidth = 1; box.stroke()     // the DME box around the VOR hexagon
+            let hex = hexPath(d, inset: 3.5)                               // smaller hexagon nested inside the box
+            vorBlue.setFill(); hex.fill()
+            UIColor.black.setStroke(); hex.lineWidth = 1.25; hex.stroke()
+            let dot = UIBezierPath(ovalIn: CGRect(x: d / 2 - 1.2, y: d / 2 - 1.2, width: 2.4, height: 2.4))
+            UIColor.white.setFill(); dot.fill()
+        }
+    }()
+    private static let ndbImg: UIImage = {
+        let d = glyphSize
+        return UIGraphicsImageRenderer(size: CGSize(width: d, height: d)).image { _ in
+            let core = UIBezierPath(ovalIn: CGRect(x: d / 2 - 2.5, y: d / 2 - 2.5, width: 5, height: 5))
+            ndbMagenta.setFill(); core.fill()
+            ndbMagenta.setFill()                                          // stippled ring of dots (NDB convention)
+            let rr = d / 2 - 1.75
+            for i in 0..<10 {
+                let a = CGFloat(i) * .pi / 5
+                let p = CGPoint(x: d / 2 + rr * cos(a), y: d / 2 + rr * sin(a))
+                UIBezierPath(ovalIn: CGRect(x: p.x - 0.7, y: p.y - 0.7, width: 1.4, height: 1.4)).fill()
+            }
         }
     }()
     private static let airportImg: UIImage = {
@@ -1559,7 +1629,7 @@ final class NearbyMarkerView: MKAnnotationView {
             path.addLine(to: CGPoint(x: d - inset, y: d - inset))            // bottom-right
             path.addLine(to: CGPoint(x: inset, y: d - inset))               // bottom-left
             path.close()
-            UIColor(red: 0.36, green: 0.62, blue: 0.98, alpha: 1).setFill(); path.fill()
+            vorBlue.setFill(); path.fill()
             UIColor.black.setStroke(); path.lineWidth = 1.5; path.lineJoinStyle = .round; path.stroke()
         }
     }()

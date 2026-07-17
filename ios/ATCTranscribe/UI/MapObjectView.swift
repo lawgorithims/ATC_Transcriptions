@@ -684,6 +684,10 @@ struct MapObjectView: View {
                     KV("Type", Self.airspaceTypeName(a.cls))
                     KV("Floor", Self.altText(a.floorFt))
                     KV("Ceiling", Self.altText(a.ceilingFt))
+                    if let note = Self.airspaceExplanation(a.cls) {
+                        Text(note).font(.caption).foregroundStyle(p.textDim)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             case .traffic:
                 if let ac = model.aircraft.first(where: { ($0.label ?? $0.callsign) == o.ident }) {
@@ -717,9 +721,17 @@ struct MapObjectView: View {
                     if !where_.isEmpty { KV("Center", where_) }
                     KV("NOTAM", t.id)
                     if !t.title.isEmpty {
-                        Text(t.title).font(.caption).foregroundStyle(p.textDim)
+                        Text(t.title).font(.caption).foregroundStyle(p.text)
                             .fixedSize(horizontal: false, vertical: true)
                             .textSelection(.enabled)
+                    }
+                    // The definitive "what it's about": the official FAA NOTAM page (full text + graphic).
+                    if let url = Self.tfrDetailURL(t.id) {
+                        Link(destination: url) {
+                            Label("View full NOTAM at tfr.faa.gov", systemImage: "arrow.up.forward.square")
+                                .font(.callout)
+                        }
+                        .accessibilityIdentifier("tfr-notam-link")
                     }
                     Text("Awareness only — confirm against an official briefing.")
                         .font(.caption2).foregroundStyle(p.textDim)
@@ -844,6 +856,20 @@ struct MapObjectView: View {
         default:    return "Airspace"
         }
     }
+
+    /// A one-line plain-English "what this area is about" for a special-use area, so a tapped red block
+    /// isn't just a name + altitudes. nil for plain controlled airspace (Class B/C/D need no caveat).
+    static func airspaceExplanation(_ cls: String) -> String? {
+        switch cls {
+        case "R":   return "Flight restricted when active (hazards such as artillery, aerial gunnery, or guided missiles). Check NOTAMs / the controlling agency before entering."
+        case "P":   return "Flight prohibited at all times (national security or welfare). Do not enter."
+        case "W":   return "Over international waters — activity that may be hazardous to aircraft. Non-regulatory, but avoid when active."
+        case "A":   return "High volume of pilot training or unusual aerial activity. Remain vigilant; not regulatory."
+        case "MOA": return "Military training activity when active. VFR may transit with caution; confirm status with the controlling agency."
+        case "TFR": return "Temporary/standing flight restriction for national defense. Confirm the active NOTAM before flight."
+        default:    return nil
+        }
+    }
     /// Feet → a readable floor/ceiling (Surface / Unlimited / FLxxx / value).
     static func altText(_ ft: Int?) -> String {
         guard let ft else { return "—" }
@@ -863,6 +889,12 @@ struct MapObjectView: View {
         return f
     }()
     static func tfrTime(_ d: Date) -> String { "\(tfrDF.string(from: d))Z" }
+
+    /// The FAA's human-readable per-NOTAM detail page ("6/6409" → …detail_6_6409). The full text + graphic.
+    static func tfrDetailURL(_ id: String) -> URL? {
+        let slug = id.replacingOccurrences(of: "/", with: "_")
+        return URL(string: "https://tfr.faa.gov/tfr3/?page=detail_\(slug)")
+    }
 
     /// Active / upcoming / expired chip for a TFR, from its effective window (single source of truth in
     /// `TFR.window(at:)` — no duplicated predicate).
