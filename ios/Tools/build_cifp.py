@@ -178,6 +178,14 @@ def main():
                         (apt, l[27:32].strip(), l[13:17].strip(), num(l[21:27], 100.0),
                          num(l[51:55], 10.0), c[0] if c else None, c[1] if c else None))
 
+    # Deduplicated terminal/approach-fix table for the map's zoomed-in fix layer: distinct named fixes
+    # (with coords) drawn from every procedure leg, lat-indexed so a small in-view box query is fast (the
+    # `leg` table itself is 190k+ rows with no spatial index). Named fixes only (RW.. thresholds excluded).
+    con.execute("CREATE TABLE terminal_fix(fix TEXT, lat REAL, lon REAL)")
+    con.execute("""INSERT INTO terminal_fix SELECT DISTINCT fix, lat, lon FROM leg
+                   WHERE fix<>'' AND fix NOT LIKE 'RW%' AND lat IS NOT NULL AND lat<>0""")
+    con.execute("CREATE INDEX ix_tfix_lat ON terminal_fix(lat)")
+    ntfix = con.execute("SELECT COUNT(*) FROM terminal_fix").fetchone()[0]
     con.commit()
 
     out = os.path.abspath(args.out)
@@ -188,7 +196,7 @@ def main():
     con.backup(disk)
     disk.execute("VACUUM")
     disk.close()
-    print(f"fixes={len(fixes)} procedures={nproc} legs={nleg} airway_points={nawy} bytes={os.path.getsize(out)} -> {out}")
+    print(f"fixes={len(fixes)} procedures={nproc} legs={nleg} airway_points={nawy} terminal_fixes={ntfix} bytes={os.path.getsize(out)} -> {out}")
     # airway spot-check: V1 and J121 should both exist with ordered geo points
     for awy in ("V1", "J121"):
         pts = con.execute("SELECT COUNT(*) FROM airway WHERE ident=?", (awy,)).fetchone()[0]

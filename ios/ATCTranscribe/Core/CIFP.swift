@@ -102,6 +102,37 @@ enum CIFP {
               """, airport) { text($0, 0) }
     }
 
+    /// Named terminal/approach fixes (SID/STAR/approach waypoints) whose coordinate falls in `box`, for
+    /// the map's zoomed-in fix layer — the deduplicated, lat-indexed `terminal_fix` table (see
+    /// build_cifp.py), so this is a cheap range scan even though it's over 45k fixes. Returns `.waypoint`
+    /// NavPoints so they render as fix triangles, matching the enroute fixes. Bounded by `limit`.
+    static func terminalFixes(inRegion box: BBox, limit: Int = 120) -> [NavPoint] {
+        assert(box.minLat <= box.maxLat && box.minLon <= box.maxLon, "terminalFixes: degenerate box")
+        assert(limit > 0, "terminalFixes: limit must be positive")
+        guard let db else { return [] }
+        var out: [NavPoint] = []
+        var st: OpaquePointer?
+        let sql = """
+            SELECT DISTINCT fix, lat, lon FROM terminal_fix
+            WHERE lat BETWEEN ?1 AND ?2 AND lon BETWEEN ?3 AND ?4 LIMIT ?5
+            """
+        if sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK {
+            sqlite3_bind_double(st, 1, box.minLat); sqlite3_bind_double(st, 2, box.maxLat)
+            sqlite3_bind_double(st, 3, box.minLon); sqlite3_bind_double(st, 4, box.maxLon)
+            sqlite3_bind_int(st, 5, Int32(limit))
+            while sqlite3_step(st) == SQLITE_ROW {                             // bounded by LIMIT (rule 2)
+                let f = text(st, 0)
+                if !f.isEmpty {
+                    out.append(NavPoint(ident: f, coord: Coord(lat: sqlite3_column_double(st, 1),
+                                                               lon: sqlite3_column_double(st, 2)), kind: .waypoint))
+                }
+            }
+        }
+        sqlite3_finalize(st)
+        assert(out.count <= limit, "terminalFixes: LIMIT not honored")
+        return out
+    }
+
     /// Legs of a procedure re-found by its stable (airport, ident, transition) keys — robust to the rowid
     /// changing when the CIFP DB is rebuilt for a new AIRAC cycle. Prefers an exact transition match, else
     /// any transition of the same ident. Empty when not found. Bounded scans (rule 2).

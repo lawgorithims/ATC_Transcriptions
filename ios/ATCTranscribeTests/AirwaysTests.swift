@@ -69,6 +69,23 @@ final class AirwaysTests: XCTestCase {
         XCTAssertEqual(Airways.splitRuns(ident: "J80", jet).count, 1)
     }
 
+    func testTerminalFixesNearBoston() throws {
+        try XCTSkipUnless(CIFP.available, "cifp.sqlite missing from the test bundle")
+        let box = BBox(minLat: 42.0, minLon: -71.3, maxLat: 42.7, maxLon: -70.7)
+        let fixes = CIFP.terminalFixes(inRegion: box, limit: 120)
+        XCTAssertFalse(fixes.isEmpty, "KBOS approaches contribute dozens of terminal fixes")
+        XCTAssertLessThanOrEqual(fixes.count, 120, "limit honored")
+        XCTAssertTrue(fixes.allSatisfy { $0.kind == .waypoint }, "terminal fixes render as fix triangles")
+        XCTAssertTrue(fixes.allSatisfy { box.contains(lat: $0.coord.lat, lon: $0.coord.lon) })
+        XCTAssertFalse(fixes.contains { $0.ident.hasPrefix("RW") }, "runway pseudo-fixes excluded")
+    }
+
+    func testTerminalFixesEmptyOverOcean() throws {
+        try XCTSkipUnless(CIFP.available, "cifp.sqlite missing from the test bundle")
+        let ocean = BBox(minLat: 30.0, minLon: -45.0, maxLat: 31.0, maxLon: -44.0)   // mid-Atlantic
+        XCTAssertTrue(CIFP.terminalFixes(inRegion: ocean).isEmpty)
+    }
+
     func testUnknownAirwayIsEmptyNotCrashing() {
         XCTAssertTrue(Airways.points(of: "ZZ99", area: "USA").isEmpty)
         let alt = Airways.altitudes(of: "ZZ99", area: "USA")
