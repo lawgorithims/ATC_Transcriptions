@@ -25,7 +25,8 @@ struct ATCTranscribeApp: App {
         WindowGroup {
             #if canImport(MapLibre)
             if showMapLibrePrototype {
-                MapLibrePrototypeScreen(onClose: {
+                // Migration milestone 1: our real offline FAA tiles + filed route on the MapLibre globe.
+                MapLibreChartScreen(model: model, onClose: {
                     UserDefaults.standard.set(false, forKey: "atc.experimentalMapLibreGlobe")
                 })
             } else {
