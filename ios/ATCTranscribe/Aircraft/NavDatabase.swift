@@ -89,10 +89,11 @@ enum NavDatabase {
         }
     }
 
-    /// Navaids/airports whose coordinate falls in `region`, for map context. Scans the full table
-    /// (~90k idents) — call once off-main per settled region, not per camera frame. `types` filters by
-    /// kind code (0=airport, 1=navaid; fixes are excluded — too dense to plot). When more than `limit`
-    /// fall in view, keeps the ones nearest the region centre.
+    /// Nav points whose coordinate falls in `region`, for map context. Scans the full table (~90k idents)
+    /// — call once off-main per settled region, not per camera frame. `types` filters by kind code
+    /// (0=airport, 1=navaid, 2=fix). The default omits fixes (too dense for a regional view); the map
+    /// requests type 2 only when zoomed in close, with its own budget. When more than `limit` fall in
+    /// view, keeps the ones nearest the region centre.
     static func nearby(_ region: BBox, types: Set<Int> = [0, 1], limit: Int = 160) -> [NavPoint] {
         var out: [NavPoint] = []
         for (ident, cands) in table {

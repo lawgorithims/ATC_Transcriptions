@@ -24,8 +24,9 @@ import MetricKit
         let charging: Bool
         let thermal: Int             // ProcessInfo.ThermalState.rawValue (0 nominal … 3 critical)
         let activity: String         // what the app was doing at this instant
-        var dischargePctPerHour: Double?   // derived vs the previous sample (nil while charging / first)
         var id: Date { at }
+        // NB: no per-sample discharge rate — batteryLevel is quantized (5% steps), so a one-minute delta
+        // yields nonsense spikes. The rate is derived over a longer contiguous window (`dischargeRate`).
     }
 
     @Published private(set) var samples: [Sample] = []
@@ -67,14 +68,15 @@ import MetricKit
 
     /// A shareable plain-text dump of everything collected (for AirDrop/Messages to a dev machine).
     func exportText() -> String {
-        var lines = ["CommSight battery diagnostics", "Samples: \(samples.count)", ""]
+        var lines = ["CommSight battery diagnostics", "Samples: \(samples.count)"]
+        if let r = dischargeRate { lines.append(String(format: "Recent discharge: %.1f %%/hr", r)) }
+        lines.append("")
         if let m = metricSummary { lines.append("MetricKit (latest daily payload):"); lines.append(m); lines.append("") }
-        lines.append("time,level%,charging,thermal,discharge%/hr,activity")
+        lines.append("time,level%,charging,thermal,activity")
         let df = ISO8601DateFormatter()
         for s in samples.suffix(Self.maxSamples) {                            // bounded (rule 2)
             let lvl = s.level >= 0 ? String(format: "%.0f", s.level * 100) : "n/a"
-            let rate = s.dischargePctPerHour.map { String(format: "%.1f", $0) } ?? ""
-            lines.append("\(df.string(from: s.at)),\(lvl),\(s.charging),\(s.thermal),\(rate),\(s.activity)")
+            lines.append("\(df.string(from: s.at)),\(lvl),\(s.charging),\(s.thermal),\(s.activity)")
         }
         return lines.joined(separator: "\n")
     }
@@ -94,30 +96,45 @@ import MetricKit
 
     private func stopSampling() {
         samplerTask?.cancel(); samplerTask = nil
+        // Restore the process-global flag so the tool is truly inert when off (it's re-set on start).
+        UIDevice.current.isBatteryMonitoringEnabled = false
     }
 
     private func takeSample() {
-        assert(Self.maxSamples > 0, "sample ring must be positive")
         let device = UIDevice.current
         let level = Double(device.batteryLevel)          // -1 when monitoring off / Simulator
         let charging = device.batteryState == .charging || device.batteryState == .full
         let thermal = ProcessInfo.processInfo.thermalState.rawValue
         let activity = activityProvider?() ?? "—"
-        var s = Sample(at: Date(), level: level, charging: charging, thermal: thermal,
-                       activity: activity, dischargePctPerHour: nil)
-        if let prev = samples.last, !charging, !prev.charging,
-           prev.level >= 0, level >= 0, level < prev.level {
-            let hours = s.at.timeIntervalSince(prev.at) / 3600
-            if hours > 0 { s.dischargePctPerHour = (prev.level - level) * 100 / hours }
-        }
-        samples.append(s)
+        assert(level == -1 || (level >= 0 && level <= 1), "battery level out of range: \(level)")
+        assert((0...3).contains(thermal), "unexpected thermal rawValue: \(thermal)")
+        samples.append(Sample(at: Date(), level: level, charging: charging, thermal: thermal, activity: activity))
         if samples.count > Self.maxSamples { samples.removeFirst(samples.count - Self.maxSamples) }
+        assert(samples.count <= Self.maxSamples, "sample ring overflow")
         persist()
     }
 
-    /// The most recent derived discharge rate (%/hr), for the summary header. nil until two discharging
-    /// samples exist.
-    var latestDischargeRate: Double? { samples.last(where: { $0.dischargePctPerHour != nil })?.dischargePctPerHour }
+    /// Discharge rate (%/hr) averaged over the most recent CONTIGUOUS discharging run, so battery-level
+    /// quantization (5 % steps) and background gaps don't produce phantom spikes. Walks back from the last
+    /// sample while consecutive gaps stay within ~3× the 60 s cadence (a foreground run, no suspension)
+    /// and nothing charged; reports only once the run spans ≥5 min AND the level actually dropped. nil
+    /// otherwise (not enough signal yet). Bounded by the ring size.
+    var dischargeRate: Double? {
+        guard let last = samples.last, last.level >= 0, !last.charging else { return nil }
+        let maxGap: TimeInterval = 3 * 60          // 3× the sampling cadence — a break means we were suspended
+        var start = last
+        var i = samples.count - 2
+        while i >= 0 {                             // bounded by samples.count ≤ maxSamples (rule 2)
+            let s = samples[i]
+            if s.charging || s.level < 0 { break }
+            if start.at.timeIntervalSince(s.at) > maxGap { break }   // gap → non-contiguous, stop walking
+            start = s
+            i -= 1
+        }
+        let hours = last.at.timeIntervalSince(start.at) / 3600
+        guard hours >= 5.0 / 60.0, start.level > last.level else { return nil }   // ≥5 min AND a real drop
+        return (start.level - last.level) * 100 / hours
+    }
 
     // MARK: persistence
 

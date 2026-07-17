@@ -33,8 +33,10 @@ struct BatteryDiagnosticsView: View {
                             Text("No samples yet — enable collection above and leave the app open a couple of minutes.")
                                 .font(.caption).foregroundStyle(p.textDim)
                         }
-                        if let rate = battery.latestDischargeRate {
-                            KV("Discharge", String(format: "%.1f %%/hr", rate))
+                        if let rate = battery.dischargeRate {
+                            KV("Discharge", String(format: "%.1f %%/hr (recent avg)", rate))
+                        } else if (battery.samples.last?.charging ?? false) {
+                            KV("Discharge", "charging")
                         }
                     }
                 }
@@ -57,10 +59,10 @@ struct BatteryDiagnosticsView: View {
                                         .font(.caption2.monospaced().weight(.semibold))
                                         .foregroundStyle(s.thermal >= 2 ? p.warn : p.text)
                                         .frame(width: 40, alignment: .leading)
-                                    if let r = s.dischargePctPerHour {
-                                        Text(String(format: "-%.1f/hr", r)).font(.caption2.monospaced()).foregroundStyle(p.accent)
-                                            .frame(width: 64, alignment: .leading)
-                                    } else { Color.clear.frame(width: 64, height: 1) }
+                                    if s.charging {
+                                        Image(systemName: "bolt.fill").font(.caption2).foregroundStyle(p.accent)
+                                            .frame(width: 20, alignment: .leading)
+                                    } else { Color.clear.frame(width: 20, height: 1) }
                                     Text(s.activity).font(.caption2).foregroundStyle(p.textDim)
                                         .fixedSize(horizontal: false, vertical: true)
                                 }

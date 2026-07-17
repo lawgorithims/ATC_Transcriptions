@@ -713,7 +713,8 @@ struct MapObjectView: View {
                     KV("Ceiling", Self.altText(t.ceilingFt))
                     if let eff = t.effective { KV("Effective", Self.tfrTime(eff)) }
                     if let exp = t.expires { KV("Expires", Self.tfrTime(exp)) }
-                    if let fac = t.facility { KV("Center", [fac, t.state].compactMap { $0 }.joined(separator: " · ")) }
+                    let where_ = [t.facility, t.state].compactMap { $0 }.joined(separator: " · ")
+                    if !where_.isEmpty { KV("Center", where_) }
                     KV("NOTAM", t.id)
                     if !t.title.isEmpty {
                         Text(t.title).font(.caption).foregroundStyle(p.textDim)
@@ -852,22 +853,26 @@ struct MapObjectView: View {
         return "\(ft) ft"
     }
 
-    /// Absolute TFR time in UTC ("Jul 17, 04:39Z") — NOTAM windows are always published in Zulu.
+    /// Absolute TFR time in UTC ("Jul 17 2026, 04:39Z") — NOTAM windows are published in Zulu; the year is
+    /// shown so a window straddling the year boundary is unambiguous.
     private static let tfrDF: DateFormatter = {
         let f = DateFormatter()
-        f.dateFormat = "MMM d, HH:mm"
+        f.dateFormat = "MMM d yyyy, HH:mm"
         f.timeZone = TimeZone(identifier: "UTC")
         f.locale = Locale(identifier: "en_US_POSIX")
         return f
     }()
     static func tfrTime(_ d: Date) -> String { "\(tfrDF.string(from: d))Z" }
 
-    /// Active / upcoming / expired chip for a TFR, from its effective window.
+    /// Active / upcoming / expired chip for a TFR, from its effective window (single source of truth in
+    /// `TFR.window(at:)` — no duplicated predicate).
     @ViewBuilder static func tfrStatusChip(_ t: TFR, now: Date = Date()) -> some View {
         let (text, color): (String, Color) = {
-            if let e = t.effective, now < e { return ("Upcoming", .hex(0xF5A623)) }
-            if let x = t.expires, now > x { return ("Expired", .hex(0x8E8E93)) }
-            return ("Active now", .hex(0xF71433))
+            switch t.window(at: now) {
+            case .upcoming: return ("Upcoming", .hex(0xF5A623))
+            case .expired:  return ("Expired", .hex(0x8E8E93))
+            case .active:   return ("Active now", .hex(0xF71433))
+            }
         }()
         Text(text.uppercased())
             .font(.caption2.weight(.bold))

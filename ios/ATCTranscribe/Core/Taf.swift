@@ -15,16 +15,45 @@ struct Taf: Equatable, Sendable {
     let issued: Date?
     let periods: [TafPeriod]
 
+    // LENIENT DECODE: every field is pulled with `try?` so one type-mismatched field never throws and
+    // drops the whole TAF (the raw text especially must survive). A bad `fcsts` array degrades to no
+    // periods; a bad field in one period degrades to nil for that field only.
     private struct DTO: Decodable {
-        let icaoId: String?
-        let rawTAF: String?
-        let issueTime: String?
-        let fcsts: [Period]?
-        struct Cloud: Decodable { let cover: String?; let base: Int? }
+        let icaoId: String?; let rawTAF: String?; let issueTime: String?; let fcsts: [Period]?
+        enum K: String, CodingKey { case icaoId, rawTAF, issueTime, fcsts }
+        init(from d: Decoder) throws {
+            let c = try d.container(keyedBy: K.self)
+            icaoId = try? c.decodeIfPresent(String.self, forKey: .icaoId)
+            rawTAF = try? c.decodeIfPresent(String.self, forKey: .rawTAF)
+            issueTime = try? c.decodeIfPresent(String.self, forKey: .issueTime)
+            fcsts = try? c.decodeIfPresent([Period].self, forKey: .fcsts)
+        }
+        struct Cloud: Decodable { let cover: String?; let base: Int?
+            enum K: String, CodingKey { case cover, base }
+            init(from d: Decoder) throws {
+                let c = try d.container(keyedBy: K.self)
+                cover = try? c.decodeIfPresent(String.self, forKey: .cover)
+                base = try? c.decodeIfPresent(Int.self, forKey: .base)
+            }
+        }
         struct Period: Decodable {
             let timeFrom: Int?; let timeTo: Int?; let fcstChange: String?; let probability: Int?
             let wdir: WindDir?; let wspd: Int?; let wgst: Int?; let visib: Vis?; let wxString: String?
             let clouds: [Cloud]?
+            enum K: String, CodingKey { case timeFrom, timeTo, fcstChange, probability, wdir, wspd, wgst, visib, wxString, clouds }
+            init(from d: Decoder) throws {
+                let c = try d.container(keyedBy: K.self)
+                timeFrom = try? c.decodeIfPresent(Int.self, forKey: .timeFrom)
+                timeTo = try? c.decodeIfPresent(Int.self, forKey: .timeTo)
+                fcstChange = try? c.decodeIfPresent(String.self, forKey: .fcstChange)
+                probability = try? c.decodeIfPresent(Int.self, forKey: .probability)
+                wdir = try? c.decodeIfPresent(WindDir.self, forKey: .wdir)
+                wspd = try? c.decodeIfPresent(Int.self, forKey: .wspd)
+                wgst = try? c.decodeIfPresent(Int.self, forKey: .wgst)
+                visib = try? c.decodeIfPresent(Vis.self, forKey: .visib)
+                wxString = try? c.decodeIfPresent(String.self, forKey: .wxString)
+                clouds = try? c.decodeIfPresent([Cloud].self, forKey: .clouds)
+            }
         }
     }
 
@@ -53,13 +82,21 @@ struct Taf: Equatable, Sendable {
     /// Parse the aviationweather.gov TAF JSON (first element) into a Taf, or nil when the payload is empty.
     static func parse(_ data: Data) -> Taf? {
         guard let list = try? JSONDecoder().decode([DTO].self, from: data), let d = list.first else { return nil }
-        let iso = ISO8601DateFormatter(); iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let issued = d.issueTime.flatMap { iso.date(from: $0) }
+        let issued = d.issueTime.flatMap { parseISO($0) }
         var periods: [TafPeriod] = []
         for p in (d.fcsts ?? []).prefix(30) {                                  // bounded (rule 2)
             periods.append(decode(p))
         }
         return Taf(icaoId: d.icaoId ?? "", rawText: d.rawTAF, issued: issued, periods: periods)
+    }
+
+    /// Parse an ISO-8601 timestamp with OR without fractional seconds (the API usually sends ".000Z" but
+    /// mustn't be assumed — a plain "…:00Z" would otherwise silently fail to parse).
+    private static func parseISO(_ s: String) -> Date? {
+        let withMs = ISO8601DateFormatter(); withMs.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let d = withMs.date(from: s) { return d }
+        let plain = ISO8601DateFormatter(); plain.formatOptions = [.withInternetDateTime]
+        return plain.date(from: s)
     }
 
     private static func decode(_ p: DTO.Period) -> TafPeriod {
@@ -75,7 +112,7 @@ struct Taf: Equatable, Sendable {
         if let v = p.visib?.text { bits.append(v) }
         if let wx = p.wxString, !wx.isEmpty { bits.append(wx) }
         if let clouds = p.clouds, !clouds.isEmpty {
-            let sky = clouds.compactMap { c -> String? in
+            let sky = clouds.prefix(8).compactMap { c -> String? in     // bounded (rule 2)
                 guard let cover = c.cover else { return nil }
                 return c.base.map { "\(cover)\($0 / 100)" } ?? cover
             }.joined(separator: " ")
