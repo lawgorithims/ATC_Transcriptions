@@ -32,6 +32,30 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 58, version: "1.0", headline: "A 7-day outlook, reliable airway altitudes, and a map that never blanks",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "calendar",
+                    title: "7-day weather outlook",
+                    detail: "The airport card's Weather tab now shows the NWS 7-day forecast — day/night temps, wind, and conditions — under the live METAR. Reach it from the map or the new ⓘ on any row of the Airports tab."),
+                WhatsNewHighlight(
+                    icon: "arrow.up.and.down.circle",
+                    title: "Airway altitudes, done right",
+                    detail: "Tap an airway and you'll see its minimum enroute and maximum authorized altitudes. Airways with a revoked middle section no longer draw a fake straight line across the country, and same-named airways in different regions no longer share the wrong altitudes."),
+                WhatsNewHighlight(
+                    icon: "map.fill",
+                    title: "The map never goes blank",
+                    detail: "“Live map background” now defaults off to save battery — and with it off your FAA chart still shows everywhere it has coverage, with the base map filling any fringe. Picking Map or Satellite always shows that map."),
+                WhatsNewHighlight(
+                    icon: "cloud.sun",
+                    title: "Weather that tells you the truth",
+                    detail: "Airports that don't report a METAR now say so instead of spinning forever, and a dropped connection shows a clear “unavailable” you can retry."),
+                WhatsNewHighlight(
+                    icon: "checkmark.shield",
+                    title: "Reliability pass",
+                    detail: "A round of hardening: the airport info button now works for every airport, a tapped-object card updates when you tap something new, the Transcript tab's controls all work, and your own tail number is never stripped from a saved plan."),
+            ]),
+        ReleaseNote(
             build: 57, version: "1.0", headline: "Cooler map rendering, airway altitudes, and transcript controls",
             highlights: [
                 WhatsNewHighlight(
