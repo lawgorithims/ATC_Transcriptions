@@ -24,9 +24,10 @@ struct MapLibreChartView: UIViewRepresentable {
         let map = MLNMapView(frame: .zero)
         map.delegate = context.coordinator
         map.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        // Frame the route if we have one, else CONUS.
+        // Frame the route if we have one, else CONUS. Zoom 7 keeps the visible span under the ~7° gate so
+        // airway/airspace-altitude labels render (they're hidden when zoomed further out — chart convention).
         if let c = routeCoords.first {
-            map.setCenter(c, zoomLevel: 5.5, animated: false)
+            map.setCenter(c, zoomLevel: 7.0, animated: false)
         } else {
             map.setCenter(CLLocationCoordinate2D(latitude: 39, longitude: -96), zoomLevel: 3.2, animated: false)
         }
@@ -71,6 +72,7 @@ struct MapLibreChartView: UIViewRepresentable {
             {
               "version": 8,
               "projection": { "type": "globe" },
+              "glyphs": "http://127.0.0.1:\(port)/font/{fontstack}/{range}.pbf",
               "sources": {
                 "osm": { "type": "raster", "tiles": ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
                          "tileSize": 256, "maxzoom": 18, "attribution": "© OpenStreetMap" },
@@ -130,6 +132,34 @@ struct MapLibreChartView: UIViewRepresentable {
             outline.lineCap = NSExpression(forConstantValue: "round"); outline.lineJoin = NSExpression(forConstantValue: "round")
             outline.minimumZoomLevel = 4.0
             style.addLayer(outline)
+
+            // TEXT LABELS (need the bundled SDF glyphs, wired via the style's "glyphs" URL).
+            // Airway idents — one per run, placed along the line centre (white text, slate-blue halo).
+            let awyLabel = MLNSymbolStyleLayer(identifier: "airways-label", source: awySrc)
+            awyLabel.text = NSExpression(forKeyPath: "ident")
+            awyLabel.symbolPlacement = NSExpression(forConstantValue: "line-center")
+            awyLabel.textFontNames = NSExpression(forConstantValue: ["Arial Bold"])
+            awyLabel.textFontSize = NSExpression(forConstantValue: 10)
+            awyLabel.textColor = NSExpression(forConstantValue: UIColor.white)
+            awyLabel.textHaloColor = NSExpression(forConstantValue: UIColor(red: 0.42, green: 0.58, blue: 0.86, alpha: 0.9))
+            awyLabel.textHaloWidth = NSExpression(forConstantValue: 1.4)
+            awyLabel.minimumZoomLevel = 5.0
+            awyLabel.symbolSortKey = NSExpression(forConstantValue: 1)   // yields to everything else
+            style.addLayer(awyLabel)
+
+            // Airspace altitude blocks (ceiling over floor) — its own point source at each area's north edge.
+            let aspLabelSrc = MLNShapeSource(identifier: "airspace-labels", shape: nil, options: nil)
+            style.addSource(aspLabelSrc)
+            let aspLabel = MLNSymbolStyleLayer(identifier: "airspace-label", source: aspLabelSrc)
+            aspLabel.text = NSExpression(forKeyPath: "alt")             // two lines: "\(ceil)\n\(floor)"
+            aspLabel.textFontNames = NSExpression(forConstantValue: ["Arial Bold"])
+            aspLabel.textFontSize = NSExpression(forConstantValue: 9)
+            aspLabel.textColor = Self.aspColorExpr()                    // class colour, like AirspaceLabelView
+            aspLabel.textHaloColor = NSExpression(forConstantValue: UIColor.black.withAlphaComponent(0.6))
+            aspLabel.textHaloWidth = NSExpression(forConstantValue: 1.2)
+            aspLabel.textLineHeight = NSExpression(forConstantValue: 1.0)
+            aspLabel.minimumZoomLevel = 5.0
+            style.addLayer(aspLabel)
         }
 
         /// Query airspace + airways for the settled region OFF-MAIN (gated on angular scale, exactly like
@@ -142,12 +172,14 @@ struct MapLibreChartView: UIViewRepresentable {
             let dLat = (b.ne.latitude - b.sw.latitude) * m, dLon = (b.ne.longitude - b.sw.longitude) * m
             let bb = BBox(minLat: b.sw.latitude - dLat, minLon: b.sw.longitude - dLon,
                           maxLat: b.ne.latitude + dLat, maxLon: b.ne.longitude + dLon)
-            let wantAir = scale < 14, wantAwy = scale < 9
+            let wantAir = scale < 14, wantLbl = scale < 7, wantAwy = scale < 9
             overlayGen += 1
             let gen = overlayGen
             Task { @MainActor in
-                let feats = await Task.detached(priority: .userInitiated) { () -> ([MLNPolygonFeature], [MLNPolylineFeature]) in
+                let feats = await Task.detached(priority: .userInitiated) {
+                    () -> ([MLNPolygonFeature], [MLNPointFeature], [MLNPolylineFeature]) in
                     var asp: [MLNPolygonFeature] = []
+                    var lbl: [MLNPointFeature] = []
                     if wantAir {
                         let order: [String: Int] = ["TFR": 0, "P": 1, "R": 2, "B": 3, "C": 4, "W": 5, "MOA": 6, "A": 7, "D": 8]
                         let list = NavDatabase.airspaces(intersecting: bb)
@@ -161,6 +193,16 @@ struct MapLibreChartView: UIViewRepresentable {
                                 if asp.count >= 260 { break building }
                             }
                         }
+                        if wantLbl {                                       // altitude blocks (scale<7, cap 140)
+                            for a in list where lbl.count < 140 {
+                                guard let top = a.rings.flatMap({ $0 }).max(by: { $0.lat < $1.lat }) else { continue }
+                                let f = MLNPointFeature()
+                                f.coordinate = CLLocationCoordinate2D(latitude: top.lat, longitude: top.lon)
+                                f.attributes = ["cls": a.cls,
+                                                "alt": "\(AirspaceLabelAnnotation.altText(a.ceilingFt))\n\(AirspaceLabelAnnotation.altText(a.floorFt))"]
+                                lbl.append(f)
+                            }
+                        }
                     }
                     var awy: [MLNPolylineFeature] = []
                     if wantAwy {
@@ -171,11 +213,12 @@ struct MapLibreChartView: UIViewRepresentable {
                             awy.append(f)
                         }
                     }
-                    return (asp, awy)
+                    return (asp, lbl, awy)
                 }.value
                 guard gen == overlayGen, let style = mapView.style else { return }
                 (style.source(withIdentifier: "airspace") as? MLNShapeSource)?.shape = MLNShapeCollectionFeature(shapes: feats.0)
-                (style.source(withIdentifier: "airways") as? MLNShapeSource)?.shape = MLNShapeCollectionFeature(shapes: feats.1)
+                (style.source(withIdentifier: "airspace-labels") as? MLNShapeSource)?.shape = MLNShapeCollectionFeature(shapes: feats.1)
+                (style.source(withIdentifier: "airways") as? MLNShapeSource)?.shape = MLNShapeCollectionFeature(shapes: feats.2)
             }
         }
 
@@ -281,7 +324,7 @@ struct MapLibreChartScreen: View {
                         }
                     }
                 }
-                Text("Globe + our offline FAA tiles (where downloaded) + filed route. Migration milestone 1.")
+                Text("FAA tiles + route + airspace/airways + labels on MapLibre. Migration milestone 3.")
                     .font(.caption2).foregroundStyle(.white.opacity(0.85))
             }
             .padding(12).background(.black.opacity(0.35))

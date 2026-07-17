@@ -63,7 +63,13 @@ final class MBTilesHTTPServer {
             let parts = line.split(separator: " ")
             guard parts.count >= 2 else { self.respond(conn, status: "400 Bad Request", body: nil); return }
             let path = String(parts[1])
-            if let tile = self.tile(forPath: path) {
+            if path.hasPrefix("/font/") {
+                if let pbf = self.glyph(forPath: path) {
+                    self.respond(conn, status: "200 OK", contentType: "application/x-protobuf", body: pbf)
+                } else {
+                    self.respond(conn, status: "404 Not Found", body: nil)
+                }
+            } else if let tile = self.tile(forPath: path) {
                 self.respond(conn, status: "200 OK", contentType: "image/png", body: tile)
             } else {
                 self.respond(conn, status: "404 Not Found", body: nil)   // no chart coverage here → transparent
@@ -85,6 +91,20 @@ final class MBTilesHTTPServer {
             return UIImage(data: raw)?.pngData() ?? raw                   // WebP → PNG for MapLibre
         }
         return nil
+    }
+
+    /// "/font/Arial%20Bold/0-255.pbf" → the bundled SDF glyph PBF for that fontstack + range. MapLibre
+    /// needs these to render any symbol-layer TEXT; we serve them from the app bundle so labels work offline.
+    private func glyph(forPath path: String) -> Data? {
+        let comps = path.split(separator: "/")     // ["font", "<fontstack>", "<range>.pbf"]
+        guard comps.count >= 3 else { return nil }
+        let fontstack = String(comps[comps.count - 2]).removingPercentEncoding ?? String(comps[comps.count - 2])
+        let file = String(comps[comps.count - 1])
+        let range = (file.hasSuffix(".pbf") ? String(file.dropLast(4)) : file)
+        assert(!fontstack.isEmpty && !range.isEmpty, "glyph: empty fontstack/range")
+        guard let url = Bundle.main.url(forResource: range, withExtension: "pbf",
+                                        subdirectory: "glyphs/\(fontstack)") else { return nil }
+        return try? Data(contentsOf: url)
     }
 
     private func respond(_ conn: NWConnection, status: String, contentType: String = "text/plain",
