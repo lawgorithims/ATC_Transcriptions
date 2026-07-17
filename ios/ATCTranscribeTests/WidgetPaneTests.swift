@@ -26,14 +26,22 @@ final class WidgetPaneTests: XCTestCase {
     }
 
     func testCardTouchingEdgeDocksEvenWithFingerMidScreen() {
-        // The reported bug: the pilot drags until the CARD hits the edge, but the finger (on the header)
-        // is still mid-screen — that drop must dock, not snap back. A shove past the edge docks any direction.
+        // The reported bug: the pilot drags until the CARD reaches the edge, but the finger (on the header)
+        // is still mid-screen — that drop must dock via the deliberate-TOSS branch (card edge at/over the
+        // screen edge + a horizontal-dominant drag toward it), not snap back.
         let c = CGSize(width: 1000, height: 700)
-        let atLeft = CGRect(x: -40, y: 200, width: 300, height: 200)            // card pushed past the left edge
-        let atRight = CGRect(x: 720, y: 200, width: 300, height: 200)           // maxX = 1020 ≥ width + shove
+        let atLeft = CGRect(x: 0, y: 200, width: 300, height: 200)              // card's left edge exactly at 0
+        let atRight = CGRect(x: 700, y: 200, width: 300, height: 200)           // maxX = 1000 ≥ width
         XCTAssertEqual(WidgetGeometry.edgeDock(fingerX: 400, drag: tossLeft, droppedRect: atLeft, container: c), .left)
         XCTAssertEqual(WidgetGeometry.edgeDock(fingerX: 600, drag: tossRight, droppedRect: atRight, container: c), .right)
-        // A card merely NEAR the edge (at its normal 12 pt anchor margin) must NOT dock.
+        // The SHOVE branch: a card pushed clear past the edge docks regardless of drag direction (even a
+        // downward two-finger fling). atLeft.minX must clear -shove (-40), atRight.maxX must clear width+shove.
+        let shovedLeft = CGRect(x: -60, y: 200, width: 300, height: 200)        // minX = -60 ≤ -40
+        let shovedRight = CGRect(x: 745, y: 200, width: 300, height: 200)       // maxX = 1045 ≥ 1040
+        let vertical = CGSize(width: 2, height: 200)
+        XCTAssertEqual(WidgetGeometry.edgeDock(fingerX: 500, drag: vertical, droppedRect: shovedLeft, container: c), .left)
+        XCTAssertEqual(WidgetGeometry.edgeDock(fingerX: 500, drag: vertical, droppedRect: shovedRight, container: c), .right)
+        // A card merely NEAR the edge (at its normal 12 pt anchor margin) with no toss must NOT dock.
         let anchored = CGRect(x: 12, y: 200, width: 300, height: 200)
         XCTAssertNil(WidgetGeometry.edgeDock(fingerX: 400, drag: tossLeft, droppedRect: anchored, container: c))
     }

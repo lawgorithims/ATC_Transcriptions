@@ -818,6 +818,10 @@ final class AppModel: ObservableObject {
     /// Did the user press Start to trigger the in-flight model load? Carried through every load fallback
     /// (a too-slow model → Small) so the pilot's "begin capturing" intent isn't dropped on the way (M13).
     private var loadStartIntent = false
+    /// A first-load watchdog that fired while BACKGROUNDED (where a slow compile is expected, not stuck)
+    /// records itself here instead of wiping a fine model; foreground re-arms it so a genuinely hung
+    /// compile is still eventually surfaced rather than stranding the app on the loading spinner.
+    private var pendingLoadWatchdog: (active: String, gen: Int)?
 
     // GPS-vicinity corrector grounding (in-cockpit feeds). Resolves the surrounding airports off-main
     // and pushes them to the running session as ownship moves — the analogue of the traffic push.
@@ -2282,6 +2286,14 @@ final class AppModel: ObservableObject {
             syncEONET()
             syncTFRs()
             prefetchChartsOnLaunch()        // top up charts around the (possibly moved) position
+            // A first-load watchdog that deferred while backgrounded re-arms now, so a genuinely hung
+            // compile is still surfaced (and one that finished in the background just fails the guard).
+            if let w = pendingLoadWatchdog {
+                pendingLoadWatchdog = nil
+                if session == nil, loadingModel == w.active, modelSwapGeneration == w.gen {
+                    armInitialLoadWatchdog(active: w.active, generation: w.gen)
+                }
+            }
             if backgroundPaused {
                 backgroundPaused = false
                 let resume = backgroundResumeSource
@@ -2536,6 +2548,7 @@ final class AppModel: ObservableObject {
     }
 
     func stop() {
+        loadStartIntent = false   // an explicit Stop cancels any pending "capture when the load lands" intent
         // Stop pressed WHILE the mic-permission dialog is open (status .starting, no run yet):
         // session.stop() would no-op on a never-started session, leaving isRunning stuck true. Move
         // to .stopped so the pending grant's currency check (status == .starting) aborts (M4).
@@ -2553,6 +2566,7 @@ final class AppModel: ObservableObject {
     /// stops draining the battery. Remembers whether a source was running so Resume can pick up
     /// where it left off.
     func enterStandby() {
+        loadStartIntent = false   // parking in Standby cancels a pending first-Start-when-loaded intent
         if isRunning { resumeSource = source; stop() } else { resumeSource = nil }
         // Belt-and-suspenders: unconditionally release the audio session so the `audio` background mode
         // can't keep the app (and the audio hardware) awake in standby. stop() already does this on the
@@ -2735,6 +2749,26 @@ final class AppModel: ObservableObject {
     /// download). Unlike `switchModel` there is nothing to fall back to, so a slow or failed load is
     /// SURFACED — and the download gate re-offered — instead of hanging on "Loading model…" forever.
     /// Shows the model actually being loaded (so the widgets don't keep showing the default "Small").
+    /// Arm the 60 s first-load watchdog: a big model (Large V2 especially) can take a long time — or
+    /// stall — to load the first time CoreML compiles it. If it's genuinely stuck, stop hanging on the
+    /// spinner and surface a recovery. `Task.sleep` counts WALL time across suspension, so if the timer
+    /// fires while BACKGROUNDED (a merely-suspended compile, not a stuck one) we don't wipe a fine model
+    /// — we record a re-arm and `handleScenePhase(.active)` re-runs the check from the foreground, so a
+    /// truly hung compile is still eventually surfaced instead of stranding the app on "Loading…".
+    private func armInitialLoadWatchdog(active: String, generation gen: Int) {
+        assert(!active.isEmpty, "armInitialLoadWatchdog: empty model id")
+        assert(gen <= modelSwapGeneration, "armInitialLoadWatchdog: future generation")
+        watchdogTask?.cancel()
+        watchdogTask = Task {
+            try? await Task.sleep(nanoseconds: 60_000_000_000)   // 60s — a first big-model compile can be slow
+            guard !Task.isCancelled, modelSwapGeneration == gen, loadingModel == active, session == nil else { return }
+            guard scenePhaseActive else { pendingLoadWatchdog = (active, gen); return }   // re-arm on foreground (L17)
+            loadingModel = nil
+            surfaceInitialLoadProblem(active: active,
+                reason: "\(ModelCatalog.shortLabel(forID: active)) is taking too long to load — it may be too large for this device.")
+        }
+    }
+
     private func beginModelLoad(models: [String: String], active: String, audioDir: String?, autostart: Bool) {
         pendingModelLoad = nil          // an explicit load supersedes the deferred-launch stash
         loadStartIntent = autostart     // remember the Start intent so a fallback load can honor it (M13)
@@ -2750,20 +2784,7 @@ final class AppModel: ObservableObject {
         modelSwapGeneration += 1
         let gen = modelSwapGeneration
         watchdogTask?.cancel(); loadTask?.cancel()
-        // Watchdog: a big model (Large V2 especially) can take a long time — or stall — to load the
-        // first time CoreML compiles it for this device. If there's still no usable model after a long
-        // grace period, stop hanging on the spinner and surface a recovery instead.
-        watchdogTask = Task {
-            try? await Task.sleep(nanoseconds: 60_000_000_000)   // 60s — a first big-model compile can be slow
-            // scenePhaseActive: Task.sleep counts WALL time across suspension, so a load that's merely
-            // suspended in the background isn't actually "taking too long" — surfacing here would wipe a
-            // fine model and re-raise onboarding on a backgrounded app (L17). Only act while foregrounded.
-            guard !Task.isCancelled, modelSwapGeneration == gen, loadingModel == active,
-                  session == nil, scenePhaseActive else { return }
-            loadingModel = nil
-            surfaceInitialLoadProblem(active: active,
-                reason: "\(ModelCatalog.shortLabel(forID: active)) is taking too long to load — it may be too large for this device.")
-        }
+        armInitialLoadWatchdog(active: active, generation: gen)
         let predecessor = loadTask   // chain anchor: a (possibly still-compiling) superseded load
         loadTask = Task {
             // Serialize CoreML compiles: cancellation cannot interrupt an in-flight WhisperKit
@@ -2802,6 +2823,7 @@ final class AppModel: ObservableObject {
             // begin once Small is up — not silently end at "Ready — press Start" (M13).
             beginModelLoad(models: modelDirs, active: "small", audioDir: audioDirPath, autostart: loadStartIntent)
         } else if !modelDownloaded("small") {
+            loadStartIntent = false     // no model to carry Start onto — recovery needs a fresh user action (finding 1)
             detail = "\(reason) Download the Small model to continue."
             needsOnboarding = true
         } else {
@@ -2809,6 +2831,7 @@ final class AppModel: ObservableObject {
             // corrupt/incomplete, so a picker retry would just re-fail. Wipe the folder so it stops
             // reading as "ready", drop the stale resolution, and re-show the download gate — which now
             // offers a working Download button for a clean copy instead of a dead-end message.
+            loadStartIntent = false     // dead-end recovery — don't let a stale Start auto-capture a later load
             try? FileManager.default.removeItem(at: ModelStore.whisperDir(ModelCatalog.small.variant ?? "small"))
             modelDirs["small"] = nil
             detail = "\(reason) The Small model looks corrupt — re-download it to continue."
@@ -2838,8 +2861,12 @@ final class AppModel: ObservableObject {
     func switchModel(_ id: String) {
         guard liveMode, modelDirs[id] != nil else { return }
         // An explicit Settings pick supersedes the deferred-launch stash: otherwise a later Start would
-        // resurrect and load the OLD stashed model instead of the one just chosen (M12/M15).
+        // resurrect and load the OLD stashed model instead of the one just chosen (M12/M15). It is also
+        // NOT a Start, so it must not inherit a stale Start intent (which would auto-capture a load the
+        // user only meant to switch). A Start pressed WHILE this switch compiles re-sets the intent via
+        // start()'s in-flight guard, so the intended mid-compile-Start (M13) still works (finding 1).
         pendingModelLoad = nil
+        loadStartIntent = false
         // Let the user change their mind WHILE a model is compiling. The swap is non-destructive, so a
         // different pick just supersedes the in-flight load (the old model keeps running until whichever
         // load lands), and re-tapping the running model cancels the swap and stays put. Only re-tapping
