@@ -803,6 +803,7 @@ struct ChartMapView: UIViewRepresentable {
         var airwayByIdent: [String: AirwayPolyline] = [:]
         var airwayLabelByIdent: [String: AirwayLabelAnnotation] = [:]
         private var contextGen = 0                                  // drops stale async refreshes (rapid panning)
+        private var wantFixes = false                               // hysteretic: GPS-fix layer visibility (see refreshContext)
         private var probeGen = 0                                    // drops a superseded tap probe (L12) — double-tap debounce
         private let loc = CLLocationManager()
 
@@ -974,6 +975,10 @@ struct ChartMapView: UIViewRepresentable {
             let wantAir = showAirspace && scale < 14
             let wantNear = showNearby && scale < 5.5
             let wantAwy = showAirways && scale < 9        // airways clutter a continent-level view
+            // Fixes are dense — show them only zoomed in close, with a hysteresis dead band (show < 2.2,
+            // hide > 2.7) so a view hovering near the threshold doesn't flip the whole fix layer on/off.
+            if scale < 2.2 { wantFixes = true } else if scale > 2.7 { wantFixes = false }
+            let showFixes = wantNear && wantFixes
             let bb = BBox(region: region, margin: 0.15)
             let idents = routeIdents
             contextGen &+= 1
@@ -1010,13 +1015,16 @@ struct ChartMapView: UIViewRepresentable {
                             }
                         }
                     }
-                    // Fixes (RNAV/GPS waypoints) are dense, so plot them only when zoomed in close; navaids
-                    // + airports show across the wider `wantNear` band. Gives GPS fixes a map icon (a blue
-                    // triangle) without cluttering a regional view.
-                    let types: Set<Int> = scale < 2.2 ? [0, 1, 2] : [0, 1]
-                    let near: [NavPoint] = wantNear
-                        ? NavDatabase.nearby(bb, types: types, limit: 200).filter { !idents.contains($0.ident) }
+                    // Airports + navaids always fill the `wantNear` band. Fixes (dense RNAV/GPS waypoints)
+                    // are scanned SEPARATELY with their own budget when zoomed in close, so a flood of
+                    // fixes can never crowd airports/navaids out of a shared nearest-N cap (they'd lose their
+                    // icons). Gives GPS fixes a blue-triangle icon without cluttering a regional view.
+                    var near: [NavPoint] = wantNear
+                        ? NavDatabase.nearby(bb, types: [0, 1], limit: 160).filter { !idents.contains($0.ident) }
                         : []
+                    if showFixes {
+                        near += NavDatabase.nearby(bb, types: [2], limit: 90).filter { !idents.contains($0.ident) }
+                    }
                     let airways: [AirwaySegment] = wantAwy ? Airways.inRegion(bb) : []
                     return (rings, labels, near, airways)
                 }.value
@@ -1511,9 +1519,9 @@ final class NearbyMarkerView: MKAnnotationView {
     func configure(ident: String, glyph: NearbyAnnotation.Glyph) {
         label.text = ident
         switch glyph {
-        case .airport: shape.image = Self.airportImg
-        case .navaid:  shape.image = Self.navaidImg
-        case .fix:     shape.image = Self.fixImg
+        case .airport: shape.image = Self.airportImg; displayPriority = MKFeatureDisplayPriority(rawValue: 260)
+        case .navaid:  shape.image = Self.navaidImg;  displayPriority = MKFeatureDisplayPriority(rawValue: 255)
+        case .fix:     shape.image = Self.fixImg;     displayPriority = MKFeatureDisplayPriority(rawValue: 250)  // yields to airports/navaids in collision
         }
     }
 

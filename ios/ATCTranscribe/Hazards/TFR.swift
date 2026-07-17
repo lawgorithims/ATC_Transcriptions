@@ -39,13 +39,16 @@ struct TFR: Identifiable, Sendable, Equatable, Codable {
         expires = try c.decodeIfPresent(Date.self, forKey: .expires)
     }
 
-    /// True when the NOTAM's window has not started or has already ended relative to `now` (awareness
-    /// hint only — always confirm against an official briefing).
-    func isActive(at now: Date) -> Bool {
-        if let e = effective, now < e { return false }
-        if let x = expires, now > x { return false }
-        return true
+    /// Where `now` falls in the NOTAM's effective window. A missing bound is open-ended on that side.
+    enum Window { case upcoming, active, expired }
+    func window(at now: Date) -> Window {
+        if let e = effective, now < e { return .upcoming }
+        if let x = expires, now > x { return .expired }
+        return .active
     }
+    /// True when the NOTAM's window is currently in effect (awareness hint only — always confirm against
+    /// an official briefing).
+    func isActive(at now: Date) -> Bool { window(at: now) == .active }
 
     var bbox: BBox {
         let lat = polygon.map(\.lat), lon = polygon.map(\.lon)

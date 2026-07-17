@@ -80,6 +80,18 @@ final class TFRParserTests: XCTestCase {
         XCTAssertFalse(tfr.isActive(at: exp.addingTimeInterval(3600)))
     }
 
+    func testCodableRoundTripPreservesNewFields() throws {
+        // The disk cache (TFRService) encodes + decodes TFR — the custom Decodable must not break Encodable.
+        let orig = TFR(id: "6/6409", type: .hazards, title: "Wildfire",
+                       polygon: [Coord(lat: 39, lon: -77), Coord(lat: 39, lon: -76), Coord(lat: 40, lon: -76)],
+                       floorFt: 0, ceilingFt: 18000, facility: "ZOA", state: "CA",
+                       effective: Date(timeIntervalSince1970: 1_784_246_400),
+                       expires: Date(timeIntervalSince1970: 1_785_000_000))
+        let data = try JSONEncoder().encode(orig)
+        let back = try JSONDecoder().decode(TFR.self, from: data)
+        XCTAssertEqual(back, orig, "round-trip must preserve facility/state/effective/expires")
+    }
+
     func testDecodesOldCachedTFRWithoutNewFields() throws {
         // A pre-enrichment snapshot has no facility/state/effective/expires — must still decode.
         let json = #"{"id":"1/1","type":"security","title":"t","polygon":[{"lat":39,"lon":-77},{"lat":39,"lon":-76},{"lat":40,"lon":-76}],"floorFt":0,"ceilingFt":18000}"#
