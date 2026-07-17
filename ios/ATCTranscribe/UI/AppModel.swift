@@ -344,6 +344,7 @@ final class AppModel: ObservableObject {
     /// Continuous device-GPS ownship (for a Stratux-less iPad) — the plate viewer starts/stops it and
     /// observes it directly. Preferred fallback after a valid Stratux fix (see `ownshipCoord`).
     let deviceLocation = DeviceLocation()
+    private var deviceGPSPausedForBackground = false   // GPS was running when we backgrounded → resume on foreground
     /// Auto-download the filed route's plates when a plan is entered (the "pack your flight bag" flow).
     @Published var autoPackFlightBag = (UserDefaults.standard.object(forKey: "atc.autoPackBag") as? Bool ?? true) {
         didSet { UserDefaults.standard.set(autoPackFlightBag, forKey: "atc.autoPackBag") }
@@ -2313,6 +2314,7 @@ final class AppModel: ObservableObject {
             syncEONET()
             syncTFRs()
             prefetchChartsOnLaunch()        // top up charts around the (possibly moved) position
+            if deviceGPSPausedForBackground { deviceGPSPausedForBackground = false; deviceLocation.start() }
             // A first-load watchdog that deferred while backgrounded re-arms now, so a genuinely hung
             // compile is still surfaced (and one that finished in the background just fails the guard).
             if let w = pendingLoadWatchdog {
@@ -2336,6 +2338,9 @@ final class AppModel: ObservableObject {
             // "I still hear ATC on the home screen" report).
             if isRunning { backgroundResumeSource = source; backgroundPaused = true; stop() }
             AudioSessionManager.deactivate()
+            // Pause device GPS in the background so it doesn't drain the battery off-screen; resume on
+            // foreground only if it was running (the map/Airports/plate viewer started it).
+            if deviceLocation.isRunning { deviceGPSPausedForBackground = true; deviceLocation.stop() }
             syncTraffic()
             syncEONET()
             syncTFRs()
