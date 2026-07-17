@@ -32,6 +32,18 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 62, version: "1.0", headline: "Lighter on the battery, and TAFs in plain English",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "bolt.badge.a",
+                    title: "The map sips less power",
+                    detail: "Your position now shows as a single lightweight aircraft marker instead of the animated system dot, which was quietly running a second GPS and redrawing the map non-stop. The GPS also eases off when you're parked and pauses in the background — so the map runs much cooler while it sits open. (Turn on Settings → General → Battery diagnostics if you'd like to help us confirm the improvement.)"),
+                WhatsNewHighlight(
+                    icon: "text.alignleft",
+                    title: "TAFs you can just read",
+                    detail: "The TAF tab now translates each forecast period into plain English — \"From 01:00Z: wind from 320° at 6 kt, visibility 6+ SM, scattered clouds at 7,000 ft\" — with weather codes spelled out (BR → mist, TSRA → thunderstorm with rain). The raw coded TAF is still shown above it for those who prefer it."),
+            ]),
+        ReleaseNote(
             build: 61, version: "1.0", headline: "Approach fixes, FAA chart symbols, and fuller TFR info",
             highlights: [
                 WhatsNewHighlight(

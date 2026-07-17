@@ -425,7 +425,9 @@ struct MapObjectView: View {
             Section("Forecast periods") {
                 ForEach(Array(periods.enumerated()), id: \.offset) { _, per in
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(per.header).font(.caption.weight(.semibold).monospaced()).foregroundStyle(p.accent)
+                        Text(per.header(lat: o.coord.lat, lon: o.coord.lon))
+                            .font(.caption.weight(.semibold)).foregroundStyle(p.accent)
+                            .fixedSize(horizontal: false, vertical: true)
                         Text(per.summary).font(.caption2).foregroundStyle(p.textDim)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -715,8 +717,8 @@ struct MapObjectView: View {
                     }
                     KV("Floor", Self.altText(t.floorFt))
                     KV("Ceiling", Self.altText(t.ceilingFt))
-                    if let eff = t.effective { KV("Effective", Self.tfrTime(eff)) }
-                    if let exp = t.expires { KV("Expires", Self.tfrTime(exp)) }
+                    if let eff = t.effective { KV("Effective", Self.tfrTime(eff, at: o.coord)) }
+                    if let exp = t.expires { KV("Expires", Self.tfrTime(exp, at: o.coord)) }
                     let where_ = [t.facility, t.state].compactMap { $0 }.joined(separator: " · ")
                     if !where_.isEmpty { KV("Center", where_) }
                     KV("NOTAM", t.id)
@@ -888,7 +890,12 @@ struct MapObjectView: View {
         f.locale = Locale(identifier: "en_US_POSIX")
         return f
     }()
-    static func tfrTime(_ d: Date) -> String { "\(tfrDF.string(from: d))Z" }
+    /// "Jul 17 2026, 04:39Z · 12:39 AM EDT" — Zulu (the published reference) plus the airport's local clock.
+    static func tfrTime(_ d: Date, at coord: Coord) -> String {
+        let z = "\(tfrDF.string(from: d))Z"
+        if let local = LocationTime.localTime(d, lat: coord.lat, lon: coord.lon) { return "\(z) · \(local)" }
+        return z
+    }
 
     /// The FAA's human-readable per-NOTAM detail page ("6/6409" → …detail_6_6409). The full text + graphic.
     static func tfrDetailURL(_ id: String) -> URL? {

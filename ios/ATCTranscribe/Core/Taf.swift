@@ -1,10 +1,20 @@
 import Foundation
 
-/// One decoded TAF forecast period: a plain-English validity header + a plain-English summary. The raw
-/// TAF is shown separately (some pilots read the codes), so this is the human-readable translation.
+/// One decoded TAF forecast period: the raw validity times + change kind, plus a plain-English summary.
+/// The header is built on demand with the AIRPORT's coordinate so it can show local clock time next to
+/// Zulu. The raw TAF is shown separately (some pilots read the codes), so this is the readable translation.
 struct TafPeriod: Equatable, Sendable {
-    let header: String        // e.g. "From 01:00Z" / "Becoming 03:00–06:00Z" / "Temporary 04:00–06:00Z"
+    let changeKind: String    // "", "FM", "BECMG", "TEMPO", "PROB"
+    let probability: Int?
+    let from: Int?            // epoch seconds (UTC)
+    let to: Int?
     let summary: String       // e.g. "Wind from 320° at 6 kt, visibility 6+ SM, scattered clouds at 7,000 ft"
+
+    /// Plain-English validity header with the location's local clock appended to Zulu — e.g.
+    /// "From 01:00Z (9:00 PM EDT)" / "Becoming 03:00Z–06:00Z (11:00 PM–2:00 AM EDT)".
+    func header(lat: Double, lon: Double) -> String {
+        Taf.changeHeader(kind: changeKind, prob: probability, from: from, to: to, lat: lat, lon: lon)
+    }
 }
 
 /// A Terminal Aerodrome Forecast for one airport, from aviationweather.gov's JSON API. Keeps the raw TAF
@@ -108,27 +118,37 @@ struct Taf: Equatable, Sendable {
         if let sky = skyText(p.clouds) { bits.append(sky) }
         var summary = bits.isEmpty ? "No significant change forecast" : bits.joined(separator: ", ")
         summary = summary.prefix(1).uppercased() + summary.dropFirst()      // sentence case
-        return TafPeriod(header: changeHeader(kind: p.fcstChange, prob: p.probability, from: p.timeFrom, to: p.timeTo),
-                         summary: summary)
+        return TafPeriod(changeKind: (p.fcstChange ?? "").uppercased(), probability: p.probability,
+                         from: p.timeFrom, to: p.timeTo, summary: summary)
     }
 
-    /// Plain-English change label + window: "From 01:00Z" / "Becoming 03:00–06:00Z" / "Temporary … (30% probability)".
-    private static func changeHeader(kind: String?, prob: Int?, from: Int?, to: Int?) -> String {
+    /// Plain-English change label + window in Zulu, with the location's local clock appended:
+    /// "From 01:00Z (9:00 PM EDT)" / "Becoming 03:00Z–06:00Z (11:00 PM–2:00 AM EDT)".
+    static func changeHeader(kind: String?, prob: Int?, from: Int?, to: Int?, lat: Double, lon: Double) -> String {
         let k = (kind ?? "").uppercased()
         let start = zulu(from)
         let span = to != nil ? "\(start)–\(zulu(to))" : "from \(start)"
         let probSuffix = prob.map { " (\($0)% probability)" } ?? ""
+        let local = localSuffix(from: from, to: to, lat: lat, lon: lon)
         switch k {
-        case "", "FM":    return "From \(start)"
-        case "BECMG":     return "Becoming \(span)\(probSuffix)"
-        case "TEMPO":     return "Temporary \(span)\(probSuffix)"
-        case "PROB":      return "\(prob ?? 30)% probability \(span)"
-        default:          return "\(k) \(span)\(probSuffix)"
+        case "", "FM":    return "From \(start)\(local)"
+        case "BECMG":     return "Becoming \(span)\(probSuffix)\(local)"
+        case "TEMPO":     return "Temporary \(span)\(probSuffix)\(local)"
+        case "PROB":      return "\(prob ?? 30)% probability \(span)\(local)"
+        default:          return "\(k) \(span)\(probSuffix)\(local)"
         }
     }
     private static func zulu(_ e: Int?) -> String {
         guard let e else { return "—" }
         return "\(tafDF.string(from: Date(timeIntervalSince1970: TimeInterval(e))))Z"
+    }
+    /// " (9:00 PM EDT)" / " (11:00 PM–2:00 AM EDT)" for the airport's local zone, or "" if the from time or
+    /// zone is unavailable.
+    private static func localSuffix(from: Int?, to: Int?, lat: Double, lon: Double) -> String {
+        guard let from else { return "" }
+        let fromDate = Date(timeIntervalSince1970: TimeInterval(from))
+        let toDate = to.map { Date(timeIntervalSince1970: TimeInterval($0)) }
+        return LocationTime.localRange(fromDate, toDate, lat: lat, lon: lon).map { " (\($0))" } ?? ""
     }
 
     private static func windText(dir: WindDir?, spd: Int?, gust: Int?) -> String? {
