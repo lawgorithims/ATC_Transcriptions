@@ -204,10 +204,9 @@ struct PlateViewer: View {
         .task { await load() }
         // Run the device GPS only while a GEOREFERENCED plate is open (it's the only kind that can plot
         // ownship); stop on close so it isn't a background battery drain. The stop is SYMMETRIC with the
-        // guarded start — a non-georef plate never started GPS, so it must not stop the SHARED
-        // DeviceLocation that the Plates tab now also drives for its nearest-field follow.
-        .onAppear { if georef != nil { deviceLocation.start() } }
-        .onDisappear { if georef != nil { deviceLocation.stop() } }
+        // GPS is owned by the always-mounted map (single owner) — the plate viewer only READS
+        // deviceLocation.coord to place ownship, so it no longer starts/stops the shared session
+        // (which previously left the map's ownship frozen after the viewer closed).
     }
 
     /// A small caption under the chart when the overlay is on — states what the markers are and the

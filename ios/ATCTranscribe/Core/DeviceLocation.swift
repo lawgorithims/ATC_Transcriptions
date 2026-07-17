@@ -5,10 +5,12 @@ import CoreLocation
 /// object like `OneShotLocation`: `CLLocationManager` is created on the main thread and delivers its
 /// callbacks there, and the project's Swift 5 mode doesn't enforce actor isolation on the delegate.
 ///
-/// Observed DIRECTLY by the views that plot ownship (the plate viewer) — a nested ObservableObject on
-/// AppModel doesn't republish its parent (see the Flight Bag C2 fix). Started only while a view needs it
-/// (start/stop with the plate viewer's lifecycle) so it isn't a battery drain the rest of the time; the
-/// map uses MKMapView's own `showsUserLocation` blue dot separately.
+/// Observed DIRECTLY by the views that plot ownship (map + plate viewer) — a nested ObservableObject on
+/// AppModel doesn't republish its parent (see the Flight Bag C2 fix). GPS lifecycle is owned by the
+/// always-mounted home map (MapHostView starts it once) and paused/resumed by scene phase, so it's a
+/// single session that the other tabs only READ (they no longer start/stop it, which used to leave the
+/// map's ownship marker frozen). The map draws its own ownship symbol from this feed — MKMapView's
+/// built-in `showsUserLocation` (a redundant second GPS session) is off.
 final class DeviceLocation: NSObject, ObservableObject, CLLocationManagerDelegate {
     @Published private(set) var coord: Coord?
     @Published private(set) var courseDeg: Double?      // true course when moving (>= 0), else nil
