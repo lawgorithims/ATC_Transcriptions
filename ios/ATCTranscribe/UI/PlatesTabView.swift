@@ -49,12 +49,11 @@ struct PlatesTabView: View {
             }
         }
         .onChange(of: model.selectedTab) { _, tab in
-            if tab == .plates {
-                model.deviceLocation.start(); refreshNearby()   // get a fix so "Nearby" binders resolve
-            } else {
-                searchActive = false                      // drop keyboard focus when leaving (hardware-kbd EFB)
-                if plate == nil { model.deviceLocation.stop() }   // battery: don't run GPS off-tab (viewer owns it if open)
-            }
+            // GPS is owned by the always-mounted map (MapHostView) + scene phase — this tab just READS
+            // deviceLocation.coord, so it no longer starts/stops the shared session (that used to freeze
+            // the map's ownship). Refresh the nearest-field list when the tab becomes active.
+            if tab == .plates { refreshNearby() }
+            else { searchActive = false }             // drop keyboard focus when leaving (hardware-kbd EFB)
         }
     }
 
@@ -90,11 +89,7 @@ struct PlatesTabView: View {
             }
         }
         .tint(model.palette.accent)
-        // A georef'd plate's viewer stops the SHARED DeviceLocation on close; re-arm it here (after the
-        // viewer's onDisappear) so the tab's nearest-field follow keeps working. start() is idempotent.
-        .fullScreenCover(item: $plate, onDismiss: {
-            if model.selectedTab == .plates { model.deviceLocation.start() }
-        }) { proc in
+        .fullScreenCover(item: $plate) { proc in
             PlateViewer(procedure: proc, airport: airport ?? "", palette: model.palette, deviceLocation: model.deviceLocation,
                         onSendToMap: { url in
                             model.overlayPlate(proc, airport: airport ?? "", pdf: url)
@@ -105,7 +100,7 @@ struct PlatesTabView: View {
                 .environmentObject(model)
         }
         .onAppear {
-            model.deviceLocation.start(); refreshNearby()               // start GPS so "Nearby" binders resolve
+            refreshNearby()               // GPS is owned by the map; just read the current fix for "Nearby"
             applyHandoff()
             if model.showFlightBagOnLaunch { showFlightBag = true; model.showFlightBagOnLaunch = false }
             if let pdf = model.previewPlatePdf, let apt = airport,

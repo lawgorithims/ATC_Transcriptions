@@ -18,7 +18,7 @@ struct AirportsTabView: View {
             if model.selectedTab == .airports { content } else { Color.clear }
         }
         .onChange(of: model.selectedTab) { _, tab in
-            if tab == .airports { model.deviceLocation.start(); refreshNearby(); refreshWeather() }
+            if tab == .airports { refreshNearby(); refreshWeather() }   // GPS owned by the map — just read the fix
             else { searchActive = false }
         }
     }
@@ -39,7 +39,7 @@ struct AirportsTabView: View {
         .sheet(item: $infoProbe) { probe in
             MapObjectSheet(result: probe).environmentObject(model)   // full card: weather tab + 7-day outlook
         }
-        .onAppear { model.deviceLocation.start(); refreshNearby(); refreshWeather() }
+        .onAppear { refreshNearby(); refreshWeather() }
         // Defer to the next main-actor hop: @Published fires in willSet, so reading `coord` synchronously
         // here would see the PRE-update (nil) value — the deferred read sees the committed fix.
         .onReceive(model.deviceLocation.$coord) { _ in Task { @MainActor in refreshNearby(); refreshWeather() } }

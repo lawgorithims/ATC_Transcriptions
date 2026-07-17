@@ -50,6 +50,13 @@ final class TafTests: XCTestCase {
         XCTAssertEqual(Taf.wxText("FZRA"), "freezing rain")
         XCTAssertEqual(Taf.wxText("-SHRA"), "light showers of rain")
         XCTAssertEqual(Taf.wxText("-SHRA BR"), "light showers of rain, mist")   // multiple groups
+        // Adjacent phenomena get a separator (was "thunderstorm with rainhail" / "rainsnow").
+        XCTAssertEqual(Taf.wxText("TSRAGR"), "thunderstorm with rain and hail")
+        XCTAssertEqual(Taf.wxText("RASN"), "rain and snow")
+        XCTAssertEqual(Taf.wxText("NSW"), "no significant weather")             // 3-char code (was "ns")
+        XCTAssertEqual(Taf.wxText("VCSH"), "showers in the vicinity")           // was "showers of  in the vicinity"
+        XCTAssertEqual(Taf.wxText("+FC"), "tornado/waterspout")                 // was "heavy funnel cloud"
+        XCTAssertEqual(Taf.wxText("FC"), "funnel cloud")
     }
 
     func testCalmAndVariableWind() throws {

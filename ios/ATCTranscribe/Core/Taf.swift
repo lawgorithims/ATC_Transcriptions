@@ -189,7 +189,7 @@ struct Taf: Equatable, Sendable {
         "PL": "ice pellets", "GR": "hail", "GS": "small hail", "UP": "unknown precipitation",
         "BR": "mist", "FG": "fog", "FU": "smoke", "VA": "volcanic ash", "DU": "dust", "SA": "sand",
         "HZ": "haze", "PY": "spray", "PO": "dust whirls", "SQ": "squalls", "FC": "funnel cloud",
-        "SS": "sandstorm", "DS": "duststorm", "NSW": "no significant weather"]
+        "SS": "sandstorm", "DS": "duststorm"]   // NSW (3-char) is handled specially in decodeWxGroup
 
     /// Decode a weather-code string ("-SHRA VCTS BR") to plain English, falling back to the raw token when
     /// a group can't be parsed (nothing is ever lost — the raw TAF is shown too).
@@ -200,19 +200,33 @@ struct Taf: Equatable, Sendable {
     }
     private static func decodeWxGroup(_ raw: String) -> String {
         var t = raw.uppercased()
-        var vicinity = false, out = ""
+        if t.isEmpty { return "" }
+        if t == "NSW" { return "no significant weather" }                    // 3-char code, not a 2-char pair
+        var vicinity = false
         if t.hasPrefix("VC") { vicinity = true; t.removeFirst(2) }
-        if let first = t.first, let word = wxIntensity[first] { out += word; t.removeFirst() }
-        var guard1 = 0
-        while t.count >= 2, guard1 < 6 {                                     // bounded (rule 2)
-            let tok = String(t.prefix(2)); t.removeFirst(2); guard1 += 1
-            if tok == "TS", !t.isEmpty { out += "thunderstorm with " }        // TSRA → "thunderstorm with rain"
-            else if let d = wxDescriptor[tok] { out += d }
-            else if let ph = wxPhenom[tok] { out += ph }
-            else { out += tok.lowercased() }                                 // unknown → keep the code
+        var intensity = ""
+        if let first = t.first, let word = wxIntensity[first] { intensity = word; t.removeFirst() }
+        // 2-char tokens: an optional leading descriptor (SH/TS/FZ/…) then one or more phenomena.
+        var toks: [String] = []; var g = 0
+        while t.count >= 2, g < 6 { toks.append(String(t.prefix(2))); t.removeFirst(2); g += 1 }   // bounded (rule 2)
+        if toks == ["FC"] {                                                  // +FC = tornado/waterspout, else funnel cloud
+            return finalizeWx(intensity == "heavy " ? "tornado/waterspout" : "funnel cloud", vicinity)
         }
-        if out.trimmingCharacters(in: .whitespaces).isEmpty { out = raw.lowercased() }
-        return (out + (vicinity ? " in the vicinity" : "")).trimmingCharacters(in: .whitespaces)
+        var descriptor = ""
+        if let first = toks.first, let d = wxDescriptor[first] { descriptor = d; toks.removeFirst() }
+        let phenomena = toks.map { wxPhenom[$0] ?? $0.lowercased() }         // join adjacent phenomena with "and"
+        let phen = phenomena.joined(separator: " and ")
+        let body: String
+        if descriptor == "thunderstorm" { body = phen.isEmpty ? "thunderstorm" : "thunderstorm with \(phen)" }
+        else if descriptor.isEmpty { body = phen }
+        else if phen.isEmpty { body = descriptor == "showers of " ? "showers" : descriptor.trimmingCharacters(in: .whitespaces) }
+        else { body = descriptor + phen }
+        let out = (intensity + body).trimmingCharacters(in: .whitespaces)
+        return finalizeWx(out.isEmpty ? raw.lowercased() : out, vicinity)
+    }
+    private static func finalizeWx(_ s: String, _ vicinity: Bool) -> String {
+        let joined = vicinity ? "\(s) in the vicinity" : s
+        return joined.replacingOccurrences(of: "  ", with: " ").trimmingCharacters(in: .whitespaces)
     }
 
     private static func skyText(_ clouds: [DTO.Cloud]?) -> String? {
