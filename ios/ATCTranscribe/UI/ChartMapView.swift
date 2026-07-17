@@ -1546,6 +1546,10 @@ final class NearbyMarkerView: MKAnnotationView {
     private static let vorBlue = UIColor(red: 0.17, green: 0.36, blue: 0.75, alpha: 1)
     private static let ndbMagenta = UIColor(red: 0.78, green: 0.22, blue: 0.62, alpha: 1)
 
+    // Accessors so the EXPERIMENTAL MapLibre migration reuses the exact FAA symbols (no duplication).
+    static var airportGlyphImage: UIImage { airportImg }
+    static var fixGlyphImage: UIImage { fixImg }
+
     static func navaidGlyph(_ type: String) -> UIImage {
         // Order matters: a standalone TACAN or DME provides NO civil VOR azimuth, so it must NOT be drawn
         // with the blue VOR hexagon (that would tell a pilot a VOR exists there). Match those exact types

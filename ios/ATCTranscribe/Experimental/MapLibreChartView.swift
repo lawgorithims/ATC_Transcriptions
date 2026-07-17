@@ -49,6 +49,7 @@ struct MapLibreChartView: UIViewRepresentable {
         private var routeCoords: [CLLocationCoordinate2D]
         private weak var map: MLNMapView?
         private var overlayGen = 0                 // drops stale async overlay refreshes (mirrors contextGen)
+        private var wantFixes = false              // hysteretic GPS-fix visibility (show scale<2.2, hide >2.7)
 
         init(store: ChartStore, routeCoords: [CLLocationCoordinate2D]) {
             self.store = store
@@ -160,66 +161,172 @@ struct MapLibreChartView: UIViewRepresentable {
             aspLabel.textLineHeight = NSExpression(forConstantValue: 1.0)
             aspLabel.minimumZoomLevel = 5.0
             style.addLayer(aspLabel)
+
+            // NAV SYMBOLS — FAA glyphs (VOR/VORTAC/NDB/fix/airport) as an icon-image layer with the ident
+            // below, above airspace so navaids read clearly. Reuses the app's exact symbols (registered below).
+            registerNavImages(style)
+            let navSrc = MLNShapeSource(identifier: "nav", shape: nil, options: nil)
+            style.addSource(navSrc)
+            let nav = MLNSymbolStyleLayer(identifier: "nav-sym", source: navSrc)
+            nav.iconImageName = NSExpression(forKeyPath: "glyph")       // "nav-vor" / "nav-fix" / … set per feature
+            nav.iconAllowsOverlap = NSExpression(forConstantValue: false)
+            nav.text = NSExpression(forKeyPath: "ident")
+            nav.textFontNames = NSExpression(forConstantValue: ["Arial Bold"])
+            nav.textFontSize = NSExpression(forConstantValue: 9)
+            nav.textColor = NSExpression(forConstantValue: UIColor.white)
+            nav.textHaloColor = NSExpression(forConstantValue: UIColor.black.withAlphaComponent(0.85))
+            nav.textHaloWidth = NSExpression(forConstantValue: 1.2)
+            nav.textAnchor = NSExpression(forConstantValue: "top")      // ident under the glyph
+            nav.textOffset = NSExpression(forConstantValue: NSValue(cgVector: CGVector(dx: 0, dy: 0.9)))
+            nav.textOptional = NSExpression(forConstantValue: true)     // drop the ident before the glyph on collision
+            nav.minimumZoomLevel = 5.5
+            style.addLayer(nav)
         }
 
-        /// Query airspace + airways for the settled region OFF-MAIN (gated on angular scale, exactly like
-        /// refreshContext), then set the features on the persistent sources on the main actor.
+        /// Register the FAA nav glyphs (reusing the app's exact NearbyMarkerView drawings) under the names
+        /// the layer's `iconImageName` expression selects per feature. Idempotent.
+        private func registerNavImages(_ style: MLNStyle) {
+            let images: [String: UIImage] = [
+                "nav-airport": NearbyMarkerView.airportGlyphImage,
+                "nav-fix": NearbyMarkerView.fixGlyphImage,
+                "nav-vor": NearbyMarkerView.navaidGlyph("VOR"),
+                "nav-vortac": NearbyMarkerView.navaidGlyph("VORTAC"),
+                "nav-vordme": NearbyMarkerView.navaidGlyph("VOR-DME"),
+                "nav-ndb": NearbyMarkerView.navaidGlyph("NDB"),
+                "nav-ndbdme": NearbyMarkerView.navaidGlyph("NDB-DME"),
+                "nav-tacan": NearbyMarkerView.navaidGlyph("TACAN"),
+                "nav-dme": NearbyMarkerView.navaidGlyph("DME"),
+            ]
+            assert(images.count == 9, "expected 9 nav glyphs")
+            assert(images.values.allSatisfy { $0.size.width > 0 }, "a nav glyph failed to render")
+            for (name, img) in images { style.setImage(img, forName: name) }   // bounded (rule 2)
+        }
+
+        /// The registered image name for a nav point, mirroring NearbyMarkerView.navaidGlyph's classification.
+        static func glyphName(_ np: NavPoint) -> String {
+            switch np.kind {
+            case .airport: return "nav-airport"
+            case .vor:
+                let t = (NavMeta.navaid(np.ident)?.type ?? "VOR").uppercased()
+                if t == "TACAN" { return "nav-tacan" }
+                if t.contains("VORTAC") { return "nav-vortac" }
+                if t.contains("NDB"), t.contains("DME") { return "nav-ndbdme" }
+                if t.contains("NDB") { return "nav-ndb" }
+                if t == "DME" { return "nav-dme" }
+                if t.contains("DME") { return "nav-vordme" }
+                return "nav-vor"
+            default: return "nav-fix"
+            }
+        }
+
+        /// Query the vector overlays for the settled region OFF-MAIN (gated on angular scale, exactly like
+        /// refreshContext), then set the features on the persistent sources on the main actor. Orchestrator
+        /// only — the per-overlay feature building lives in the bounded static builders below (rule 4).
         private func refreshOverlays(_ mapView: MLNMapView) {
             let b = mapView.visibleCoordinateBounds
-            guard b.ne.latitude > b.sw.latitude, b.ne.longitude > b.sw.longitude else { return }   // antimeridian/degenerate
+            guard b.ne.latitude > b.sw.latitude, b.ne.longitude > b.sw.longitude else { return }  // antimeridian/degenerate
             let scale = b.ne.latitude - b.sw.latitude          // latitude span in degrees (matches the MK gate)
+            assert(scale > 0, "refreshOverlays: non-positive scale")
+            assert(overlayGen >= 0, "refreshOverlays: generation underflow")
             let m = 0.15
-            let dLat = (b.ne.latitude - b.sw.latitude) * m, dLon = (b.ne.longitude - b.sw.longitude) * m
-            let bb = BBox(minLat: b.sw.latitude - dLat, minLon: b.sw.longitude - dLon,
-                          maxLat: b.ne.latitude + dLat, maxLon: b.ne.longitude + dLon)
-            let wantAir = scale < 14, wantLbl = scale < 7, wantAwy = scale < 9
+            let bb = BBox(minLat: b.sw.latitude - (b.ne.latitude - b.sw.latitude) * m,
+                          minLon: b.sw.longitude - (b.ne.longitude - b.sw.longitude) * m,
+                          maxLat: b.ne.latitude + (b.ne.latitude - b.sw.latitude) * m,
+                          maxLon: b.ne.longitude + (b.ne.longitude - b.sw.longitude) * m)
+            if scale < 2.2 { wantFixes = true } else if scale > 2.7 { wantFixes = false }   // hysteresis dead band
+            let wantAir = scale < 14, wantLbl = scale < 7, wantAwy = scale < 9, wantNear = scale < 5.5
+            let showFixes = wantNear && wantFixes
             overlayGen += 1
             let gen = overlayGen
             Task { @MainActor in
-                let feats = await Task.detached(priority: .userInitiated) {
-                    () -> ([MLNPolygonFeature], [MLNPointFeature], [MLNPolylineFeature]) in
-                    var asp: [MLNPolygonFeature] = []
-                    var lbl: [MLNPointFeature] = []
-                    if wantAir {
-                        let order: [String: Int] = ["TFR": 0, "P": 1, "R": 2, "B": 3, "C": 4, "W": 5, "MOA": 6, "A": 7, "D": 8]
-                        let list = NavDatabase.airspaces(intersecting: bb)
-                            .sorted { (order[$0.cls] ?? 9, $0.name) < (order[$1.cls] ?? 9, $1.name) }
-                        building: for a in list {
-                            for ring in a.rings {                          // bounded by the 260 cap below
-                                var c = ring.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) }
-                                let f = MLNPolygonFeature(coordinates: &c, count: UInt(c.count))
-                                f.attributes = ["cls": a.cls]              // drives fill/line color, opacity, width
-                                asp.append(f)
-                                if asp.count >= 260 { break building }
-                            }
-                        }
-                        if wantLbl {                                       // altitude blocks (scale<7, cap 140)
-                            for a in list where lbl.count < 140 {
-                                guard let top = a.rings.flatMap({ $0 }).max(by: { $0.lat < $1.lat }) else { continue }
-                                let f = MLNPointFeature()
-                                f.coordinate = CLLocationCoordinate2D(latitude: top.lat, longitude: top.lon)
-                                f.attributes = ["cls": a.cls,
-                                                "alt": "\(AirspaceLabelAnnotation.altText(a.ceilingFt))\n\(AirspaceLabelAnnotation.altText(a.floorFt))"]
-                                lbl.append(f)
-                            }
-                        }
-                    }
-                    var awy: [MLNPolylineFeature] = []
-                    if wantAwy {
-                        for seg in Airways.inRegion(bb) where seg.points.count >= 2 {   // already split into runs
-                            var c = seg.points.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) }
-                            let f = MLNPolylineFeature(coordinates: &c, count: UInt(c.count))
-                            f.attributes = ["ident": seg.ident, "area": seg.area]       // for the future tap card
-                            awy.append(f)
-                        }
-                    }
-                    return (asp, lbl, awy)
+                let f = await Task.detached(priority: .userInitiated) {
+                    () -> (asp: [MLNPolygonFeature], lbl: [MLNPointFeature], awy: [MLNPolylineFeature], nav: [MLNPointFeature]) in
+                    let a = Coordinator.airspaceFeatures(bb, want: wantAir, labels: wantLbl)
+                    return (a.polys, a.labels, Coordinator.airwayFeatures(bb, want: wantAwy),
+                            Coordinator.navFeatures(bb, near: wantNear, fixes: showFixes))
                 }.value
-                guard gen == overlayGen, let style = mapView.style else { return }
-                (style.source(withIdentifier: "airspace") as? MLNShapeSource)?.shape = MLNShapeCollectionFeature(shapes: feats.0)
-                (style.source(withIdentifier: "airspace-labels") as? MLNShapeSource)?.shape = MLNShapeCollectionFeature(shapes: feats.1)
-                (style.source(withIdentifier: "airways") as? MLNShapeSource)?.shape = MLNShapeCollectionFeature(shapes: feats.2)
+                guard gen == self.overlayGen, let style = mapView.style else { return }
+                (style.source(withIdentifier: "airspace") as? MLNShapeSource)?.shape = MLNShapeCollectionFeature(shapes: f.asp)
+                (style.source(withIdentifier: "airspace-labels") as? MLNShapeSource)?.shape = MLNShapeCollectionFeature(shapes: f.lbl)
+                (style.source(withIdentifier: "airways") as? MLNShapeSource)?.shape = MLNShapeCollectionFeature(shapes: f.awy)
+                (style.source(withIdentifier: "nav") as? MLNShapeSource)?.shape = MLNShapeCollectionFeature(shapes: f.nav)
             }
+        }
+
+        /// Airspace polygons (1 per ring, "cls" attr) + altitude-block points, capped + safety-sorted like
+        /// refreshContext. nonisolated (runs in the detached task). Bounded loops (rule 2), >=2 assertions.
+        static func airspaceFeatures(_ bb: BBox, want: Bool, labels: Bool) -> (polys: [MLNPolygonFeature], labels: [MLNPointFeature]) {
+            assert(bb.minLat <= bb.maxLat && bb.minLon <= bb.maxLon, "airspaceFeatures: degenerate box")
+            guard want else { return ([], []) }
+            let order: [String: Int] = ["TFR": 0, "P": 1, "R": 2, "B": 3, "C": 4, "W": 5, "MOA": 6, "A": 7, "D": 8]
+            let list = NavDatabase.airspaces(intersecting: bb)
+                .sorted { (order[$0.cls] ?? 9, $0.name) < (order[$1.cls] ?? 9, $1.name) }
+            var polys: [MLNPolygonFeature] = []
+            building: for a in list {
+                for ring in a.rings {                                      // bounded by the 260 cap
+                    var c = ring.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) }
+                    let f = MLNPolygonFeature(coordinates: &c, count: UInt(c.count))
+                    f.attributes = ["cls": a.cls]
+                    polys.append(f)
+                    if polys.count >= 260 { break building }
+                }
+            }
+            var lbls: [MLNPointFeature] = []
+            if labels {
+                for a in list where lbls.count < 140 {                     // bounded (rule 2)
+                    guard let top = a.rings.flatMap({ $0 }).max(by: { $0.lat < $1.lat }) else { continue }
+                    let f = MLNPointFeature()
+                    f.coordinate = CLLocationCoordinate2D(latitude: top.lat, longitude: top.lon)
+                    f.attributes = ["cls": a.cls,
+                                    "alt": "\(AirspaceLabelAnnotation.altText(a.ceilingFt))\n\(AirspaceLabelAnnotation.altText(a.floorFt))"]
+                    lbls.append(f)
+                }
+            }
+            assert(polys.count <= 260 && lbls.count <= 140, "airspaceFeatures: caps exceeded")
+            return (polys, lbls)
+        }
+
+        /// One polyline per already-split airway run. nonisolated. Bounded by Airways.inRegion's own caps.
+        static func airwayFeatures(_ bb: BBox, want: Bool) -> [MLNPolylineFeature] {
+            assert(bb.minLat <= bb.maxLat, "airwayFeatures: degenerate box")
+            guard want else { return [] }
+            var out: [MLNPolylineFeature] = []
+            for seg in Airways.inRegion(bb) where seg.points.count >= 2 {   // bounded (Airways caps at 80 idents)
+                var c = seg.points.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) }
+                let f = MLNPolylineFeature(coordinates: &c, count: UInt(c.count))
+                f.attributes = ["ident": seg.ident, "area": seg.area]      // for the future tap card
+                out.append(f)
+            }
+            assert(out.count <= 4096, "airwayFeatures: unexpectedly many runs")
+            return out
+        }
+
+        /// Nearby airports/navaids (+ terminal/approach fixes when zoomed in), one point each carrying its
+        /// FAA-glyph name + ident. Deduped by ident. nonisolated. Bounded by the query limits (rule 2).
+        static func navFeatures(_ bb: BBox, near: Bool, fixes: Bool) -> [MLNPointFeature] {
+            assert(bb.minLat <= bb.maxLat, "navFeatures: degenerate box")
+            guard near else { return [] }
+            var out: [MLNPointFeature] = []
+            var seen = Set<String>()
+            for np in NavDatabase.nearby(bb, types: [0, 1], limit: 160) where seen.insert(np.ident).inserted {
+                out.append(navFeature(np))
+            }
+            if fixes {
+                for np in NavDatabase.nearby(bb, types: [2], limit: 90) where seen.insert(np.ident).inserted {
+                    out.append(navFeature(np))
+                }
+                for np in CIFP.terminalFixes(inRegion: bb, limit: 120) where seen.insert(np.ident).inserted {
+                    out.append(navFeature(np))
+                }
+            }
+            assert(out.count <= 370, "navFeatures: exceeded the combined query cap")
+            return out
+        }
+        private static func navFeature(_ np: NavPoint) -> MLNPointFeature {
+            let f = MLNPointFeature()
+            f.coordinate = CLLocationCoordinate2D(latitude: np.coord.lat, longitude: np.coord.lon)
+            f.attributes = ["glyph": glyphName(np), "ident": np.ident]
+            return f
         }
 
         /// "#RRGGBB" from the app's canonical `airspaceColor` (reused verbatim — no hand-typed hex).
