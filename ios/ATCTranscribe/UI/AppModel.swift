@@ -1095,6 +1095,22 @@ final class AppModel: ObservableObject {
     /// widgets showing the previous/default model ("Small") the whole time.
     var activeModelLabel: String { ModelCatalog.shortLabel(forID: loadingModel ?? activeModel) }
 
+    /// A compact one-line description of what the app is doing right now, for the battery sampler to tag
+    /// each reading with — so a drain spike can be attributed to transcription vs map vs GPS vs Stratux.
+    var batteryActivityTag: String {
+        var parts: [String] = []
+        if standby { parts.append("standby") }
+        else if isLiveCapturing { parts.append("xcribe:\(source.rawValue)") }
+        else if isRunning { parts.append("demo") }
+        else { parts.append("idle") }
+        if selectedTab == .map { parts.append("map:\(chartLayer.rawValue)\(mapBackgroundEnabled ? "+base" : "")") }
+        else { parts.append("tab:\(selectedTab.rawValue)") }
+        if stratuxStatus == .connected { parts.append("stratux") }
+        if deviceLocation.coord != nil { parts.append("gps") }
+        if thermalSerious { parts.append("HOT") }
+        return parts.joined(separator: " ")
+    }
+
     // MARK: live wiring
 
     /// Build a session for `active` and (on success) make it the live one. Returns false if the model

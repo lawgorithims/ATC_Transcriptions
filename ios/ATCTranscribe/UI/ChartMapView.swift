@@ -1010,8 +1010,12 @@ struct ChartMapView: UIViewRepresentable {
                             }
                         }
                     }
+                    // Fixes (RNAV/GPS waypoints) are dense, so plot them only when zoomed in close; navaids
+                    // + airports show across the wider `wantNear` band. Gives GPS fixes a map icon (a blue
+                    // triangle) without cluttering a regional view.
+                    let types: Set<Int> = scale < 2.2 ? [0, 1, 2] : [0, 1]
                     let near: [NavPoint] = wantNear
-                        ? NavDatabase.nearby(bb, limit: 160).filter { !idents.contains($0.ident) }
+                        ? NavDatabase.nearby(bb, types: types, limit: 200).filter { !idents.contains($0.ident) }
                         : []
                     let airways: [AirwaySegment] = wantAwy ? Airways.inRegion(bb) : []
                     return (rings, labels, near, airways)
@@ -1255,7 +1259,7 @@ struct ChartMapView: UIViewRepresentable {
                 let v = mv.dequeueReusableAnnotationView(withIdentifier: "near") as? NearbyMarkerView
                     ?? NearbyMarkerView(annotation: annotation, reuseIdentifier: "near")
                 v.annotation = annotation
-                v.configure(ident: n.ident, isAirport: n.isAirport)
+                v.configure(ident: n.ident, glyph: n.glyph)
                 return v
             case let awy as AirwayLabelAnnotation:
                 let v = mv.dequeueReusableAnnotationView(withIdentifier: "awylbl") as? AirwayLabelView
@@ -1415,13 +1419,18 @@ final class OwnshipAnnotation: NSObject, MKAnnotation {
 
 /// A bundled navaid / airport plotted for map context (not on the filed route).
 final class NearbyAnnotation: NSObject, MKAnnotation {
+    enum Glyph { case airport, navaid, fix }
     let coordinate: CLLocationCoordinate2D
     let ident: String
-    let isAirport: Bool
+    let glyph: Glyph
     init(_ np: NavPoint) {
         coordinate = CLLocationCoordinate2D(latitude: np.coord.lat, longitude: np.coord.lon)
         ident = np.ident
-        isAirport = np.kind == .airport
+        switch np.kind {
+        case .airport:  glyph = .airport
+        case .vor:      glyph = .navaid
+        default:        glyph = .fix        // 5-letter RNAV/GPS waypoint (intersection)
+        }
     }
 }
 
@@ -1478,14 +1487,18 @@ final class NearbyMarkerView: MKAnnotationView {
     private let shape = UIImageView()
     private let label = UILabel()
 
+    // Glyph size bumped 25% (12 → 15 pt) per pilot feedback for chart legibility.
+    private static let glyphSize: CGFloat = 15
+
     override init(annotation: MKAnnotation?, reuseIdentifier: String?) {
         super.init(annotation: annotation, reuseIdentifier: reuseIdentifier)
-        frame = CGRect(x: 0, y: 0, width: 52, height: 27)
-        shape.frame = CGRect(x: 20, y: 0, width: 12, height: 12)
+        let g = Self.glyphSize
+        frame = CGRect(x: 0, y: 0, width: 56, height: g + 15)
+        shape.frame = CGRect(x: (56 - g) / 2, y: 0, width: g, height: g)
         addSubview(shape)
-        label.frame = CGRect(x: 0, y: 13, width: 52, height: 12)
+        label.frame = CGRect(x: 0, y: g + 1, width: 56, height: 12)
         label.textAlignment = .center
-        label.font = .monospacedSystemFont(ofSize: 8, weight: .semibold)
+        label.font = .monospacedSystemFont(ofSize: 9, weight: .semibold)
         label.textColor = .white
         label.layer.shadowColor = UIColor.black.cgColor
         label.layer.shadowOpacity = 1; label.layer.shadowRadius = 1.5; label.layer.shadowOffset = .zero
@@ -1495,17 +1508,21 @@ final class NearbyMarkerView: MKAnnotationView {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
-    func configure(ident: String, isAirport: Bool) {
+    func configure(ident: String, glyph: NearbyAnnotation.Glyph) {
         label.text = ident
-        shape.image = isAirport ? Self.airportImg : Self.navaidImg
+        switch glyph {
+        case .airport: shape.image = Self.airportImg
+        case .navaid:  shape.image = Self.navaidImg
+        case .fix:     shape.image = Self.fixImg
+        }
     }
 
     // Bolder, chart-legible glyphs (per pilot feedback): FILLED shapes with a black border so they pop
     // against both the muted Apple base and a busy sectional, instead of thin dim outlines.
     private static let navaidImg: UIImage = {
-        let d: CGFloat = 12
+        let d = glyphSize
         return UIGraphicsImageRenderer(size: CGSize(width: d, height: d)).image { _ in
-            let path = UIBezierPath(); let c = CGPoint(x: d / 2, y: d / 2); let r = d / 2 - 1.25
+            let path = UIBezierPath(); let c = CGPoint(x: d / 2, y: d / 2); let r = d / 2 - 1.5
             for i in 0..<6 {
                 let a = CGFloat(i) * .pi / 3 - .pi / 2
                 let p = CGPoint(x: c.x + r * cos(a), y: c.y + r * sin(a))
@@ -1517,11 +1534,25 @@ final class NearbyMarkerView: MKAnnotationView {
         }
     }()
     private static let airportImg: UIImage = {
-        let d: CGFloat = 12
+        let d = glyphSize
         return UIGraphicsImageRenderer(size: CGSize(width: d, height: d)).image { _ in
-            let ring = UIBezierPath(ovalIn: CGRect(x: 1, y: 1, width: d - 2, height: d - 2))
+            let ring = UIBezierPath(ovalIn: CGRect(x: 1.25, y: 1.25, width: d - 2.5, height: d - 2.5))
             UIColor(red: 0.91, green: 0.47, blue: 0.98, alpha: 1).setFill(); ring.fill()
             UIColor.black.setStroke(); ring.lineWidth = 1.5; ring.stroke()
+        }
+    }()
+    // GPS/RNAV fix — the chart convention is a small triangle (a filled blue △ with a black border here).
+    private static let fixImg: UIImage = {
+        let d = glyphSize
+        return UIGraphicsImageRenderer(size: CGSize(width: d, height: d)).image { _ in
+            let path = UIBezierPath()
+            let inset: CGFloat = 1.5
+            path.move(to: CGPoint(x: d / 2, y: inset))                       // apex
+            path.addLine(to: CGPoint(x: d - inset, y: d - inset))            // bottom-right
+            path.addLine(to: CGPoint(x: inset, y: d - inset))               // bottom-left
+            path.close()
+            UIColor(red: 0.36, green: 0.62, blue: 0.98, alpha: 1).setFill(); path.fill()
+            UIColor.black.setStroke(); path.lineWidth = 1.5; path.lineJoinStyle = .round; path.stroke()
         }
     }()
 }
