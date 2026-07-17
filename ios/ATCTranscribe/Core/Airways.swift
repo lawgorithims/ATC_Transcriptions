@@ -79,14 +79,21 @@ enum Airways {
     }
 
     /// Split an ordered fix chain into continuous runs, breaking wherever a leg is implausibly long for
-    /// the route class (Victor/T are VOR/RNAV low-altitude, ≤250 NM; J/Q/RNAV high-altitude, ≤500 NM) or
-    /// crosses the antimeridian (|Δlon| > 180°). A break drops only the connecting leg — both sides still
-    /// draw. Empirically this cuts exactly the revoked-segment jumps (V210's 929 NM Missouri→Pennsylvania
-    /// leg, J6's 781 NM, …) while keeping real long oceanic/RNAV legs.
+    /// the route class or crosses the antimeridian (|Δlon| > 180°). A break drops only the connecting
+    /// leg — both sides still draw. Empirically this cuts exactly the revoked-segment jumps in US airspace
+    /// (V210's 929 NM Missouri→Pennsylvania leg, J6's 781 NM, L375's 641 NM, …) while keeping every real
+    /// leg: over the bundled US-area data no legitimate leg is fragmented.
+    ///
+    /// Only VICTOR routes get the 250 NM cap — they're VOR-reception-limited, so a longer leg is always a
+    /// revoked jump. T-routes are GPS/RNAV (not VOR-bound) and can legitimately run longer, so they use the
+    /// 500 NM cap like J/Q/RNAV. A fixed distance can't perfectly separate a revoked jump from a genuinely
+    /// long far-oceanic RNAV leg (both can exceed 500 NM), so outside US coverage a real >500 NM oceanic
+    /// leg may render as two fragments — cosmetic (fixes/label/MEA still show), and out of the app's scope.
     static func splitRuns(ident: String, _ pts: [Coord]) -> [[Coord]] {
         assert(pts.count <= 400, "splitRuns: unbounded input")
+        assert(!ident.isEmpty, "splitRuns: empty ident")
         guard pts.count >= 2 else { return pts.isEmpty ? [] : [pts] }
-        let maxLeg: Double = (ident.first == "V" || ident.first == "T") ? 250 : 500   // NM
+        let maxLeg: Double = ident.first == "V" ? 250 : 500   // NM — only Victor is VOR-range-limited
         var runs: [[Coord]] = []
         var run: [Coord] = [pts[0]]
         for i in 1..<pts.count {                                              // bounded (rule 2)
@@ -114,6 +121,7 @@ enum Airways {
     /// without a vertex inside it is still drawn).
     private static func bboxIntersects(_ run: [Coord], _ box: BBox) -> Bool {
         assert(!run.isEmpty, "bboxIntersects: empty run")
+        assert(box.minLat <= box.maxLat && box.minLon <= box.maxLon, "bboxIntersects: degenerate box")
         var minLat = run[0].lat, maxLat = run[0].lat, minLon = run[0].lon, maxLon = run[0].lon
         for p in run {                                                        // bounded (rule 2)
             minLat = min(minLat, p.lat); maxLat = max(maxLat, p.lat)
