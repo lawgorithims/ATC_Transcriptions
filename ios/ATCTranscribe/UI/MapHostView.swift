@@ -23,6 +23,10 @@ struct MapHostView: View {
     /// The overlaid plate's top-corner screen-points (streamed from the map's region callbacks) — the
     /// SwiftUI ✕ / opacity controls are positioned here so they ride the plate itself.
     @State private var plateAnchors: PlateAnchors?
+    // Device-GPS ownship, bridged from `model.deviceLocation` (a nested ObservableObject that doesn't
+    // republish the parent) so a fix change re-renders the map. Stratux is preferred when connected.
+    @State private var deviceCoord: Coord?
+    @State private var deviceCourse: Double?
 
     struct PlateAnchors: Equatable { var tl: CGPoint; var tr: CGPoint }
 
@@ -47,7 +51,9 @@ struct MapHostView: View {
                              procedure: model.previewedProcedureLegs,   // resolved once off-main in AppModel (L8)
                              showAirspace: model.showAirspace, showNearby: model.showNearby,
                              showAirways: model.showAirways,
-                             initialCenter: model.stratuxGPS?.coordinate,
+                             initialCenter: model.stratuxGPS?.coordinate ?? deviceCoord,
+                             ownship: model.stratuxGPS?.coordinate ?? deviceCoord,
+                             ownshipCourse: model.stratuxGPS?.coordinate == nil ? deviceCourse : nil,
                              onVisibleRegion: { rect in
                                  // Remember where the user settled so a thermal rebuild restores it (M7);
                                  // the settle hook is already debounced (0.4 s) in the coordinator.
@@ -79,6 +85,12 @@ struct MapHostView: View {
             }
         }
         .ignoresSafeArea()
+        // Own GPS session for the map's ownship marker (replaces MKMapView's built-in showsUserLocation
+        // GPS). Bridged into @State so a fix change re-renders → updateUIView moves the marker. GPS is
+        // paused in the background by AppModel.handleScenePhase (battery).
+        .onAppear { model.deviceLocation.start() }
+        .onReceive(model.deviceLocation.$coord) { deviceCoord = $0 }
+        .onReceive(model.deviceLocation.$courseDeg) { deviceCourse = $0 }
         // The plate's ✕ / opacity controls ride the PLATE's own top corners (screen-points streamed
         // from the map's region callbacks). SwiftUI-layered — not annotation subviews — so their
         // gestures never fight MapKit's pan recognizer (which cancels UIControl tracking inside

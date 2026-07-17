@@ -491,6 +491,8 @@ struct ChartMapView: UIViewRepresentable {
     let showNearby: Bool
     var showAirways: Bool = true     // enroute V/J/T/Q routes as tappable lines (zoom-gated)
     let initialCenter: Coord?        // frame here when there's no filed route (device / Stratux position)
+    var ownship: Coord? = nil        // your aircraft's position (Stratux GPS, else device GPS) — one marker
+    var ownshipCourse: Double? = nil // true course when moving, to rotate the ownship symbol
     let onVisibleRegion: (MKMapRect) -> Void
     let onTapObjects: ([IdentifiedObject]) -> Void   // tap / long-press → ranked objects there (empty = nothing)
     let focus: Coord?                                // recenter here when it changes (search result)
@@ -506,7 +508,12 @@ struct ChartMapView: UIViewRepresentable {
         mv.delegate = context.coordinator
         mv.pointOfInterestFilter = .excludingAll
         mv.showsCompass = true
-        mv.showsUserLocation = true
+        // NOT showsUserLocation: MapKit's built-in user location runs its OWN high-accuracy CLLocationManager
+        // (a second GPS session on top of our DeviceLocation) and keeps the map's location subsystem hot
+        // (accuracy halo, heading) — a real battery/heat cost while the map just sits there. We draw a single
+        // static ownship marker from our one GPS feed (Stratux, else DeviceLocation) instead, updated only
+        // when the position actually changes.
+        mv.showsUserLocation = false
         let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTap(_:)))
         tap.delegate = context.coordinator           // coexist with MapKit's own pan/zoom recognizers
         mv.addGestureRecognizer(tap)
@@ -689,7 +696,7 @@ struct ChartMapView: UIViewRepresentable {
             Task { @MainActor in m.mapFrameRect = nil }
         }
 
-        c.syncDynamic(mv, aircraft: model.aircraft, ownship: model.stratuxGPS?.coordinate)
+        c.syncDynamic(mv, aircraft: model.aircraft, ownship: ownship, ownshipCourse: ownshipCourse)
         c.syncHazards(mv, events: model.showHazards ? model.hazardEvents : [])
         c.syncTFRs(mv, tfrs: model.showTFRs ? model.tfrs : [])
     }
@@ -935,14 +942,6 @@ struct ChartMapView: UIViewRepresentable {
                 }
             }
             return out
-        }
-
-        /// With no filed route to frame, center on the device GPS fix once it arrives (Stratux, when
-        /// connected, frames immediately via `initialCenter`).
-        func mapView(_ mv: MKMapView, didUpdate userLocation: MKUserLocation) {
-            guard !didFrame, routeOverlay == nil, let c = userLocation.location?.coordinate else { return }
-            mv.setRegion(MKCoordinateRegion(center: c, span: MKCoordinateSpan(latitudeDelta: 1.4, longitudeDelta: 1.4)), animated: false)
-            didFrame = true
         }
 
         /// Free-pan trigger: debounce so we act once the map settles, then ask the store to load the
@@ -1252,15 +1251,6 @@ struct ChartMapView: UIViewRepresentable {
         }
 
         func mapView(_ mv: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
-            if annotation is MKUserLocation {
-                let v = mv.dequeueReusableAnnotationView(withIdentifier: "me")
-                    ?? MKAnnotationView(annotation: annotation, reuseIdentifier: "me")
-                v.annotation = annotation
-                v.image = Self.ownPlane
-                let course = mv.userLocation.location?.course ?? -1
-                v.transform = course < 0 ? .identity : CGAffineTransform(rotationAngle: CGFloat((course - 90) * .pi / 180))
-                return v
-            }
             switch annotation {
             case let w as WaypointAnnotation:
                 let v = mv.dequeueReusableAnnotationView(withIdentifier: "wp") as? MKMarkerAnnotationView
@@ -1306,9 +1296,10 @@ struct ChartMapView: UIViewRepresentable {
                 v.glyphImage = UIImage(systemName: h.category.glyph)
                 v.displayPriority = .defaultHigh; v.titleVisibility = .adaptive; v.animatesWhenAdded = false
                 return v
-            case is OwnshipAnnotation:
+            case let o as OwnshipAnnotation:
                 let v = mv.dequeueReusableAnnotationView(withIdentifier: "own") ?? MKAnnotationView(annotation: annotation, reuseIdentifier: "own")
                 v.annotation = annotation; v.image = Self.ownPlane
+                v.transform = o.course < 0 ? .identity : CGAffineTransform(rotationAngle: CGFloat((o.course - 90) * .pi / 180))
                 return v
             default: return nil
             }
@@ -1319,7 +1310,7 @@ struct ChartMapView: UIViewRepresentable {
         /// refreshed title/heading, departed aircraft are removed, and new ones added. The old code
         /// removed + re-added EVERY annotation whenever any aircraft moved, so the whole field blinked
         /// each ADS-B tick. Incoming is bounded (rule 2) and de-duped by hex.
-        func syncDynamic(_ mv: MKMapView, aircraft: [Aircraft], ownship: Coord?) {
+        func syncDynamic(_ mv: MKMapView, aircraft: [Aircraft], ownship: Coord?, ownshipCourse: Double? = nil) {
             var incoming: [String: Aircraft] = [:]
             var order: [String] = []
             for ac in aircraft.prefix(128) {                       // bound the field (rule 2)
@@ -1349,8 +1340,16 @@ struct ChartMapView: UIViewRepresentable {
                 trafficByKey[hex] = a; mv.addAnnotation(a)
             }
             if let ownship {                                       // ownship: move in place, or add once
-                if let a = ownshipAnn { a.coordinate = ownship.clCoordinate }
-                else { let a = OwnshipAnnotation(); a.coordinate = ownship.clCoordinate; ownshipAnn = a; mv.addAnnotation(a) }
+                let course = ownshipCourse ?? -1
+                let a: OwnshipAnnotation
+                if let existing = ownshipAnn { a = existing; a.coordinate = ownship.clCoordinate }
+                else { a = OwnshipAnnotation(); a.coordinate = ownship.clCoordinate; ownshipAnn = a; mv.addAnnotation(a) }
+                if a.course != course {                            // rotate only when the course actually changes
+                    a.course = course
+                    if let v = mv.view(for: a) {
+                        v.transform = course < 0 ? .identity : CGAffineTransform(rotationAngle: CGFloat((course - 90) * .pi / 180))
+                    }
+                }
             } else if let a = ownshipAnn { mv.removeAnnotation(a); ownshipAnn = nil }
         }
 
@@ -1435,6 +1434,7 @@ enum TrafficReconcile {
 
 final class OwnshipAnnotation: NSObject, MKAnnotation {
     @objc dynamic var coordinate = CLLocationCoordinate2D()
+    var course: Double = -1        // true course in degrees when moving, else -1 (marker points north)
 }
 
 /// A bundled navaid / airport plotted for map context (not on the filed route).

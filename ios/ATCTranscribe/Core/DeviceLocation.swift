@@ -14,11 +14,18 @@ final class DeviceLocation: NSObject, ObservableObject, CLLocationManagerDelegat
     @Published private(set) var courseDeg: Double?      // true course when moving (>= 0), else nil
     private let manager = CLLocationManager()
     private var running = false
+    var isRunning: Bool { running }
 
     override init() {
         super.init()
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
+        // Duty-cycle: only deliver a fix once the position moves ~15 m, so a parked/idle aircraft doesn't
+        // stream sub-metre jitter that re-renders the map every second (battery). The activity type lets iOS
+        // duty-cycle the GPS radio itself when stationary; auto-pause is off so an EFB never silently stops.
+        manager.distanceFilter = 15
+        manager.activityType = .otherNavigation
+        manager.pausesLocationUpdatesAutomatically = false
     }
 
     /// Begin continuous updates if authorized (asks once if undetermined; updates then begin in

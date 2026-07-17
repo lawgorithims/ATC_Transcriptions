@@ -22,16 +22,41 @@ final class TafTests: XCTestCase {
         XCTAssertEqual(taf.periods.count, 2)
     }
 
-    func testDecodesWindVisSkyIntoSummary() throws {
+    func testDecodesIntoPlainEnglish() throws {
         let taf = try XCTUnwrap(Taf.parse(Data(sample.utf8)))
         let first = taf.periods[0].summary
-        XCTAssertTrue(first.contains("290°"), "wind direction decoded: \(first)")
-        XCTAssertTrue(first.contains("11G22 kt"), "wind + gust decoded: \(first)")
-        XCTAssertTrue(first.contains("SCT60"), "sky decoded in hundreds of feet: \(first)")
-        // An FM period is tagged in its header, with its own decoded wind/vis.
-        XCTAssertTrue(taf.periods[1].header.contains("FM"))
-        XCTAssertTrue(taf.periods[1].summary.contains("320°"))
-        XCTAssertTrue(taf.periods[1].summary.contains("6+"), "string visibility passes through: \(taf.periods[1].summary)")
+        XCTAssertTrue(first.hasPrefix("Wind from 290°"), "sentence-case plain English: \(first)")
+        XCTAssertTrue(first.contains("at 11 kt"), "wind speed in words: \(first)")
+        XCTAssertTrue(first.contains("gusting 22"), "gust in words: \(first)")
+        XCTAssertTrue(first.contains("smoke"), "FU decoded to 'smoke': \(first)")
+        XCTAssertTrue(first.contains("scattered clouds at 6,000 ft"), "sky in feet + words: \(first)")
+        XCTAssertTrue(first.contains("broken clouds at 20,000 ft"), "second layer: \(first)")
+        // The FM period header is plain English now (no raw "FM"), with its own decoded body.
+        XCTAssertTrue(taf.periods[1].header.hasPrefix("From "), "header: \(taf.periods[1].header)")
+        XCTAssertTrue(taf.periods[1].summary.contains("from 320°"), "wind: \(taf.periods[1].summary)")
+        XCTAssertTrue(taf.periods[1].summary.contains("visibility 6+ SM"), "6+ vis: \(taf.periods[1].summary)")
+    }
+
+    func testWeatherCodeDecoding() {
+        XCTAssertEqual(Taf.wxText("BR"), "mist")
+        XCTAssertEqual(Taf.wxText("-RA"), "light rain")
+        XCTAssertEqual(Taf.wxText("+SN"), "heavy snow")
+        XCTAssertEqual(Taf.wxText("TSRA"), "thunderstorm with rain")
+        XCTAssertEqual(Taf.wxText("VCTS"), "thunderstorm in the vicinity")
+        XCTAssertEqual(Taf.wxText("FZRA"), "freezing rain")
+        XCTAssertEqual(Taf.wxText("-SHRA"), "light showers of rain")
+        XCTAssertEqual(Taf.wxText("-SHRA BR"), "light showers of rain, mist")   // multiple groups
+    }
+
+    func testCalmAndVariableWind() throws {
+        let calm = """
+        [{"icaoId":"KXYZ","rawTAF":"TAF KXYZ 1700/1806 00000KT P6SM SKC",
+          "fcsts":[{"timeFrom":1784250000,"wdir":"VRB","wspd":0,"visib":"6+","clouds":[{"cover":"SKC"}]}]}]
+        """
+        let taf = try XCTUnwrap(Taf.parse(Data(calm.utf8)))
+        XCTAssertTrue(taf.periods[0].summary.contains("wind calm") || taf.periods[0].summary.hasPrefix("Wind calm"),
+                      "0 kt → calm: \(taf.periods[0].summary)")
+        XCTAssertTrue(taf.periods[0].summary.contains("sky clear"))
     }
 
     func testEmptyPayloadIsNil() {

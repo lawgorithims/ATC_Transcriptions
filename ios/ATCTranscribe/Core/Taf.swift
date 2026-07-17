@@ -1,9 +1,10 @@
 import Foundation
 
-/// One decoded TAF forecast period ("FM170100 …"): the validity header + a one-line decoded summary.
+/// One decoded TAF forecast period: a plain-English validity header + a plain-English summary. The raw
+/// TAF is shown separately (some pilots read the codes), so this is the human-readable translation.
 struct TafPeriod: Equatable, Sendable {
-    let header: String        // e.g. "17 01:00Z – 15:00Z" or "TEMPO 17 03:00Z – 06:00Z"
-    let summary: String       // e.g. "320° 6 kt · P6SM · SCT070"
+    let header: String        // e.g. "From 01:00Z" / "Becoming 03:00–06:00Z" / "Temporary 04:00–06:00Z"
+    let summary: String       // e.g. "Wind from 320° at 6 kt, visibility 6+ SM, scattered clouds at 7,000 ft"
 }
 
 /// A Terminal Aerodrome Forecast for one airport, from aviationweather.gov's JSON API. Keeps the raw TAF
@@ -100,34 +101,118 @@ struct Taf: Equatable, Sendable {
     }
 
     private static func decode(_ p: DTO.Period) -> TafPeriod {
-        let kind = p.fcstChange.map { $0.uppercased() } ?? ""
-        let prefix = kind.isEmpty ? "" : (p.probability.map { "PROB\($0) " } ?? "") + kind + " "
-        let header = prefix + timeRange(p.timeFrom, p.timeTo)
         var bits: [String] = []
-        if let w = p.wdir?.text {
-            let spd = p.wspd.map { "\($0)" } ?? "—"
-            let gust = p.wgst.map { "G\($0)" } ?? ""
-            bits.append("\(w) \(spd)\(gust) kt")
-        }
-        if let v = p.visib?.text { bits.append(v) }
-        if let wx = p.wxString, !wx.isEmpty { bits.append(wx) }
-        if let clouds = p.clouds, !clouds.isEmpty {
-            let sky = clouds.prefix(8).compactMap { c -> String? in     // bounded (rule 2)
-                guard let cover = c.cover else { return nil }
-                return c.base.map { "\(cover)\($0 / 100)" } ?? cover
-            }.joined(separator: " ")
-            if !sky.isEmpty { bits.append(sky) }
-        }
-        return TafPeriod(header: header, summary: bits.isEmpty ? "—" : bits.joined(separator: " · "))
+        if let w = windText(dir: p.wdir, spd: p.wspd, gust: p.wgst) { bits.append(w) }
+        if let v = visText(p.visib) { bits.append(v) }
+        if let wx = p.wxString, !wx.isEmpty { bits.append(wxText(wx)) }
+        if let sky = skyText(p.clouds) { bits.append(sky) }
+        var summary = bits.isEmpty ? "No significant change forecast" : bits.joined(separator: ", ")
+        summary = summary.prefix(1).uppercased() + summary.dropFirst()      // sentence case
+        return TafPeriod(header: changeHeader(kind: p.fcstChange, prob: p.probability, from: p.timeFrom, to: p.timeTo),
+                         summary: summary)
     }
 
-    /// "17 01:00Z – 15:00Z" from two epoch seconds (UTC).
-    private static func timeRange(_ from: Int?, _ to: Int?) -> String {
-        func z(_ e: Int?) -> String {
-            guard let e else { return "—" }
-            return "\(tafDF.string(from: Date(timeIntervalSince1970: TimeInterval(e))))Z"
+    /// Plain-English change label + window: "From 01:00Z" / "Becoming 03:00–06:00Z" / "Temporary … (30% probability)".
+    private static func changeHeader(kind: String?, prob: Int?, from: Int?, to: Int?) -> String {
+        let k = (kind ?? "").uppercased()
+        let start = zulu(from)
+        let span = to != nil ? "\(start)–\(zulu(to))" : "from \(start)"
+        let probSuffix = prob.map { " (\($0)% probability)" } ?? ""
+        switch k {
+        case "", "FM":    return "From \(start)"
+        case "BECMG":     return "Becoming \(span)\(probSuffix)"
+        case "TEMPO":     return "Temporary \(span)\(probSuffix)"
+        case "PROB":      return "\(prob ?? 30)% probability \(span)"
+        default:          return "\(k) \(span)\(probSuffix)"
         }
-        return "\(z(from)) – \(z(to))"
+    }
+    private static func zulu(_ e: Int?) -> String {
+        guard let e else { return "—" }
+        return "\(tafDF.string(from: Date(timeIntervalSince1970: TimeInterval(e))))Z"
+    }
+
+    private static func windText(dir: WindDir?, spd: Int?, gust: Int?) -> String? {
+        guard spd != nil || dir != nil else { return nil }
+        if let s = spd, s == 0 { return "wind calm" }
+        let from: String
+        switch dir {
+        case .some(.vrb): from = "wind variable"
+        case .some(.deg(let d)): from = String(format: "wind from %03d°", d)
+        case .none: from = "wind"
+        }
+        let at = spd.map { " at \($0) kt" } ?? ""
+        let g = gust.map { ", gusting \($0)" } ?? ""
+        return from + at + g
+    }
+
+    private static func visText(_ v: Vis?) -> String? {
+        guard let v else { return nil }
+        switch v {
+        case .num(let d): return d >= 6 ? "visibility 6+ SM" : "visibility \(d.clean) SM"
+        case .str(let s):
+            let t = s.uppercased()
+            if t.isEmpty { return nil }
+            if t.hasPrefix("P6") || t == "6+" { return "visibility 6+ SM" }
+            let num = t.replacingOccurrences(of: "SM", with: "").trimmingCharacters(in: .whitespaces)
+            return num.isEmpty ? "visibility \(t)" : "visibility \(num) SM"
+        }
+    }
+
+    // MARK: weather-code + sky decode
+
+    private static let wxIntensity: [Character: String] = ["-": "light ", "+": "heavy "]
+    private static let wxDescriptor: [String: String] = [
+        "MI": "shallow ", "PR": "partial ", "BC": "patches of ", "DR": "low drifting ", "BL": "blowing ",
+        "SH": "showers of ", "TS": "thunderstorm", "FZ": "freezing "]
+    private static let wxPhenom: [String: String] = [
+        "DZ": "drizzle", "RA": "rain", "SN": "snow", "SG": "snow grains", "IC": "ice crystals",
+        "PL": "ice pellets", "GR": "hail", "GS": "small hail", "UP": "unknown precipitation",
+        "BR": "mist", "FG": "fog", "FU": "smoke", "VA": "volcanic ash", "DU": "dust", "SA": "sand",
+        "HZ": "haze", "PY": "spray", "PO": "dust whirls", "SQ": "squalls", "FC": "funnel cloud",
+        "SS": "sandstorm", "DS": "duststorm", "NSW": "no significant weather"]
+
+    /// Decode a weather-code string ("-SHRA VCTS BR") to plain English, falling back to the raw token when
+    /// a group can't be parsed (nothing is ever lost — the raw TAF is shown too).
+    static func wxText(_ s: String) -> String {
+        let groups = s.split(separator: " ").prefix(8)                        // bounded (rule 2)
+        let phrases = groups.map { decodeWxGroup(String($0)) }
+        return phrases.joined(separator: ", ")
+    }
+    private static func decodeWxGroup(_ raw: String) -> String {
+        var t = raw.uppercased()
+        var vicinity = false, out = ""
+        if t.hasPrefix("VC") { vicinity = true; t.removeFirst(2) }
+        if let first = t.first, let word = wxIntensity[first] { out += word; t.removeFirst() }
+        var guard1 = 0
+        while t.count >= 2, guard1 < 6 {                                     // bounded (rule 2)
+            let tok = String(t.prefix(2)); t.removeFirst(2); guard1 += 1
+            if tok == "TS", !t.isEmpty { out += "thunderstorm with " }        // TSRA → "thunderstorm with rain"
+            else if let d = wxDescriptor[tok] { out += d }
+            else if let ph = wxPhenom[tok] { out += ph }
+            else { out += tok.lowercased() }                                 // unknown → keep the code
+        }
+        if out.trimmingCharacters(in: .whitespaces).isEmpty { out = raw.lowercased() }
+        return (out + (vicinity ? " in the vicinity" : "")).trimmingCharacters(in: .whitespaces)
+    }
+
+    private static func skyText(_ clouds: [DTO.Cloud]?) -> String? {
+        guard let clouds, !clouds.isEmpty else { return nil }
+        let parts = clouds.prefix(6).compactMap { c -> String? in            // bounded (rule 2)
+            guard let cover = c.cover?.uppercased() else { return nil }
+            let name: String
+            switch cover {
+            case "SKC", "CLR", "NSC", "NCD": return "sky clear"
+            case "FEW": name = "few clouds"
+            case "SCT": name = "scattered clouds"
+            case "BKN": name = "broken clouds"
+            case "OVC": name = "overcast"
+            case "VV":  name = "sky obscured, vertical visibility"
+            default:    name = cover.lowercased()
+            }
+            guard let base = c.base else { return name }
+            return "\(name) at \(base.grouped) ft"
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: ", ")
     }
     private static let tafDF: DateFormatter = {
         let f = DateFormatter(); f.dateFormat = "d HH:mm"
