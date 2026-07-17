@@ -13,8 +13,31 @@ struct ATCTranscribeApp: App {
     @StateObject private var battery = BatteryDiagnostics()   // opt-in on-device energy telemetry
     @Environment(\.scenePhase) private var scenePhase
 
+    /// EXPERIMENTAL (branch experimental/maplibre-globe-prototype — DO NOT MERGE): show the MapLibre globe
+    /// spike instead of the app, behind a flag so normal use is untouched. Enable with the `--maplibre`
+    /// launch arg (Xcode scheme) or by setting the `atc.experimentalMapLibreGlobe` UserDefault.
+    private var showMapLibrePrototype: Bool {
+        ProcessInfo.processInfo.arguments.contains("--maplibre")
+            || UserDefaults.standard.bool(forKey: "atc.experimentalMapLibreGlobe")
+    }
+
     var body: some Scene {
         WindowGroup {
+            #if canImport(MapLibre)
+            if showMapLibrePrototype {
+                MapLibrePrototypeScreen(onClose: {
+                    UserDefaults.standard.set(false, forKey: "atc.experimentalMapLibreGlobe")
+                })
+            } else {
+                appRoot
+            }
+            #else
+            appRoot
+            #endif
+        }
+    }
+
+    private var appRoot: some View {
             RootTabView()                               // Transcript · Map · Plates · Airports · Notes tabs
                 .environmentObject(model)
                 .environmentObject(model.widgetStore)   // isolated widget-layout/probe store (see WidgetStore)
@@ -34,6 +57,5 @@ struct ATCTranscribeApp: App {
                     guard url.isFileURL else { return }
                     _ = model.importFPL(url)
                 }
-        }
     }
 }
