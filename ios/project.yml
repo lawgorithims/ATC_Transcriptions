@@ -33,6 +33,12 @@ packages:
   argmax-oss-swift:
     url: https://github.com/argmaxinc/argmax-oss-swift.git
     from: "1.0.0"
+  # EXPERIMENTAL (branch experimental/maplibre-globe-prototype — DO NOT MERGE): MapLibre Native, the
+  # open-source GPU chart renderer we're spiking as a possible MKMapView replacement (globe projection +
+  # on-demand rendering). Prebuilt XCFramework distribution; 6.x supports the globe projection.
+  MapLibre:
+    url: https://github.com/maplibre/maplibre-gl-native-distribution
+    from: "6.0.0"
   # llama.cpp powers the local CPU context-fixer LLM (LocalLLMCorrector / LlamaContext).
   # NOTE: not a SwiftPM package. Upstream dropped its Package.swift, and the StanfordBDHG
   # mirror's xcframework leaks C++ headers (grammar-parser.h) into the C `llama` module, so
@@ -136,6 +142,9 @@ targets:
     dependencies:
       - package: argmax-oss-swift
         product: WhisperKit
+      # EXPERIMENTAL (DO NOT MERGE): MapLibre Native GPU renderer spike (MapLibrePrototypeView).
+      - package: MapLibre
+        product: MapLibre
       # Local CPU context-fixer LLM. Vendored dynamic xcframework (built by
       # Tools/build_llama_xcframework.sh, git-ignored). Embedded into the app's Frameworks/
       # (install_name @rpath/llama.framework/llama → resolved by the default app rpath).
