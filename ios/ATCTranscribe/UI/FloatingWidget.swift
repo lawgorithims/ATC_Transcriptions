@@ -325,14 +325,40 @@ enum WidgetGeometry {
 
     static let minSize = CGSize(width: 220, height: 120)
 
-    /// The side pane to dock into when a widget drag ends, else nil. Docks when the FINGER is inside a
-    /// generous 56 pt edge zone OR the dropped CARD itself touches/crosses the screen edge — the user
-    /// drags until the card hits the edge, but their finger (on the header) can still be mid-screen, so
-    /// finger-position alone made docking feel broken (the card just snapped back). Pure → unit-tested.
-    static func edgeDock(fingerX: CGFloat, droppedRect: CGRect, container: CGSize,
-                         zone: CGFloat = 56) -> WidgetStore.PaneSide? {
-        if fingerX <= zone || droppedRect.minX <= 0 { return .left }
-        if fingerX >= container.width - zone || droppedRect.maxX >= container.width { return .right }
+    /// The side pane to dock into when a widget drag ends, else nil. DOCKING NEEDS DELIBERATE INTENT so
+    /// the gesture isn't brittle: an earlier version docked on any drop whose finger merely ended in a
+    /// 56 pt edge band, which fired on a vertical drag ALONG that edge or on parking a card near it. Now:
+    ///
+    ///   • an unambiguous SHOVE past the edge (the card pushed ≥`shove` pt off-screen) docks outright; else
+    ///   • a deliberate TOSS: the drop reaches the edge (finger in the zone, or the card's edge at/over the
+    ///     screen edge) AND the drag was horizontal-dominant, directed at that side, and travelled ≥
+    ///     `minTravel`. A mostly-vertical drag, a short nudge, or a wrong-direction drift never docks.
+    ///
+    /// `drag` is the gesture's net translation (canvas space). Pure → unit-tested.
+    static func edgeDock(fingerX: CGFloat, drag: CGSize, droppedRect: CGRect, container: CGSize,
+                         zone: CGFloat = 56, minTravel: CGFloat = 44, shove: CGFloat = 40) -> WidgetStore.PaneSide? {
+        // Unambiguous shove: the card was pushed well past a screen edge — always dock, any direction.
+        if droppedRect.minX <= -shove { return .left }
+        if droppedRect.maxX >= container.width + shove { return .right }
+        let dx = drag.width, dy = drag.height
+        let horizontalIntent = abs(dx) >= abs(dy) && abs(dx) >= minTravel   // a real sideways toss, not a jiggle/vertical drag
+        let atLeft = fingerX <= zone || droppedRect.minX <= 0
+        let atRight = fingerX >= container.width - zone || droppedRect.maxX >= container.width
+        if atLeft, dx < 0, horizontalIntent { return .left }
+        if atRight, dx > 0, horizontalIntent { return .right }
+        return nil
+    }
+
+    /// The two-finger-pan dock decision — same deliberate-intent contract as `edgeDock`, but the only
+    /// signals a two-finger pan gives are the card CENTRE and the translation (no finger location). Dock
+    /// only when the centre lands in the outer `band` AND the pan was a horizontal-dominant push of at
+    /// least `minTravel` toward that side. Pure → unit-tested.
+    static func edgeDockByCenter(centerX: CGFloat, drag: CGSize, container: CGSize,
+                                 band: CGFloat = 0.16, minTravel: CGFloat = 44) -> WidgetStore.PaneSide? {
+        let dx = drag.width
+        guard abs(dx) >= abs(drag.height), abs(dx) >= minTravel else { return nil }   // deliberate sideways push
+        if centerX <= container.width * band, dx < 0 { return .left }
+        if centerX >= container.width * (1 - band), dx > 0 { return .right }
         return nil
     }
 }
@@ -439,11 +465,12 @@ struct FloatingWidgetContainer<Content: View>: View {
     private func commitTwoFingerMove(_ translation: CGSize) {
         let rect = WidgetGeometry.rect(for: frame, in: container)
         let dropped = CGPoint(x: rect.origin.x + translation.width, y: rect.origin.y + translation.height)
-        // Shoved to an edge (card centre in the outer 16%) → dock into that side pane, mirroring the
-        // header-drag path (two-finger has no finger location, so gate on the card centre instead).
+        // Deliberate sideways push into an edge band → dock; a vertical/short two-finger pan of a card
+        // that's already near an edge no longer docks by accident (mirrors the header-drag hardening).
         let centerX = dropped.x + rect.width / 2
-        if centerX <= container.width * 0.16 { Haptics.impact(.medium); widgets.dockToSide(frame.kind, .left); mtTranslation = .zero; return }
-        if centerX >= container.width * 0.84 { Haptics.impact(.medium); widgets.dockToSide(frame.kind, .right); mtTranslation = .zero; return }
+        if let side = WidgetGeometry.edgeDockByCenter(centerX: centerX, drag: translation, container: container) {
+            Haptics.impact(.medium); widgets.dockToSide(frame.kind, side); mtTranslation = .zero; return
+        }
         let snapped = WidgetGeometry.snap(droppedOrigin: dropped, size: rect.size, in: container)
         widgets.update(frame.kind) { $0.anchor = snapped.anchor; $0.offset = snapped.offset }
         mtTranslation = .zero
@@ -544,7 +571,8 @@ struct FloatingWidgetContainer<Content: View>: View {
                                      width: rect.width, height: rect.height)
                 // Dragged INTO a screen edge (finger in the zone, or the card itself touching the edge)
                 // → dock into that side pane (Windows-snap).
-                if let side = WidgetGeometry.edgeDock(fingerX: v.location.x, droppedRect: dropped, container: container) {
+                if let side = WidgetGeometry.edgeDock(fingerX: v.location.x, drag: v.translation,
+                                                      droppedRect: dropped, container: container) {
                     Haptics.impact(.medium); widgets.dockToSide(frame.kind, side); return
                 }
                 let snapped = WidgetGeometry.snap(droppedOrigin: dropped.origin, size: rect.size, in: container)
