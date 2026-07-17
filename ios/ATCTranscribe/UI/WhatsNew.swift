@@ -32,6 +32,22 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 59, version: "1.0", headline: "Sturdier widget docking and a hardening pass",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "rectangle.trailinghalf.inset.filled",
+                    title: "Docking that only docks when you mean it",
+                    detail: "Dragging a widget into a side panel now takes a deliberate push toward the edge — dragging a card up or down along an edge, or nudging it near one, no longer snaps it into a pane by accident. A real toss to the side still docks instantly."),
+                WhatsNewHighlight(
+                    icon: "point.topleft.down.to.point.bottomright.curvepath",
+                    title: "Cleaner airways up north",
+                    detail: "RNAV T-routes with long legs (common in Alaska) no longer show a false gap — only true route discontinuities are broken, so what you see matches the charts."),
+                WhatsNewHighlight(
+                    icon: "wrench.and.screwdriver",
+                    title: "Reliability hardening",
+                    detail: "A deep review pass tightened the model-loading recovery (a load interrupted by backgrounding is always recovered), so the app can't get stuck on “Loading…”, plus assorted robustness fixes throughout."),
+            ]),
+        ReleaseNote(
             build: 58, version: "1.0", headline: "A 7-day outlook, reliable airway altitudes, and a map that never blanks",
             highlights: [
                 WhatsNewHighlight(
