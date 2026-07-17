@@ -65,6 +65,30 @@ final class TFRParserTests: XCTestCase {
         XCTAssertEqual(tfr?.labelCoord?.lat ?? 0, 40.0, accuracy: 1e-6)
     }
 
+    func testEffectiveTimesFacilityAndStateParsed() throws {
+        let xml = polygonXML.replacingOccurrences(of: "</TFR>",
+            with: "<dateEffective>2026-07-17T04:39:00</dateEffective><dateExpire>2026-07-30T07:00:00</dateExpire></TFR>")
+        let stub = TFRParser.Stub(id: "6/6409", type: "HAZARDS", title: "Wildfire", facility: "ZOA", state: "CA")
+        let tfr = try XCTUnwrap(TFRParser.detail(xml, stub: stub))
+        XCTAssertEqual(tfr.facility, "ZOA")
+        XCTAssertEqual(tfr.state, "CA")
+        let eff = try XCTUnwrap(tfr.effective), exp = try XCTUnwrap(tfr.expires)
+        XCTAssertLessThan(eff, exp)
+        // A time inside the window is active; before it is not.
+        XCTAssertTrue(tfr.isActive(at: eff.addingTimeInterval(3600)))
+        XCTAssertFalse(tfr.isActive(at: eff.addingTimeInterval(-3600)))
+        XCTAssertFalse(tfr.isActive(at: exp.addingTimeInterval(3600)))
+    }
+
+    func testDecodesOldCachedTFRWithoutNewFields() throws {
+        // A pre-enrichment snapshot has no facility/state/effective/expires — must still decode.
+        let json = #"{"id":"1/1","type":"security","title":"t","polygon":[{"lat":39,"lon":-77},{"lat":39,"lon":-76},{"lat":40,"lon":-76}],"floorFt":0,"ceilingFt":18000}"#
+        let tfr = try JSONDecoder().decode(TFR.self, from: Data(json.utf8))
+        XCTAssertEqual(tfr.id, "1/1")
+        XCTAssertNil(tfr.effective); XCTAssertNil(tfr.facility)
+        XCTAssertTrue(tfr.isActive(at: Date()), "no window → treated as active")
+    }
+
     /// A circular TFR (5 NM radius) — one CIR vertex expands into a full ring.
     private let circleXML = """
     <TFR>

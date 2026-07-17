@@ -12,6 +12,40 @@ struct TFR: Identifiable, Sendable, Equatable, Codable {
     let polygon: [Coord]      // closed lateral boundary (>= 3 points)
     let floorFt: Int?         // feet (0 = surface, 99999 = unlimited)
     let ceilingFt: Int?
+    var facility: String?     // controlling ARTCC, e.g. "ZOA" (from the list stub)
+    var state: String?        // US state, e.g. "CA"
+    var effective: Date?      // NOTAM effective start (UTC, from the AIXM detail)
+    var expires: Date?        // NOTAM expiry (UTC); nil = indefinite/unknown
+
+    // Older cached snapshots (pre-enrichment) decode with these fields absent — hence the defaults.
+    enum CodingKeys: String, CodingKey { case id, type, title, polygon, floorFt, ceilingFt, facility, state, effective, expires }
+    init(id: String, type: TFRType, title: String, polygon: [Coord], floorFt: Int?, ceilingFt: Int?,
+         facility: String? = nil, state: String? = nil, effective: Date? = nil, expires: Date? = nil) {
+        self.id = id; self.type = type; self.title = title; self.polygon = polygon
+        self.floorFt = floorFt; self.ceilingFt = ceilingFt
+        self.facility = facility; self.state = state; self.effective = effective; self.expires = expires
+    }
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        type = try c.decode(TFRType.self, forKey: .type)
+        title = try c.decode(String.self, forKey: .title)
+        polygon = try c.decode([Coord].self, forKey: .polygon)
+        floorFt = try c.decodeIfPresent(Int.self, forKey: .floorFt)
+        ceilingFt = try c.decodeIfPresent(Int.self, forKey: .ceilingFt)
+        facility = try c.decodeIfPresent(String.self, forKey: .facility)
+        state = try c.decodeIfPresent(String.self, forKey: .state)
+        effective = try c.decodeIfPresent(Date.self, forKey: .effective)
+        expires = try c.decodeIfPresent(Date.self, forKey: .expires)
+    }
+
+    /// True when the NOTAM's window has not started or has already ended relative to `now` (awareness
+    /// hint only — always confirm against an official briefing).
+    func isActive(at now: Date) -> Bool {
+        if let e = effective, now < e { return false }
+        if let x = expires, now > x { return false }
+        return true
+    }
 
     var bbox: BBox {
         let lat = polygon.map(\.lat), lon = polygon.map(\.lon)
@@ -55,18 +89,29 @@ enum TFRType: String, Sendable, Codable {
 /// sequence of `<Avx>` vertices (GRC point / CIR circle / CCA·CWA arc) and whose altitudes are
 /// `valDistVer{Upper,Lower}` (FL → ×100). Machine-generated, so a lightweight tag scan is robust.
 enum TFRParser {
-    struct Stub: Sendable { let id: String; let type: String; let title: String }
+    struct Stub: Sendable { let id: String; let type: String; let title: String; var facility: String? = nil; var state: String? = nil }
 
-    /// Parse the `exportTfrList` JSON into per-TFR stubs (id + type + description).
+    /// Parse the `exportTfrList` JSON into per-TFR stubs (id + type + description + facility/state).
     static func list(_ data: Data) -> [Stub] {
         guard let arr = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else { return [] }
         return arr.prefix(400).compactMap { o in
             guard let id = o["notam_id"] as? String, !id.isEmpty else { return nil }
             let type = (o["type"] as? String) ?? ""
             let desc = (o["description"] as? String) ?? (o["facility"] as? String) ?? id
-            return Stub(id: id, type: type, title: desc)
+            let fac = (o["facility"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            let st = (o["state"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+            return Stub(id: id, type: type, title: desc, facility: fac, state: st)
         }
     }
+
+    /// Shared UTC parser for the AIXM `yyyy-MM-dd'T'HH:mm:ss` timestamps — configured once, read-only.
+    private static let aixmDate: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+        f.timeZone = TimeZone(identifier: "UTC")
+        f.locale = Locale(identifier: "en_US_POSIX")
+        return f
+    }()
 
     /// The URL path segment for a NOTAM's detail XML (`6/5198` → `6_5198`).
     static func detailFile(_ notamID: String) -> String { notamID.replacingOccurrences(of: "/", with: "_") }
@@ -78,8 +123,11 @@ enum TFRParser {
         let floor = alt(tag("valDistVerLower", xml), tag("uomDistVerLower", xml))
         let pts = tessellate(boundary(xml))
         guard pts.count >= 3 else { return nil }
+        let eff = tag("dateEffective", xml).flatMap { aixmDate.date(from: $0) }
+        let exp = tag("dateExpire", xml).flatMap { aixmDate.date(from: $0) }
         return TFR(id: stub.id, type: TFRType(raw: stub.type), title: stub.title,
-                   polygon: pts, floorFt: floor, ceilingFt: ceil)
+                   polygon: pts, floorFt: floor, ceilingFt: ceil,
+                   facility: stub.facility, state: stub.state, effective: eff, expires: exp)
     }
 
     // MARK: boundary parsing

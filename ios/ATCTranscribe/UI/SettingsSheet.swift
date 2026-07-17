@@ -279,6 +279,19 @@ struct SettingsSheet: View {
                     .font(.caption2).foregroundStyle(p.textDim)
             }
         }
+        Card(title: "Battery") {
+            NavigationLink {
+                BatteryDiagnosticsView().environmentObject(model)
+            } label: {
+                HStack {
+                    Label("Battery diagnostics", systemImage: "battery.100.bolt")
+                        .font(.caption).foregroundStyle(p.text)
+                    Spacer()
+                    Image(systemName: "chevron.right").font(.caption2).foregroundStyle(p.textDim)
+                }
+            }
+            .accessibilityIdentifier("settings-battery-diag")
+        }
         Card(title: "About") {
             VStack(alignment: .leading, spacing: 10) {
                 KV("Version", "\(WhatsNew.currentVersion()) (build \(WhatsNew.currentBuild()))")

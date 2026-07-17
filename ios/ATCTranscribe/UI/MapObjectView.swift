@@ -9,6 +9,7 @@ struct MapObjectView: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var metars: MetarStore
     @EnvironmentObject var forecasts: ForecastStore
+    @EnvironmentObject var tafs: TafStore
     let result: MapProbeResult
     var onCommit: () -> Void = {}      // called after an edit (the flight-plan change also redraws the map)
     var onClose: () -> Void = {}       // dismiss the panel/sheet after an action
@@ -54,9 +55,16 @@ struct MapObjectView: View {
     /// climate (opens the charts). Split so the "current" gap is honest and the historical data is
     /// clearly separate, not mistaken for now.
     private enum WxTab: String, CaseIterable, Identifiable {
-        case current, historical
+        case current, taf, forecast, historical
         var id: String { rawValue }
-        var label: String { self == .current ? "Current" : "Historical" }
+        var label: String {
+            switch self {
+            case .current:    return "METAR"
+            case .taf:        return "TAF"
+            case .forecast:   return "7-Day"
+            case .historical: return "History"
+            }
+        }
     }
 
     /// Sheet payload for the Airport Climate card (`.sheet(item:)` works in both hosts — the
@@ -311,6 +319,8 @@ struct MapObjectView: View {
         }
         switch wxTab {
         case .current:    currentWxSection(o)
+        case .taf:        tafSection(o)
+        case .forecast:   forecastSection(o)
         case .historical: historicalWxSection(o)
         }
     }
@@ -355,7 +365,83 @@ struct MapObjectView: View {
                 }
             }
         }
-        // NWS 7-day outlook — day/night periods with temp, wind, and the short forecast.
+        let near = model.hazardEvents
+            .map { ($0, Geo.nmBetween(o.coord, $0.point)) }
+            .filter { $0.1 <= 200 }
+            .sorted { $0.1 < $1.1 }
+            .prefix(5)
+        if !near.isEmpty {
+            Section("Hazards nearby (NASA EONET)") {
+                ForEach(Array(near), id: \.0.id) { ev, nm in
+                    HStack(spacing: 10) {
+                        Image(systemName: ev.category.glyph).foregroundStyle(Color.hex(0xF97316))
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(ev.title).font(.caption).foregroundStyle(p.text).lineLimit(1)
+                            Text(ev.category.label).font(.caption2).foregroundStyle(p.textDim)
+                        }
+                        Spacer()
+                        Text(String(format: "%.0f nm", nm)).font(.caption2).foregroundStyle(p.textDim)
+                    }
+                }
+            }
+        }
+        Section {} footer: {
+            Text("METAR from aviationweather.gov (requires a connection). Hazards are satellite-observed (NASA EONET). Neither substitutes for an official weather briefing.")
+                .font(.caption2).foregroundStyle(p.textDim)
+        }
+    }
+
+    /// TAF (Terminal Aerodrome Forecast) — the airport's own forecast: the raw TAF plus each decoded
+    /// forecast period (validity, wind, visibility, sky, weather). From aviationweather.gov.
+    @ViewBuilder private func tafSection(_ o: IdentifiedObject) -> some View {
+        let p = model.palette
+        Section("Terminal Aerodrome Forecast") {
+            if let taf = tafs.taf(o.ident) {
+                if let raw = taf.rawText, !raw.isEmpty {
+                    Text(raw).font(.caption2.monospaced()).foregroundStyle(p.text)
+                        .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("weather-taf-raw")
+                }
+                if let issued = taf.issued {
+                    KV("Issued", Self.relative.localizedString(for: issued, relativeTo: Date()))
+                }
+            } else {
+                switch tafs.state(o.ident) {
+                case .failed:
+                    Label("TAF service unavailable — reopen to retry.", systemImage: "wifi.slash")
+                        .font(.callout).foregroundStyle(p.textDim)
+                case .noReport:
+                    Label("No TAF issued for \(o.ident) (not all fields publish one).", systemImage: "cloud")
+                        .font(.callout).foregroundStyle(p.textDim)
+                default:
+                    HStack(spacing: 10) {
+                        ProgressView().controlSize(.small)
+                        Text("Fetching the TAF…").font(.callout).foregroundStyle(p.textDim)
+                    }
+                }
+            }
+        }
+        if let periods = tafs.taf(o.ident)?.periods, !periods.isEmpty {
+            Section("Forecast periods") {
+                ForEach(Array(periods.enumerated()), id: \.offset) { _, per in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(per.header).font(.caption.weight(.semibold).monospaced()).foregroundStyle(p.accent)
+                        Text(per.summary).font(.caption2).foregroundStyle(p.textDim)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
+        Section {} footer: {
+            Text("TAF from aviationweather.gov — a forecast for the airport's immediate vicinity, valid 24–30 h. Not a substitute for an official briefing.")
+                .font(.caption2).foregroundStyle(p.textDim)
+        }
+        .onAppear { tafs.ensure([o.ident]) }
+    }
+
+    /// NWS 7-day outlook — day/night periods with temp, wind, and the short forecast (its own sub-tab).
+    @ViewBuilder private func forecastSection(_ o: IdentifiedObject) -> some View {
+        let p = model.palette
         Section("7-day outlook (NWS)") {
             if let periods = forecasts.forecast(o.ident), !periods.isEmpty {
                 ForEach(Array(periods.enumerated()), id: \.offset) { _, per in
@@ -390,28 +476,8 @@ struct MapObjectView: View {
             }
         }
         .onAppear { forecasts.ensure(o.ident, coord: o.coord) }
-        let near = model.hazardEvents
-            .map { ($0, Geo.nmBetween(o.coord, $0.point)) }
-            .filter { $0.1 <= 200 }
-            .sorted { $0.1 < $1.1 }
-            .prefix(5)
-        if !near.isEmpty {
-            Section("Hazards nearby (NASA EONET)") {
-                ForEach(Array(near), id: \.0.id) { ev, nm in
-                    HStack(spacing: 10) {
-                        Image(systemName: ev.category.glyph).foregroundStyle(Color.hex(0xF97316))
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(ev.title).font(.caption).foregroundStyle(p.text).lineLimit(1)
-                            Text(ev.category.label).font(.caption2).foregroundStyle(p.textDim)
-                        }
-                        Spacer()
-                        Text(String(format: "%.0f nm", nm)).font(.caption2).foregroundStyle(p.textDim)
-                    }
-                }
-            }
-        }
         Section {} footer: {
-            Text("METAR from aviationweather.gov (requires a connection). Hazards are satellite-observed (NASA EONET). Neither substitutes for an official weather briefing.")
+            Text("7-day outlook from the U.S. National Weather Service (api.weather.gov). Planning context, not an aviation forecast — always check the TAF and an official briefing.")
                 .font(.caption2).foregroundStyle(p.textDim)
         }
     }
@@ -638,14 +704,24 @@ struct MapObjectView: View {
                 bearingRow(o.coord)
             case .tfr:
                 if let t = o.tfr {
-                    KV("Type", t.type.label)
+                    HStack(spacing: 8) {
+                        Text(t.type.label).font(.headline).foregroundStyle(p.text)
+                        Spacer(minLength: 0)
+                        Self.tfrStatusChip(t)
+                    }
                     KV("Floor", Self.altText(t.floorFt))
                     KV("Ceiling", Self.altText(t.ceilingFt))
+                    if let eff = t.effective { KV("Effective", Self.tfrTime(eff)) }
+                    if let exp = t.expires { KV("Expires", Self.tfrTime(exp)) }
+                    if let fac = t.facility { KV("Center", [fac, t.state].compactMap { $0 }.joined(separator: " · ")) }
                     KV("NOTAM", t.id)
                     if !t.title.isEmpty {
                         Text(t.title).font(.caption).foregroundStyle(p.textDim)
                             .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
                     }
+                    Text("Awareness only — confirm against an official briefing.")
+                        .font(.caption2).foregroundStyle(p.textDim)
                 }
                 bearingRow(o.coord)
             case .airway:
@@ -774,6 +850,30 @@ struct MapObjectView: View {
         if ft <= 0 { return "Surface" }
         if ft >= 18_000 { return "FL\(ft / 100)" }
         return "\(ft) ft"
+    }
+
+    /// Absolute TFR time in UTC ("Jul 17, 04:39Z") — NOTAM windows are always published in Zulu.
+    private static let tfrDF: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "MMM d, HH:mm"
+        f.timeZone = TimeZone(identifier: "UTC")
+        f.locale = Locale(identifier: "en_US_POSIX")
+        return f
+    }()
+    static func tfrTime(_ d: Date) -> String { "\(tfrDF.string(from: d))Z" }
+
+    /// Active / upcoming / expired chip for a TFR, from its effective window.
+    @ViewBuilder static func tfrStatusChip(_ t: TFR, now: Date = Date()) -> some View {
+        let (text, color): (String, Color) = {
+            if let e = t.effective, now < e { return ("Upcoming", .hex(0xF5A623)) }
+            if let x = t.expires, now > x { return ("Expired", .hex(0x8E8E93)) }
+            return ("Active now", .hex(0xF71433))
+        }()
+        Text(text.uppercased())
+            .font(.caption2.weight(.bold))
+            .padding(.horizontal, 7).padding(.vertical, 2)
+            .background(color.opacity(0.18), in: Capsule())
+            .foregroundStyle(color)
     }
 
     private struct FreqRow { let label: String; let value: String }
