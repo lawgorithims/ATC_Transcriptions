@@ -1031,7 +1031,10 @@ struct ChartMapView: UIViewRepresentable {
                             near.append(np)
                         }
                         for np in CIFP.terminalFixes(inRegion: bb, limit: 120) where seen.insert(np.ident).inserted {
-                            near.append(np)
+                            // A procedure fix that's really a navaid (a VOR used as an IAF) must not draw as
+                            // a fix triangle — skip it (the navaid layer owns its hexagon). Off-main + NavMeta
+                            // is warmed, so this is a cheap dict check.
+                            if NavMeta.navaid(np.ident) == nil { near.append(np) }
                         }
                     }
                     let airways: [AirwaySegment] = wantAwy ? Airways.inRegion(bb) : []
@@ -1497,9 +1500,10 @@ final class AirspaceLabelView: MKAnnotationView {
     }
 }
 
-/// Context navaid/airport marker — deliberately smaller & dimmer than a filed waypoint or traffic, and a
-/// distinct glyph (teal hexagon = navaid, magenta ring = airport) so it doesn't read as either. Decorative
-/// (non-selectable) and low display priority so it yields to route waypoints and traffic.
+/// Context navaid/airport/fix marker in FAA chart symbology — a blue VOR/VORTAC/VOR-DME hexagon, a magenta
+/// NDB stipple circle, a standalone TACAN trefoil / DME box, a magenta airport circle, or a blue RNAV-fix
+/// triangle (see `navaidGlyph`). Decorative (non-selectable), low display priority so it yields to route
+/// waypoints + traffic; airports/navaids outrank fixes in collision.
 final class NearbyMarkerView: MKAnnotationView {
     private let shape = UIImageView()
     private let label = UILabel()
@@ -1543,17 +1547,25 @@ final class NearbyMarkerView: MKAnnotationView {
     private static let ndbMagenta = UIColor(red: 0.78, green: 0.22, blue: 0.62, alpha: 1)
 
     static func navaidGlyph(_ type: String) -> UIImage {
+        // Order matters: a standalone TACAN or DME provides NO civil VOR azimuth, so it must NOT be drawn
+        // with the blue VOR hexagon (that would tell a pilot a VOR exists there). Match those exact types
+        // BEFORE the VOR-bearing symbols, and NDB-DME before plain NDB.
         let t = type.uppercased()
-        if t.contains("NDB")    { return ndbImg }
-        if t.contains("VORTAC") || t == "TACAN" { return vortacImg }
-        if t.contains("DME")    { return vordmeImg }
-        return vorImg
+        if t == "TACAN"                          { return tacanImg }   // standalone — no VOR hexagon
+        if t.contains("VORTAC")                  { return vortacImg }  // VOR + TACAN co-located
+        if t.contains("NDB") && t.contains("DME") { return ndbDmeImg }
+        if t.contains("NDB")                     { return ndbImg }
+        if t == "DME"                            { return dmeImg }     // standalone — no VOR hexagon
+        if t.contains("DME")                     { return vordmeImg }  // VOR-DME
+        return vorImg                                                  // plain VOR
     }
 
-    /// A regular hexagon path (flat-ish top, point up) inset in a `d`×`d` box.
+    /// A regular hexagon path (point up) inscribed in a `d`×`d` box, inset from the edges.
     private static func hexPath(_ d: CGFloat, inset: CGFloat) -> UIBezierPath {
+        assert(d > 0, "hexPath: box size must be positive")
+        assert(inset >= 0 && inset < d / 2, "hexPath: inset must leave a positive radius")
         let path = UIBezierPath(); let c = CGPoint(x: d / 2, y: d / 2); let r = d / 2 - inset
-        for i in 0..<6 {
+        for i in 0..<6 {                                                     // bounded (rule 2)
             let a = CGFloat(i) * .pi / 3 - .pi / 2
             let p = CGPoint(x: c.x + r * cos(a), y: c.y + r * sin(a))
             if i == 0 { path.move(to: p) } else { path.addLine(to: p) }
@@ -1561,6 +1573,8 @@ final class NearbyMarkerView: MKAnnotationView {
         path.close(); return path
     }
     private static func drawHexBase(_ d: CGFloat) {
+        assert(d > 0, "drawHexBase: box size must be positive")
+        assert(d >= 6, "drawHexBase: too small for the centre dot to render")
         let hex = hexPath(d, inset: 1.5)
         vorBlue.setFill(); hex.fill()
         UIColor.black.setStroke(); hex.lineWidth = 1.5; hex.stroke()
@@ -1597,18 +1611,54 @@ final class NearbyMarkerView: MKAnnotationView {
             UIColor.white.setFill(); dot.fill()
         }
     }()
+    private static func drawNdb(_ d: CGFloat) {
+        let core = UIBezierPath(ovalIn: CGRect(x: d / 2 - 2.5, y: d / 2 - 2.5, width: 5, height: 5))
+        ndbMagenta.setFill(); core.fill()
+        let rr = d / 2 - 1.75                                             // stippled ring of dots (NDB convention)
+        for i in 0..<10 {                                                 // bounded (rule 2)
+            let a = CGFloat(i) * .pi / 5
+            let p = CGPoint(x: d / 2 + rr * cos(a), y: d / 2 + rr * sin(a))
+            UIBezierPath(ovalIn: CGRect(x: p.x - 0.7, y: p.y - 0.7, width: 1.4, height: 1.4)).fill()
+        }
+    }
     private static let ndbImg: UIImage = {
         let d = glyphSize
+        return UIGraphicsImageRenderer(size: CGSize(width: d, height: d)).image { _ in drawNdb(d) }
+    }()
+    private static let ndbDmeImg: UIImage = {   // NDB stipple inside the DME box
+        let d = glyphSize
         return UIGraphicsImageRenderer(size: CGSize(width: d, height: d)).image { _ in
-            let core = UIBezierPath(ovalIn: CGRect(x: d / 2 - 2.5, y: d / 2 - 2.5, width: 5, height: 5))
-            ndbMagenta.setFill(); core.fill()
-            ndbMagenta.setFill()                                          // stippled ring of dots (NDB convention)
-            let rr = d / 2 - 1.75
-            for i in 0..<10 {
-                let a = CGFloat(i) * .pi / 5
-                let p = CGPoint(x: d / 2 + rr * cos(a), y: d / 2 + rr * sin(a))
-                UIBezierPath(ovalIn: CGRect(x: p.x - 0.7, y: p.y - 0.7, width: 1.4, height: 1.4)).fill()
+            let box = UIBezierPath(roundedRect: CGRect(x: 0.75, y: 0.75, width: d - 1.5, height: d - 1.5), cornerRadius: 1.5)
+            UIColor.black.setStroke(); box.lineWidth = 1; box.stroke()
+            drawNdb(d)
+        }
+    }()
+    // Standalone TACAN — the military distance/bearing beacon. NO VOR hexagon (it carries no civil VOR
+    // azimuth): a dark trefoil of three "ears" around a centre dot.
+    private static let tacanImg: UIImage = {
+        let d = glyphSize
+        return UIGraphicsImageRenderer(size: CGSize(width: d, height: d)).image { _ in
+            let tacBlue = UIColor(red: 0.20, green: 0.40, blue: 0.55, alpha: 1)
+            let c = CGPoint(x: d / 2, y: d / 2), r = d / 2 - 3, e: CGFloat = 3.2
+            tacBlue.setFill(); UIColor.black.setStroke()
+            for i in 0..<3 {                                              // bounded (rule 2)
+                let a = CGFloat(i) * 2 * .pi / 3 - .pi / 2
+                let p = CGPoint(x: c.x + r * cos(a), y: c.y + r * sin(a))
+                let ear = UIBezierPath(ovalIn: CGRect(x: p.x - e / 2, y: p.y - e / 2, width: e, height: e))
+                ear.fill(); ear.lineWidth = 1; ear.stroke()
             }
+            let dot = UIBezierPath(ovalIn: CGRect(x: d / 2 - 1.6, y: d / 2 - 1.6, width: 3.2, height: 3.2))
+            tacBlue.setFill(); dot.fill(); UIColor.black.setStroke(); dot.lineWidth = 1; dot.stroke()
+        }
+    }()
+    // Standalone DME — distance only, NO VOR hexagon: a plain rounded box with a centre dot.
+    private static let dmeImg: UIImage = {
+        let d = glyphSize
+        return UIGraphicsImageRenderer(size: CGSize(width: d, height: d)).image { _ in
+            let box = UIBezierPath(roundedRect: CGRect(x: 2, y: 2, width: d - 4, height: d - 4), cornerRadius: 1.5)
+            UIColor(red: 0.20, green: 0.40, blue: 0.55, alpha: 1).setStroke(); box.lineWidth = 1.75; box.stroke()
+            let dot = UIBezierPath(ovalIn: CGRect(x: d / 2 - 1.4, y: d / 2 - 1.4, width: 2.8, height: 2.8))
+            UIColor(red: 0.20, green: 0.40, blue: 0.55, alpha: 1).setFill(); dot.fill()
         }
     }()
     private static let airportImg: UIImage = {

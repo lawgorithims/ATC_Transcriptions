@@ -110,16 +110,22 @@ enum CIFP {
         assert(box.minLat <= box.maxLat && box.minLon <= box.maxLon, "terminalFixes: degenerate box")
         assert(limit > 0, "terminalFixes: limit must be positive")
         guard let db else { return [] }
+        let cLat = (box.minLat + box.maxLat) / 2, cLon = (box.minLon + box.maxLon) / 2
         var out: [NavPoint] = []
         var st: OpaquePointer?
+        // ORDER BY proximity to the box centre before the cap, so the kept fixes are the NEAREST ones —
+        // a plain LIMIT walks the lat index and would return only the southernmost band (leaving the north
+        // of a dense terminal area blank + pop-in on pan). The box holds only a few hundred rows, cheap sort.
         let sql = """
             SELECT DISTINCT fix, lat, lon FROM terminal_fix
-            WHERE lat BETWEEN ?1 AND ?2 AND lon BETWEEN ?3 AND ?4 LIMIT ?5
+            WHERE lat BETWEEN ?1 AND ?2 AND lon BETWEEN ?3 AND ?4
+            ORDER BY (lat-?6)*(lat-?6) + (lon-?7)*(lon-?7) LIMIT ?5
             """
         if sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK {
             sqlite3_bind_double(st, 1, box.minLat); sqlite3_bind_double(st, 2, box.maxLat)
             sqlite3_bind_double(st, 3, box.minLon); sqlite3_bind_double(st, 4, box.maxLon)
             sqlite3_bind_int(st, 5, Int32(limit))
+            sqlite3_bind_double(st, 6, cLat); sqlite3_bind_double(st, 7, cLon)
             while sqlite3_step(st) == SQLITE_ROW {                             // bounded by LIMIT (rule 2)
                 let f = text(st, 0)
                 if !f.isEmpty {
