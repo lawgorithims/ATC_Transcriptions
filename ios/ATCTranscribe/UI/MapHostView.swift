@@ -109,7 +109,11 @@ struct MapHostView: View {
     }
 
     private func buildRoute() async {
-        await Task.detached(priority: .userInitiated) { _ = NavDatabase.count; _ = NavDatabase.airspaceCount }.value
+        // Warm the nav tables off-main so the map's first paint never blocks on a decode — NavMeta too,
+        // now that the FAA nav-symbol glyph picks the VOR/VORTAC/NDB shape from NavMeta.navaid(ident).
+        await Task.detached(priority: .userInitiated) {
+            _ = NavDatabase.count; _ = NavDatabase.airspaceCount; _ = NavMeta.navaidCount
+        }.value
         // Draw the full path INCLUDING any loaded SID / STAR / approach (their coded legs), not just the
         // filed departure→enroute→destination — see `ProcedureRoute`.
         route = model.flightPlan.map { ProcedureRoute.resolve($0) } ?? []
