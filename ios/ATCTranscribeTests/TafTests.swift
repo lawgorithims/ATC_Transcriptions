@@ -31,8 +31,12 @@ final class TafTests: XCTestCase {
         XCTAssertTrue(first.contains("smoke"), "FU decoded to 'smoke': \(first)")
         XCTAssertTrue(first.contains("scattered clouds at 6,000 ft"), "sky in feet + words: \(first)")
         XCTAssertTrue(first.contains("broken clouds at 20,000 ft"), "second layer: \(first)")
-        // The FM period header is plain English now (no raw "FM"), with its own decoded body.
-        XCTAssertTrue(taf.periods[1].header.hasPrefix("From "), "header: \(taf.periods[1].header)")
+        // The FM period header is plain English now (no raw "FM"), with its own decoded body. Header is
+        // built with the airport coordinate so it carries Zulu + the local clock.
+        let hdr = taf.periods[1].header(lat: 42.36, lon: -71.01)   // Boston → Eastern
+        XCTAssertTrue(hdr.hasPrefix("From "), "header: \(hdr)")
+        XCTAssertTrue(hdr.contains("Z"), "Zulu retained: \(hdr)")
+        XCTAssertTrue(hdr.contains("EDT") || hdr.contains("EST"), "local time appended: \(hdr)")
         XCTAssertTrue(taf.periods[1].summary.contains("from 320°"), "wind: \(taf.periods[1].summary)")
         XCTAssertTrue(taf.periods[1].summary.contains("visibility 6+ SM"), "6+ vis: \(taf.periods[1].summary)")
     }
