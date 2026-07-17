@@ -32,6 +32,26 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 60, version: "1.0", headline: "TAFs, tap-a-TFR details, clearer map, and a battery meter",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "wind",
+                    title: "TAF + a reorganized Weather tab",
+                    detail: "The airport Weather tab is now METAR · TAF · 7-Day · History. The new TAF sub-tab shows the raw Terminal Aerodrome Forecast plus decoded periods, and the 7-day outlook has its own tab."),
+                WhatsNewHighlight(
+                    icon: "exclamationmark.triangle",
+                    title: "Tap a TFR for the details",
+                    detail: "Tapping a TFR now shows an Active / Upcoming / Expired badge, its effective and expiry times, the controlling ARTCC, floor/ceiling, and the full NOTAM description."),
+                WhatsNewHighlight(
+                    icon: "mappin.and.ellipse",
+                    title: "Bigger icons, and GPS fixes on the map",
+                    detail: "Map symbols are 25% larger for legibility, and named GPS/RNAV fixes (intersections) now appear as blue triangles when you're zoomed in — without crowding out airports or navaids."),
+                WhatsNewHighlight(
+                    icon: "battery.100.bolt",
+                    title: "Battery meter (help us find the drain)",
+                    detail: "Settings → General → Battery diagnostics can record, once a minute, the battery level and what the app is doing (transcription, map layer, GPS, Stratux), then show a real discharge rate — so we can pin down what actually uses power in flight. Off by default; flip it on for a session and Copy the log."),
+            ]),
+        ReleaseNote(
             build: 59, version: "1.0", headline: "Sturdier widget docking and a hardening pass",
             highlights: [
                 WhatsNewHighlight(
