@@ -436,6 +436,7 @@ final class AppModel: ObservableObject {
                                                       heightMeters: PlatePlacement.heightMeters(
                                                           widthMeters: g.widthMeters, imageAspect: aspect),
                                                       rotationDeg: g.rotationDeg)
+        selectedTab = .map   // send-to-map may fire from the Airports ⓘ sheet — show the map, not a stranded plate (L14)
     }
     /// Download the filed route's plates into the Flight Bag (departure/destination/alternate + route
     /// airports) when enabled and the route changed. Cheap when everything is cached (PlateBag skips
@@ -814,6 +815,9 @@ final class AppModel: ObservableObject {
     private var llmDeferred = false   // the ~400 MB LLM load was kept off the launch path → build on first Start
     /// The speech-model load stashed off the launch path (heat) — consumed by the first Start.
     private var pendingModelLoad: (models: [String: String], active: String, audioDir: String?)?
+    /// Did the user press Start to trigger the in-flight model load? Carried through every load fallback
+    /// (a too-slow model → Small) so the pilot's "begin capturing" intent isn't dropped on the way (M13).
+    private var loadStartIntent = false
 
     // GPS-vicinity corrector grounding (in-cockpit feeds). Resolves the surrounding airports off-main
     // and pushes them to the running session as ownship moves — the analogue of the traffic push.
@@ -835,10 +839,12 @@ final class AppModel: ObservableObject {
 
     init() {
         // SANITIZER: the Clearance Test Bench's sandbox ownship (N8925T / "Piper Seneca") must never
-        // masquerade as the pilot's real aircraft. If the persisted plan carries the bench tail but the
-        // pilot never SAVED that aircraft, the callsign/type can only be sandbox residue (a pre-failsafe
-        // leak) — strip it so the aircraft box goes back to its unfilled placeholder.
-        if var fp = flightPlan,
+        // masquerade as the pilot's real aircraft. The crash-leak case is already handled up front by
+        // `recoverIfInterrupted()` (breadcrumb restore); this is only a belt-and-suspenders for stale
+        // residue. CRITICAL: N8925T is also a real registered tail — a pilot may legitimately type it
+        // into their plan without saving a profile. So only strip when the bench was ever UNLOCKED
+        // (`diagnosticsEnabled`): a user who never opened diagnostics keeps their real aircraft (M16).
+        if diagnosticsEnabled, var fp = flightPlan,
            fp.callsign.caseInsensitiveCompare(ClearanceScenarioCatalog.ownship.callsign) == .orderedSame,
            !aircraftProfiles.contains(where: { $0.callsign.caseInsensitiveCompare(fp.callsign) == .orderedSame }) {
             fp.callsign = ""; fp.aircraftType = ""
@@ -1238,13 +1244,25 @@ final class AppModel: ObservableObject {
 
         if let audioDir { clips = (try? Self.loadClips(audioDir)) ?? [] }
         detail = clips.isEmpty ? "Model ready (no demo clips)." : "Ready — press Start."
-        if autostart {
-            // Only resume capture if we're on screen. If the model finished compiling while the app was
-            // backgrounded, do NOT start Whisper + the (Stratux) audio pipeline in the background — that
-            // would run the AI hot with the screen off (the battery-drain rule). Defer via the same
-            // background-resume path the scene-phase handler uses; it restarts on foreground.
-            if scenePhaseActive { start(resuming: preserveHistory) }
-            else { backgroundResumeSource = source; backgroundPaused = true }
+        // `loadStartIntent` catches a Start pressed WHILE this load was compiling (a Settings switch, or
+        // a second tap during the deferred first load) — commit capture even if this load itself began
+        // without the autostart flag.
+        if autostart || loadStartIntent {
+            loadStartIntent = false     // intent consumed — a later benign load must not autostart
+            if standby {
+                // The model finished compiling while the user parked us in Standby. Do NOT run capture
+                // behind the "Standby — capture paused" overlay — arm Resume so exitStandby() begins it
+                // (mirrors enterStandby's resumeSource contract) (M14).
+                resumeSource = source
+            } else if scenePhaseActive {
+                // Only resume capture if we're on screen. If the model finished compiling while the app
+                // was backgrounded, do NOT start Whisper + the (Stratux) audio pipeline in the background
+                // — that would run the AI hot with the screen off. Defer via the same background-resume
+                // path the scene-phase handler uses; it restarts on foreground.
+                start(resuming: preserveHistory)
+            } else {
+                backgroundResumeSource = source; backgroundPaused = true
+            }
         }
         return true
     }
@@ -1843,8 +1861,18 @@ final class AppModel: ObservableObject {
     func importFPL(_ url: URL) -> Bool {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-        guard let data = try? Data(contentsOf: url),
-              let route = ForeFlightImport.routeString(fromFPL: data) else { return false }
+        // Bound the read BEFORE pulling the whole file into memory on the main actor — a .fpl is a few KB;
+        // anything past 4 MB isn't a flight plan and must not block the UI or balloon memory (M2, rule 7).
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        guard size <= 4_000_000 else {
+            detail = "Couldn’t import \(url.lastPathComponent): file is too large to be a flight plan."
+            return false
+        }
+        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe),
+              let route = ForeFlightImport.routeString(fromFPL: data) else {
+            detail = "Couldn’t read a route from \(url.lastPathComponent)."   // surface failure, not silence
+            return false
+        }
         commitRouteString(route)
         detail = "Imported route from \(url.lastPathComponent)."
         return true
@@ -2016,8 +2044,10 @@ final class AppModel: ObservableObject {
     /// anyway). Everything is gated on `showHazards` so a pilot who never opts in never generates
     /// NASA traffic.
     private var eonetActive: Bool {
-        scenePhaseActive && !thermalSerious && showHazards &&
-            (mapBackgroundEnabled || showRouteMap || flightPlan != nil)
+        // The home map is always live in the foreground now (an FAA raster replaces the base rather than
+        // blanking, and Apple-only layers render the base), so there is always a map to plot hazards on —
+        // the old `mapBackgroundEnabled` clause silently disabled the poller once background defaulted off.
+        scenePhaseActive && !thermalSerious && showHazards
     }
 
     /// Reconcile the EONET poller (single edge-triggered call — see `EONETService.sync`). In
@@ -2030,8 +2060,8 @@ final class AppModel: ObservableObject {
 
     /// Poll the live FAA TFR feed while the layer is on + there's a foregrounded map to show it on.
     private var tfrActive: Bool {
-        scenePhaseActive && !thermalSerious && showTFRs &&
-            (mapBackgroundEnabled || showRouteMap || flightPlan != nil)
+        // Same as eonetActive — gate on opt-in + foreground, not the (now decoupled) background toggle.
+        scenePhaseActive && !thermalSerious && showTFRs
     }
     func syncTFRs() {
         let active = tfrActive
@@ -2349,6 +2379,15 @@ final class AppModel: ObservableObject {
             pendingModelLoad = nil
             beginModelLoad(models: pending.models, active: pending.active,
                            audioDir: pending.audioDir, autostart: true)
+            return
+        }
+        // A model load is already in flight (the first Start already consumed the stash, or a Settings
+        // model switch is compiling). A second Start tap must NOT fall through to the "unavailable"
+        // error — the in-flight deferred load already carries the autostart intent and will begin
+        // capture when it commits (L16/L18).
+        if session == nil, loadingModel != nil {
+            loadStartIntent = true
+            detail = "Loading \(activeModelLabel)… capture starts when it’s ready."
             return
         }
         guard let session else {        // live build whose model failed to load
@@ -2698,6 +2737,7 @@ final class AppModel: ObservableObject {
     /// Shows the model actually being loaded (so the widgets don't keep showing the default "Small").
     private func beginModelLoad(models: [String: String], active: String, audioDir: String?, autostart: Bool) {
         pendingModelLoad = nil          // an explicit load supersedes the deferred-launch stash
+        loadStartIntent = autostart     // remember the Start intent so a fallback load can honor it (M13)
         self.modelDirs = models
         liveMode = true
         loadingModel = active            // `activeModelLabel` now reflects the model being loaded
@@ -2715,7 +2755,11 @@ final class AppModel: ObservableObject {
         // grace period, stop hanging on the spinner and surface a recovery instead.
         watchdogTask = Task {
             try? await Task.sleep(nanoseconds: 60_000_000_000)   // 60s — a first big-model compile can be slow
-            guard !Task.isCancelled, modelSwapGeneration == gen, loadingModel == active, session == nil else { return }
+            // scenePhaseActive: Task.sleep counts WALL time across suspension, so a load that's merely
+            // suspended in the background isn't actually "taking too long" — surfacing here would wipe a
+            // fine model and re-raise onboarding on a backgrounded app (L17). Only act while foregrounded.
+            guard !Task.isCancelled, modelSwapGeneration == gen, loadingModel == active,
+                  session == nil, scenePhaseActive else { return }
             loadingModel = nil
             surfaceInitialLoadProblem(active: active,
                 reason: "\(ModelCatalog.shortLabel(forID: active)) is taking too long to load — it may be too large for this device.")
@@ -2754,7 +2798,9 @@ final class AppModel: ObservableObject {
         // retrying the model that won't load. Fall back FROM another model only (no Small→Small loop).
         if active != "small", modelDownloaded("small") {
             detail = "\(reason) Loading the Small model instead."
-            beginModelLoad(models: modelDirs, active: "small", audioDir: audioDirPath, autostart: false)
+            // Carry the pilot's Start intent onto the fallback: if they pressed Start, capture should
+            // begin once Small is up — not silently end at "Ready — press Start" (M13).
+            beginModelLoad(models: modelDirs, active: "small", audioDir: audioDirPath, autostart: loadStartIntent)
         } else if !modelDownloaded("small") {
             detail = "\(reason) Download the Small model to continue."
             needsOnboarding = true
@@ -2791,6 +2837,9 @@ final class AppModel: ObservableObject {
     /// Preserves run state: if a source was live it restarts after the new model loads.
     func switchModel(_ id: String) {
         guard liveMode, modelDirs[id] != nil else { return }
+        // An explicit Settings pick supersedes the deferred-launch stash: otherwise a later Start would
+        // resurrect and load the OLD stashed model instead of the one just chosen (M12/M15).
+        pendingModelLoad = nil
         // Let the user change their mind WHILE a model is compiling. The swap is non-destructive, so a
         // different pick just supersedes the in-flight load (the old model keeps running until whichever
         // load lands), and re-tapping the running model cancels the swap and stays put. Only re-tapping

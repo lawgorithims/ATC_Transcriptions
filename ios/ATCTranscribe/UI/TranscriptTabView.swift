@@ -26,6 +26,9 @@ struct TranscriptTabView: View {
             // controls must be reachable here without bouncing back to the map.
             TopBar()
             if model.showInputBar { InputBar().transition(ConsoleView.barTransition) }
+            // Mirror ConsoleView's strip stack: TopBar's briefcase toggles showFlightPlanBar, so the bar
+            // must render here too — otherwise the toggle flips an invisible strip (M11).
+            if model.showFlightPlanBar { FlightPlanBar().transition(ConsoleView.barTransition) }
             TranscriptCard()
                 .environment(\.floatingSurface, true)  // no card chrome — fill the page, we own the bg
                 .frame(maxWidth: .infinity, maxHeight: .infinity)

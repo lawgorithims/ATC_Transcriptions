@@ -79,7 +79,11 @@ struct ConsoleView: View {
             NavigationStack { DownloadsView(bag: model.plateBag).environmentObject(model) }
         }
         .sheet(isPresented: $model.showMapSearch) {
-            MapSearchSheet(onPick: { model.selectMapObject($0); model.showMapSearch = false }, initialQuery: "")
+            MapSearchSheet(onPick: {
+                // Switch to the Map tab so the centred result + its object card are actually visible —
+                // from the Transcript/Notes tab a pick otherwise only moved the hidden map (M9).
+                model.selectMapObject($0); model.showMapSearch = false; model.selectedTab = .map
+            }, initialQuery: "")
                 .environmentObject(model)
         }
         // On compact width the tapped-object info is a bottom sheet; on regular it's a floating side panel.

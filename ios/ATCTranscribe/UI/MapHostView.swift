@@ -26,17 +26,18 @@ struct MapHostView: View {
 
     struct PlateAnchors: Equatable { var tl: CGPoint; var tr: CGPoint }
 
-    /// Show the live map only when it's worth the power — paused when truly backgrounded (a transient
+    /// Show the live map unless it's genuinely pointless: only paused when truly backgrounded (a transient
     /// `.inactive`, e.g. a permission alert, must NOT blank it) or when the full-screen route map is
     /// covering it (no point running two MKMapViews at once). NOT gated on thermal — the map must never
     /// disappear on the pilot; heat is handled by flattening terrain + pausing network layers instead.
     ///
-    /// "Live map background" OFF no longer tears the map down when an FAA chart layer is selected — the
-    /// pilot loses only the Apple imagery (the raster replaces the base, see MBTilesTileOverlay), never
-    /// their chart. Only the Apple-only layers (Map/Satellite) fall back to the off placeholder.
+    /// The map is NEVER blanked by the "Live map background" toggle. With the toggle off (the battery
+    /// default) an FAA raster simply REPLACES the Apple base within its coverage (MBTilesTileOverlay:
+    /// canReplaceMapContent + a `reader.bounds` boundingMapRect so the fringe never goes blank); an
+    /// Apple-only layer (Map/Satellite) has no raster and just renders the base. Either way the pilot
+    /// always has a moving map — the toggle only chooses whether the Apple base draws UNDER the chart.
     private var live: Bool {
-        (model.mapBackgroundEnabled || model.chartLayer.isRaster)
-            && scenePhase != .background && !model.showRouteMap
+        scenePhase != .background && !model.showRouteMap
     }
 
     var body: some View {
@@ -71,18 +72,10 @@ struct MapHostView: View {
                                  }
                              },
                              model: model)
-            } else if !model.mapBackgroundEnabled {
-                // The user's own "map background off" toggle — the only non-transient reason to stand
-                // down (backgrounded / route-map-covering just pause rendering with nothing to show).
-                model.palette.bg
-                    .overlay {
-                        VStack(spacing: 6) {
-                            Image(systemName: "map").font(.title2).foregroundStyle(model.palette.textDim)
-                            Text("Map background off").font(.caption).foregroundStyle(model.palette.textDim)
-                        }
-                    }
             } else {
-                model.palette.bg   // transiently covered (route map / background) — plain, no message
+                // Not live only when backgrounded or the full-screen route map is covering us — both
+                // transient, nothing to show. (The map is never intentionally blanked anymore.)
+                model.palette.bg
             }
         }
         .ignoresSafeArea()

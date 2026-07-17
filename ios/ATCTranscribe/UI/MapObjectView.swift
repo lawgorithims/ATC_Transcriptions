@@ -337,11 +337,22 @@ struct MapObjectView: View {
                     KV("Observed", Self.relative.localizedString(for: Date(timeIntervalSince1970: TimeInterval(t)), relativeTo: Date()))
                 }
             } else {
-                HStack(spacing: 10) {
-                    ProgressView().controlSize(.small)
-                    Text("Fetching the latest METAR…").font(.callout).foregroundStyle(p.textDim)
+                switch metars.state(o.ident) {
+                case .failed:
+                    Label("Weather service unavailable — reopen to retry.", systemImage: "wifi.slash")
+                        .font(.callout).foregroundStyle(p.textDim)
+                        .accessibilityIdentifier("weather-current-failed")
+                case .noReport:
+                    Label("No current METAR reported at \(o.ident).", systemImage: "cloud")
+                        .font(.callout).foregroundStyle(p.textDim)
+                        .accessibilityIdentifier("weather-current-none")
+                default:
+                    HStack(spacing: 10) {
+                        ProgressView().controlSize(.small)
+                        Text("Fetching the latest METAR…").font(.callout).foregroundStyle(p.textDim)
+                    }
+                    .accessibilityIdentifier("weather-current-loading")
                 }
-                .accessibilityIdentifier("weather-current-loading")
             }
         }
         // NWS 7-day outlook — day/night periods with temp, wind, and the short forecast.
@@ -363,9 +374,18 @@ struct MapObjectView: View {
                     }
                 }
             } else {
-                HStack(spacing: 10) {
-                    ProgressView().controlSize(.small)
-                    Text("Fetching the outlook…").font(.caption).foregroundStyle(p.textDim)
+                switch forecasts.state(o.ident) {
+                case .failed:
+                    Label("Outlook unavailable — reopen to retry.", systemImage: "wifi.slash")
+                        .font(.caption).foregroundStyle(p.textDim)
+                case .empty:
+                    Label("No NWS outlook for this location.", systemImage: "calendar")
+                        .font(.caption).foregroundStyle(p.textDim)
+                default:
+                    HStack(spacing: 10) {
+                        ProgressView().controlSize(.small)
+                        Text("Fetching the outlook…").font(.caption).foregroundStyle(p.textDim)
+                    }
                 }
             }
         }
@@ -631,7 +651,9 @@ struct MapObjectView: View {
             case .airway:
                 KV("Route", o.ident)
                 KV("Kind", Self.airwayKindName(o.ident))
-                let alt = Airways.altitudes(of: o.ident)
+                // Area-scoped: the East Coast V1 and the Hawaii V1 are different airways with different
+                // MEAs — look up the one that was actually tapped (defaults to USA for older tap paths).
+                let alt = Airways.altitudes(of: o.ident, area: o.airwayArea ?? "USA")
                 if let lo = alt.meaLow {
                     // MEA varies by segment — show the coded range across the whole airway.
                     KV("Minimum enroute alt", alt.meaHigh.map { hi in

@@ -124,7 +124,10 @@ struct AirportsTabView: View {
                         // without leaving the directory; the row itself still opens the plates binder.
                         Button {
                             Haptics.impact(.light)
-                            if let c = AirportCoordinates.coordinate(icao: ident) {
+                            // Resolve against the FULL nav database (AirportCoordinates only carries ~78
+                            // major fields, so it left the button dead for almost every airport — H4).
+                            let near = model.stratuxGPS?.coordinate ?? model.deviceLocation.coord
+                            if let c = NavDatabase.resolve(ident, near: near) {
                                 model.noteAirportViewed(ident)
                                 infoProbe = MapProbeResult(id: ident,
                                                            objects: [IdentifiedObject(kind: .airport, ident: ident,
