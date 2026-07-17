@@ -32,6 +32,22 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 61, version: "1.0", headline: "Approach fixes, FAA chart symbols, and fuller TFR info",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "triangle",
+                    title: "Approach fixes on the map",
+                    detail: "Zoom in and you'll now see named approach and terminal fixes (from every instrument procedure), not just enroute GPS fixes — the nearest ones to what you're looking at."),
+                WhatsNewHighlight(
+                    icon: "hexagon",
+                    title: "Real FAA chart symbols",
+                    detail: "Navaids are drawn the way they look on a sectional: a VOR is a blue hexagon, a VORTAC has its corner spurs, a VOR-DME sits in a box, and an NDB is a magenta stippled circle. TACAN- and DME-only stations no longer borrow the VOR shape."),
+                WhatsNewHighlight(
+                    icon: "exclamationmark.triangle",
+                    title: "Fuller TFR and airspace info",
+                    detail: "The TFR card now links straight to the official FAA NOTAM for the full text, and tapping a Restricted, Prohibited, Warning, Alert, or MOA area explains what it is and reminds you to check NOTAMs."),
+            ]),
+        ReleaseNote(
             build: 60, version: "1.0", headline: "TAFs, tap-a-TFR details, clearer map, and a battery meter",
             highlights: [
                 WhatsNewHighlight(
