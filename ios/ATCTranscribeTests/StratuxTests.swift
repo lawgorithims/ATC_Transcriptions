@@ -62,13 +62,14 @@ final class StratuxTests: XCTestCase {
     func testSituationDecodesGPS() throws {
         let json = """
         { "GPSLatitude": 42.3656, "GPSLongitude": -71.0096, "GPSFixQuality": 2, "GPSSatellites": 11,
-          "GPSAltitudeMSL": 230.0, "GPSGroundSpeed": 0.0, "GPSTrueCourse": 0.0 }
+          "GPSAltitudeMSL": 230.0, "GPSGroundSpeed": 0.0, "GPSTrueCourse": 145.0 }
         """.data(using: .utf8)!
         let gps = try JSONDecoder().decode(StratuxSituation.self, from: json).gps
         XCTAssertTrue(gps.hasFix)
         XCTAssertEqual(gps.fixQuality, 2)
         XCTAssertEqual(gps.fixLabel, "WAAS")
         XCTAssertEqual(gps.satellites, 11)
+        XCTAssertEqual(gps.trackDeg ?? -1, 145.0, accuracy: 0.01)   // GPSTrueCourse now flows into the readout
         XCTAssertEqual(gps.coordinate?.lat ?? 0, 42.3656, accuracy: 0.0001)
         XCTAssertEqual(gps.coordinate?.lon ?? 0, -71.0096, accuracy: 0.0001)
     }

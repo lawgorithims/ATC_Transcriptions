@@ -344,6 +344,10 @@ final class AppModel: ObservableObject {
     /// Continuous device-GPS ownship (for a Stratux-less iPad) — the plate viewer starts/stops it and
     /// observes it directly. Preferred fallback after a valid Stratux fix (see `ownshipCoord`).
     let deviceLocation = DeviceLocation()
+    /// Shared frame counter the MapLibre map bumps per rendered frame; the battery sampler deltas it into
+    /// map fps (to tell an idle map compositing continuously from a paused one). NOT @Published — reading it
+    /// per frame must never re-render a view.
+    let renderMeter = MapRenderMeter()
     private var deviceGPSPausedForBackground = false   // GPS was running when we backgrounded → resume on foreground
     /// Auto-download the filed route's plates when a plan is entered (the "pack your flight bag" flow).
     @Published var autoPackFlightBag = (UserDefaults.standard.object(forKey: "atc.autoPackBag") as? Bool ?? true) {
@@ -1132,6 +1136,20 @@ final class AppModel: ObservableObject {
         if deviceLocation.coord != nil { parts.append("gps") }
         if thermalSerious { parts.append("HOT") }
         return parts.joined(separator: " ")
+    }
+
+    /// The full per-sample battery snapshot — attributes the drain to subsystems (map engine + render count →
+    /// fps, transcription/ANE, pollers, GPS) so the diagnostics can isolate "map redrawing continuously" from
+    /// "Whisper inference" instead of a single opaque %/hr.
+    var batterySnapshot: BatteryActivitySnapshot {
+        BatteryActivitySnapshot(
+            tag: batteryActivityTag,
+            mapEngine: (useMapLibreMap && !mapLibreRenderFailed) ? "maplibre" : "mk",
+            transcribing: transcribing,
+            renderCount: renderMeter.count,
+            pollersActive: scenePhaseActive && !thermalSerious,
+            gpsActive: deviceLocation.coord != nil,
+            stratux: stratuxStatus == .connected)
     }
 
     // MARK: live wiring

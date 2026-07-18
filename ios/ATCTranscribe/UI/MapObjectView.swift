@@ -421,6 +421,10 @@ struct MapObjectView: View {
                 }
             }
         }
+        // Kick the fetch from THIS content-bearing section — it always renders ≥1 row, so onAppear fires
+        // reliably. (Was on the empty footer Section below, whose onAppear never fired → the TAF tab was
+        // stuck on the "Fetching…" spinner forever.) .task(id:) also re-fetches if the airport ident changes.
+        .task(id: o.ident) { tafs.ensure([o.ident]) }
         if let periods = tafs.taf(o.ident)?.periods, !periods.isEmpty {
             Section("Forecast periods") {
                 ForEach(Array(periods.enumerated()), id: \.offset) { _, per in
@@ -438,7 +442,6 @@ struct MapObjectView: View {
             Text("TAF from aviationweather.gov — a forecast for the airport's immediate vicinity, valid 24–30 h. Not a substitute for an official briefing.")
                 .font(.caption2).foregroundStyle(p.textDim)
         }
-        .onAppear { tafs.ensure([o.ident]) }
     }
 
     /// NWS 7-day outlook — day/night periods with temp, wind, and the short forecast (its own sub-tab).

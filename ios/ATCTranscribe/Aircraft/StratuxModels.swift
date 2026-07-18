@@ -94,7 +94,8 @@ struct StratuxSituation: Decodable {
             return Coord(lat: lat, lon: lon)
         }()
         return StratuxGPS(coordinate: coord, fixQuality: fixQuality ?? 0,
-                          satellites: satellites ?? 0, altMSLft: altMSLft, groundSpeedKt: groundSpeedKt)
+                          satellites: satellites ?? 0, altMSLft: altMSLft, groundSpeedKt: groundSpeedKt,
+                          trackDeg: trueCourse)
     }
 }
 
@@ -105,6 +106,7 @@ struct StratuxGPS: Equatable, Sendable {
     var satellites: Int
     var altMSLft: Double?
     var groundSpeedKt: Double?
+    var trackDeg: Double?          // GPS true course/track (° true), when the receiver reports one
 
     /// True once the receiver has a usable position fix.
     var hasFix: Bool { fixQuality > 0 && coordinate != nil }

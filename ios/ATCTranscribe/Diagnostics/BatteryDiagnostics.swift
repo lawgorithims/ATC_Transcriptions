@@ -16,6 +16,20 @@ import MetricKit
 /// Everything is inert until the user enables collection (Settings → General), so the tool never costs
 /// battery unless we're deliberately measuring. Device-only for real numbers (the Simulator has no
 /// battery and never delivers MetricKit payloads).
+/// Everything the sampler needs to know about "what's running right now", assembled by AppModel in one
+/// place. A plain value so BatteryDiagnostics stays decoupled from AppModel.
+struct BatteryActivitySnapshot {
+    let tag: String            // the human activity string (xcribe / idle, map:layer, stratux, gps, HOT)
+    let mapEngine: String      // "maplibre" | "mk" | "-"
+    let transcribing: Bool     // a Whisper decode is in flight this instant
+    let renderCount: Int       // MapRenderMeter absolute frame count (the sampler deltas it into fps)
+    let pollersActive: Bool
+    let gpsActive: Bool
+    let stratux: Bool
+    static let placeholder = BatteryActivitySnapshot(tag: "—", mapEngine: "-", transcribing: false,
+                                                     renderCount: 0, pollersActive: false, gpsActive: false, stratux: false)
+}
+
 @MainActor final class BatteryDiagnostics: NSObject, ObservableObject {
 
     struct Sample: Codable, Identifiable, Equatable {
@@ -24,10 +38,16 @@ import MetricKit
         let charging: Bool
         let thermal: Int             // ProcessInfo.ThermalState.rawValue (0 nominal … 3 critical)
         let activity: String         // what the app was doing at this instant
+        // GRANULAR attribution (build 65): averaged over the sample interval so we can tell WHAT drew power.
+        let cpu: Double              // avg process CPU% (percent of one core; >100 = multi-core) over the interval
+        let mapFPS: Double           // MapLibre frames/sec over the interval — ~0 idle vs ~30 = continuous redraw
+        let whisperPct: Double       // % of the interval a Whisper transcription was in flight (ANE/CPU proxy)
+        let engine: String           // "maplibre" | "mk" | "-"
         var id: Date { at }
         // NB: no per-sample discharge rate — batteryLevel is quantized (5% steps), so a one-minute delta
         // yields nonsense spikes. The rate is derived over a longer contiguous window (`dischargeRate`).
     }
+
 
     @Published private(set) var samples: [Sample] = []
     @Published private(set) var metricSummary: String?     // latest MetricKit payload, human-readable
@@ -38,14 +58,20 @@ import MetricKit
         }
     }
 
-    /// Injected by the app: a compact one-line description of what's running right now (transcription
-    /// state, map layer, Stratux, GPS). Kept as a closure so this stays decoupled from `AppModel`.
-    var activityProvider: (() -> String)?
+    /// Injected by the app: the full activity snapshot for right now. Kept as a closure so this store stays
+    /// decoupled from `AppModel`.
+    var snapshotProvider: (() -> BatteryActivitySnapshot)?
 
     private static let enabledKey = "atc.batteryDiagnostics"
     private static let maxSamples = 720          // ~12 h at one sample/min — bounded ring
+    private static let tickSeconds: UInt64 = 5   // inner accumulation cadence (12 ticks per 60 s sample)
     private var samplerTask: Task<Void, Never>?
     private var foregrounded = true
+    // Inner-interval accumulators (reset each 60 s sample): CPU%, Whisper-busy ticks, and the render count at
+    // the last sample so map fps = Δframes / elapsed.
+    private var cpuSum = 0.0, tickCount = 0, whisperTicks = 0
+    private var lastRenderCount = 0
+    private var lastSampleAt = Date()
 
     override init() {
         super.init()
@@ -72,11 +98,13 @@ import MetricKit
         if let r = dischargeRate { lines.append(String(format: "Recent discharge: %.1f %%/hr", r)) }
         lines.append("")
         if let m = metricSummary { lines.append("MetricKit (latest daily payload):"); lines.append(m); lines.append("") }
-        lines.append("time,level%,charging,thermal,activity")
+        lines.append("time,level%,charging,thermal,cpu%,mapfps,whisper%,engine,activity")
         let df = ISO8601DateFormatter()
         for s in samples.suffix(Self.maxSamples) {                            // bounded (rule 2)
             let lvl = s.level >= 0 ? String(format: "%.0f", s.level * 100) : "n/a"
-            lines.append("\(df.string(from: s.at)),\(lvl),\(s.charging),\(s.thermal),\(s.activity)")
+            lines.append("\(df.string(from: s.at)),\(lvl),\(s.charging),\(s.thermal)," +
+                         "\(String(format: "%.0f", s.cpu)),\(String(format: "%.1f", s.mapFPS))," +
+                         "\(String(format: "%.0f", s.whisperPct)),\(s.engine),\(s.activity)")
         }
         return lines.joined(separator: "\n")
     }
@@ -86,10 +114,15 @@ import MetricKit
     private func startSampling() {
         guard samplerTask == nil, foregrounded else { return }
         UIDevice.current.isBatteryMonitoringEnabled = true
+        resetAccumulators(renderCount: snapshotProvider?().renderCount ?? 0)
         samplerTask = Task { [weak self] in
-            while !Task.isCancelled {
-                await self?.takeSample()
-                try? await Task.sleep(nanoseconds: 60_000_000_000)   // 60 s
+            var elapsed: UInt64 = 0
+            while !Task.isCancelled {                                 // bounded by cancellation (rule 2)
+                try? await Task.sleep(nanoseconds: Self.tickSeconds * 1_000_000_000)
+                guard let self else { return }
+                await self.accumulate()
+                elapsed += Self.tickSeconds
+                if elapsed >= 60 { elapsed = 0; await self.takeSample() }   // one persisted sample per 60 s
             }
         }
     }
@@ -100,17 +133,35 @@ import MetricKit
         UIDevice.current.isBatteryMonitoringEnabled = false
     }
 
+    private func resetAccumulators(renderCount: Int) {
+        cpuSum = 0; tickCount = 0; whisperTicks = 0; lastRenderCount = renderCount; lastSampleAt = Date()
+    }
+
+    /// One inner tick (~5 s): read CPU% + whether Whisper is decoding, into the interval accumulators.
+    private func accumulate() {
+        cpuSum += CPUSampler.processUsagePercent() ?? 0
+        tickCount += 1
+        if snapshotProvider?().transcribing == true { whisperTicks += 1 }
+    }
+
     private func takeSample() {
         let device = UIDevice.current
         let level = Double(device.batteryLevel)          // -1 when monitoring off / Simulator
         let charging = device.batteryState == .charging || device.batteryState == .full
         let thermal = ProcessInfo.processInfo.thermalState.rawValue
-        let activity = activityProvider?() ?? "—"
+        let snap = snapshotProvider?() ?? .placeholder
+        let elapsed = max(Date().timeIntervalSince(lastSampleAt), 1)
+        let cpu = tickCount > 0 ? cpuSum / Double(tickCount) : 0
+        let mapFPS = max(Double(snap.renderCount - lastRenderCount), 0) / elapsed
+        let whisperPct = tickCount > 0 ? 100 * Double(whisperTicks) / Double(tickCount) : 0
         assert(level == -1 || (level >= 0 && level <= 1), "battery level out of range: \(level)")
         assert((0...3).contains(thermal), "unexpected thermal rawValue: \(thermal)")
-        samples.append(Sample(at: Date(), level: level, charging: charging, thermal: thermal, activity: activity))
+        assert(mapFPS >= 0 && (0...100).contains(whisperPct), "granular metric out of range")
+        samples.append(Sample(at: Date(), level: level, charging: charging, thermal: thermal,
+                              activity: snap.tag, cpu: cpu, mapFPS: mapFPS, whisperPct: whisperPct, engine: snap.mapEngine))
         if samples.count > Self.maxSamples { samples.removeFirst(samples.count - Self.maxSamples) }
         assert(samples.count <= Self.maxSamples, "sample ring overflow")
+        resetAccumulators(renderCount: snap.renderCount)
         persist()
     }
 
@@ -141,7 +192,7 @@ import MetricKit
     private var fileURL: URL? {
         (try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
                                       appropriateFor: nil, create: true))?
-            .appendingPathComponent("battery_diagnostics.json")
+            .appendingPathComponent("battery_diagnostics_v2.json")   // v2: added cpu/mapFPS/whisperPct/engine
     }
     private func persist() {
         guard let url = fileURL, let d = try? JSONEncoder().encode(samples) else { return }

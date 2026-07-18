@@ -50,7 +50,7 @@ struct ATCTranscribeApp: App {
                 .environmentObject(battery)             // battery/energy diagnostics
                 .onAppear {
                     // Tag each battery sample with what the app is doing (transcription/map/GPS/Stratux).
-                    battery.activityProvider = { [weak model] in model?.batteryActivityTag ?? "—" }
+                    battery.snapshotProvider = { [weak model] in model?.batterySnapshot ?? .placeholder }
                 }
                 .onChange(of: scenePhase) { _, phase in battery.setForegrounded(phase == .active) }
                 // "Open in CommSight" from ForeFlight's share sheet (a Garmin .fpl) imports the route.

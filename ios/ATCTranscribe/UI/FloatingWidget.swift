@@ -5,7 +5,7 @@ import SwiftUI
 /// Every panel that can float over the home map. Superset of `SidebarWidget` (the diagnostic/info
 /// cards) plus the operational panels that used to be top bars or the always-on transcript.
 enum FloatingWidgetKind: String, Codable, CaseIterable, Identifiable {
-    case transcript, flightPlan, objectInfo, proofOfLife, stratux, host, latency, diagnostics
+    case transcript, flightPlan, objectInfo, proofOfLife, stratux, host, latency, diagnostics, gps
     var id: String { rawValue }
 
     var title: String {
@@ -18,6 +18,7 @@ enum FloatingWidgetKind: String, Codable, CaseIterable, Identifiable {
         case .host:        return "Host"
         case .latency:     return "Latency"
         case .diagnostics: return "Diagnostics"
+        case .gps:         return "GPS"
         }
     }
 
@@ -31,6 +32,7 @@ enum FloatingWidgetKind: String, Codable, CaseIterable, Identifiable {
         case .host:        return "cpu"
         case .latency:     return "speedometer"
         case .diagnostics: return "gauge.with.dots.needle.bottom.50percent"
+        case .gps:         return "location.north.line.fill"
         }
     }
 
@@ -97,7 +99,21 @@ struct WidgetLayout: Codable, Equatable {
               !layout.items.isEmpty else { return nil }
         layout.items.removeAll { $0.kind.retired }   // flight plan is a strip now, not a card
         guard !layout.items.isEmpty else { return nil }
+        layout.mergeNewKinds()                        // back-fill widget kinds added since this layout was saved
         return layout
+    }
+
+    /// Forward-migration: append any default widget frame whose kind isn't already in a saved layout (and
+    /// isn't retired), so a new widget (e.g. .gps) shows up in the Widgets menu for existing users instead
+    /// of being invisible forever. Bounded loop over the fixed default set; >=2 assertions.
+    mutating func mergeNewKinds() {
+        let present = Set(items.map(\.kind))
+        let defaults = Self.defaults().items
+        assert(defaults.count <= 32, "defaults set unexpectedly large")
+        for frame in defaults where !present.contains(frame.kind) && !frame.kind.retired {
+            items.append(frame)
+        }
+        assert(items.count <= 32, "widget layout unexpectedly large after merge")
     }
 
     func save() {
@@ -119,6 +135,7 @@ struct WidgetLayout: Codable, Equatable {
             WidgetFrame(kind: .host,        anchor: .topTrailing,   offset: CGSize(width: 0, height: 0.28), size: CGSize(width: 260, height: 140), opacity: 0.90, visible: false, pinned: false, z: 5),
             WidgetFrame(kind: .latency,     anchor: .center,        offset: .zero, size: CGSize(width: 300, height: 180), opacity: 0.90, visible: false, pinned: false, z: 7),
             WidgetFrame(kind: .diagnostics, anchor: .center,        offset: CGSize(width: 0, height: 0.2), size: CGSize(width: 280, height: 170), opacity: 0.90, visible: false, pinned: false, z: 8),
+            WidgetFrame(kind: .gps,         anchor: .topLeading,    offset: CGSize(width: 0, height: 0.28), size: CGSize(width: 250, height: 156), opacity: 0.90, visible: false, pinned: false, z: 2),
         ])
     }
 
