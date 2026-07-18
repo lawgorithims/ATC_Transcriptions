@@ -521,6 +521,17 @@ final class AppModel: ObservableObject {
     @Published var showAirways = (UserDefaults.standard.object(forKey: "atc.map.airways") as? Bool) ?? true {
         didSet { UserDefaults.standard.set(showAirways, forKey: "atc.map.airways") }
     }
+    /// Map ENGINE selector: the new MapLibre GPU/globe renderer (default) vs the classic MKMapView chart.
+    /// Persisted. Default ON = MapLibre is the primary Map-tab map; flipping OFF falls back to the fully
+    /// featured MKMapView map (a one-tap safety net while MapLibre's on-device behaviour is being proven +
+    /// the A/B battery lever). Only consulted in a MapLibre-linked build (MapHostView `#if canImport`).
+    @Published var useMapLibreMap = (UserDefaults.standard.object(forKey: "atc.map.engine.maplibre") as? Bool) ?? true {
+        didSet { UserDefaults.standard.set(useMapLibreMap, forKey: "atc.map.engine.maplibre"); mapLibreRenderFailed = false }
+    }
+    /// SESSION-ONLY (not persisted): set when the MapLibre map draws zero frames (the MLNMapView blank-until-
+    /// scene-refresh condition) so the Map tab falls back to the classic map for the rest of this launch — the
+    /// pilot is never left with a blank chart. Cleared on relaunch (retries MapLibre) or on an explicit toggle.
+    @Published var mapLibreRenderFailed = false
     @Published var showWxRadar = UserDefaults.standard.bool(forKey: "atc.map.wxRadar") {   // stub overlay for now
         didSet { UserDefaults.standard.set(showWxRadar, forKey: "atc.map.wxRadar") }
     }

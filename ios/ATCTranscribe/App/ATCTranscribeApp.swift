@@ -13,12 +13,12 @@ struct ATCTranscribeApp: App {
     @StateObject private var battery = BatteryDiagnostics()   // opt-in on-device energy telemetry
     @Environment(\.scenePhase) private var scenePhase
 
-    /// EXPERIMENTAL (branch experimental/maplibre-globe-prototype — DO NOT MERGE): show the MapLibre globe
-    /// spike instead of the app, behind a flag so normal use is untouched. Enable with the `--maplibre`
-    /// launch arg (Xcode scheme) or by setting the `atc.experimentalMapLibreGlobe` UserDefault.
+    /// The MapLibre map is now the app's PRIMARY Map-tab engine (toggle: Settings → General → Map engine),
+    /// so the old full-screen standalone globe screen is a debug-only harness reachable ONLY via the explicit
+    /// `--maplibre` launch arg. The former `atc.experimentalMapLibreGlobe` UserDefault trigger is retired so a
+    /// value left over from an earlier test can't hijack the whole app instead of showing the tab UI.
     private var showMapLibrePrototype: Bool {
         ProcessInfo.processInfo.arguments.contains("--maplibre")
-            || UserDefaults.standard.bool(forKey: "atc.experimentalMapLibreGlobe")
     }
 
     var body: some Scene {

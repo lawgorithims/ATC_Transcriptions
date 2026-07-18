@@ -65,6 +65,7 @@ targets:
           - "Resources/airports"
           - "Resources/nav"
           - "Resources/glyphs"
+          - "Resources/basemap"
       - path: ATCTranscribe/Resources/Models      # `small` Whisper model + `llm/<model>.gguf`,
         type: folder                              #   placed by Tools/testflight.sh + fetch_llm_model.sh
       - path: ATCTranscribe/Resources/DemoClips    # 5 known-good clips → offline Replay demo
@@ -79,6 +80,10 @@ targets:
         type: folder
       # EXPERIMENTAL (MapLibre migration): SDF glyph PBFs (Arial Bold) served to MapLibre for label text.
       - path: ATCTranscribe/Resources/glyphs
+        type: folder
+      # MapLibre migration: OFFLINE vector land base (Natural Earth 1:50m land, public domain) so the map
+      # renders coastlines/land-vs-water with NO network — replaces the old online OSM backdrop.
+      - path: ATCTranscribe/Resources/basemap
         type: folder
     settings:
       base:

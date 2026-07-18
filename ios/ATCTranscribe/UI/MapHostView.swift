@@ -47,37 +47,7 @@ struct MapHostView: View {
     var body: some View {
         Group {
             if live {
-                ChartMapView(layer: model.chartLayer, readers: store.readers, route: route,
-                             procedure: model.previewedProcedureLegs,   // resolved once off-main in AppModel (L8)
-                             showAirspace: model.showAirspace, showNearby: model.showNearby,
-                             showAirways: model.showAirways,
-                             initialCenter: model.stratuxGPS?.coordinate ?? deviceCoord,
-                             ownship: model.stratuxGPS?.coordinate ?? deviceCoord,
-                             ownshipCourse: model.stratuxGPS?.coordinate == nil ? deviceCourse : nil,
-                             onVisibleRegion: { rect in
-                                 // Remember where the user settled so a thermal rebuild restores it (M7);
-                                 // the settle hook is already debounced (0.4 s) in the coordinator.
-                                 model.lastMapCamera = SavedMapCamera(rect: rect, now: Date())
-                                 Task { await store.ensureVisible(rect, layer: model.chartLayer) }
-                             },
-                             onTapObjects: { objs in
-                                 guard !objs.isEmpty else { return }
-                                 Haptics.impact(.light)
-                                 widgets.mapProbe = MapProbeResult(id: UUID().uuidString, objects: objs)
-                             },
-                             focus: model.mapFocus,
-                             restoreCamera: model.lastMapCamera,
-                             plateOverlay: model.plateOverlay,
-                             onPlateAnchors: { pts in
-                                 // Most emissions arrive from inside updateUIView (a view-update
-                                 // context) where SwiftUI DISCARDS state writes — defer a tick, and
-                                 // only publish real changes so a static map doesn't re-render.
-                                 let mapped = pts.map { PlateAnchors(tl: $0.0, tr: $0.1) }
-                                 Task { @MainActor in
-                                     if plateAnchors != mapped { plateAnchors = mapped }
-                                 }
-                             },
-                             model: model)
+                mapContent
             } else {
                 // Not live only when backgrounded or the full-screen route map is covering us — both
                 // transient, nothing to show. (The map is never intentionally blanked anymore.)
@@ -119,6 +89,91 @@ struct MapHostView: View {
             Task { await store.setLayer(new, routeRects: ChartGeo.routeRects(route)) }
         }
     }
+
+    /// The map engine: MapLibre (GPU/globe, the default) or the classic MKMapView chart. Both slot into the
+    /// same chrome — every top-bar/menu/widget interaction reaches the map only via `model` + `widgets.mapProbe`.
+    @ViewBuilder private var mapContent: some View {
+        #if canImport(MapLibre)
+        if model.useMapLibreMap && !model.mapLibreRenderFailed { mapLibreMap } else { chartMapView }
+        #else
+        chartMapView
+        #endif
+    }
+
+    private var chartMapView: some View {
+        ChartMapView(layer: model.chartLayer, readers: store.readers, route: route,
+                     procedure: model.previewedProcedureLegs,   // resolved once off-main in AppModel (L8)
+                     showAirspace: model.showAirspace, showNearby: model.showNearby,
+                     showAirways: model.showAirways,
+                     initialCenter: model.stratuxGPS?.coordinate ?? deviceCoord,
+                     ownship: model.stratuxGPS?.coordinate ?? deviceCoord,
+                     ownshipCourse: model.stratuxGPS?.coordinate == nil ? deviceCourse : nil,
+                     onVisibleRegion: { rect in
+                         // Remember where the user settled so a thermal rebuild restores it (M7);
+                         // the settle hook is already debounced (0.4 s) in the coordinator.
+                         model.lastMapCamera = SavedMapCamera(rect: rect, now: Date())
+                         Task { await store.ensureVisible(rect, layer: model.chartLayer) }
+                     },
+                     onTapObjects: { objs in
+                         guard !objs.isEmpty else { return }
+                         Haptics.impact(.light)
+                         widgets.mapProbe = MapProbeResult(id: UUID().uuidString, objects: objs)
+                     },
+                     focus: model.mapFocus,
+                     restoreCamera: model.lastMapCamera,
+                     plateOverlay: model.plateOverlay,
+                     onPlateAnchors: { pts in
+                         let mapped = pts.map { PlateAnchors(tl: $0.0, tr: $0.1) }
+                         Task { @MainActor in
+                             if plateAnchors != mapped { plateAnchors = mapped }
+                         }
+                     },
+                     model: model)
+    }
+
+    #if canImport(MapLibre)
+    /// The MapLibre GPU/globe map fed from the SAME MapHostView state as ChartMapView. Taps route to
+    /// `widgets.mapProbe` (NOT a private sheet), so the existing object-card / side-panel flow keeps working.
+    /// The single-GPS-owner ownship invariant is preserved: this reuses the shared deviceCoord/deviceCourse
+    /// (started + bridged once in body's onAppear/onReceive), and MapLibre draws its own ownship (no
+    /// MLNMapView user-location dot / second CLLocationManager).
+    private var mapLibreMap: some View {
+        MapLibreChartView(
+            store: store,
+            layer: model.chartLayer,
+            routeCoords: route.map { CLLocationCoordinate2D(latitude: $0.coord.lat, longitude: $0.coord.lon) },
+            ownship: (model.stratuxGPS?.coordinate ?? deviceCoord).map {
+                CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon)
+            },
+            ownshipCourse: model.stratuxGPS?.coordinate == nil ? deviceCourse : nil,
+            traffic: model.aircraft,
+            tfrs: model.tfrs,
+            showTFRs: model.showTFRs,
+            showAirspace: model.showAirspace,
+            showNearby: model.showNearby,
+            showAirways: model.showAirways,
+            plateOverlay: model.plateOverlay,
+            routeIdents: Set(route.map { $0.ident }),
+            initialCenter: model.stratuxGPS?.coordinate ?? deviceCoord,
+            focus: model.mapFocus,
+            onTapObjects: { objs in
+                guard !objs.isEmpty else { return }
+                Haptics.impact(.light)
+                widgets.mapProbe = MapProbeResult(id: UUID().uuidString, objects: objs)
+            },
+            onPlateAnchors: { pts in
+                let mapped = pts.map { PlateAnchors(tl: $0.0, tr: $0.1) }
+                Task { @MainActor in
+                    if plateAnchors != mapped { plateAnchors = mapped }
+                }
+            },
+            onRenderStalled: {
+                // The MapLibre map produced no frames (MLNMapView blank-until-scene-refresh) — fall back to the
+                // classic map for this session so the pilot always has a working chart.
+                Task { @MainActor in model.mapLibreRenderFailed = true }
+            })
+    }
+    #endif
 
     private func buildRoute() async {
         // Warm the nav tables off-main so the map's first paint never blocks on a decode — NavMeta too,
