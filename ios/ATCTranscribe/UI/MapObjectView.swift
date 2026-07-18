@@ -89,7 +89,7 @@ struct MapObjectView: View {
             Button("Go Direct", role: .destructive) { if let o = confirmDirect { model.directTo(o.ident); finish() } }
             Button("Cancel", role: .cancel) { confirmDirect = nil }
         } message: {
-            Text("Sets \(confirmDirect?.ident ?? "") as your destination and clears intermediate waypoints. Present-position sequencing comes later.")
+            Text("Draws a direct course from your present position to \(confirmDirect?.ident ?? "") and clears intermediate waypoints.")
         }
         // The full approach/departure plate opens over the whole screen (its own "tab"), with the
         // frequencies, altitudes, minimums, and profile the coded waypoints can't show.

@@ -1873,7 +1873,15 @@ final class AppModel: ObservableObject {
     func insertInRoute(_ ident: String, at coord: Coord, resolved: [ResolvedLeg]) {
         editPlan { $0.insertWaypointInOrder(ident, at: coord, resolved: resolved) }
     }
-    func directTo(_ ident: String) { editPlan { $0.directTo(ident) } }
+    /// The aircraft's present position for route anchoring — the live Stratux fix when valid, else the device
+    /// GPS, mirroring the ownship the map marker draws (MapHostView). nil until a fix exists.
+    var presentPosition: Coord? {
+        if let s = stratuxGPS, s.hasFix { return s.coordinate }
+        return deviceLocation.coord
+    }
+    /// Direct-to originates at PRESENT POSITION (ForeFlight parity), falling back to the filed departure if
+    /// there's no GPS fix. Both callers (map "Direct-To" + voice "cleared direct") route through here.
+    func directTo(_ ident: String) { editPlan { $0.directTo(ident, from: presentPosition) } }
     func setDeparture(_ ident: String) { editPlan { $0.setDeparture(ident) } }
     func setDestination(_ ident: String) { editPlan { $0.setDestination(ident) } }
     func removeFromRoute(_ ident: String) { editPlan { $0.removeWaypoint(ident) } }

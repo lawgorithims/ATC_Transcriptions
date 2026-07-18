@@ -32,12 +32,28 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 64, version: "1.0", headline: "Map fixes from your feedback",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "bolt.badge.checkmark",
+                    title: "Cooler and lighter on the battery",
+                    detail: "The map was quietly redrawing about once a second even parked, from GPS jitter nudging the ownship and traffic icons. It now only redraws when you actually move, and the renderer is capped to a battery-friendly frame rate — so the map idles closer to zero GPU. (Heads-up: live transcription itself is a heavy draw, so for a clean battery read, compare with transcription stopped.)"),
+                WhatsNewHighlight(
+                    icon: "location.north.line.fill",
+                    title: "\"Direct to\" now starts at your position",
+                    detail: "Sending a Direct-To (from the map or an ATC \"cleared direct\" call) now draws the course from your present GPS position to the fix — not from your flight plan's first waypoint. With no GPS fix it keeps the filed departure."),
+                WhatsNewHighlight(
+                    icon: "square.and.arrow.down.on.square",
+                    title: "Charts load reliably after switching layers",
+                    detail: "Switching to IFR-low/high over a slow connection could leave the chart blank until you panned. Freshly-downloaded charts now appear as soon as they finish, and a small pill tells you when charts are loading, need a zoom-in, or failed to download."),
+            ]),
+        ReleaseNote(
             build: 63, version: "1.0", headline: "A new, fully-offline chart engine",
             highlights: [
                 WhatsNewHighlight(
-                    icon: "globe.americas.fill",
+                    icon: "map.fill",
                     title: "A faster, offline-first map",
-                    detail: "The moving map now runs on a new GPU chart engine (MapLibre) built to sip power and draw a true globe. It renders your FAA charts, route, airspace, airways, navaids, traffic, TFRs and approach plates entirely on-device — with NO internet needed. Even outside your downloaded charts you'll see a bundled world land-and-coastline base instead of a blank screen. This is the reason for the migration; please fly with it and tell us how the battery and warmth compare."),
+                    detail: "The moving map now runs on a new GPU chart engine (MapLibre) built to sip power. It renders your FAA charts, route, airspace, airways, navaids, traffic, TFRs and approach plates entirely on-device — with NO internet needed. Even outside your downloaded charts you'll see a bundled world land-and-coastline base instead of a blank screen. This is the reason for the migration; please fly with it and tell us how the battery and warmth compare."),
                 WhatsNewHighlight(
                     icon: "arrow.triangle.2.circlepath",
                     title: "The classic map is one tap away",

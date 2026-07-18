@@ -83,6 +83,7 @@ struct MapHostView: View {
                 }
             }
         }
+        .overlay(alignment: .top) { chartStatusPill }
         .task { await buildRoute() }
         .onChange(of: model.flightPlan) { _, _ in Task { await buildRoute() } }      // edits redraw the route
         .onChange(of: model.chartLayer) { _, new in
@@ -90,7 +91,7 @@ struct MapHostView: View {
         }
     }
 
-    /// The map engine: MapLibre (GPU/globe, the default) or the classic MKMapView chart. Both slot into the
+    /// The map engine: MapLibre (GPU chart, the default) or the classic MKMapView chart. Both slot into the
     /// same chrome — every top-bar/menu/widget interaction reaches the map only via `model` + `widgets.mapProbe`.
     @ViewBuilder private var mapContent: some View {
         #if canImport(MapLibre)
@@ -132,7 +133,7 @@ struct MapHostView: View {
     }
 
     #if canImport(MapLibre)
-    /// The MapLibre GPU/globe map fed from the SAME MapHostView state as ChartMapView. Taps route to
+    /// The MapLibre GPU map fed from the SAME MapHostView state as ChartMapView. Taps route to
     /// `widgets.mapProbe` (NOT a private sheet), so the existing object-card / side-panel flow keeps working.
     /// The single-GPS-owner ownship invariant is preserved: this reuses the shared deviceCoord/deviceCourse
     /// (started + bridged once in body's onAppear/onReceive), and MapLibre draws its own ownship (no
@@ -180,6 +181,38 @@ struct MapHostView: View {
             })
     }
     #endif
+
+    /// A small status pill when the FAA chart can't draw yet (download in progress / failed / zoomed out),
+    /// so a slow or absent pack reads as an ACTIONABLE state instead of a silent blank (the build-63 IFR-low
+    /// confusion). Engine-agnostic — `store.phase` is set by ChartStore regardless of MapLibre vs MKMapView.
+    @ViewBuilder private var chartStatusPill: some View {
+        if live {
+            switch store.phase {
+            case .loadingCatalog: statusPill("Loading chart index…", "arrow.down.circle", spin: true)
+            case .downloading:    statusPill("Loading charts for this area…", "arrow.down.circle", spin: true)
+            case .zoomOut where model.chartLayer.isRaster:
+                statusPill("Zoom in to load the chart here", "plus.magnifyingglass")
+            case .empty where model.chartLayer.isRaster:
+                statusPill(route.isEmpty ? "Pan and zoom in to load charts" : "No \(model.chartLayer.title) charts here", "map")
+            case .failed:
+                statusPill("Chart download failed — tap to retry", "wifi.exclamationmark")
+                    .onTapGesture { Task { await store.setLayer(model.chartLayer, routeRects: ChartGeo.routeRects(route)) } }
+            default: EmptyView()
+            }
+        }
+    }
+
+    private func statusPill(_ text: String, _ icon: String, spin: Bool = false) -> some View {
+        HStack(spacing: 8) {
+            if spin { ProgressView().controlSize(.small) } else { Image(systemName: icon) }
+            Text(text).font(.caption.weight(.medium))
+        }
+        .padding(.horizontal, 14).padding(.vertical, 8)
+        .background(.ultraThinMaterial, in: Capsule())
+        .foregroundStyle(.primary)
+        .shadow(radius: 4)
+        .padding(.top, 150)   // clear the top chrome (TopBar + input/flight-plan strips)
+    }
 
     private func buildRoute() async {
         // Warm the nav tables off-main so the map's first paint never blocks on a decode — NavMeta too,
