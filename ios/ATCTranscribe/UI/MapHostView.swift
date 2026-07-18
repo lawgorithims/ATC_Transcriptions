@@ -178,7 +178,8 @@ struct MapHostView: View {
                 // Persist the pilot's pan/zoom so a background→foreground remount restores it, and so the
                 // classic-map fallback lands on the same view (M7 camera contract — parity with ChartMapView).
                 model.lastMapCamera = SavedMapCamera(rect: rect, now: Date())
-            })
+            },
+            renderMeter: model.renderMeter)   // battery diagnostics: per-frame counter → map fps
     }
     #endif
 

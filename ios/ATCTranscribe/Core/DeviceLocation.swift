@@ -14,6 +14,7 @@ import CoreLocation
 final class DeviceLocation: NSObject, ObservableObject, CLLocationManagerDelegate {
     @Published private(set) var coord: Coord?
     @Published private(set) var courseDeg: Double?      // true course when moving (>= 0), else nil
+    @Published private(set) var fix: DeviceFix?         // full snapshot (alt/speed/accuracy) for the GPS readout
     private let manager = CLLocationManager()
     private var running = false
     var isRunning: Bool { running }
@@ -49,8 +50,16 @@ final class DeviceLocation: NSObject, ObservableObject, CLLocationManagerDelegat
 
     func locationManager(_ m: CLLocationManager, didUpdateLocations locs: [CLLocation]) {
         guard let l = locs.last, l.horizontalAccuracy >= 0 else { return }   // negative accuracy = invalid
-        coord = Coord(lat: l.coordinate.latitude, lon: l.coordinate.longitude)
+        let c = Coord(lat: l.coordinate.latitude, lon: l.coordinate.longitude)
+        coord = c
         courseDeg = l.course >= 0 ? l.course : nil
+        // Full snapshot for the GPS readout widget (map/plate paths only read coord/courseDeg — unchanged).
+        // CoreLocation invalid sentinels resolved here: speed/course < 0 and verticalAccuracy <= 0 → nil.
+        fix = DeviceFix(coord: c,
+                        altitudeMSLm: l.verticalAccuracy > 0 ? l.altitude : nil,
+                        groundSpeedMps: l.speed >= 0 ? l.speed : nil,
+                        courseDeg: l.course >= 0 ? l.course : nil,
+                        horizontalAccuracyM: l.horizontalAccuracy)
     }
 
     func locationManagerDidChangeAuthorization(_ m: CLLocationManager) {

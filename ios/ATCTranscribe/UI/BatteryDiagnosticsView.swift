@@ -28,6 +28,9 @@ struct BatteryDiagnosticsView: View {
                         if let s = battery.samples.last {
                             KV("Battery", s.level >= 0 ? "\(Int(s.level * 100))%\(s.charging ? " (charging)" : "")" : "n/a (Simulator)")
                             KV("Thermal", Self.thermalLabel(s.thermal))
+                            KV("CPU", String(format: "%.0f%% of a core", s.cpu))
+                            KV("Map", String(format: "%.1f fps%@", s.mapFPS, s.engine == "maplibre" ? "" : " (classic)"))
+                            KV("Whisper", String(format: "%.0f%% of last min", s.whisperPct))
                             KV("Doing", s.activity)
                         } else {
                             Text("No samples yet — enable collection above and leave the app open a couple of minutes.")
@@ -71,6 +74,24 @@ struct BatteryDiagnosticsView: View {
                     }
                 }
 
+                if battery.samples.count >= 3 {
+                    Card(title: "By activity (averages)") {
+                        VStack(alignment: .leading, spacing: 7) {
+                            Text("Isolates the drain: compare CPU (Whisper/ANE) and map fps (idle redraw) across what the app was doing.")
+                                .font(.caption2).foregroundStyle(p.textDim)
+                            ForEach(Self.byActivity(battery.samples), id: \.tag) { row in
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(row.tag).font(.caption2.weight(.semibold)).foregroundStyle(p.text)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                    Text(String(format: "CPU %.0f%% · map %.1f fps · whisper %.0f%% · %d min",
+                                                row.cpu, row.fps, row.whisper, row.count))
+                                        .font(.caption2.monospaced()).foregroundStyle(p.textDim)
+                                }
+                            }
+                        }
+                    }
+                }
+
                 HStack(spacing: 12) {
                     Button {
                         UIPasteboard.general.string = battery.exportText()
@@ -98,6 +119,23 @@ struct BatteryDiagnosticsView: View {
 
     private static func thermalLabel(_ raw: Int) -> String {
         switch raw { case 0: return "Nominal"; case 1: return "Fair"; case 2: return "Serious"; default: return "Critical" }
+    }
+
+    struct ActivityRow { let tag: String; let cpu: Double; let fps: Double; let whisper: Double; let count: Int }
+    /// Average CPU / map-fps / whisper% grouped by the activity tag, busiest groups first. Bounded loops.
+    private static func byActivity(_ samples: [BatteryDiagnostics.Sample]) -> [ActivityRow] {
+        var g: [String: (cpu: Double, fps: Double, whisper: Double, n: Int)] = [:]
+        for s in samples.suffix(720) {                                // bounded by the ring (rule 2)
+            var v = g[s.activity] ?? (0, 0, 0, 0)
+            v.cpu += s.cpu; v.fps += s.mapFPS; v.whisper += s.whisperPct; v.n += 1
+            g[s.activity] = v
+        }
+        assert(g.count <= 720, "activity grouping overflow")
+        let rows = g.map { (k, v) -> ActivityRow in
+            let n = Double(max(v.n, 1))
+            return ActivityRow(tag: k, cpu: v.cpu / n, fps: v.fps / n, whisper: v.whisper / n, count: v.n)
+        }
+        return Array(rows.sorted { $0.count > $1.count }.prefix(12))   // bounded display
     }
     private static let clock: DateFormatter = {
         let f = DateFormatter(); f.dateFormat = "HH:mm"; return f

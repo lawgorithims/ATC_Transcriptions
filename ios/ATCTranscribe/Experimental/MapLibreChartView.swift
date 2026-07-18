@@ -37,6 +37,7 @@ struct MapLibreChartView: UIViewRepresentable {
     var onPlateAnchors: ((CGPoint, CGPoint)?) -> Void = { _ in }   // plate top-corner screen-points → host chrome
     var onRenderStalled: () -> Void = {}                           // map drew 0 frames → host falls back to classic map
     var onVisibleRegion: (MKMapRect) -> Void = { _ in }            // settle → host persists model.lastMapCamera
+    var renderMeter: MapRenderMeter? = nil                         // battery diagnostics: per-frame counter → map fps
 
     func makeCoordinator() -> Coordinator { Coordinator(store: store, routeCoords: routeCoords) }
 
@@ -50,6 +51,7 @@ struct MapLibreChartView: UIViewRepresentable {
         container.backgroundColor = .clear
         context.coordinator.onRenderStalled = onRenderStalled   // set BEFORE mount (watchdog is armed in createMap)
         context.coordinator.onVisibleRegion = onVisibleRegion
+        context.coordinator.renderMeter = renderMeter
         context.coordinator.mount(in: container, initialCenter: initialCenter, routeFirst: routeCoords.first)
         return container
     }
@@ -203,7 +205,10 @@ struct MapLibreChartView: UIViewRepresentable {
         // map so the pilot is NEVER left with a blank chart. renderCount is driven by didFinishRenderingFrame.
         var renderCount = 0
         var onRenderStalled: (() -> Void)?
-        func mapView(_ mapView: MLNMapView, didFinishRenderingFrame fullyRendered: Bool) { renderCount += 1 }
+        var renderMeter: MapRenderMeter?           // shared frame counter for the battery diagnostics (map fps)
+        func mapView(_ mapView: MLNMapView, didFinishRenderingFrame fullyRendered: Bool) {
+            renderCount += 1; renderMeter?.tick()
+        }
 
         /// MapLibre failed to load the map/tiles (e.g. the style URL was never set on a bind failure, or a
         /// fatal tile error). Fall back to the classic map immediately — the zero-frame watchdog can't see a

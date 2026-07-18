@@ -1535,6 +1535,7 @@ struct FloatingCanvas: View {
         case .host:        SidebarWidget.host.card
         case .latency:     SidebarWidget.latency.card
         case .diagnostics: SidebarWidget.diagnostics.card
+        case .gps:         GPSReadoutCard()
         }
     }
 }
