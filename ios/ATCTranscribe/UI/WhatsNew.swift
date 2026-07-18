@@ -32,6 +32,18 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 63, version: "1.0", headline: "A new, fully-offline chart engine",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "globe.americas.fill",
+                    title: "A faster, offline-first map",
+                    detail: "The moving map now runs on a new GPU chart engine (MapLibre) built to sip power and draw a true globe. It renders your FAA charts, route, airspace, airways, navaids, traffic, TFRs and approach plates entirely on-device — with NO internet needed. Even outside your downloaded charts you'll see a bundled world land-and-coastline base instead of a blank screen. This is the reason for the migration; please fly with it and tell us how the battery and warmth compare."),
+                WhatsNewHighlight(
+                    icon: "arrow.triangle.2.circlepath",
+                    title: "The classic map is one tap away",
+                    detail: "The new engine is on by default. If you ever prefer the previous map — or need a feature not yet moved over (the full-screen Route map, weather/hazard overlays, or the CIFP procedure preview line) — flip Settings → General → Map engine off to return to it instantly. And if the new map ever fails to draw, the app falls back to the classic map on its own, so you're never left without a chart."),
+            ]),
+        ReleaseNote(
             build: 62, version: "1.0", headline: "Lighter on the battery, and TAFs in plain English",
             highlights: [
                 WhatsNewHighlight(
