@@ -35,7 +35,7 @@ packages:
     from: "1.0.0"
   # EXPERIMENTAL (branch experimental/maplibre-globe-prototype — DO NOT MERGE): MapLibre Native, the
   # open-source GPU chart renderer we're spiking as a possible MKMapView replacement (globe projection +
-  # on-demand rendering). Prebuilt XCFramework distribution; 6.x supports the globe projection.
+  # on-demand rendering). Prebuilt XCFramework distribution. NOTE: MapLibre Native 6.27 is Web-Mercator only.
   MapLibre:
     url: https://github.com/maplibre/maplibre-gl-native-distribution
     from: "6.0.0"

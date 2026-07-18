@@ -178,13 +178,20 @@ struct FlightPlan: Codable, Equatable {
         return route.count
     }
 
-    /// Proceed direct to `ident`: make it the destination and drop the intermediate enroute waypoints
-    /// (a straight course from the departure). Present-position GPS sequencing is a later phase.
-    mutating func directTo(_ ident: String) {
+    /// Proceed direct to `ident` FROM the aircraft's present position: make `ident` the destination, drop the
+    /// intermediate enroute waypoints, and re-anchor the origin to `origin` (the live GPS fix) so the drawn
+    /// course runs from where the aircraft actually IS — not the filed departure (ForeFlight parity). `origin`
+    /// is stored as a `lat,lon` user-point that RouteResolver + the ForeFlight hand-off already understand.
+    /// `origin == nil` (no fix) keeps the filed departure — the only sensible anchor then.
+    mutating func directTo(_ ident: String, from origin: Coord? = nil) {
         let id = Self.norm(ident)
         guard !id.isEmpty else { return }
+        assert(origin.map { (-90...90).contains($0.lat) && (-180...180).contains($0.lon) } ?? true,
+               "direct-to origin must be a valid coordinate")
+        if let origin { departure = UserPoint.token(origin) }   // re-anchor the origin to present position
         route = []
         destination = id
+        assert(destination == id && route.isEmpty, "direct-to must clear the route onto the target")
     }
 
     mutating func setDeparture(_ ident: String) { departure = Self.norm(ident) }

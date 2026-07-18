@@ -89,11 +89,10 @@ struct MapLibreChartView: UIViewRepresentable {
         private var plateImageKey: String?         // "pdf|inverted" — refresh the raster on a plate SWAP, not just invert
         private var plateCornersCoord: (tl: CLLocationCoordinate2D, tr: CLLocationCoordinate2D)?  // chrome anchors
         private var serverPort: UInt16 = 0         // bound loopback port, delivered async by the tile server
-        private var serverHadReaders = false       // false→true transition forces the initial FAA source re-add
+        private var servedReadersSig: String?      // (layer + sorted mounted packIDs) last handed to the tile server
         private var regionDebounce: DispatchWorkItem?  // coalesces a burst of region-settle events (pan/zoom)
         private var layer: ChartLayer = .sectional     // FAA base layer; drives ensureVisiblePacks
         private var appliedLayer: ChartLayer?          // last-applied — a change re-requests packs for the new layer
-        private var faaLayerServed: ChartLayer?        // which layer the mounted faa source currently serves
         private var showAirspace = true, showNearby = true, showAirways = true   // MapLayersMenu overlay toggles
         private var appliedToggles: String?            // last-applied toggle triple — a change re-runs refreshOverlays
         private var lastFocus: Coord?                  // search-recenter dedupe
@@ -135,8 +134,11 @@ struct MapLibreChartView: UIViewRepresentable {
             guard let map else { return }
             frameIfNeeded(on: map)          // re-attempt initial framing until real route/GPS/saved-camera exists
             applyLayer(inLayer, on: map)
-            applyOverlayToggles(inShowAirspace, inShowNearby, inShowAirways, on: map)
+            // Surface packs whose download completed AFTER ensureVisiblePacks returned (store.readers is
+            // @MainActor → hop, matching ensureVisiblePacks). Signature-gated, so a no-op when the set is unchanged.
+            Task { @MainActor [weak self, weak map] in guard let self, let map else { return }; self.syncFAASource(on: map) }
             updateRoute(inRoute, on: map)
+            applyOverlayToggles(inShowAirspace, inShowNearby, inShowAirways, on: map)
             updateOwnship(inOwnship, course: inOwnCourse, on: map)
             updateTraffic(inTraffic, on: map)
             updateTFRs(inTFRs, on: map)
@@ -214,6 +216,9 @@ struct MapLibreChartView: UIViewRepresentable {
             let m = MLNMapView(frame: container.bounds)
             m.delegate = self
             m.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            m.preferredFramesPerSecond = .lowPower  // BATTERY: cap ~30fps (EFB
+            // moving map needs no 60fps); halves GPU per redraw + per symbol-fade frame. Still increments
+            // renderCount so the zero-frame stall watchdog is unaffected.
             // Frame the pilot's location if we have a fix, else the route, else CONUS. Zoom 7-8 keeps the visible
             // span under the ~7° gate so airway/airspace-altitude labels render (hidden when zoomed further out).
             if let ic = pendingInitialCenter {
@@ -263,10 +268,12 @@ struct MapLibreChartView: UIViewRepresentable {
             // dependency — glyphs + FAA tiles are loopback, land is bundled. Only ever called with a bound
             // port (>0), so both loopback URLs are always connectable.
             assert(port > 0, "writeStyle requires a bound loopback port")
+            // NOTE: MapLibre Native iOS 6.27.0 is Web-Mercator ONLY — it has NO globe projection (globe shipped
+            // in MapLibre GL JS/web, not the native renderer; it's an unshipped Native roadmap item, and there is
+            // no style key OR runtime API to enable it on this SDK). So the map is a flat chart, not a sphere.
             let style = """
             {
               "version": 8,
-              "projection": { "type": "globe" },
               "glyphs": "http://127.0.0.1:\(port)/font/{fontstack}/{range}.pbf",
               "sources": {
                 "faa": { "type": "raster", "tiles": ["http://127.0.0.1:\(port)/{z}/{x}/{y}"],
@@ -283,6 +290,7 @@ struct MapLibreChartView: UIViewRepresentable {
         }
 
         func mapView(_ mapView: MLNMapView, didFinishLoading style: MLNStyle) {
+            servedReadersSig = nil               // the faa source is freshly (re)created empty here → force a remount
             setupOverlayLayers(style)            // airspace/airways/nav + TFR/route/traffic/ownship (empty)
             updateRoute(routeCoords, on: mapView)
             ensureVisiblePacks(mapView)
@@ -715,41 +723,40 @@ struct MapLibreChartView: UIViewRepresentable {
             let rect = MKMapRect(x: min(ne.x, sw.x), y: min(ne.y, sw.y),
                                  width: abs(ne.x - sw.x), height: abs(ne.y - sw.y))
             Task { @MainActor in
-                let before = store.readers.count
                 await store.ensureVisible(rect, layer: layer)      // the selected FAA base (sectional/IFR-low/high)
-                server.setReaders(store.readers)       // hand the current packs to the tile server
-                // Re-add the FAA source so MapLibre re-requests tiles it 404'd while the server had no packs.
-                // Fire it on the FIRST empty→non-empty transition too (not just a per-call count delta): the
-                // screen may prefetch the route corridor before the style finishes loading, so by didFinishLoading
-                // the readers are already populated and a delta-only gate would leave the chart blank at launch.
-                // Also fire on a LAYER change (sectional↔IFR): the pack count can be unchanged but the tiles differ.
-                let becameNonEmpty = !serverHadReaders && !store.readers.isEmpty
-                let layerChanged = faaLayerServed != layer
-                serverHadReaders = !store.readers.isEmpty
-                if (store.readers.count != before || becameNonEmpty || layerChanged), serverPort > 0, let style = mapView.style {
-                    faaLayerServed = layer
-                    // ORDER MATTERS: MapLibre throws if you remove a source still used by a layer — remove the
-                    // LAYER first, then the source.
-                    if let faaLayer = style.layer(withIdentifier: "faa") { style.removeLayer(faaLayer) }
-                    if let src = style.source(withIdentifier: "faa") { style.removeSource(src) }
-                    // Cap the source maxzoom at the mounted packs' real max so MapLibre clamps requests (the
-                    // server also overzooms past it), instead of the hardcoded 16 that spammed 404s past ~z11.
-                    let faaMax = store.readers.map(\.maxZoom).max() ?? 16
-                    let fresh = MLNRasterTileSource(identifier: "faa",
-                        tileURLTemplates: ["http://127.0.0.1:\(serverPort)/{z}/{x}/{y}"],
-                        options: [.tileSize: 256,
-                                  .maximumZoomLevel: NSNumber(value: faaMax + MBTilesTileOverlay.overzoomLevels)])
-                    style.addSource(fresh)
-                    // INSERT the raster at the BOTTOM (below the first vector layer) so a pack re-mount never
-                    // lifts the chart above the airspace/nav/plate overlays.
-                    let faaRaster = MLNRasterStyleLayer(identifier: "faa", source: fresh)
-                    if let bottom = style.layer(withIdentifier: "airways-line") {
-                        style.insertLayer(faaRaster, below: bottom)
-                    } else {
-                        style.addLayer(faaRaster)
-                    }
-                }
+                syncFAASource(on: mapView)                          // surface whatever is now mounted
             }
+        }
+
+        /// Hand the store's currently-mounted packs to the loopback tile server and (re)mount the "faa" raster
+        /// whenever the mounted SET or the selected layer changes. Runs on EVERY apply (not only on a pan /
+        /// layer-switch) so packs whose DOWNLOAD completes AFTER ensureVisiblePacks already returned — e.g.
+        /// store.setLayer's route-corridor download landing over slow Wi-Fi — appear the instant store.readers
+        /// publishes, instead of a blank chart until the pilot pans (the build-63 IFR-low-wouldn't-load bug; the
+        /// classic ChartMapView reconciles its `readers` prop every updateUIView, which the port had dropped).
+        /// A (layer + sorted packID) signature makes an unchanged set a cheap no-op. Bounded (≤64), ≥2 asserts.
+        @MainActor private func syncFAASource(on map: MLNMapView) {
+            guard serverPort > 0, let style = map.style else { return }
+            let readers = store.readers
+            assert(readers.count <= 64, "syncFAASource: unexpectedly many packs mounted")
+            let sig = "\(layer.rawValue)#" + readers.map(\.packID).sorted().joined(separator: ",")
+            guard sig != servedReadersSig else { return }          // same set + layer → nothing to remount
+            servedReadersSig = sig
+            server.setReaders(readers)
+            // ORDER MATTERS: remove the LAYER before the SOURCE (MapLibre throws otherwise), then re-add so it
+            // re-requests tiles it 404'd while the set was empty/different. Cap maxzoom at the packs' real max.
+            if let faaLayer = style.layer(withIdentifier: "faa") { style.removeLayer(faaLayer) }
+            if let src = style.source(withIdentifier: "faa") { style.removeSource(src) }
+            let faaMax = readers.map(\.maxZoom).max() ?? 16
+            assert(faaMax >= 0, "syncFAASource: negative maxzoom")
+            let fresh = MLNRasterTileSource(identifier: "faa",
+                tileURLTemplates: ["http://127.0.0.1:\(serverPort)/{z}/{x}/{y}"],
+                options: [.tileSize: 256,
+                          .maximumZoomLevel: NSNumber(value: faaMax + MBTilesTileOverlay.overzoomLevels)])
+            style.addSource(fresh)
+            let faaRaster = MLNRasterStyleLayer(identifier: "faa", source: fresh)   // BOTTOM (below the first vector layer)
+            if let bottom = style.layer(withIdentifier: "airways-line") { style.insertLayer(faaRaster, below: bottom) }
+            else { style.addLayer(faaRaster) }
         }
 
         // MARK: route line
@@ -779,13 +786,20 @@ struct MapLibreChartView: UIViewRepresentable {
         private var appliedTrafficSig: String?
         private var appliedTFRSig: String?
         static func q(_ v: Double) -> Int { Int((v * 100_000).rounded()) }   // ~1 m quantization, kills float jitter
+        // BATTERY: the ownship/traffic change-detection is coarser than the route's (~12 m + 3° dead band). A
+        // PARKED aircraft's normal 3-5 m GPS jitter (Stratux streams ~1 Hz with no distanceFilter) otherwise
+        // crosses the fine ~1 m bucket every fix → `src.shape =` reassign → full-scene redraw + a 300 ms symbol
+        // fade → near-continuous idle GPU (the reported heat). The displayed feature still uses RAW lat/lon
+        // (positions/taps unchanged); only the "did it move enough to redraw" test coarsens.
+        static func qJit(_ v: Double) -> Int { Int((v * 9_000).rounded()) }   // ~12 m idle-jitter dead band
+        static func qDeg(_ d: Double) -> Int { Int((d / 3).rounded()) }       // ~3° heading dead band
 
         /// A single static ownship marker (no pulsing showsUserLocation dot — we render our own). The SF
         /// "airplane" glyph draws nose-EAST, so rot = course - 90 to make the nose point along the heading.
         func updateOwnship(_ coord: CLLocationCoordinate2D?, course: Double?, on map: MLNMapView) {
             lastOwnship = coord; lastOwnCourse = course
             guard let src = map.style?.source(withIdentifier: "ownship") as? MLNShapeSource else { return }
-            let sig = coord.map { "\(Self.q($0.latitude)),\(Self.q($0.longitude)),\(Int((course ?? 0).rounded()))" } ?? "nil"
+            let sig = coord.map { "\(Self.qJit($0.latitude)),\(Self.qJit($0.longitude)),\(Self.qDeg(course ?? 0))" } ?? "nil"
             guard sig != appliedOwnSig else { return }
             appliedOwnSig = sig
             guard let coord else { src.shape = nil; return }             // no fix → hide (MK removes the annotation)
@@ -805,7 +819,7 @@ struct MapLibreChartView: UIViewRepresentable {
                 f.coordinate = CLLocationCoordinate2D(latitude: c.lat, longitude: c.lon)
                 f.attributes = ["rot": (ac.trackDeg ?? 0) - 90, "hex": ac.hex, "label": ac.label ?? "Traffic"]
                 out.append(f)
-                sigs.append("\(ac.hex):\(Self.q(c.lat)),\(Self.q(c.lon)),\(Int((ac.trackDeg ?? 0).rounded()))")
+                sigs.append("\(ac.hex):\(Self.qJit(c.lat)),\(Self.qJit(c.lon)),\(Self.qDeg(ac.trackDeg ?? 0))")
             }
             assert(out.count <= 128, "updateTraffic: field bound exceeded")
             assert(seen.count == out.count, "updateTraffic: dedup/emit mismatch")

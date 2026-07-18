@@ -75,8 +75,21 @@ final class MapInteractionTests: XCTestCase {
 
     func testDirectToSetsDestinationAndClearsMiddle() {
         var p = FlightPlan(departure: "KBOS", destination: "KJFK", route: ["PVD", "HFD"])
-        p.directTo("alb")
+        p.directTo("alb")                                   // no fix → keep the filed departure (only sensible anchor)
         XCTAssertEqual(p.departure, "KBOS")
+        XCTAssertEqual(p.destination, "ALB")
+        XCTAssertTrue(p.route.isEmpty)
+    }
+
+    /// Direct-to WITH a present-position fix re-anchors the origin to that GPS point (as a lat,lon user-point),
+    /// so the drawn course runs from where the aircraft IS — not the filed departure (the build-63 report).
+    func testDirectToFromPresentPositionReanchorsOrigin() {
+        var p = FlightPlan(departure: "KBOS", destination: "KJFK", route: ["PVD", "HFD"])
+        let here = Coord(lat: 41.50, lon: -72.10)
+        p.directTo("alb", from: here)
+        XCTAssertEqual(p.departure, UserPoint.token(here), "origin must become the present-position user-point")
+        XCTAssertEqual(UserPoint.parse(p.departure), here, "the stored origin must round-trip to the GPS fix")
+        XCTAssertNotEqual(p.departure, "KBOS", "must NOT anchor on the filed departure when a fix exists")
         XCTAssertEqual(p.destination, "ALB")
         XCTAssertTrue(p.route.isEmpty)
     }
