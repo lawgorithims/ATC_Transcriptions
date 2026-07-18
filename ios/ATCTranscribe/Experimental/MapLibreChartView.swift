@@ -32,9 +32,11 @@ struct MapLibreChartView: UIViewRepresentable {
     var routeIdents: Set<String> = []
     var initialCenter: Coord? = nil                   // frame here on first load (pilot's GPS) if no route
     var focus: Coord? = nil                           // recenter here when it changes (search-result pick)
+    var restoreCamera: SavedMapCamera? = nil          // restore the pilot's last pan/zoom across remounts (M7)
     var onTapObjects: ([IdentifiedObject]) -> Void = { _ in }
     var onPlateAnchors: ((CGPoint, CGPoint)?) -> Void = { _ in }   // plate top-corner screen-points → host chrome
     var onRenderStalled: () -> Void = {}                           // map drew 0 frames → host falls back to classic map
+    var onVisibleRegion: (MKMapRect) -> Void = { _ in }            // settle → host persists model.lastMapCamera
 
     func makeCoordinator() -> Coordinator { Coordinator(store: store, routeCoords: routeCoords) }
 
@@ -47,16 +49,19 @@ struct MapLibreChartView: UIViewRepresentable {
         let container = UIView(frame: UIScreen.main.bounds)
         container.backgroundColor = .clear
         context.coordinator.onRenderStalled = onRenderStalled   // set BEFORE mount (watchdog is armed in createMap)
+        context.coordinator.onVisibleRegion = onVisibleRegion
         context.coordinator.mount(in: container, initialCenter: initialCenter, routeFirst: routeCoords.first)
         return container
     }
 
     func updateUIView(_ uiView: UIView, context: Context) {
         let c = context.coordinator
+        c.onVisibleRegion = onVisibleRegion
         c.cacheInputs(layer: layer, routeCoords: routeCoords, ownship: ownship, ownshipCourse: ownshipCourse,
                       traffic: traffic, tfrs: showTFRs ? tfrs : [], showAirspace: showAirspace,
                       showNearby: showNearby, showAirways: showAirways, plateOverlay: plateOverlay,
-                      routeIdents: routeIdents, focus: focus, onTap: onTapObjects, onAnchors: onPlateAnchors)
+                      routeIdents: routeIdents, focus: focus, restoreCamera: restoreCamera,
+                      onTap: onTapObjects, onAnchors: onPlateAnchors)
         guard c.map != nil else { return }      // map not built yet (scene still activating) → apply on createMap
         c.applyLatest()
     }
@@ -92,6 +97,10 @@ struct MapLibreChartView: UIViewRepresentable {
         private var showAirspace = true, showNearby = true, showAirways = true   // MapLayersMenu overlay toggles
         private var appliedToggles: String?            // last-applied toggle triple — a change re-runs refreshOverlays
         private var lastFocus: Coord?                  // search-recenter dedupe
+        var onVisibleRegion: ((MKMapRect) -> Void)?    // settle → host persists model.lastMapCamera (M7)
+        private var restoreCamera: SavedMapCamera?     // pilot's last pan/zoom, restored once on first frame
+        private var didFrame = false                   // one-shot: frame to camera/route/GPS once real data exists
+        private var probeGen = 0                       // tap-identify generation guard (a newer tap supersedes)
         private var styleConfigured = false            // setup-overlays ONCE per coordinator (didFinishLoading can re-fire)
         // Lazy-map plumbing: the container + framing captured at mount, and the latest updateUIView inputs (so
         // they can be applied once the map is actually built on scene-active).
@@ -112,17 +121,19 @@ struct MapLibreChartView: UIViewRepresentable {
         func cacheInputs(layer: ChartLayer, routeCoords: [CLLocationCoordinate2D], ownship: CLLocationCoordinate2D?,
                          ownshipCourse: Double?, traffic: [Aircraft], tfrs: [TFR], showAirspace: Bool,
                          showNearby: Bool, showAirways: Bool, plateOverlay: PlateOverlayState?,
-                         routeIdents: Set<String>, focus: Coord?, onTap: @escaping ([IdentifiedObject]) -> Void,
+                         routeIdents: Set<String>, focus: Coord?, restoreCamera: SavedMapCamera?,
+                         onTap: @escaping ([IdentifiedObject]) -> Void,
                          onAnchors: @escaping ((CGPoint, CGPoint)?) -> Void) {
             inLayer = layer; inRoute = routeCoords; inOwnship = ownship; inOwnCourse = ownshipCourse
             inTraffic = traffic; inTFRs = tfrs; inShowAirspace = showAirspace; inShowNearby = showNearby
-            inShowAirways = showAirways; inPlate = plateOverlay; inFocus = focus
+            inShowAirways = showAirways; inPlate = plateOverlay; inFocus = focus; self.restoreCamera = restoreCamera
             self.routeIdents = routeIdents; self.onTapObjects = onTap; self.onPlateAnchors = onAnchors
         }
 
         /// Apply the cached inputs to the live map (from updateUIView, and once more right after createMap).
         func applyLatest() {
             guard let map else { return }
+            frameIfNeeded(on: map)          // re-attempt initial framing until real route/GPS/saved-camera exists
             applyLayer(inLayer, on: map)
             applyOverlayToggles(inShowAirspace, inShowNearby, inShowAirways, on: map)
             updateRoute(inRoute, on: map)
@@ -131,6 +142,35 @@ struct MapLibreChartView: UIViewRepresentable {
             updateTFRs(inTFRs, on: map)
             updatePlate(inPlate, on: map)
             applyFocus(inFocus, on: map)
+        }
+
+        /// One-shot initial framing (mirrors ChartMapView's didFrame): at cold launch the route resolves
+        /// and the GPS fix arrive AFTER the map is built, so createMap's mount-time snapshot is CONUS. Keep
+        /// re-attempting on every apply until a real target exists — a fresh saved camera, else the route,
+        /// else the ownship/GPS — so the map auto-centers instead of stranding the pilot at continental scale.
+        private func frameIfNeeded(on map: MLNMapView) {
+            guard !didFrame else { return }
+            if let cam = restoreCamera, SavedMapCamera.cameraIsFresh(savedAt: cam.savedAt, now: Date()) {
+                let r = cam.region
+                let sw = CLLocationCoordinate2D(latitude: r.center.latitude - r.span.latitudeDelta / 2,
+                                                longitude: r.center.longitude - r.span.longitudeDelta / 2)
+                let ne = CLLocationCoordinate2D(latitude: r.center.latitude + r.span.latitudeDelta / 2,
+                                                longitude: r.center.longitude + r.span.longitudeDelta / 2)
+                map.setVisibleCoordinateBounds(MLNCoordinateBounds(sw: sw, ne: ne), animated: false)
+                didFrame = true; return
+            }
+            if inRoute.count >= 2 {
+                let lats = inRoute.map(\.latitude), lons = inRoute.map(\.longitude)
+                guard let a = lats.min(), let b = lats.max(), let c = lons.min(), let d = lons.max() else { return }
+                map.setVisibleCoordinateBounds(MLNCoordinateBounds(sw: .init(latitude: a, longitude: c),
+                                                                   ne: .init(latitude: b, longitude: d)),
+                                               edgePadding: UIEdgeInsets(top: 80, left: 60, bottom: 80, right: 60),
+                                               animated: false)
+                didFrame = true; return
+            }
+            if let own = inOwnship {
+                map.setCenter(own, zoomLevel: 8.0, animated: false); didFrame = true
+            }
         }
 
         init(store: ChartStore, routeCoords: [CLLocationCoordinate2D]) {
@@ -163,6 +203,11 @@ struct MapLibreChartView: UIViewRepresentable {
         var onRenderStalled: (() -> Void)?
         func mapView(_ mapView: MLNMapView, didFinishRenderingFrame fullyRendered: Bool) { renderCount += 1 }
 
+        /// MapLibre failed to load the map/tiles (e.g. the style URL was never set on a bind failure, or a
+        /// fatal tile error). Fall back to the classic map immediately — the zero-frame watchdog can't see a
+        /// blank-but-rendering globe, so a real load failure must trigger the fallback explicitly.
+        func mapViewDidFailLoadingMap(_ mapView: MLNMapView, withError error: Error) { onRenderStalled?() }
+
         @objc private func createMap() {
             guard map == nil, let container else { return }
             NotificationCenter.default.removeObserver(self, name: UIApplication.didBecomeActiveNotification, object: nil)
@@ -185,9 +230,15 @@ struct MapLibreChartView: UIViewRepresentable {
             // Start the loopback tile server WITHOUT blocking the main thread; install the style only once the
             // listener binds a port (the port is the sole thing writeStyle needs). A failed bind delivers 0.
             server.start { [weak self, weak m] port in
-                guard let self, let m, port > 0, self.serverPort == 0 else { return }  // install the style ONCE
+                guard let self, let m else { return }
+                // Loopback bind FAILED (onReady delivers 0) → the style would render blank forever. Fall back to
+                // the classic map NOW rather than relying on the zero-frame watchdog (which a blank-but-rendering
+                // globe defeats). Same for a temp-file write failure making writeStyle nil.
+                guard port > 0 else { self.onRenderStalled?(); return }
+                guard self.serverPort == 0 else { return }                 // install the style ONCE
                 self.serverPort = port
-                m.styleURL = Self.writeStyle(port: port)
+                guard let styleURL = Self.writeStyle(port: port) else { self.onRenderStalled?(); return }
+                m.styleURL = styleURL
             }
             applyLatest()   // push whatever updateUIView cached before the map existed
             // Arm the render watchdog: if the map hasn't drawn a single frame ~2.2s after creation, it's the
@@ -236,6 +287,7 @@ struct MapLibreChartView: UIViewRepresentable {
             updateRoute(routeCoords, on: mapView)
             ensureVisiblePacks(mapView)
             refreshOverlays(mapView)
+            frameIfNeeded(on: mapView)           // frame now if route/GPS/camera arrived before the style loaded
             // Re-apply anything updateUIView cached before the style finished loading (same idiom as route).
             updateOwnship(lastOwnship, course: lastOwnCourse, on: mapView)
             updateTraffic(lastTraffic, on: mapView)
@@ -252,11 +304,20 @@ struct MapLibreChartView: UIViewRepresentable {
             regionDebounce?.cancel()
             let work = DispatchWorkItem { [weak self, weak mapView] in
                 guard let self, let mapView else { return }
+                self.onVisibleRegion?(Coordinator.visibleMapRect(mapView))  // host saves model.lastMapCamera (M7)
                 self.ensureVisiblePacks(mapView)
                 self.refreshOverlays(mapView)
             }
             regionDebounce = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+        }
+
+        /// The map's visible span as an MKMapRect (for the host's SavedMapCamera + store.ensureVisible).
+        static func visibleMapRect(_ mapView: MLNMapView) -> MKMapRect {
+            let b = mapView.visibleCoordinateBounds
+            let ne = MKMapPoint(b.ne), sw = MKMapPoint(b.sw)
+            return MKMapRect(x: min(ne.x, sw.x), y: min(ne.y, sw.y),
+                             width: abs(ne.x - sw.x), height: abs(ne.y - sw.y))
         }
 
         /// Stream the plate corner gear's screen anchors continuously during an active pan/zoom (cheap:
@@ -911,32 +972,47 @@ struct MapLibreChartView: UIViewRepresentable {
             probe(at: gr.location(in: mv), in: mv, radius: 40, userPoint: true)
         }
 
-        /// Identify what's under the finger and present the same object card. Navaids/airports/fixes come
-        /// from a DB box-scan (NOT the rendered nav-sym layer) so collision-suppressed / below-min-zoom
-        /// symbols the pilot still sees on the FAA raster stay identifiable — mirroring the production probe.
-        /// Airways/airspace/TFR/traffic are geometric, so MapLibre's rendered-feature hit-test is legitimate.
-        /// Main-actor + synchronous (one tap = one small SQLite query — no continuous-scan jank concern).
+        /// Identify what's under the finger and present the same object card. Mirrors ChartMapView.beginProbe:
+        /// the cheap screen-math runs on MAIN, the full-table nav scan + airspace containment run OFF-MAIN
+        /// (so a tap never blocks the UI thread on SQLite during active map interaction), then the rendered-
+        /// feature hit-tests + rank hop back to MAIN under a per-tap generation guard.
         private func probe(at pt: CGPoint, in mv: MLNMapView, radius: CGFloat, userPoint: Bool) {
             assert(radius > 0, "probe: non-positive radius")
             let ll = mv.convert(pt, toCoordinateFrom: mv)
             let here = Coord(lat: ll.latitude, lon: ll.longitude)
-            let rect = CGRect(x: pt.x - radius, y: pt.y - radius, width: radius * 2, height: radius * 2)
-            func dist(_ c: CLLocationCoordinate2D) -> Double { let s = mv.convert(c, toPointTo: mv); return Double(hypot(s.x - pt.x, s.y - pt.y)) }
-            func dist(_ c: Coord) -> Double { dist(CLLocationCoordinate2D(latitude: c.lat, longitude: c.lon)) }
-            var cands: [(object: IdentifiedObject, distance: Double)] = []
-            // Navaids/airports/fixes: DB scan over a box ~2.5× the tap radius (matches beginProbe), ranked by
-            // ON-SCREEN distance so collision-hidden symbols are found. Deduped by ident.
+            // Box ~2.5× the tap radius (matches beginProbe) for the nav scan + airspace containment.
             let off = mv.convert(CGPoint(x: pt.x + radius * 2.5, y: pt.y + radius * 2.5), toCoordinateFrom: mv)
             let dLat = max(abs(ll.latitude - off.latitude), 0.002), dLon = max(abs(ll.longitude - off.longitude), 0.002)
             let box = BBox(minLat: ll.latitude - dLat, minLon: ll.longitude - dLon,
                            maxLat: ll.latitude + dLat, maxLon: ll.longitude + dLon)
+            let wantAir = showAirspace
+            probeGen &+= 1
+            let gen = probeGen
+            Task.detached(priority: .userInitiated) { [weak self] in
+                let nearby = NavDatabase.nearby(box, types: [0, 1, 2], limit: 40)           // full-table scan — off main
+                let airspaces = wantAir ? NavDatabase.airspaces(intersecting: box).filter { $0.containsCoord(here) } : []
+                await MainActor.run { [weak self] in
+                    guard let self, self.probeGen == gen else { return }   // a newer tap superseded this one
+                    self.finishProbe(pt: pt, ll: ll, here: here, radius: radius, userPoint: userPoint,
+                                     nearby: nearby, airspaces: airspaces, in: mv)
+                }
+            }
+        }
+
+        /// Main-actor finish: rank the nav-DB hits + rendered traffic/airway features by on-screen distance,
+        /// then append the off-main airspace containment + geometric TFR containment (any zoom, not tessellation-
+        /// limited) and the long-press user point. Present via onTapObjects → the same MapObjectSheet flow.
+        @MainActor private func finishProbe(pt: CGPoint, ll: CLLocationCoordinate2D, here: Coord, radius: CGFloat,
+                                            userPoint: Bool, nearby: [NavPoint], airspaces: [Airspace], in mv: MLNMapView) {
+            let rect = CGRect(x: pt.x - radius, y: pt.y - radius, width: radius * 2, height: radius * 2)
+            func dist(_ c: CLLocationCoordinate2D) -> Double { let s = mv.convert(c, toPointTo: mv); return Double(hypot(s.x - pt.x, s.y - pt.y)) }
+            func dist(_ c: Coord) -> Double { dist(CLLocationCoordinate2D(latitude: c.lat, longitude: c.lon)) }
+            var cands: [(object: IdentifiedObject, distance: Double)] = []
             var seen = Set<String>()
-            for np in NavDatabase.nearby(box, types: [0, 1, 2], limit: 40) where seen.insert(np.ident).inserted {
+            for np in nearby where seen.insert(np.ident).inserted {
                 cands.append((IdentifiedObject(kind: MapObjectKind(routeKind: np.kind), ident: np.ident,
                                                coord: np.coord, onRoute: routeIdents.contains(np.ident)), dist(np.coord)))
             }
-            // Live ADS-B/Stratux traffic under the finger — the traffic-sym layer (always rendered:
-            // iconAllowsOverlap). ident = the "label" attr so MapObjectView resolves the live Aircraft.
             for f in mv.visibleFeatures(in: rect, styleLayerIdentifiers: ["traffic-sym"]) {
                 guard let label = f.attributes["label"] as? String else { continue }
                 let c = (f as? MLNPointFeature)?.coordinate ?? ll
@@ -949,21 +1025,12 @@ struct MapLibreChartView: UIViewRepresentable {
                                                airwayArea: (f.attributes["area"] as? String) ?? "USA"), 0))
             }
             var results = MapProbe.rank(cands, within: Double(radius))
-            for f in mv.visibleFeatures(in: rect, styleLayerIdentifiers: ["airspace-fill"]) {
-                guard let cls = f.attributes["cls"] as? String, let name = f.attributes["name"] as? String else { continue }
-                let asp = Airspace(id: 0, cls: cls, name: name,
-                                   floorFt: (f.attributes["floorFt"] as? NSNumber)?.intValue,
-                                   ceilingFt: (f.attributes["ceilingFt"] as? NSNumber)?.intValue,
-                                   bb: BBox(minLat: here.lat, minLon: here.lon, maxLat: here.lat, maxLon: here.lon), rings: [])
-                if !results.contains(where: { $0.kind == .airspace && $0.ident == name }) {
-                    results.append(IdentifiedObject(kind: .airspace, ident: name, coord: here, onRoute: false, airspace: asp))
-                }
+            for asp in airspaces where !results.contains(where: { $0.kind == .airspace && $0.ident == asp.name }) {
+                results.append(IdentifiedObject(kind: .airspace, ident: asp.name, coord: here, onRoute: false, airspace: asp))
             }
-            for f in mv.visibleFeatures(in: rect, styleLayerIdentifiers: ["tfr-fill"]) {
-                guard let id = f.attributes["id"] as? String, let t = tfrByID[id] else { continue }
-                if !results.contains(where: { $0.tfr?.id == id }) {
-                    results.append(IdentifiedObject(kind: .tfr, ident: id, coord: t.labelCoord ?? here, onRoute: false, tfr: t))
-                }
+            for t in tfrByID.values where t.polygon.count >= 3 {           // geometric containment (any zoom)
+                guard Geo.pointInRing(here, t.polygon), !results.contains(where: { $0.tfr?.id == t.id }) else { continue }
+                results.append(IdentifiedObject(kind: .tfr, ident: t.id, coord: t.labelCoord ?? here, onRoute: false, tfr: t))
             }
             if userPoint { results.insert(IdentifiedObject(kind: .userPoint, ident: UserPoint.token(here), coord: here, onRoute: false), at: 0) }
             guard !results.isEmpty else { return }
