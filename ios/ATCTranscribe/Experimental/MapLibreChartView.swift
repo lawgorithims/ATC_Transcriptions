@@ -18,50 +18,50 @@ import CoreLocation
 
 struct MapLibreChartView: UIViewRepresentable {
     let store: ChartStore
+    var layer: ChartLayer = .sectional               // FAA base layer (sectional / IFR-low / IFR-high)
     var routeCoords: [CLLocationCoordinate2D]
     var ownship: CLLocationCoordinate2D? = nil
     var ownshipCourse: Double? = nil
     var traffic: [Aircraft] = []
     var tfrs: [TFR] = []
     var showTFRs: Bool = false
+    var showAirspace: Bool = true                     // MapLayersMenu overlay toggles (parity with ChartMapView)
+    var showNearby: Bool = true
+    var showAirways: Bool = true
     var plateOverlay: PlateOverlayState? = nil
     var routeIdents: Set<String> = []
+    var initialCenter: Coord? = nil                   // frame here on first load (pilot's GPS) if no route
+    var focus: Coord? = nil                           // recenter here when it changes (search-result pick)
     var onTapObjects: ([IdentifiedObject]) -> Void = { _ in }
+    var onPlateAnchors: ((CGPoint, CGPoint)?) -> Void = { _ in }   // plate top-corner screen-points → host chrome
+    var onRenderStalled: () -> Void = {}                           // map drew 0 frames → host falls back to classic map
 
     func makeCoordinator() -> Coordinator { Coordinator(store: store, routeCoords: routeCoords) }
 
-    func makeUIView(context: Context) -> MLNMapView {
-        let map = MLNMapView(frame: .zero)
-        map.delegate = context.coordinator
-        map.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        // Frame the route if we have one, else CONUS. Zoom 7 keeps the visible span under the ~7° gate so
-        // airway/airspace-altitude labels render (they're hidden when zoomed further out — chart convention).
-        if let c = routeCoords.first {
-            map.setCenter(c, zoomLevel: 7.0, animated: false)
-        } else {
-            map.setCenter(CLLocationCoordinate2D(latitude: 39, longitude: -96), zoomLevel: 3.2, animated: false)
-        }
-        // Tap = identify; long-press = drop a user waypoint (MapLibre has no built-in long-press → free).
-        map.addGestureRecognizer(UITapGestureRecognizer(target: context.coordinator,
-                                                        action: #selector(Coordinator.handleTap(_:))))
-        map.addGestureRecognizer(UILongPressGestureRecognizer(target: context.coordinator,
-                                                              action: #selector(Coordinator.handleLongPress(_:))))
-        context.coordinator.attach(map)
-        return map
+    // Host the MLNMapView inside a plain UIView CONTAINER, and create the MLNMapView itself LAZILY — only once
+    // the scene is ACTIVE. An MLNMapView built during scene-connect (cold launch, deep in the RootTabView
+    // opacity-switched ZStack) starts DORMANT: valid (in-window, sized, visible) yet renders ZERO frames until a
+    // background→foreground cycle. Built once the scene is active it renders immediately. (The full-screen
+    // standalone screen never hit this because it is created near the window root as the scene activates.)
+    func makeUIView(context: Context) -> UIView {
+        let container = UIView(frame: UIScreen.main.bounds)
+        container.backgroundColor = .clear
+        context.coordinator.onRenderStalled = onRenderStalled   // set BEFORE mount (watchdog is armed in createMap)
+        context.coordinator.mount(in: container, initialCenter: initialCenter, routeFirst: routeCoords.first)
+        return container
     }
 
-    func updateUIView(_ uiView: MLNMapView, context: Context) {
+    func updateUIView(_ uiView: UIView, context: Context) {
         let c = context.coordinator
-        c.onTapObjects = onTapObjects
-        c.routeIdents = routeIdents
-        c.updateRoute(routeCoords, on: uiView)
-        c.updateOwnship(ownship, course: ownshipCourse, on: uiView)
-        c.updateTraffic(traffic, on: uiView)
-        c.updateTFRs(showTFRs ? tfrs : [], on: uiView)
-        c.updatePlate(plateOverlay, on: uiView)
+        c.cacheInputs(layer: layer, routeCoords: routeCoords, ownship: ownship, ownshipCourse: ownshipCourse,
+                      traffic: traffic, tfrs: showTFRs ? tfrs : [], showAirspace: showAirspace,
+                      showNearby: showNearby, showAirways: showAirways, plateOverlay: plateOverlay,
+                      routeIdents: routeIdents, focus: focus, onTap: onTapObjects, onAnchors: onPlateAnchors)
+        guard c.map != nil else { return }      // map not built yet (scene still activating) → apply on createMap
+        c.applyLatest()
     }
 
-    static func dismantleUIView(_ uiView: MLNMapView, coordinator: Coordinator) { coordinator.teardown() }
+    static func dismantleUIView(_ uiView: UIView, coordinator: Coordinator) { coordinator.teardown() }
 
     // MARK: coordinator
 
@@ -69,10 +69,11 @@ struct MapLibreChartView: UIViewRepresentable {
         let store: ChartStore
         let server: MBTilesHTTPServer
         private var routeCoords: [CLLocationCoordinate2D]
-        private weak var map: MLNMapView?
+        weak var map: MLNMapView?              // the hosted map (inside a UIView container); driven by updateUIView
         private var overlayGen = 0                 // drops stale async overlay refreshes (mirrors contextGen)
         private var wantFixes = false              // hysteretic GPS-fix visibility (show scale<2.2, hide >2.7)
         var onTapObjects: (([IdentifiedObject]) -> Void)?
+        var onPlateAnchors: ((CGPoint, CGPoint)?) -> Void = { _ in }  // plate top-corner screen-points → host chrome
         var routeIdents: Set<String> = []
         var tfrByID: [String: TFR] = [:]           // full TFRs, recovered from a tapped feature's "id"
         private var cachedTFRs: [TFR] = []         // applied at didFinishLoading if the style wasn't ready yet
@@ -81,9 +82,56 @@ struct MapLibreChartView: UIViewRepresentable {
         private var plateOpacity: Double?
         private var plateInverted: Bool?
         private var plateImageKey: String?         // "pdf|inverted" — refresh the raster on a plate SWAP, not just invert
+        private var plateCornersCoord: (tl: CLLocationCoordinate2D, tr: CLLocationCoordinate2D)?  // chrome anchors
         private var serverPort: UInt16 = 0         // bound loopback port, delivered async by the tile server
         private var serverHadReaders = false       // false→true transition forces the initial FAA source re-add
         private var regionDebounce: DispatchWorkItem?  // coalesces a burst of region-settle events (pan/zoom)
+        private var layer: ChartLayer = .sectional     // FAA base layer; drives ensureVisiblePacks
+        private var appliedLayer: ChartLayer?          // last-applied — a change re-requests packs for the new layer
+        private var faaLayerServed: ChartLayer?        // which layer the mounted faa source currently serves
+        private var showAirspace = true, showNearby = true, showAirways = true   // MapLayersMenu overlay toggles
+        private var appliedToggles: String?            // last-applied toggle triple — a change re-runs refreshOverlays
+        private var lastFocus: Coord?                  // search-recenter dedupe
+        private var styleConfigured = false            // setup-overlays ONCE per coordinator (didFinishLoading can re-fire)
+        // Lazy-map plumbing: the container + framing captured at mount, and the latest updateUIView inputs (so
+        // they can be applied once the map is actually built on scene-active).
+        private weak var container: UIView?
+        private var pendingInitialCenter: Coord?
+        private var pendingRouteFirst: CLLocationCoordinate2D?
+        private var inLayer: ChartLayer = .sectional
+        private var inRoute: [CLLocationCoordinate2D] = []
+        private var inOwnship: CLLocationCoordinate2D?
+        private var inOwnCourse: Double?
+        private var inTraffic: [Aircraft] = []
+        private var inTFRs: [TFR] = []
+        private var inShowAirspace = true, inShowNearby = true, inShowAirways = true
+        private var inPlate: PlateOverlayState?
+        private var inFocus: Coord?
+
+        /// Stash the latest inputs from updateUIView (called every body eval, even before the map exists).
+        func cacheInputs(layer: ChartLayer, routeCoords: [CLLocationCoordinate2D], ownship: CLLocationCoordinate2D?,
+                         ownshipCourse: Double?, traffic: [Aircraft], tfrs: [TFR], showAirspace: Bool,
+                         showNearby: Bool, showAirways: Bool, plateOverlay: PlateOverlayState?,
+                         routeIdents: Set<String>, focus: Coord?, onTap: @escaping ([IdentifiedObject]) -> Void,
+                         onAnchors: @escaping ((CGPoint, CGPoint)?) -> Void) {
+            inLayer = layer; inRoute = routeCoords; inOwnship = ownship; inOwnCourse = ownshipCourse
+            inTraffic = traffic; inTFRs = tfrs; inShowAirspace = showAirspace; inShowNearby = showNearby
+            inShowAirways = showAirways; inPlate = plateOverlay; inFocus = focus
+            self.routeIdents = routeIdents; self.onTapObjects = onTap; self.onPlateAnchors = onAnchors
+        }
+
+        /// Apply the cached inputs to the live map (from updateUIView, and once more right after createMap).
+        func applyLatest() {
+            guard let map else { return }
+            applyLayer(inLayer, on: map)
+            applyOverlayToggles(inShowAirspace, inShowNearby, inShowAirways, on: map)
+            updateRoute(inRoute, on: map)
+            updateOwnship(inOwnship, course: inOwnCourse, on: map)
+            updateTraffic(inTraffic, on: map)
+            updateTFRs(inTFRs, on: map)
+            updatePlate(inPlate, on: map)
+            applyFocus(inFocus, on: map)
+        }
 
         init(store: ChartStore, routeCoords: [CLLocationCoordinate2D]) {
             self.store = store
@@ -92,25 +140,77 @@ struct MapLibreChartView: UIViewRepresentable {
             super.init()
         }
 
-        func attach(_ map: MLNMapView) {
-            self.map = map
+        /// Prepare the container and create the MLNMapView only once the scene is ACTIVE (see makeUIView note:
+        /// a map built during scene-connect stays dormant / never renders in the tab). If the scene is already
+        /// active (a later remount, e.g. toggling the engine), build immediately.
+        func mount(in container: UIView, initialCenter: Coord?, routeFirst: CLLocationCoordinate2D?) {
+            self.container = container
+            self.pendingInitialCenter = initialCenter
+            self.pendingRouteFirst = routeFirst
+            // Build the map only once the scene is ACTIVE (a map built during scene-connect can stay dormant).
+            if UIApplication.shared.applicationState == .active {
+                createMap()
+            } else {
+                NotificationCenter.default.addObserver(self, selector: #selector(createMap),
+                                                       name: UIApplication.didBecomeActiveNotification, object: nil)
+            }
+        }
+
+        // Render watchdog: if the MLNMapView produces ZERO frames shortly after it should be visible, it hit
+        // the MLNMapView-blank-until-scene-refresh condition (seen in the Simulator) — fall back to the classic
+        // map so the pilot is NEVER left with a blank chart. renderCount is driven by didFinishRenderingFrame.
+        var renderCount = 0
+        var onRenderStalled: (() -> Void)?
+        func mapView(_ mapView: MLNMapView, didFinishRenderingFrame fullyRendered: Bool) { renderCount += 1 }
+
+        @objc private func createMap() {
+            guard map == nil, let container else { return }
+            NotificationCenter.default.removeObserver(self, name: UIApplication.didBecomeActiveNotification, object: nil)
+            let m = MLNMapView(frame: container.bounds)
+            m.delegate = self
+            m.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            // Frame the pilot's location if we have a fix, else the route, else CONUS. Zoom 7-8 keeps the visible
+            // span under the ~7° gate so airway/airspace-altitude labels render (hidden when zoomed further out).
+            if let ic = pendingInitialCenter {
+                m.setCenter(CLLocationCoordinate2D(latitude: ic.lat, longitude: ic.lon), zoomLevel: 8.0, animated: false)
+            } else if let c = pendingRouteFirst {
+                m.setCenter(c, zoomLevel: 7.0, animated: false)
+            } else {
+                m.setCenter(CLLocationCoordinate2D(latitude: 39, longitude: -96), zoomLevel: 3.2, animated: false)
+            }
+            m.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(handleTap(_:))))
+            m.addGestureRecognizer(UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:))))
+            container.addSubview(m)
+            self.map = m
             // Start the loopback tile server WITHOUT blocking the main thread; install the style only once the
             // listener binds a port (the port is the sole thing writeStyle needs). A failed bind delivers 0.
-            server.start { [weak self, weak map] port in
-                guard let self, let map, port > 0 else { return }
+            server.start { [weak self, weak m] port in
+                guard let self, let m, port > 0, self.serverPort == 0 else { return }  // install the style ONCE
                 self.serverPort = port
-                map.styleURL = Self.writeStyle(port: port)
+                m.styleURL = Self.writeStyle(port: port)
+            }
+            applyLatest()   // push whatever updateUIView cached before the map existed
+            // Arm the render watchdog: if the map hasn't drawn a single frame ~2.2s after creation, it's the
+            // MLNMapView-blank-until-scene-refresh condition — hand back to the classic map (never a blank chart).
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) { [weak self] in
+                guard let self, self.renderCount == 0 else { return }
+                self.onRenderStalled?()
             }
         }
 
         /// Cancel the pending region-settle work and stop the loopback server (called from dismantleUIView).
-        func teardown() { regionDebounce?.cancel(); regionDebounce = nil; server.stop() }
+        func teardown() {
+            NotificationCenter.default.removeObserver(self, name: UIApplication.didBecomeActiveNotification, object: nil)
+            regionDebounce?.cancel(); regionDebounce = nil; server.stop()
+        }
 
         // MARK: style + layers
 
         private static func writeStyle(port: UInt16) -> URL? {
-            // Base OSM raster (online-only backdrop) + our FAA sectional raster from the loopback server. Only
-            // ever called with a bound port (>0), so both the tile and glyph URLs are always connectable.
+            // FULLY OFFLINE style: FAA sectional raster from the loopback server over a #0b1a2b sea, with a
+            // bundled vector land base (setupLandBase, added at didFinishLoading) drawn between. NO network
+            // dependency — glyphs + FAA tiles are loopback, land is bundled. Only ever called with a bound
+            // port (>0), so both loopback URLs are always connectable.
             assert(port > 0, "writeStyle requires a bound loopback port")
             let style = """
             {
@@ -118,14 +218,11 @@ struct MapLibreChartView: UIViewRepresentable {
               "projection": { "type": "globe" },
               "glyphs": "http://127.0.0.1:\(port)/font/{fontstack}/{range}.pbf",
               "sources": {
-                "osm": { "type": "raster", "tiles": ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
-                         "tileSize": 256, "maxzoom": 18, "attribution": "© OpenStreetMap" },
                 "faa": { "type": "raster", "tiles": ["http://127.0.0.1:\(port)/{z}/{x}/{y}"],
                          "tileSize": 256, "maxzoom": 16, "attribution": "FAA charts (offline pack)" }
               },
               "layers": [
                 { "id": "bg", "type": "background", "paint": { "background-color": "#0b1a2b" } },
-                { "id": "osm", "type": "raster", "source": "osm", "paint": { "raster-opacity": 0.55 } },
                 { "id": "faa", "type": "raster", "source": "faa" }
               ]
             }
@@ -151,6 +248,7 @@ struct MapLibreChartView: UIViewRepresentable {
         /// the production MK coordinator) so a momentum pan / pinch burst coalesces to ONE pack-load + overlay
         /// refresh instead of firing redundant network downloads + off-main DB scans on every settle.
         func mapView(_ mapView: MLNMapView, regionDidChangeAnimated animated: Bool) {
+            emitPlateAnchors(mapView)              // keep the plate corner gear pinned (NOT debounced — must be live)
             regionDebounce?.cancel()
             let work = DispatchWorkItem { [weak self, weak mapView] in
                 guard let self, let mapView else { return }
@@ -161,16 +259,80 @@ struct MapLibreChartView: UIViewRepresentable {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
         }
 
+        /// Stream the plate corner gear's screen anchors continuously during an active pan/zoom (cheap:
+        /// projects 2 points, guarded to no-op when no plate is loaded), so the gear rides the plate live.
+        func mapViewRegionIsChanging(_ mapView: MLNMapView) { emitPlateAnchors(mapView) }
+
         // MARK: airspace + airways overlays (milestone 2)
 
         /// Create the persistent overlay sources + layers ONCE (empty). Per-region refresh only mutates
         /// `source.shape` — so we never remove a source a layer still uses (MapLibre would throw). Stacking:
-        /// airways below airspace below route, all above the FAA/OSM rasters.
+        /// land base below the FAA raster below airways below airspace below route.
         private func setupOverlayLayers(_ style: MLNStyle) {
+            // ONCE per coordinator: MapLibre can call didFinishLoading more than once for the SAME map.
+            guard !styleConfigured else { return }
+            styleConfigured = true
+            // CLEAN SLATE: MapLibre restores runtime-added layers from its ambient cache across launches, so
+            // the "fresh" style can already carry OUR layers (with dangling sources) → adding them again throws
+            // MLNRedundantLayerIdentifierException. Remove any of our managed layers/sources first (layers
+            // before their sources, or MapLibre throws), then build fresh — self-healing + fully idempotent.
+            clearManagedStyle(style)
+            setupLandBase(style)               // OFFLINE vector land/coastline, bottom-most (above bg, below faa)
             setupAirwayAirspaceLayers(style)   // airways-line + airspace fill/outline (below labels)
             setupLabelLayers(style)            // airway idents + airspace altitude blocks (SDF text)
             setupNavLayers(style)              // FAA nav glyphs + idents
             setupDynamicLayers(style)          // TFR/route/traffic/ownship (empty; driven by updateUIView)
+        }
+
+        /// Remove every layer + source THIS coordinator manages, layers-before-sources (MapLibre throws if a
+        /// source is removed while a layer still uses it). Makes setup self-healing against a MapLibre ambient
+        /// cache that restored our runtime layers (leaving dangling ids). "faa" is intentionally excluded — it
+        /// lives in the base style JSON and is re-managed by ensureVisiblePacks. Bounded loops, >=2 asserts.
+        private func clearManagedStyle(_ style: MLNStyle) {
+            let layers = ["plate-raster", "ownship-sym", "traffic-sym", "route-line",
+                          "tfr-label", "tfr-outline", "tfr-fill", "nav-sym",
+                          "airspace-label", "airways-label", "airspace-outline", "airspace-fill",
+                          "airways-line", "coastline", "land-fill"]
+            for id in layers where style.layer(withIdentifier: id) != nil {          // bounded (rule 2)
+                if let l = style.layer(withIdentifier: id) { style.removeLayer(l) }
+            }
+            let sources = ["plate", "ownship", "traffic", "route", "tfr-labels", "tfr",
+                           "nav", "airspace-labels", "airspace", "airways", "land"]
+            for id in sources where style.source(withIdentifier: id) != nil {        // bounded (rule 2)
+                if let s = style.source(withIdentifier: id) { style.removeSource(s) }
+            }
+            assert(style.layer(withIdentifier: "coastline") == nil, "clearManagedStyle: coastline survived")
+            assert(style.source(withIdentifier: "land") == nil, "clearManagedStyle: land source survived")
+        }
+
+        /// OFFLINE world backdrop: a bundled coarse global land polygon set (Natural Earth 1:50m, public
+        /// domain) as a fill + thin coastline, so the map shows land-vs-water + coastlines with NO network
+        /// (replacing the old online OSM raster). Drawn just above the background so it sits BELOW the FAA
+        /// raster and every overlay; `above: bg` survives ensureVisiblePacks re-inserting the faa layer.
+        /// No-ops (map still renders bg+faa) if the bundled asset is missing/unparseable — never crashes.
+        private func setupLandBase(_ style: MLNStyle) {
+            guard style.source(withIdentifier: "land") == nil else { return }   // per-id idempotency (defensive)
+            guard let url = Bundle.main.url(forResource: "ne_land", withExtension: "geojson", subdirectory: "basemap"),
+                  let data = try? Data(contentsOf: url),
+                  let shape = try? MLNShape(data: data, encoding: String.Encoding.utf8.rawValue) else {
+                assert(false, "offline land base asset missing/unparseable — shipping bg+faa only")
+                return
+            }
+            assert(!data.isEmpty, "land base data empty")
+            let src = MLNShapeSource(identifier: "land", shape: shape, options: nil)
+            style.addSource(src)
+            let fill = MLNFillStyleLayer(identifier: "land-fill", source: src)
+            // Muted slate-green land, clearly distinct from the #0b1a2b sea (so coastlines read outside FAA
+            // coverage) but quiet enough not to fight the chart/route/airspace colors where a pack IS mounted.
+            fill.fillColor = NSExpression(forConstantValue: UIColor(red: 0.20, green: 0.28, blue: 0.29, alpha: 1))
+            let coast = MLNLineStyleLayer(identifier: "coastline", source: src)
+            coast.lineColor = NSExpression(forConstantValue: UIColor(red: 0.40, green: 0.52, blue: 0.55, alpha: 0.7))
+            coast.lineWidth = NSExpression(forConstantValue: 0.7)
+            if let bg = style.layer(withIdentifier: "bg") {
+                style.insertLayer(fill, above: bg); style.insertLayer(coast, above: fill)
+            } else {
+                style.addLayer(fill); style.addLayer(coast)
+            }
         }
 
         /// Airways line + airspace fill/outline, stacked bottom-most of the vector context.
@@ -364,7 +526,10 @@ struct MapLibreChartView: UIViewRepresentable {
             let bb = BBox(minLat: b.sw.latitude - latD * m, minLon: b.sw.longitude - lonD * m,
                           maxLat: b.ne.latitude + latD * m, maxLon: b.ne.longitude + lonD * m)
             if scale < 2.2 { wantFixes = true } else if scale > 2.7 { wantFixes = false }   // hysteresis dead band
-            let wantAir = scale < 14, wantLbl = scale < 7, wantAwy = scale < 9, wantNear = scale < 5.5
+            // Gate on the MapLayersMenu toggles AND the zoom scale — a toggle OFF makes the builder return []
+            // so the source clears (parity with ChartMapView's showAirspace/showNearby/showAirways).
+            let wantAir = showAirspace && scale < 14, wantLbl = showAirspace && scale < 7
+            let wantAwy = showAirways && scale < 9, wantNear = showNearby && scale < 5.5
             let showFixes = wantNear && wantFixes
             overlayGen += 1
             let gen = overlayGen
@@ -490,15 +655,18 @@ struct MapLibreChartView: UIViewRepresentable {
                                  width: abs(ne.x - sw.x), height: abs(ne.y - sw.y))
             Task { @MainActor in
                 let before = store.readers.count
-                await store.ensureVisible(rect, layer: .sectional)
+                await store.ensureVisible(rect, layer: layer)      // the selected FAA base (sectional/IFR-low/high)
                 server.setReaders(store.readers)       // hand the current packs to the tile server
                 // Re-add the FAA source so MapLibre re-requests tiles it 404'd while the server had no packs.
                 // Fire it on the FIRST empty→non-empty transition too (not just a per-call count delta): the
                 // screen may prefetch the route corridor before the style finishes loading, so by didFinishLoading
                 // the readers are already populated and a delta-only gate would leave the chart blank at launch.
+                // Also fire on a LAYER change (sectional↔IFR): the pack count can be unchanged but the tiles differ.
                 let becameNonEmpty = !serverHadReaders && !store.readers.isEmpty
+                let layerChanged = faaLayerServed != layer
                 serverHadReaders = !store.readers.isEmpty
-                if (store.readers.count != before || becameNonEmpty), serverPort > 0, let style = mapView.style {
+                if (store.readers.count != before || becameNonEmpty || layerChanged), serverPort > 0, let style = mapView.style {
+                    faaLayerServed = layer
                     // ORDER MATTERS: MapLibre throws if you remove a source still used by a layer — remove the
                     // LAYER first, then the source.
                     if let faaLayer = style.layer(withIdentifier: "faa") { style.removeLayer(faaLayer) }
@@ -632,13 +800,15 @@ struct MapLibreChartView: UIViewRepresentable {
             guard let s else {
                 if let l = style.layer(withIdentifier: "plate-raster") { style.removeLayer(l) }
                 if let src = style.source(withIdentifier: "plate") { style.removeSource(src) }
-                plateKey = nil; plateOpacity = nil; plateInverted = nil; plateImageKey = nil; return
+                plateKey = nil; plateOpacity = nil; plateInverted = nil; plateImageKey = nil
+                plateCornersCoord = nil; onPlateAnchors(nil); return   // hide the corner gear
             }
             assert((0.0...1.0).contains(s.opacity), "plate opacity out of range")
             // The plate's RENDERED-bitmap identity: pdf selects the page, inverted selects normal/night render.
             // geoKey is PLACEMENT-only, so without this the raster would go stale on a plate SWAP (a pilot would
             // see the WRONG approach chart warped onto the new airport's footprint) — a safety-critical bug.
             let imgKey = "\(s.pdf)|\(s.inverted)"
+            let isNewPlate = style.source(withIdentifier: "plate") == nil
             if let src = style.source(withIdentifier: "plate") as? MLNImageSource,
                let layer = style.layer(withIdentifier: "plate-raster") as? MLNRasterStyleLayer {
                 if plateKey != s.geoKey { src.coordinates = Coordinator.plateQuad(s) }
@@ -660,16 +830,74 @@ struct MapLibreChartView: UIViewRepresentable {
                 }
             }
             plateKey = s.geoKey; plateOpacity = s.opacity; plateInverted = s.inverted; plateImageKey = imgKey
+            // Feed the host chrome's corner gear (the ONLY path to dim/invert/hide/remove the plate) + frame
+            // the plate on first load so it never loads off-screen (mirrors ChartMapView's mapFrameRect).
+            plateCornersCoord = Coordinator.plateTopCorners(s)
+            emitPlateAnchors(map)
+            if isNewPlate { frameToPlate(s, on: map) }
         }
 
         /// The 4 geo corners as an MLNCoordinateQuad {topLeft, bottomLeft, bottomRight, topRight}.
         static func plateQuad(_ s: PlateOverlayState) -> MLNCoordinateQuad {
-            func corner(_ dx: Double, _ dy: Double) -> CLLocationCoordinate2D {
-                PlatePlacement.corner(centerLat: s.centerLat, centerLon: s.centerLon,
-                                      widthMeters: s.widthMeters, heightMeters: s.heightMeters,
-                                      rotationDeg: s.rotationDeg, dxSign: dx, dySign: dy)
-            }
-            return MLNCoordinateQuadMake(corner(-1, 1), corner(-1, -1), corner(1, -1), corner(1, 1))
+            return MLNCoordinateQuadMake(corner(s, -1, 1), corner(s, -1, -1), corner(s, 1, -1), corner(s, 1, 1))
+        }
+        /// The plate's TOP-left/-right geo corners (chrome-anchor coords), matching plateQuad's corner order.
+        static func plateTopCorners(_ s: PlateOverlayState) -> (tl: CLLocationCoordinate2D, tr: CLLocationCoordinate2D) {
+            (corner(s, -1, 1), corner(s, 1, 1))
+        }
+        private static func corner(_ s: PlateOverlayState, _ dx: Double, _ dy: Double) -> CLLocationCoordinate2D {
+            PlatePlacement.corner(centerLat: s.centerLat, centerLon: s.centerLon,
+                                  widthMeters: s.widthMeters, heightMeters: s.heightMeters,
+                                  rotationDeg: s.rotationDeg, dxSign: dx, dySign: dy)
+        }
+
+        /// Frame the loaded plate: fit all 4 corners in view (with padding) so it never opens off-screen.
+        private func frameToPlate(_ s: PlateOverlayState, on map: MLNMapView) {
+            let cs = [Coordinator.corner(s, -1, 1), Coordinator.corner(s, -1, -1),
+                      Coordinator.corner(s, 1, -1), Coordinator.corner(s, 1, 1)]
+            let lats = cs.map(\.latitude), lons = cs.map(\.longitude)
+            guard let minLat = lats.min(), let maxLat = lats.max(),
+                  let minLon = lons.min(), let maxLon = lons.max() else { return }
+            let sw = CLLocationCoordinate2D(latitude: minLat, longitude: minLon)
+            let ne = CLLocationCoordinate2D(latitude: maxLat, longitude: maxLon)
+            map.setVisibleCoordinateBounds(MLNCoordinateBounds(sw: sw, ne: ne),
+                                           edgePadding: UIEdgeInsets(top: 80, left: 60, bottom: 80, right: 60),
+                                           animated: true, completionHandler: nil)
+        }
+
+        /// Project the plate's top-corner geo coords to SCREEN points and stream them to the host chrome
+        /// (called on every region tick so the corner gear rides the plate through pans/zooms).
+        func emitPlateAnchors(_ map: MLNMapView) {
+            guard let c = plateCornersCoord else { return }
+            onPlateAnchors((map.convert(c.tl, toPointTo: map), map.convert(c.tr, toPointTo: map)))
+        }
+
+        // MARK: layer / overlay-toggle / focus application (tab-parity inputs)
+
+        /// Switch the FAA base layer (sectional ↔ IFR-low ↔ IFR-high). A real change re-requests packs +
+        /// re-adds the faa source for the new layer (ensureVisiblePacks). The first apply just records.
+        func applyLayer(_ new: ChartLayer, on map: MLNMapView) {
+            layer = new
+            defer { appliedLayer = new }
+            guard let prev = appliedLayer, prev != new, map.style != nil else { return }
+            ensureVisiblePacks(map)
+        }
+
+        /// Apply the MapLayersMenu overlay toggles; a real change re-runs refreshOverlays so a toggled-off
+        /// layer clears (the builders return [] when its `want` is false).
+        func applyOverlayToggles(_ air: Bool, _ near: Bool, _ awy: Bool, on map: MLNMapView) {
+            showAirspace = air; showNearby = near; showAirways = awy
+            let sig = "\(air)\(near)\(awy)"
+            defer { appliedToggles = sig }
+            guard let prev = appliedToggles, prev != sig, map.style != nil else { return }
+            refreshOverlays(map)
+        }
+
+        /// Recenter on a search-result pick (keeps the current zoom). Only fires when `focus` changes.
+        func applyFocus(_ focus: Coord?, on map: MLNMapView) {
+            guard let focus, focus != lastFocus else { return }
+            lastFocus = focus
+            map.setCenter(CLLocationCoordinate2D(latitude: focus.lat, longitude: focus.lon), animated: true)
         }
 
         // MARK: tap-to-identify (milestone 8)

@@ -279,6 +279,19 @@ struct SettingsSheet: View {
                     .font(.caption2).foregroundStyle(p.textDim)
             }
         }
+        #if canImport(MapLibre)
+        Card(title: "Map engine") {
+            VStack(alignment: .leading, spacing: 10) {
+                Toggle(isOn: $model.useMapLibreMap) {
+                    Text("New GPU map (MapLibre)").font(.caption).foregroundStyle(p.text)
+                }
+                .tint(model.palette.accent)
+                .accessibilityIdentifier("maplibre-engine-toggle")
+                Text("On (default): the new MapLibre GPU/globe chart engine. Off: the classic map — a fallback that also carries a few features not yet on the new engine (procedure preview line, hazard/smoke overlays, the full-screen Route map). Both render your offline FAA charts + route + airspace + traffic + plates.")
+                    .font(.caption2).foregroundStyle(p.textDim)
+            }
+        }
+        #endif
         Card(title: "Battery") {
             NavigationLink {
                 BatteryDiagnosticsView().environmentObject(model)
