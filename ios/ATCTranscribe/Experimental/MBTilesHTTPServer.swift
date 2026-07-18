@@ -105,7 +105,10 @@ final class MBTilesHTTPServer {
         for r in readers.prefix(64) {                                    // bounded (rule 2)
             guard z >= r.minZoom, z <= r.maxZoom + MBTilesTileOverlay.overzoomLevels else { continue }
             let key = "\(r.packID)/\(z)/\(x)/\(y)" as NSString
-            if let hit = pngCache.object(forKey: key) { return hit as Data }
+            if let hit = pngCache.object(forKey: key) {
+                if hit.length == 0 { continue }        // cached NEGATIVE (this pack has no such tile) → try the next
+                return hit as Data
+            }
             let out: Data?
             if z > r.maxZoom {
                 // Past the pack's data: upscale the deepest ancestor tile (same math as the MKMapView path,
@@ -113,12 +116,20 @@ final class MBTilesHTTPServer {
                 // instead of vanishing to bare OSM. Without this the +overzoomLevels band was dead allowance.
                 out = Self.overzoomedPNG(reader: r, z: z, x: x, y: y)
             } else if let raw = r.tileData(z: z, x: x, y: y) {           // reader flips XYZ→TMS internally
-                out = (r.format == "png" || r.format == "jpg" || r.format == "jpeg")
-                    ? raw : (UIImage(data: raw)?.pngData() ?? raw)       // WebP → PNG for MapLibre
+                if r.format == "png" || r.format == "jpg" || r.format == "jpeg" {
+                    out = raw
+                } else {
+                    // WebP → PNG for MapLibre. A DECODE FAILURE must NOT be served as a mislabeled image/png
+                    // (a permanent blank square) nor cached — return no-tile so MapLibre treats it as no coverage.
+                    out = UIImage(data: raw)?.pngData()
+                }
             } else {
                 out = nil                                                // this pack lacks the tile; try the next
             }
             if let out { pngCache.setObject(out as NSData, forKey: key, cost: out.count); return out }
+            // Cache the miss (empty sentinel) so an uncovered tile isn't re-scanned via SQLite every request
+            // (a pan over open water re-requests the same empties constantly). NSCache still bounds growth.
+            pngCache.setObject(NSData(), forKey: key, cost: 1)
         }
         return nil
     }

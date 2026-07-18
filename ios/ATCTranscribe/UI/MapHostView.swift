@@ -156,6 +156,7 @@ struct MapHostView: View {
             routeIdents: Set(route.map { $0.ident }),
             initialCenter: model.stratuxGPS?.coordinate ?? deviceCoord,
             focus: model.mapFocus,
+            restoreCamera: model.lastMapCamera,
             onTapObjects: { objs in
                 guard !objs.isEmpty else { return }
                 Haptics.impact(.light)
@@ -171,6 +172,11 @@ struct MapHostView: View {
                 // The MapLibre map produced no frames (MLNMapView blank-until-scene-refresh) — fall back to the
                 // classic map for this session so the pilot always has a working chart.
                 Task { @MainActor in model.mapLibreRenderFailed = true }
+            },
+            onVisibleRegion: { rect in
+                // Persist the pilot's pan/zoom so a background→foreground remount restores it, and so the
+                // classic-map fallback lands on the same view (M7 camera contract — parity with ChartMapView).
+                model.lastMapCamera = SavedMapCamera(rect: rect, now: Date())
             })
     }
     #endif
