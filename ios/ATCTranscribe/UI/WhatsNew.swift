@@ -32,6 +32,22 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 65, version: "1.0", headline: "TAFs, a GPS readout, and battery instrumentation",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "cloud.sun.fill",
+                    title: "TAFs load again",
+                    detail: "The Terminal Aerodrome Forecast tab on the airport card was stuck loading forever — the fetch simply wasn't being kicked off. Fixed; open any airport → Weather → TAF."),
+                WhatsNewHighlight(
+                    icon: "location.north.line.fill",
+                    title: "New GPS readout widget",
+                    detail: "A GPS panel showing signal quality, altitude, ground speed and track. It uses your Stratux fix when connected (with satellite count), and falls back to the on-device GPS otherwise — with a badge so you always know which one you're seeing. Turn it on from the Widgets menu in the top bar."),
+                WhatsNewHighlight(
+                    icon: "gauge.with.dots.needle.bottom.50percent",
+                    title: "Granular battery diagnostics",
+                    detail: "Settings → General → Battery diagnostics now breaks the drain down by subsystem — live CPU load, the map's actual frame rate (to catch the map redrawing when it should be idle), and how much of each minute transcription is running — grouped by what the app was doing. This is how we pin down what's heating the device. Enable it, fly a session (try it once with transcription stopped for a clean read), then Copy the log."),
+            ]),
+        ReleaseNote(
             build: 64, version: "1.0", headline: "Map fixes from your feedback",
             highlights: [
                 WhatsNewHighlight(
