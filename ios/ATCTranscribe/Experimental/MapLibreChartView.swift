@@ -17,6 +17,14 @@ import CoreLocation
 struct MapLibreChartView: UIViewRepresentable {
     let store: ChartStore
     var routeCoords: [CLLocationCoordinate2D]
+    var ownship: CLLocationCoordinate2D? = nil
+    var ownshipCourse: Double? = nil
+    var traffic: [Aircraft] = []
+    var tfrs: [TFR] = []
+    var showTFRs: Bool = false
+    var plateOverlay: PlateOverlayState? = nil
+    var routeIdents: Set<String> = []
+    var onTapObjects: ([IdentifiedObject]) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator { Coordinator(store: store, routeCoords: routeCoords) }
 
@@ -31,12 +39,24 @@ struct MapLibreChartView: UIViewRepresentable {
         } else {
             map.setCenter(CLLocationCoordinate2D(latitude: 39, longitude: -96), zoomLevel: 3.2, animated: false)
         }
+        // Tap = identify; long-press = drop a user waypoint (MapLibre has no built-in long-press → free).
+        map.addGestureRecognizer(UITapGestureRecognizer(target: context.coordinator,
+                                                        action: #selector(Coordinator.handleTap(_:))))
+        map.addGestureRecognizer(UILongPressGestureRecognizer(target: context.coordinator,
+                                                              action: #selector(Coordinator.handleLongPress(_:))))
         context.coordinator.attach(map)
         return map
     }
 
     func updateUIView(_ uiView: MLNMapView, context: Context) {
-        context.coordinator.updateRoute(routeCoords, on: uiView)
+        let c = context.coordinator
+        c.onTapObjects = onTapObjects
+        c.routeIdents = routeIdents
+        c.updateRoute(routeCoords, on: uiView)
+        c.updateOwnship(ownship, course: ownshipCourse, on: uiView)
+        c.updateTraffic(traffic, on: uiView)
+        c.updateTFRs(showTFRs ? tfrs : [], on: uiView)
+        c.updatePlate(plateOverlay, on: uiView)
     }
 
     static func dismantleUIView(_ uiView: MLNMapView, coordinator: Coordinator) { coordinator.server.stop() }
@@ -50,6 +70,14 @@ struct MapLibreChartView: UIViewRepresentable {
         private weak var map: MLNMapView?
         private var overlayGen = 0                 // drops stale async overlay refreshes (mirrors contextGen)
         private var wantFixes = false              // hysteretic GPS-fix visibility (show scale<2.2, hide >2.7)
+        var onTapObjects: (([IdentifiedObject]) -> Void)?
+        var routeIdents: Set<String> = []
+        var tfrByID: [String: TFR] = [:]           // full TFRs, recovered from a tapped feature's "id"
+        private var cachedTFRs: [TFR] = []         // applied at didFinishLoading if the style wasn't ready yet
+        private var plateState: PlateOverlayState? // last plate applied; diffed against below to avoid churn
+        private var plateKey: String?
+        private var plateOpacity: Double?
+        private var plateInverted: Bool?
 
         init(store: ChartStore, routeCoords: [CLLocationCoordinate2D]) {
             self.store = store
@@ -92,10 +120,15 @@ struct MapLibreChartView: UIViewRepresentable {
         }
 
         func mapView(_ mapView: MLNMapView, didFinishLoading style: MLNStyle) {
-            setupOverlayLayers(style)            // airways + airspace layers (empty; filled per region)
-            updateRoute(routeCoords, on: mapView)   // route added last → sits above airspace
+            setupOverlayLayers(style)            // airspace/airways/nav + TFR/route/traffic/ownship (empty)
+            updateRoute(routeCoords, on: mapView)
             ensureVisiblePacks(mapView)
             refreshOverlays(mapView)
+            // Re-apply anything updateUIView cached before the style finished loading (same idiom as route).
+            updateOwnship(lastOwnship, course: lastOwnCourse, on: mapView)
+            updateTraffic(lastTraffic, on: mapView)
+            updateTFRs(cachedTFRs, on: mapView)
+            updatePlate(plateState, on: mapView)
         }
 
         /// Load the chart packs under the region the user settles on (as MapHostView does), so panning the
@@ -181,6 +214,57 @@ struct MapLibreChartView: UIViewRepresentable {
             nav.textOptional = NSExpression(forConstantValue: true)     // drop the ident before the glyph on collision
             nav.minimumZoomLevel = 5.5
             style.addLayer(nav)
+
+            setupDynamicLayers(style)
+        }
+
+        /// TFR + route + traffic + ownship layers (empty; driven by updateUIView, not by region). Stacked on
+        /// top of the static context so the route/traffic/ownship read above everything (as MK annotations do).
+        private func setupDynamicLayers(_ style: MLNStyle) {
+            let red = ChartMapView.Coordinator.airspaceColor("TFR")     // #F71433 — reuse, no hand-typed hex
+            let tfrSrc = MLNShapeSource(identifier: "tfr", shape: nil, options: nil); style.addSource(tfrSrc)
+            let tfrFill = MLNFillStyleLayer(identifier: "tfr-fill", source: tfrSrc)   // no minzoom: TFRs show at any zoom
+            tfrFill.fillColor = NSExpression(forConstantValue: red); tfrFill.fillOpacity = NSExpression(forConstantValue: 0.18)
+            style.addLayer(tfrFill)
+            let tfrLine = MLNLineStyleLayer(identifier: "tfr-outline", source: tfrSrc)
+            tfrLine.lineColor = NSExpression(forConstantValue: red); tfrLine.lineWidth = NSExpression(forConstantValue: 2.4)
+            tfrLine.lineCap = NSExpression(forConstantValue: "round"); tfrLine.lineJoin = NSExpression(forConstantValue: "round")
+            style.addLayer(tfrLine)
+            let tfrLblSrc = MLNShapeSource(identifier: "tfr-labels", shape: nil, options: nil); style.addSource(tfrLblSrc)
+            let tfrLbl = MLNSymbolStyleLayer(identifier: "tfr-label", source: tfrLblSrc)
+            tfrLbl.text = NSExpression(forKeyPath: "alt"); tfrLbl.textFontNames = NSExpression(forConstantValue: ["Arial Bold"])
+            tfrLbl.textFontSize = NSExpression(forConstantValue: 9); tfrLbl.textColor = NSExpression(forConstantValue: red)
+            tfrLbl.textHaloColor = NSExpression(forConstantValue: UIColor.black.withAlphaComponent(0.6))
+            tfrLbl.textHaloWidth = NSExpression(forConstantValue: 1.2); tfrLbl.textLineHeight = NSExpression(forConstantValue: 1.0)
+            tfrLbl.minimumZoomLevel = 5.0
+            style.addLayer(tfrLbl)
+
+            // Route (persistent source so ownship/traffic can sit above it).
+            let routeSrc = MLNShapeSource(identifier: "route", shape: nil, options: nil); style.addSource(routeSrc)
+            let route = MLNLineStyleLayer(identifier: "route-line", source: routeSrc)
+            route.lineColor = NSExpression(forConstantValue: UIColor(red: 0.95, green: 0.24, blue: 0.62, alpha: 1))
+            route.lineWidth = NSExpression(forConstantValue: 3.0)
+            route.lineCap = NSExpression(forConstantValue: "round"); route.lineJoin = NSExpression(forConstantValue: "round")
+            style.addLayer(route)
+
+            style.setImage(ChartMapView.Coordinator.traffic, forName: "own-traffic")
+            style.setImage(ChartMapView.Coordinator.ownPlane, forName: "own-ship")
+            let trafficSrc = MLNShapeSource(identifier: "traffic", shape: nil, options: nil); style.addSource(trafficSrc)
+            let traffic = MLNSymbolStyleLayer(identifier: "traffic-sym", source: trafficSrc)
+            traffic.iconImageName = NSExpression(forConstantValue: "own-traffic")
+            traffic.iconRotation = NSExpression(forKeyPath: "rot")          // pre-baked (track - 90)
+            traffic.iconRotationAlignment = NSExpression(forConstantValue: "map")
+            traffic.iconAllowsOverlap = NSExpression(forConstantValue: true)   // traffic must never collide away
+            traffic.iconIgnoresPlacement = NSExpression(forConstantValue: true)
+            style.addLayer(traffic)
+            let ownSrc = MLNShapeSource(identifier: "ownship", shape: nil, options: nil); style.addSource(ownSrc)
+            let own = MLNSymbolStyleLayer(identifier: "ownship-sym", source: ownSrc)
+            own.iconImageName = NSExpression(forConstantValue: "own-ship")
+            own.iconRotation = NSExpression(forKeyPath: "rot")             // pre-baked (course - 90)
+            own.iconRotationAlignment = NSExpression(forConstantValue: "map")
+            own.iconAllowsOverlap = NSExpression(forConstantValue: true)
+            own.iconIgnoresPlacement = NSExpression(forConstantValue: true)
+            style.addLayer(own)
         }
 
         /// Register the FAA nav glyphs (reusing the app's exact NearbyMarkerView drawings) under the names
@@ -266,7 +350,10 @@ struct MapLibreChartView: UIViewRepresentable {
                 for ring in a.rings {                                      // bounded by the 260 cap
                     var c = ring.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) }
                     let f = MLNPolygonFeature(coordinates: &c, count: UInt(c.count))
-                    f.attributes = ["cls": a.cls]
+                    var at: [String: Any] = ["cls": a.cls, "name": a.name]   // name/floor/ceiling for the tap card
+                    if let fl = a.floorFt { at["floorFt"] = fl }
+                    if let cl = a.ceilingFt { at["ceilingFt"] = cl }         // omit nil ints (MLN attrs reject NSNull)
+                    f.attributes = at
                     polys.append(f)
                     if polys.count >= 260 { break building }
                 }
@@ -369,7 +456,14 @@ struct MapLibreChartView: UIViewRepresentable {
                         tileURLTemplates: ["http://127.0.0.1:\(server.port)/{z}/{x}/{y}"],
                         options: [.tileSize: 256, .maximumZoomLevel: 16])
                     style.addSource(fresh)
-                    style.addLayer(MLNRasterStyleLayer(identifier: "faa", source: fresh))
+                    // INSERT the raster at the BOTTOM (below the first vector layer) so a pack re-mount never
+                    // lifts the chart above the airspace/nav/plate overlays.
+                    let faaRaster = MLNRasterStyleLayer(identifier: "faa", source: fresh)
+                    if let bottom = style.layer(withIdentifier: "airways-line") {
+                        style.insertLayer(faaRaster, below: bottom)
+                    } else {
+                        style.addLayer(faaRaster)
+                    }
                 }
             }
         }
@@ -378,20 +472,165 @@ struct MapLibreChartView: UIViewRepresentable {
 
         func updateRoute(_ coords: [CLLocationCoordinate2D], on mapView: MLNMapView) {
             routeCoords = coords
-            guard let style = mapView.style else { return }
-            if let oldL = style.layer(withIdentifier: "route-line") { style.removeLayer(oldL) }
-            if let old = style.source(withIdentifier: "route") { style.removeSource(old) }
-            guard coords.count >= 2 else { return }
+            guard let src = mapView.style?.source(withIdentifier: "route") as? MLNShapeSource else { return }
+            guard coords.count >= 2 else { src.shape = nil; return }
             var c = coords
-            let line = MLNPolylineFeature(coordinates: &c, count: UInt(c.count))
-            let src = MLNShapeSource(identifier: "route", shape: line, options: nil)
-            style.addSource(src)
-            let layer = MLNLineStyleLayer(identifier: "route-line", source: src)
-            layer.lineColor = NSExpression(forConstantValue: UIColor(red: 0.95, green: 0.24, blue: 0.62, alpha: 1))
-            layer.lineWidth = NSExpression(forConstantValue: 3.0)
-            layer.lineCap = NSExpression(forConstantValue: "round")
-            layer.lineJoin = NSExpression(forConstantValue: "round")
-            style.addLayer(layer)
+            src.shape = MLNPolylineFeature(coordinates: &c, count: UInt(c.count))
+        }
+
+        // MARK: ownship + traffic (milestone 5)
+
+        private var lastOwnship: CLLocationCoordinate2D?
+        private var lastOwnCourse: Double?
+        private var lastTraffic: [Aircraft] = []
+
+        /// A single static ownship marker (no pulsing showsUserLocation dot — we render our own). The SF
+        /// "airplane" glyph draws nose-EAST, so rot = course - 90 to make the nose point along the heading.
+        func updateOwnship(_ coord: CLLocationCoordinate2D?, course: Double?, on map: MLNMapView) {
+            lastOwnship = coord; lastOwnCourse = course
+            guard let src = map.style?.source(withIdentifier: "ownship") as? MLNShapeSource else { return }
+            guard let coord else { src.shape = nil; return }             // no fix → hide (MK removes the annotation)
+            let f = MLNPointFeature(); f.coordinate = coord
+            f.attributes = ["rot": (course.map { $0 - 90 } ?? 0)]
+            src.shape = f
+        }
+
+        /// Live ADS-B/Stratux traffic, deduped by ICAO hex, rotated by track. Bounded (rule 2).
+        func updateTraffic(_ aircraft: [Aircraft], on map: MLNMapView) {
+            lastTraffic = aircraft
+            guard let src = map.style?.source(withIdentifier: "traffic") as? MLNShapeSource else { return }
+            var seen = Set<String>(); var out: [MLNPointFeature] = []
+            for ac in aircraft.prefix(128) {                             // bounded (rule 2)
+                guard let c = ac.coordinate, !ac.hex.isEmpty, seen.insert(ac.hex).inserted else { continue }
+                let f = MLNPointFeature()
+                f.coordinate = CLLocationCoordinate2D(latitude: c.lat, longitude: c.lon)
+                f.attributes = ["rot": (ac.trackDeg ?? 0) - 90, "hex": ac.hex, "label": ac.label ?? "Traffic"]
+                out.append(f)
+            }
+            assert(out.count <= 128, "updateTraffic: field bound exceeded")
+            src.shape = MLNShapeCollectionFeature(shapes: out)
+        }
+
+        // MARK: live TFRs (milestone 6)
+
+        func updateTFRs(_ tfrs: [TFR], on map: MLNMapView) {
+            cachedTFRs = tfrs
+            tfrByID = Dictionary(tfrs.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+            guard let style = map.style else { return }                  // style not up yet → didFinishLoading re-applies
+            let f = Coordinator.tfrFeatures(tfrs)
+            (style.source(withIdentifier: "tfr") as? MLNShapeSource)?.shape = MLNShapeCollectionFeature(shapes: f.polys)
+            (style.source(withIdentifier: "tfr-labels") as? MLNShapeSource)?.shape = MLNShapeCollectionFeature(shapes: f.labels)
+        }
+
+        /// One polygon per TFR (single ring) + an altitude-block point. nonisolated; bounded; >=2 assertions.
+        static func tfrFeatures(_ tfrs: [TFR]) -> (polys: [MLNPolygonFeature], labels: [MLNPointFeature]) {
+            assert(tfrs.count <= 4096, "tfrFeatures: absurd TFR count")
+            var polys: [MLNPolygonFeature] = []; var lbls: [MLNPointFeature] = []
+            for t in tfrs.prefix(400) where t.polygon.count >= 3 {       // bounded + ring guard (TFRMapLayer)
+                var c = t.polygon.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) }
+                let f = MLNPolygonFeature(coordinates: &c, count: UInt(c.count))
+                f.attributes = ["id": t.id, "cls": "TFR"]
+                polys.append(f)
+                if let top = t.labelCoord {
+                    let p = MLNPointFeature(); p.coordinate = CLLocationCoordinate2D(latitude: top.lat, longitude: top.lon)
+                    p.attributes = ["alt": "\(AirspaceLabelAnnotation.altText(t.ceilingFt))\n\(AirspaceLabelAnnotation.altText(t.floorFt))"]
+                    lbls.append(p)
+                }
+            }
+            assert(polys.count <= 400, "tfrFeatures: cap exceeded")
+            return (polys, lbls)
+        }
+
+        // MARK: georeferenced plate overlay (milestone 7)
+
+        /// Add / update-in-place / remove the overlaid approach plate as an MLNImageSource (a warped raster
+        /// from the 4 geo corners). rasterOpacity + image swap are honored GPU props — no rebuild, no mask
+        /// hack (the layer sits above the labels, so MapLibre's z-order covers them for free).
+        func updatePlate(_ s: PlateOverlayState?, on map: MLNMapView) {
+            plateState = s
+            guard let style = map.style else { return }
+            guard let s else {
+                if let l = style.layer(withIdentifier: "plate-raster") { style.removeLayer(l) }
+                if let src = style.source(withIdentifier: "plate") { style.removeSource(src) }
+                plateKey = nil; plateOpacity = nil; plateInverted = nil; return
+            }
+            if let src = style.source(withIdentifier: "plate") as? MLNImageSource,
+               let layer = style.layer(withIdentifier: "plate-raster") as? MLNRasterStyleLayer {
+                if plateKey != s.geoKey { src.coordinates = Coordinator.plateQuad(s) }
+                if plateInverted != s.inverted { src.image = s.displayImage }
+                if plateOpacity != s.opacity { layer.rasterOpacity = NSExpression(forConstantValue: s.opacity) }
+            } else {
+                let src = MLNImageSource(identifier: "plate", coordinateQuad: Coordinator.plateQuad(s), image: s.displayImage)
+                style.addSource(src)
+                let layer = MLNRasterStyleLayer(identifier: "plate-raster", source: src)
+                layer.rasterOpacity = NSExpression(forConstantValue: s.opacity)
+                layer.rasterOpacityTransition = MLNTransition(duration: 0, delay: 0)   // slider must be instant
+                style.addLayer(layer)                                     // appends on top → above the labels
+            }
+            plateKey = s.geoKey; plateOpacity = s.opacity; plateInverted = s.inverted
+        }
+
+        /// The 4 geo corners as an MLNCoordinateQuad {topLeft, bottomLeft, bottomRight, topRight}.
+        static func plateQuad(_ s: PlateOverlayState) -> MLNCoordinateQuad {
+            func corner(_ dx: Double, _ dy: Double) -> CLLocationCoordinate2D {
+                PlatePlacement.corner(centerLat: s.centerLat, centerLon: s.centerLon,
+                                      widthMeters: s.widthMeters, heightMeters: s.heightMeters,
+                                      rotationDeg: s.rotationDeg, dxSign: dx, dySign: dy)
+            }
+            return MLNCoordinateQuadMake(corner(-1, 1), corner(-1, -1), corner(1, -1), corner(1, 1))
+        }
+
+        // MARK: tap-to-identify (milestone 8)
+
+        @objc func handleTap(_ gr: UITapGestureRecognizer) {
+            guard let mv = map, gr.state == .ended else { return }
+            probe(at: gr.location(in: mv), in: mv, radius: 24, userPoint: false)
+        }
+        @objc func handleLongPress(_ gr: UILongPressGestureRecognizer) {
+            guard gr.state == .began, let mv = map else { return }
+            probe(at: gr.location(in: mv), in: mv, radius: 40, userPoint: true)
+        }
+
+        /// Identify what's under the finger via MapLibre's feature query (its polygon hit-test replaces the
+        /// old pointInRing) and present the same object card. Main-actor + synchronous.
+        private func probe(at pt: CGPoint, in mv: MLNMapView, radius: CGFloat, userPoint: Bool) {
+            let ll = mv.convert(pt, toCoordinateFrom: mv)
+            let here = Coord(lat: ll.latitude, lon: ll.longitude)
+            let rect = CGRect(x: pt.x - radius, y: pt.y - radius, width: radius * 2, height: radius * 2)
+            func dist(_ c: CLLocationCoordinate2D) -> Double { let s = mv.convert(c, toPointTo: mv); return Double(hypot(s.x - pt.x, s.y - pt.y)) }
+            var cands: [(object: IdentifiedObject, distance: Double)] = []
+            for f in mv.visibleFeatures(in: rect, styleLayerIdentifiers: ["nav-sym"]) {
+                guard let g = f.attributes["glyph"] as? String, let id = f.attributes["ident"] as? String else { continue }
+                let kind: MapObjectKind = g == "nav-airport" ? .airport : (g == "nav-fix" ? .fix : .vor)
+                let c = (f as? MLNPointFeature)?.coordinate ?? ll
+                cands.append((IdentifiedObject(kind: kind, ident: id, coord: Coord(lat: c.latitude, lon: c.longitude),
+                                               onRoute: routeIdents.contains(id)), dist(c)))
+            }
+            for f in mv.visibleFeatures(in: rect, styleLayerIdentifiers: ["airways-line"]) {
+                guard let id = f.attributes["ident"] as? String else { continue }
+                cands.append((IdentifiedObject(kind: .airway, ident: id, coord: here, onRoute: false,
+                                               airwayArea: (f.attributes["area"] as? String) ?? "USA"), 0))
+            }
+            var results = MapProbe.rank(cands, within: Double(radius))
+            for f in mv.visibleFeatures(in: rect, styleLayerIdentifiers: ["airspace-fill"]) {
+                guard let cls = f.attributes["cls"] as? String, let name = f.attributes["name"] as? String else { continue }
+                let asp = Airspace(id: 0, cls: cls, name: name,
+                                   floorFt: (f.attributes["floorFt"] as? NSNumber)?.intValue,
+                                   ceilingFt: (f.attributes["ceilingFt"] as? NSNumber)?.intValue,
+                                   bb: BBox(minLat: here.lat, minLon: here.lon, maxLat: here.lat, maxLon: here.lon), rings: [])
+                if !results.contains(where: { $0.kind == .airspace && $0.ident == name }) {
+                    results.append(IdentifiedObject(kind: .airspace, ident: name, coord: here, onRoute: false, airspace: asp))
+                }
+            }
+            for f in mv.visibleFeatures(in: rect, styleLayerIdentifiers: ["tfr-fill"]) {
+                guard let id = f.attributes["id"] as? String, let t = tfrByID[id] else { continue }
+                if !results.contains(where: { $0.tfr?.id == id }) {
+                    results.append(IdentifiedObject(kind: .tfr, ident: id, coord: t.labelCoord ?? here, onRoute: false, tfr: t))
+                }
+            }
+            if userPoint { results.insert(IdentifiedObject(kind: .userPoint, ident: UserPoint.token(here), coord: here, onRoute: false), at: 0) }
+            guard !results.isEmpty else { return }
+            onTapObjects?(results)
         }
     }
 }
@@ -399,10 +638,23 @@ struct MapLibreChartView: UIViewRepresentable {
 /// Full-screen host: owns a ChartStore, downloads the route corridor, and shows the globe chart with an
 /// EXPERIMENTAL banner + ✕. Uses the app's filed plan if present, else a demo route.
 struct MapLibreChartScreen: View {
-    let model: AppModel
+    @ObservedObject var model: AppModel                 // re-render body on plate/tfr/aircraft @Published changes
     var onClose: (() -> Void)?
     @StateObject private var store = ChartStore(library: ChartLibrary.shared)
+    @StateObject private var metars = MetarStore()      // the tapped-object card's env objects (may stay empty)
+    @StateObject private var forecasts = ForecastStore()
+    @StateObject private var tafs = TafStore()
     @State private var didLoad = false
+    // Device GPS is a NESTED ObservableObject that doesn't republish the parent — bridge it like MapHostView.
+    @State private var deviceCoord: Coord?
+    @State private var deviceCourse: Double?
+    @State private var probe: MapProbeResult?           // the tapped object(s) → object card sheet
+
+    private var ownship: CLLocationCoordinate2D? {
+        let c = model.stratuxGPS?.coordinate ?? deviceCoord
+        return c.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) }
+    }
+    private var ownshipCourse: Double? { model.stratuxGPS?.coordinate == nil ? deviceCourse : nil }
 
     private var legs: [ResolvedLeg] {
         if let plan = model.flightPlan, !plan.isEmpty {
@@ -417,7 +669,17 @@ struct MapLibreChartScreen: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            MapLibreChartView(store: store, routeCoords: routeCoords).ignoresSafeArea()
+            MapLibreChartView(store: store, routeCoords: routeCoords,
+                              ownship: ownship, ownshipCourse: ownshipCourse,
+                              traffic: model.aircraft, tfrs: model.tfrs, showTFRs: model.showTFRs,
+                              plateOverlay: model.plateOverlay,
+                              routeIdents: Set(legs.map { $0.ident }),
+                              onTapObjects: { objs in
+                                  guard !objs.isEmpty else { return }
+                                  Haptics.impact(.light)
+                                  probe = MapProbeResult(id: UUID().uuidString, objects: objs)
+                              })
+                .ignoresSafeArea()
             VStack(alignment: .leading, spacing: 6) {
                 HStack {
                     Text("EXPERIMENTAL · MapLibre chart")
@@ -431,7 +693,7 @@ struct MapLibreChartScreen: View {
                         }
                     }
                 }
-                Text("FAA tiles + route + airspace/airways + labels on MapLibre. Migration milestone 3.")
+                Text("FAA tiles + route + airspace/airways + nav symbols + ownship/traffic + TFR + plate + tap. 1:1 port.")
                     .font(.caption2).foregroundStyle(.white.opacity(0.85))
             }
             .padding(12).background(.black.opacity(0.35))
@@ -441,6 +703,16 @@ struct MapLibreChartScreen: View {
             didLoad = true
             // Pull the sectional packs the route crosses (downloads them if needed) so the FAA layer shows.
             await store.setLayer(.sectional, routeRects: ChartGeo.routeRects(legs))
+        }
+        .onAppear { model.deviceLocation.start() }
+        .onReceive(model.deviceLocation.$coord) { deviceCoord = $0 }
+        .onReceive(model.deviceLocation.$courseDeg) { deviceCourse = $0 }
+        .sheet(item: $probe) { p in
+            MapObjectSheet(result: p)
+                .environmentObject(model)
+                .environmentObject(metars)
+                .environmentObject(forecasts)
+                .environmentObject(tafs)
         }
     }
 
