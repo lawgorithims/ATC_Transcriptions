@@ -16,13 +16,22 @@ import UIKit
 /// packs are mounted right now (they change as the user pans / switches layers).
 final class MBTilesHTTPServer {
     private var listener: NWListener?
-    private let queue = DispatchQueue(label: "commsight.mbtiles.http")
+    // CONCURRENT: MapLibre fires many parallel tile requests when filling a region. MBTilesReader is opened
+    // FULLMUTEX (thread-safe reads) and the reader-array swap is NSLock-guarded, so tiles can decode/upscale
+    // in parallel instead of serializing behind one another on a single serial queue.
+    private let queue = DispatchQueue(label: "commsight.mbtiles.http", attributes: .concurrent)
     private(set) var port: UInt16 = 0
     // The mounted packs, handed over from the main actor (ChartStore is @MainActor) and read under the
     // lock on the listener's background queue. MBTilesReader is opened FULLMUTEX so its own tile queries
     // are thread-safe; only the array swap needs guarding.
     private let lock = NSLock()
     private var readers: [MBTilesReader] = []
+    // Bounded, self-evicting cache of ready-to-serve PNG bytes keyed "packID/z/x/y", so a re-requested tile
+    // skips the SQLite read + WebP transcode / overzoom upscale (mirrors the MKMapView path's shared cache).
+    // NSCache is thread-safe, so it needs no extra locking on the concurrent queue.
+    private let pngCache: NSCache<NSString, NSData> = {
+        let c = NSCache<NSString, NSData>(); c.totalCostLimit = 48 * 1024 * 1024; return c
+    }()
 
     init() {}
 
@@ -30,23 +39,31 @@ final class MBTilesHTTPServer {
     func setReaders(_ r: [MBTilesReader]) { lock.lock(); readers = r; lock.unlock() }
     private func currentReaders() -> [MBTilesReader] { lock.lock(); defer { lock.unlock() }; return readers }
 
-    /// Start listening on an ephemeral loopback port. Returns the port, or nil on failure.
-    @discardableResult
-    func start() -> UInt16? {
-        guard listener == nil else { return port }
+    /// Start the loopback listener WITHOUT blocking the caller. `onReady` is invoked on the MAIN queue with
+    /// the bound port once the listener reaches `.ready` (or 0 on failure) — the caller installs the MapLibre
+    /// style then. This replaces the old synchronous `DispatchSemaphore.wait(timeout: 2)`, which parked the
+    /// MAIN thread (Coordinator.init runs on it) for up to 2s while the listener bound a port.
+    func start(onReady: @escaping (UInt16) -> Void) {
+        guard listener == nil else { if port > 0 { onReady(port) }; return }
         do {
             let params = NWParameters.tcp
             params.requiredInterfaceType = .loopback            // 127.0.0.1 only — never leaves the device
             let l = try NWListener(using: params, on: .any)     // OS picks a free port
             l.newConnectionHandler = { [weak self] conn in self?.handle(conn) }
-            let ready = DispatchSemaphore(value: 0)
-            l.stateUpdateHandler = { state in if case .ready = state { ready.signal() } }
+            l.stateUpdateHandler = { [weak self] state in
+                switch state {
+                case .ready:
+                    let p = l.port?.rawValue ?? 0
+                    self?.port = p
+                    DispatchQueue.main.async { onReady(p) }
+                case .failed, .cancelled:
+                    DispatchQueue.main.async { onReady(0) } // surface the failure instead of a silent 2s stall
+                default: break
+                }
+            }
             l.start(queue: queue)
             listener = l
-            _ = ready.wait(timeout: .now() + 2)                 // wait for the assigned port
-            port = l.port?.rawValue ?? 0
-            return port > 0 ? port : nil
-        } catch { return nil }
+        } catch { DispatchQueue.main.async { onReady(0) } }
     }
 
     func stop() { listener?.cancel(); listener = nil; port = 0 }
@@ -84,13 +101,45 @@ final class MBTilesHTTPServer {
               let x = Int(comps[comps.count - 2]), let y = Int(comps[comps.count - 1]) else { return nil }
         let readers = currentReaders()
         assert(readers.count <= 64, "unexpectedly many chart packs mounted")
+        assert(z >= 0 && z <= 24, "tile: out-of-range zoom")
         for r in readers.prefix(64) {                                    // bounded (rule 2)
             guard z >= r.minZoom, z <= r.maxZoom + MBTilesTileOverlay.overzoomLevels else { continue }
-            guard let raw = r.tileData(z: z, x: x, y: y) else { continue }   // reader flips XYZ→TMS internally
-            if r.format == "png" || r.format == "jpg" || r.format == "jpeg" { return raw }
-            return UIImage(data: raw)?.pngData() ?? raw                   // WebP → PNG for MapLibre
+            let key = "\(r.packID)/\(z)/\(x)/\(y)" as NSString
+            if let hit = pngCache.object(forKey: key) { return hit as Data }
+            let out: Data?
+            if z > r.maxZoom {
+                // Past the pack's data: upscale the deepest ancestor tile (same math as the MKMapView path,
+                // MBTilesTileOverlay.overzoomedTile) so the chart stays visible on close-in/approach zoom
+                // instead of vanishing to bare OSM. Without this the +overzoomLevels band was dead allowance.
+                out = Self.overzoomedPNG(reader: r, z: z, x: x, y: y)
+            } else if let raw = r.tileData(z: z, x: x, y: y) {           // reader flips XYZ→TMS internally
+                out = (r.format == "png" || r.format == "jpg" || r.format == "jpeg")
+                    ? raw : (UIImage(data: raw)?.pngData() ?? raw)       // WebP → PNG for MapLibre
+            } else {
+                out = nil                                                // this pack lacks the tile; try the next
+            }
+            if let out { pngCache.setObject(out as NSData, forKey: key, cost: out.count); return out }
         }
         return nil
+    }
+
+    /// Upscale the deepest available ancestor tile to cover a z>maxZoom request (mirrors
+    /// MBTilesTileOverlay.overzoomedTile; reuses its pure, unit-tested `overzoomSource` math). Bounded.
+    private static func overzoomedPNG(reader r: MBTilesReader, z: Int, x: Int, y: Int) -> Data? {
+        assert(z > r.maxZoom, "overzoomedPNG called at/below the pack's maxZoom")
+        guard let src = MBTilesTileOverlay.overzoomSource(z: z, x: x, y: y, maxZoom: r.maxZoom),
+              let raw = r.tileData(z: r.maxZoom, x: src.ax, y: src.ay),
+              let img = UIImage(data: raw) else { return nil }
+        assert(src.sub > 0, "overzoomedPNG: non-positive sub-tile size")
+        let tile: CGFloat = 256
+        let fmt = UIGraphicsImageRendererFormat.default(); fmt.scale = 1; fmt.opaque = false
+        let outImg = UIGraphicsImageRenderer(size: CGSize(width: tile, height: tile), format: fmt).image { _ in
+            let draw = tile / CGFloat(src.sub)                          // == scale factor
+            let size = CGSize(width: img.size.width * draw, height: img.size.height * draw)
+            img.draw(in: CGRect(x: -CGFloat(src.ox) * draw, y: -CGFloat(src.oy) * draw,
+                                width: size.width, height: size.height))
+        }
+        return outImg.pngData()
     }
 
     /// "/font/Arial%20Bold/0-255.pbf" → the bundled SDF glyph PBF for that fontstack + range. MapLibre
