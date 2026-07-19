@@ -353,6 +353,7 @@ final class AppModel: ObservableObject {
     /// (same pattern as widgetStore/deviceLocation) — observers subscribe to them directly.
     let flightRecorder = FlightRecorder()
     let logbook = Logbook()
+    let rainViewer = RainViewerService()      // live precipitation-radar tiles for the weather-radar layer
     /// A just-finished flight awaiting the save-to-logbook prompt (drives the SaveFlightSheet). Transient.
     @Published var pendingLoggedFlight: LoggedFlight?
     private var deviceGPSPausedForBackground = false   // GPS was running when we backgrounded → resume on foreground
@@ -551,8 +552,10 @@ final class AppModel: ObservableObject {
     /// Bounded MapLibre re-arms after a render-stall fallback (per launch): a genuine blank-until-scene-refresh
     /// dormancy self-heals on the next foreground instead of stranding the CPU-hungry classic map all flight.
     private var mapLibreRetriesLeft = 2
-    @Published var showWxRadar = UserDefaults.standard.bool(forKey: "atc.map.wxRadar") {   // stub overlay for now
-        didSet { UserDefaults.standard.set(showWxRadar, forKey: "atc.map.wxRadar") }
+    /// Live precipitation-radar overlay (RainViewer, internet). Persisted, default off; the RainViewerService
+    /// fetches the latest frame while it's on + foregrounded + not thermally throttled.
+    @Published var showWxRadar = UserDefaults.standard.bool(forKey: "atc.map.wxRadar") {
+        didSet { UserDefaults.standard.set(showWxRadar, forKey: "atc.map.wxRadar"); syncRadar() }
     }
     /// NASA GIBS satellite smoke/true-colour overlay (a separate layer from the radar stub above). A
     /// translucent, prior-day satellite image over the chart — situational context, NOT current weather.
@@ -589,7 +592,7 @@ final class AppModel: ObservableObject {
     /// Updated (with exit hysteresis) from `ProcessInfo.thermalStateDidChangeNotification` via
     /// `applyThermal` — see there for why the exit is delayed.
     @Published var thermalSerious = ProcessInfo.processInfo.thermalState.rawValue >= ProcessInfo.ThermalState.serious.rawValue {
-        didSet { if didFinishInit, thermalSerious != oldValue { syncEONET(); syncTFRs() } }   // hot → pause the pollers too
+        didSet { if didFinishInit, thermalSerious != oldValue { syncEONET(); syncTFRs(); syncRadar() } }   // hot → pause the pollers too
     }
     /// The single pending "clear thermalSerious" timer (M7). A device hovering at the threshold used
     /// to flip thermalSerious repeatedly, and each flip destroys + rebuilds the whole ChartMapView
@@ -2169,6 +2172,10 @@ final class AppModel: ObservableObject {
         syncADSB()
     }
 
+    /// Reconcile the precipitation-radar fetcher: refresh while the layer is on, foregrounded, and not
+    /// thermally throttled (a network + GPU tile layer — pause it when hot, like the other net overlays).
+    func syncRadar() { rainViewer.setEnabled(showWxRadar && scenePhaseActive && !thermalSerious) }
+
     /// Reconcile the Stratux link (traffic WebSocket + GPS poll). Streams whenever the link is
     /// enabled and the app is foregrounded (standby off) — no session or source selection required.
     func syncStratux() {
@@ -2426,6 +2433,7 @@ final class AppModel: ObservableObject {
             prefetchChartsOnLaunch()        // top up charts around the (possibly moved) position
             if deviceGPSPausedForBackground { deviceGPSPausedForBackground = false; deviceLocation.start() }
             flightRecorder.setForegrounded(true)   // resume breadcrumb sampling
+            syncRadar()                            // resume the weather-radar fetch
             // Give MapLibre another chance after a render-stall fallback (bounded): clearing the flag republishes
             // → MapHostView re-swaps to the MapLibre map → a fresh createMap re-arms the staggered watchdog.
             if useMapLibreMap, mapLibreRenderFailed, mapLibreRetriesLeft > 0 {
@@ -2449,6 +2457,7 @@ final class AppModel: ObservableObject {
             guard scenePhaseActive else { return }
             scenePhaseActive = false
             flightRecorder.setForegrounded(false)   // flush the trail to disk before GPS pauses (below)
+            syncRadar()                             // stop the weather-radar fetch in the background
             clearTraffic()
             // Stop capture so the feed isn't streamed/played in the background, and release the audio
             // session so the `audio` background mode can't keep the app awake (the battery drain + the

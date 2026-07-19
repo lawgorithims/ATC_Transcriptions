@@ -49,8 +49,14 @@ struct MapLayersMenu: View {
             if model.showSmoke {
                 Text("NASA satellite · imagery \(GIBSTileOverlay.priorUTCDay(from: Date())) UTC — context, not current weather")
             }
-            Toggle(isOn: $model.showWxRadar) { Label("Weather radar — coming soon", systemImage: "cloud.rain") }
-                .disabled(true)
+            Toggle(isOn: $model.showWxRadar) { Label("Weather radar (precip)", systemImage: "cloud.rain") }
+            if model.showWxRadar {
+                if model.rainViewer.tileTemplate != nil {
+                    Text("Live precipitation · \(RainViewerService.attribution) · needs internet")
+                } else {
+                    Text("Loading radar from \(RainViewerService.attribution)…")
+                }
+            }
             Divider()
             Toggle(isOn: $model.terrain3DEnabled) { Label("3D terrain (Map/Satellite)", systemImage: "mountain.2") }
             if model.terrain3DEnabled {
