@@ -402,6 +402,7 @@ final class AppModel: ObservableObject {
     var offersForeFlight: Bool { foreflightEnabled && foreflightInstalled }
     private var lastEFBRecordID: UUID?
     private var efbCancellable: AnyCancellable?
+    private var deviceCoordCancellable: AnyCancellable?   // re-centers online ADS-B as the aircraft moves
     /// Cached EFB command grounding (fixes/airports/SIDs/STARs), keyed on the (airport ident, plan)
     /// it was built for, so `interpretForEFB` doesn't hit CIFP (SQLite) on the main actor per
     /// transmission (L4). Rebuilt off-main by `refreshEFBGrounding` on the setupLive commit and on
@@ -1110,6 +1111,9 @@ final class AppModel: ObservableObject {
         // flight that was awaiting its save prompt at a crash so it isn't lost.
         flightRecorder.fixProvider = { [weak self] in self?.currentBreadcrumbFix() }
         if let recovered = flightRecorder.recoveredPendingSave { pendingLoggedFlight = recovered }
+        // Keep the online-ADS-B poll centered on the aircraft as it flies (throttled to ~10 NM).
+        deviceCoordCancellable = deviceLocation.$coord
+            .sink { [weak self] _ in self?.recenterADSBIfMoved() }
         // Bring the traffic providers in line with the restored state: the Stratux link is decoupled
         // from Start (see `stratuxTrafficActive`), so an enabled link must connect at launch — nothing
         // else fires an edge on a plain foreground launch (`scenePhaseActive` starts true, making the
@@ -2124,11 +2128,12 @@ final class AppModel: ObservableObject {
 
     // MARK: ADS-B live traffic
 
-    /// Whether airplanes.live (internet) ADS-B should be polling now. Session-coupled by design (its
-    /// Settings copy promises it only runs while transcribing) and suppressed while the Stratux link
-    /// is streaming — that path provides traffic on-board instead (works with no internet), and both
-    /// providers publish into the same `applyTraffic`, so at most one may run.
-    private var adsbActive: Bool { adsbStreamingEnabled && !stratuxTrafficActive && isRunning && liveMode && scenePhaseActive }
+    /// Whether airplanes.live (internet) ADS-B should be polling now. It's a standalone TRAFFIC LAYER: it
+    /// runs whenever the layer is toggled on and the app is foregrounded (standby off) — independent of a
+    /// transcription session (mirrors how the Stratux link streams). Suppressed while the Stratux link is
+    /// streaming (that path provides traffic on-board, works offline); both publish into the same
+    /// `applyTraffic`, so at most one runs.
+    private var adsbActive: Bool { adsbStreamingEnabled && !stratuxTrafficActive && scenePhaseActive && !standby }
     /// Whether the Stratux link should be streaming traffic/GPS now: whenever it's enabled, the app
     /// is foregrounded, and standby is off — independent of the input source and of a running
     /// session (audio still requires picking the source + Start; see `beginCapture`). `!standby`
@@ -2146,10 +2151,22 @@ final class AppModel: ObservableObject {
     /// Reconcile the airplanes.live poller (single edge-triggered call). Polls only while online ADS-B
     /// is ON, the Stratux link is not streaming, a live session is running, and the app is foregrounded.
     func syncADSB() {
-        let center = facilityCoordinate()
+        // Center on the AIRCRAFT (present position) so traffic follows you in flight, falling back to the
+        // airport context when there's no fix yet. Re-centered as you move via recenterADSBIfMoved.
+        let center = presentPosition ?? facilityCoordinate()
+        lastADSBCenter = center
         let active = adsbActive
         let service = adsbService
         Task { await service?.sync(center: center, enabled: active) }
+    }
+
+    private var lastADSBCenter: Coord?
+    /// Re-center the ADS-B poll once the aircraft has flown far enough that traffic ahead would leave the
+    /// ~30 NM radius — throttled to ~10 NM so a moving fix doesn't thrash the poller's contact list.
+    func recenterADSBIfMoved() {
+        guard adsbActive, let pos = presentPosition else { return }
+        if let last = lastADSBCenter, Geo.nmBetween(last, pos) <= 10 { return }
+        syncADSB()
     }
 
     /// Reconcile the Stratux link (traffic WebSocket + GPS poll). Streams whenever the link is
