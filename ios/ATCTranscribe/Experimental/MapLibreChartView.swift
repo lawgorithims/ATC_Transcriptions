@@ -21,6 +21,7 @@ struct MapLibreChartView: UIViewRepresentable {
     var layer: ChartLayer = .sectional               // FAA base layer (sectional / IFR-low / IFR-high)
     var routeCoords: [CLLocationCoordinate2D]
     var breadcrumbCoords: [CLLocationCoordinate2D] = []   // flight-recorder trail (translucent orange)
+    var radarTemplate: String? = nil                      // live precipitation-radar tile URL (nil = off)
     var ownship: CLLocationCoordinate2D? = nil
     var ownshipCourse: Double? = nil
     var traffic: [Aircraft] = []
@@ -61,7 +62,7 @@ struct MapLibreChartView: UIViewRepresentable {
         let c = context.coordinator
         c.onVisibleRegion = onVisibleRegion
         c.cacheInputs(layer: layer, routeCoords: routeCoords, breadcrumbCoords: breadcrumbCoords,
-                      ownship: ownship, ownshipCourse: ownshipCourse,
+                      radarTemplate: radarTemplate, ownship: ownship, ownshipCourse: ownshipCourse,
                       traffic: traffic, tfrs: showTFRs ? tfrs : [], showAirspace: showAirspace,
                       showNearby: showNearby, showAirways: showAirways, plateOverlay: plateOverlay,
                       routeIdents: routeIdents, focus: focus, restoreCamera: restoreCamera,
@@ -115,6 +116,8 @@ struct MapLibreChartView: UIViewRepresentable {
         private var inBreadcrumb: [CLLocationCoordinate2D] = []
         private var trackCoords: [CLLocationCoordinate2D] = []   // last-applied trail (re-applied after a style reload)
         private var appliedTrackCount = -1                       // cheap change signature (append-only + reset-to-0)
+        private var inRadarTemplate: String?                     // latest radar tile URL from updateUIView
+        private var appliedRadarTemplate: String??              // last-applied (double-optional: distinguishes "never applied")
         private var inOwnship: CLLocationCoordinate2D?
         private var inOwnCourse: Double?
         private var inTraffic: [Aircraft] = []
@@ -125,13 +128,14 @@ struct MapLibreChartView: UIViewRepresentable {
 
         /// Stash the latest inputs from updateUIView (called every body eval, even before the map exists).
         func cacheInputs(layer: ChartLayer, routeCoords: [CLLocationCoordinate2D],
-                         breadcrumbCoords: [CLLocationCoordinate2D], ownship: CLLocationCoordinate2D?,
+                         breadcrumbCoords: [CLLocationCoordinate2D], radarTemplate: String?,
+                         ownship: CLLocationCoordinate2D?,
                          ownshipCourse: Double?, traffic: [Aircraft], tfrs: [TFR], showAirspace: Bool,
                          showNearby: Bool, showAirways: Bool, plateOverlay: PlateOverlayState?,
                          routeIdents: Set<String>, focus: Coord?, restoreCamera: SavedMapCamera?,
                          onTap: @escaping ([IdentifiedObject]) -> Void,
                          onAnchors: @escaping ((CGPoint, CGPoint)?) -> Void) {
-            inLayer = layer; inRoute = routeCoords; inBreadcrumb = breadcrumbCoords
+            inLayer = layer; inRoute = routeCoords; inBreadcrumb = breadcrumbCoords; inRadarTemplate = radarTemplate
             inOwnship = ownship; inOwnCourse = ownshipCourse
             inTraffic = traffic; inTFRs = tfrs; inShowAirspace = showAirspace; inShowNearby = showNearby
             inShowAirways = showAirways; inPlate = plateOverlay; inFocus = focus; self.restoreCamera = restoreCamera
@@ -148,6 +152,7 @@ struct MapLibreChartView: UIViewRepresentable {
             Task { @MainActor [weak self, weak map] in guard let self, let map else { return }; self.syncFAASource(on: map) }
             updateRoute(inRoute, on: map)
             updateTrack(inBreadcrumb, on: map)
+            updateRadar(inRadarTemplate, on: map)
             applyOverlayToggles(inShowAirspace, inShowNearby, inShowAirways, on: map)
             updateOwnship(inOwnship, course: inOwnCourse, on: map)
             updateTraffic(inTraffic, on: map)
@@ -318,9 +323,11 @@ struct MapLibreChartView: UIViewRepresentable {
         func mapView(_ mapView: MLNMapView, didFinishLoading style: MLNStyle) {
             servedReadersSig = nil               // the faa source is freshly (re)created empty here → force a remount
             appliedTrackCount = -1               // the "track" source is recreated empty → force a re-apply below
+            appliedRadarTemplate = nil           // wxradar source gone after reload → force updateRadar to re-add
             setupOverlayLayers(style)            // airspace/airways/nav + TFR/route/traffic/ownship (empty)
             updateRoute(routeCoords, on: mapView)
             updateTrack(trackCoords, on: mapView)
+            updateRadar(inRadarTemplate, on: mapView)
             ensureVisiblePacks(mapView)
             refreshOverlays(mapView)
             frameIfNeeded(on: mapView)           // frame now if route/GPS/camera arrived before the style loaded
@@ -387,13 +394,13 @@ struct MapLibreChartView: UIViewRepresentable {
         /// lives in the base style JSON and is re-managed by ensureVisiblePacks. Bounded loops, >=2 asserts.
         private func clearManagedStyle(_ style: MLNStyle) {
             let layers = ["plate-raster", "ownship-sym", "traffic-sym", "route-line", "track-line",
-                          "tfr-label", "tfr-outline", "tfr-fill", "nav-sym",
+                          "wxradar-layer", "tfr-label", "tfr-outline", "tfr-fill", "nav-sym",
                           "airspace-label", "airways-label", "airspace-outline", "airspace-fill",
                           "airways-line", "coastline", "land-fill"]
             for id in layers where style.layer(withIdentifier: id) != nil {          // bounded (rule 2)
                 if let l = style.layer(withIdentifier: id) { style.removeLayer(l) }
             }
-            let sources = ["plate", "ownship", "traffic", "route", "track", "tfr-labels", "tfr",
+            let sources = ["plate", "ownship", "traffic", "route", "track", "wxradar", "tfr-labels", "tfr",
                            "nav", "airspace-labels", "airspace", "airways", "land"]
             for id in sources where style.source(withIdentifier: id) != nil {        // bounded (rule 2)
                 if let s = style.source(withIdentifier: id) { style.removeSource(s) }
@@ -807,6 +814,28 @@ struct MapLibreChartView: UIViewRepresentable {
             guard coords.count >= 2 else { src.shape = nil; return }
             var c = coords
             src.shape = MLNPolylineFeature(coordinates: &c, count: UInt(c.count))
+        }
+
+        /// Live precipitation-radar raster (RainViewer). A remote raster source added ABOVE the FAA chart but
+        /// BELOW the vector overlays. The tile URL rolls over ~every 10 min → remove/re-add the source when the
+        /// template changes (or is cleared). Signature-gated so an unchanged template is a no-op per tick.
+        func updateRadar(_ template: String?, on map: MLNMapView) {
+            guard let style = map.style else { return }
+            guard appliedRadarTemplate == nil || appliedRadarTemplate! != template else { return }  // unchanged
+            appliedRadarTemplate = .some(template)
+            if let l = style.layer(withIdentifier: "wxradar-layer") { style.removeLayer(l) }
+            if let s = style.source(withIdentifier: "wxradar") { style.removeSource(s) }
+            guard let template else { return }   // nil → radar off (removed above)
+            let src = MLNRasterTileSource(identifier: "wxradar", tileURLTemplates: [template],
+                                          options: [.tileSize: 256])
+            style.addSource(src)
+            let layer = MLNRasterStyleLayer(identifier: "wxradar-layer", source: src)
+            layer.rasterOpacity = NSExpression(forConstantValue: 0.6)   // translucent — chart reads underneath
+            if let above = style.layer(withIdentifier: "airways-line") {   // above faa, below the vector overlays
+                style.insertLayer(layer, below: above)
+            } else {
+                style.addLayer(layer)
+            }
         }
 
         /// The flight-recorder breadcrumb. Append-only during a recording + reset-to-empty on stop, so the

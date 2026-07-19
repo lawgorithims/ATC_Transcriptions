@@ -488,6 +488,7 @@ struct ChartMapView: UIViewRepresentable {
     let route: [ResolvedLeg]
     var procedure: [ResolvedLeg] = []                // a previewed coded procedure (approach/SID/STAR), georeferenced
     var breadcrumb: [Coord] = []                     // flight-recorder trail (translucent orange)
+    var radarTemplate: String? = nil                 // live precipitation-radar tile URL (nil = layer off)
     let showAirspace: Bool
     let showNearby: Bool
     var showAirways: Bool = true     // enroute V/J/T/Q routes as tappable lines (zoom-gated)
@@ -661,6 +662,7 @@ struct ChartMapView: UIViewRepresentable {
         // added/removed on a pan (always inserted at index 0) keeps the chart below the smoke. Gated on
         // the thermal state like the other network map layers so a hot device stops pulling tiles.
         c.syncSmoke(mv, on: model.showSmoke && !model.thermalSerious)
+        c.syncRadar(mv, template: radarTemplate)   // live precipitation radar (nil template = off)
 
         // Reconcile the superimposed plate. Rebuild the MKOverlay only when the PLACEMENT changes
         // (opacity-only changes still need a rebuild since the renderer reads it, but the geoKey
@@ -823,6 +825,8 @@ struct ChartMapView: UIViewRepresentable {
         var tfrOverlayIDs: Set<ObjectIdentifier> = []                  // marks a polygon as a TFR for the renderer
         var tfrByID: [String: TFR] = [:]                              // the full TFR for the tap probe + change detection
         var smokeOverlay: GIBSTileOverlay?                            // NASA GIBS satellite smoke layer (translucent, above the chart)
+        var radarOverlay: RadarTileOverlay?                          // RainViewer precipitation radar (translucent, above the chart)
+        var radarTemplate: String?                                   // last-applied radar tile URL (swap on change)
         private var nearbyByKey: [String: NearbyAnnotation] = [:]   // keyed by NavPoint.id for the same reason
         // Enroute airways — polylines + one midpoint ident label per airway, diffed like the other layers.
         var airwayByIdent: [String: AirwayPolyline] = [:]
@@ -1195,12 +1199,32 @@ struct ChartMapView: UIViewRepresentable {
             }
         }
 
+        /// Reconcile the RainViewer precipitation-radar overlay. Unlike smoke (a static GIBS date), the radar
+        /// tile URL rolls over every ~10 min, so swap the overlay whenever the template CHANGES (or clears).
+        func syncRadar(_ mv: MKMapView, template: String?) {
+            assert(Thread.isMainThread, "overlay mutation must run on the main thread")
+            guard template != radarTemplate else { return }
+            radarTemplate = template
+            if let o = radarOverlay { mv.removeOverlay(o); radarOverlay = nil }
+            guard let template else { return }
+            let o = RadarTileOverlay(urlTemplate: template)
+            o.canReplaceMapContent = false           // draws OVER the chart, never replaces it
+            o.tileSize = CGSize(width: 256, height: 256)
+            mv.insertOverlay(o, at: overlays.count, level: .aboveLabels)
+            radarOverlay = o
+        }
+
         func mapView(_ mv: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
             if let plate = overlay as? PlateImageOverlay { return PlateOverlayRenderer(plate) }
             // GIBS satellite smoke — a translucent tile overlay; matched before the opaque chart tiles.
             if let smoke = overlay as? GIBSTileOverlay {
                 let r = MKTileOverlayRenderer(tileOverlay: smoke)
                 r.alpha = smoke.layer.alpha
+                return r
+            }
+            if let radar = overlay as? RadarTileOverlay {   // precipitation radar — translucent, over the chart
+                let r = MKTileOverlayRenderer(tileOverlay: radar)
+                r.alpha = 0.6
                 return r
             }
             if let tile = overlay as? MKTileOverlay { return MKTileOverlayRenderer(tileOverlay: tile) }
@@ -1723,6 +1747,10 @@ final class NearbyMarkerView: MKAnnotationView {
 /// The flight-recorder breadcrumb polyline — a distinct subclass so the renderer types it (translucent
 /// orange) rather than treating it as the magenta filed route.
 final class TrackPolyline: MKPolyline {}
+
+/// The RainViewer precipitation-radar tile overlay — a distinct subclass so the renderer draws it
+/// translucent (not as an opaque chart layer). RainViewer tiles use a standard {z}/{x}/{y} URL template.
+final class RadarTileOverlay: MKTileOverlay {}
 
 final class AirwayPolyline: MKPolyline {
     var ident = ""
