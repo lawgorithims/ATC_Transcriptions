@@ -44,7 +44,13 @@ struct MapHostView: View {
     /// Apple-only layer (Map/Satellite) has no raster and just renders the base. Either way the pilot
     /// always has a moving map — the toggle only chooses whether the Apple base draws UNDER the chart.
     private var live: Bool {
-        scenePhase != .background && !model.showRouteMap
+        // Render the map ONLY when it's the front tab. It's kept MOUNTED behind the ZStack, but a live
+        // MKMapView / MapLibre map burns CPU/GPU even at opacity 0 behind another tab (the real-flight
+        // battery data showed ~0.6 core still spent on the transcript tab). GPS + the flight recorder run
+        // independently (started once in onAppear, read directly), so pausing the render doesn't stop them;
+        // the camera restores from lastMapCamera on return. Still never gated on THERMAL — heat is handled
+        // by flattening terrain, not by blanking the map on the pilot.
+        scenePhase != .background && !model.showRouteMap && model.selectedTab == .map
     }
 
     var body: some View {

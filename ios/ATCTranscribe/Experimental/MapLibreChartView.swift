@@ -259,11 +259,24 @@ struct MapLibreChartView: UIViewRepresentable {
                 m.styleURL = styleURL
             }
             applyLatest()   // push whatever updateUIView cached before the map existed
-            // Arm the render watchdog: if the map hasn't drawn a single frame ~2.2s after creation, it's the
-            // MLNMapView-blank-until-scene-refresh condition — hand back to the classic map (never a blank chart).
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) { [weak self] in
-                guard let self, self.renderCount == 0 else { return }
-                self.onRenderStalled?()
+            armRenderWatchdog()
+        }
+
+        /// Render watchdog: if the map draws ZERO frames it hit the MLNMapView-blank-until-scene-refresh
+        /// condition → hand back to the classic map. STAGGERED (not a single 2.2s shot): a slow-but-working
+        /// first frame under cold-launch contention (WhisperKit compile + NavDB warm + listener bind + style
+        /// parse) shouldn't be misclassified as a permanent failure. Only the LAST check falls back, giving
+        /// ~6.6s of grace; any frame in between → healthy → no-op. Hard failures (bind/style/load-error) still
+        /// fall back immediately via their own paths.
+        private static let maxStallChecks = 3
+        private func armRenderWatchdog() {
+            assert(Self.maxStallChecks >= 1, "watchdog needs >=1 check")
+            assert(renderCount >= 0, "renderCount underflow")
+            for i in 1...Self.maxStallChecks {                          // bounded (rule 2), no recursion
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.2 * Double(i)) { [weak self] in
+                    guard let self, self.renderCount == 0 else { return }   // any frame → healthy
+                    if i == Self.maxStallChecks { self.onRenderStalled?() }  // still blank at the last check
+                }
             }
         }
 

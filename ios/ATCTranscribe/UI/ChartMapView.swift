@@ -1347,8 +1347,9 @@ struct ChartMapView: UIViewRepresentable {
             }
             for hex in plan.update {                               // survivors — move + refresh in place
                 guard let a = trafficByKey[hex], let ac = incoming[hex], let c = ac.coordinate else { continue }
-                a.coordinate = c.clCoordinate                      // @objc dynamic → animated glide
-                a.title = ac.label
+                let nc = c.clCoordinate                            // @objc dynamic → animated glide + a MapKit re-layout
+                if a.coordinate.latitude != nc.latitude || a.coordinate.longitude != nc.longitude { a.coordinate = nc }
+                if a.title != ac.label { a.title = ac.label }
                 let newTrack = ac.trackDeg ?? 0
                 if a.track != newTrack {
                     a.track = newTrack
@@ -1366,8 +1367,13 @@ struct ChartMapView: UIViewRepresentable {
             if let ownship {                                       // ownship: move in place, or add once
                 let course = ownshipCourse ?? -1
                 let a: OwnshipAnnotation
-                if let existing = ownshipAnn { a = existing; a.coordinate = ownship.clCoordinate }
-                else { a = OwnshipAnnotation(); a.coordinate = ownship.clCoordinate; ownshipAnn = a; mv.addAnnotation(a) }
+                if let existing = ownshipAnn {
+                    a = existing
+                    let nc = ownship.clCoordinate                  // only write when moved — an unconditional
+                    if a.coordinate.latitude != nc.latitude || a.coordinate.longitude != nc.longitude {   // @objc
+                        a.coordinate = nc                          // dynamic write fires KVO → MapKit re-layout
+                    }
+                } else { a = OwnshipAnnotation(); a.coordinate = ownship.clCoordinate; ownshipAnn = a; mv.addAnnotation(a) }
                 if a.course != course {                            // rotate only when the course actually changes
                     a.course = course
                     if let v = mv.view(for: a) {

@@ -43,7 +43,8 @@ struct LoggedFlight: Codable, Equatable, Identifiable {
     var notes: String
     let breadcrumb: [Breadcrumb]
 
-    static let maxBreadcrumb = 500          // detail-map cap (the live recorder holds the full-res trail)
+    static let maxBreadcrumb = 2000         // stored trail cap — dense enough to REPLAY (position/alt/speed
+                                            // per point), still bounded (~100 KB/flight)
 
     // MARK: display helpers (pure)
 

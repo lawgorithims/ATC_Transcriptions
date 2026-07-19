@@ -15,6 +15,13 @@ struct GPSBottomBar: View {
             metricBox("ALT", r.altitudeFtMSL.map { "\(Int($0.rounded())) ft" } ?? "—")
             metricBox("GS", r.groundSpeedKt.map { "\(Int($0.rounded())) kt" } ?? "—")
             metricBox("TRK", r.trackDeg.map { String(format: "%03.0f°", $0) } ?? "—")
+            // Live ETAs down the filed route at the current ground speed (only while a route + fix + GS exist).
+            if let eta = model.liveETAs {
+                let now = Date()
+                metricBox("→ \(eta.nextIdent)", eta.nextETAText(now: now))    // ETA at the next waypoint
+                metricBox("→ \(eta.destIdent)", eta.destETAText(now: now))    // ETA at the destination
+                metricBox("\(eta.destIdent) LCL", eta.destLocalText(now: now)) // arrival in the destination's local time
+            }
             Spacer(minLength: 0)
             if model.isRecording {
                 RecordingIndicator(startedAt: model.recordingStartedAt, palette: p).modifier(BoxCell(p: p))
