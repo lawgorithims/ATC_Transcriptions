@@ -32,6 +32,22 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 66, version: "1.0", headline: "Flight recorder & logbook",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "record.circle",
+                    title: "Record your flight",
+                    detail: "Tap the new ⏺ button in the map's top bar to record. It leaves a breadcrumb trail of where you've been and tracks your GPS speed and altitude the whole way. Stop when you land and you'll be prompted to save the trip."),
+                WhatsNewHighlight(
+                    icon: "book.closed.fill",
+                    title: "A logbook for your trips",
+                    detail: "Every saved flight lands in the new Logbook tab with its time in flight, distance, top and average speed, altitude, the stops you made (with the nearest airport), the aircraft you flew, and room for your own notes — plus a map of the whole route."),
+                WhatsNewHighlight(
+                    icon: "location.north.line.fill",
+                    title: "Live GPS bar",
+                    detail: "Your live GPS quality, altitude, ground speed and track can now ride as a slim bar along the bottom of the screen (toggle it in the Widgets menu) — Stratux when connected, on-device GPS otherwise."),
+            ]),
+        ReleaseNote(
             build: 65, version: "1.0", headline: "TAFs, a GPS readout, and battery instrumentation",
             highlights: [
                 WhatsNewHighlight(
