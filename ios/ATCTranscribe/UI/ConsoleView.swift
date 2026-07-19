@@ -90,6 +90,9 @@ struct ConsoleView: View {
         .sheet(item: compactProbe) { result in
             MapObjectSheet(result: result).environmentObject(model)
         }
+        .sheet(item: $model.pendingLoggedFlight) { flight in   // recording stopped → save-to-logbook prompt
+            SaveFlightSheet(flight: flight).environmentObject(model)
+        }
         .animation(.easeInOut(duration: 0.25), value: model.theme)
         .onAppear {
             Haptics.prepare()   // warm the Taptic engine so the first button tap is felt (iPhone only)
@@ -303,6 +306,7 @@ struct TopBar: View {
                 MapLayersMenu(iconSize: iconSize).foregroundStyle(p.text)   // base map + overlays
                 WidgetsMenu(iconSize: iconSize).foregroundStyle(p.text)     // show/hide floating widgets
                 ThemeMenu()
+                RecordButton()          // ⏺ record flight → breadcrumb + logbook (blinks while recording)
                 PowerButton()
                 iconButton(p, "gearshape.fill", id: "settings-button", label: "Settings") {
                     model.showSettings = true
@@ -1543,6 +1547,7 @@ struct FloatingCanvas: View {
 /// Top-bar menu to show/hide the floating widgets and reset the layout (replaces the old bar toggles).
 struct WidgetsMenu: View {
     @EnvironmentObject var widgets: WidgetStore
+    @EnvironmentObject var model: AppModel
     var iconSize: CGFloat = 19
     var body: some View {
         Menu {
@@ -1551,6 +1556,10 @@ struct WidgetsMenu: View {
                     Haptics.impact(.light)
                     if f.visible { widgets.update(f.kind) { $0.visible = false } } else { widgets.show(f.kind) }
                 } label: { Label(f.kind.title, systemImage: f.visible ? "checkmark" : f.kind.symbol) }
+            }
+            Divider()
+            Button { Haptics.impact(.light); model.showGPSBar.toggle() } label: {
+                Label("GPS bar (bottom)", systemImage: model.showGPSBar ? "checkmark" : "ruler")
             }
             Divider()
             Button { Haptics.impact(.light); widgets.reset() } label: {

@@ -20,6 +20,7 @@ struct MapLibreChartView: UIViewRepresentable {
     let store: ChartStore
     var layer: ChartLayer = .sectional               // FAA base layer (sectional / IFR-low / IFR-high)
     var routeCoords: [CLLocationCoordinate2D]
+    var breadcrumbCoords: [CLLocationCoordinate2D] = []   // flight-recorder trail (translucent orange)
     var ownship: CLLocationCoordinate2D? = nil
     var ownshipCourse: Double? = nil
     var traffic: [Aircraft] = []
@@ -59,7 +60,8 @@ struct MapLibreChartView: UIViewRepresentable {
     func updateUIView(_ uiView: UIView, context: Context) {
         let c = context.coordinator
         c.onVisibleRegion = onVisibleRegion
-        c.cacheInputs(layer: layer, routeCoords: routeCoords, ownship: ownship, ownshipCourse: ownshipCourse,
+        c.cacheInputs(layer: layer, routeCoords: routeCoords, breadcrumbCoords: breadcrumbCoords,
+                      ownship: ownship, ownshipCourse: ownshipCourse,
                       traffic: traffic, tfrs: showTFRs ? tfrs : [], showAirspace: showAirspace,
                       showNearby: showNearby, showAirways: showAirways, plateOverlay: plateOverlay,
                       routeIdents: routeIdents, focus: focus, restoreCamera: restoreCamera,
@@ -110,6 +112,9 @@ struct MapLibreChartView: UIViewRepresentable {
         private var pendingRouteFirst: CLLocationCoordinate2D?
         private var inLayer: ChartLayer = .sectional
         private var inRoute: [CLLocationCoordinate2D] = []
+        private var inBreadcrumb: [CLLocationCoordinate2D] = []
+        private var trackCoords: [CLLocationCoordinate2D] = []   // last-applied trail (re-applied after a style reload)
+        private var appliedTrackCount = -1                       // cheap change signature (append-only + reset-to-0)
         private var inOwnship: CLLocationCoordinate2D?
         private var inOwnCourse: Double?
         private var inTraffic: [Aircraft] = []
@@ -119,13 +124,15 @@ struct MapLibreChartView: UIViewRepresentable {
         private var inFocus: Coord?
 
         /// Stash the latest inputs from updateUIView (called every body eval, even before the map exists).
-        func cacheInputs(layer: ChartLayer, routeCoords: [CLLocationCoordinate2D], ownship: CLLocationCoordinate2D?,
+        func cacheInputs(layer: ChartLayer, routeCoords: [CLLocationCoordinate2D],
+                         breadcrumbCoords: [CLLocationCoordinate2D], ownship: CLLocationCoordinate2D?,
                          ownshipCourse: Double?, traffic: [Aircraft], tfrs: [TFR], showAirspace: Bool,
                          showNearby: Bool, showAirways: Bool, plateOverlay: PlateOverlayState?,
                          routeIdents: Set<String>, focus: Coord?, restoreCamera: SavedMapCamera?,
                          onTap: @escaping ([IdentifiedObject]) -> Void,
                          onAnchors: @escaping ((CGPoint, CGPoint)?) -> Void) {
-            inLayer = layer; inRoute = routeCoords; inOwnship = ownship; inOwnCourse = ownshipCourse
+            inLayer = layer; inRoute = routeCoords; inBreadcrumb = breadcrumbCoords
+            inOwnship = ownship; inOwnCourse = ownshipCourse
             inTraffic = traffic; inTFRs = tfrs; inShowAirspace = showAirspace; inShowNearby = showNearby
             inShowAirways = showAirways; inPlate = plateOverlay; inFocus = focus; self.restoreCamera = restoreCamera
             self.routeIdents = routeIdents; self.onTapObjects = onTap; self.onPlateAnchors = onAnchors
@@ -140,6 +147,7 @@ struct MapLibreChartView: UIViewRepresentable {
             // @MainActor → hop, matching ensureVisiblePacks). Signature-gated, so a no-op when the set is unchanged.
             Task { @MainActor [weak self, weak map] in guard let self, let map else { return }; self.syncFAASource(on: map) }
             updateRoute(inRoute, on: map)
+            updateTrack(inBreadcrumb, on: map)
             applyOverlayToggles(inShowAirspace, inShowNearby, inShowAirways, on: map)
             updateOwnship(inOwnship, course: inOwnCourse, on: map)
             updateTraffic(inTraffic, on: map)
@@ -296,8 +304,10 @@ struct MapLibreChartView: UIViewRepresentable {
 
         func mapView(_ mapView: MLNMapView, didFinishLoading style: MLNStyle) {
             servedReadersSig = nil               // the faa source is freshly (re)created empty here → force a remount
+            appliedTrackCount = -1               // the "track" source is recreated empty → force a re-apply below
             setupOverlayLayers(style)            // airspace/airways/nav + TFR/route/traffic/ownship (empty)
             updateRoute(routeCoords, on: mapView)
+            updateTrack(trackCoords, on: mapView)
             ensureVisiblePacks(mapView)
             refreshOverlays(mapView)
             frameIfNeeded(on: mapView)           // frame now if route/GPS/camera arrived before the style loaded
@@ -363,14 +373,14 @@ struct MapLibreChartView: UIViewRepresentable {
         /// cache that restored our runtime layers (leaving dangling ids). "faa" is intentionally excluded — it
         /// lives in the base style JSON and is re-managed by ensureVisiblePacks. Bounded loops, >=2 asserts.
         private func clearManagedStyle(_ style: MLNStyle) {
-            let layers = ["plate-raster", "ownship-sym", "traffic-sym", "route-line",
+            let layers = ["plate-raster", "ownship-sym", "traffic-sym", "route-line", "track-line",
                           "tfr-label", "tfr-outline", "tfr-fill", "nav-sym",
                           "airspace-label", "airways-label", "airspace-outline", "airspace-fill",
                           "airways-line", "coastline", "land-fill"]
             for id in layers where style.layer(withIdentifier: id) != nil {          // bounded (rule 2)
                 if let l = style.layer(withIdentifier: id) { style.removeLayer(l) }
             }
-            let sources = ["plate", "ownship", "traffic", "route", "tfr-labels", "tfr",
+            let sources = ["plate", "ownship", "traffic", "route", "track", "tfr-labels", "tfr",
                            "nav", "airspace-labels", "airspace", "airways", "land"]
             for id in sources where style.source(withIdentifier: id) != nil {        // bounded (rule 2)
                 if let s = style.source(withIdentifier: id) { style.removeSource(s) }
@@ -509,6 +519,15 @@ struct MapLibreChartView: UIViewRepresentable {
             tfrLbl.textHaloWidth = NSExpression(forConstantValue: 1.2); tfrLbl.textLineHeight = NSExpression(forConstantValue: 1.0)
             tfrLbl.minimumZoomLevel = 5.0
             style.addLayer(tfrLbl)
+
+            // Flight-recorder breadcrumb (where the aircraft HAS BEEN) — translucent orange, BELOW the route so
+            // the magenta filed route reads over it, both above the FAA raster / TFR and below traffic/ownship.
+            let trackSrc = MLNShapeSource(identifier: "track", shape: nil, options: nil); style.addSource(trackSrc)
+            let track = MLNLineStyleLayer(identifier: "track-line", source: trackSrc)
+            track.lineColor = NSExpression(forConstantValue: UIColor(red: 1.0, green: 0.62, blue: 0.20, alpha: 0.85))
+            track.lineWidth = NSExpression(forConstantValue: 4.0)
+            track.lineCap = NSExpression(forConstantValue: "round"); track.lineJoin = NSExpression(forConstantValue: "round")
+            style.addLayer(track)
 
             // Route (persistent source so ownship/traffic can sit above it).
             let routeSrc = MLNShapeSource(identifier: "route", shape: nil, options: nil); style.addSource(routeSrc)
@@ -773,6 +792,20 @@ struct MapLibreChartView: UIViewRepresentable {
             guard sig != appliedRouteSig else { return }                 // unchanged → skip the re-tessellation
             appliedRouteSig = sig
             guard coords.count >= 2 else { src.shape = nil; return }
+            var c = coords
+            src.shape = MLNPolylineFeature(coordinates: &c, count: UInt(c.count))
+        }
+
+        /// The flight-recorder breadcrumb. Append-only during a recording + reset-to-empty on stop, so the
+        /// POINT COUNT is a sufficient (and cheapest) change signature — no per-point string like the route.
+        /// BATTERY: skips the re-tessellation on every unrelated updateUIView tick.
+        func updateTrack(_ coords: [CLLocationCoordinate2D], on map: MLNMapView) {
+            trackCoords = coords
+            guard let src = map.style?.source(withIdentifier: "track") as? MLNShapeSource else { return }
+            guard coords.count != appliedTrackCount else { return }      // only rebuild when a point was added/cleared
+            appliedTrackCount = coords.count
+            guard coords.count >= 2 else { src.shape = nil; return }
+            assert(coords.count <= 200_000, "updateTrack: breadcrumb unbounded — recorder must cap")
             var c = coords
             src.shape = MLNPolylineFeature(coordinates: &c, count: UInt(c.count))
         }
