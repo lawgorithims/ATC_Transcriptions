@@ -31,6 +31,16 @@ struct MapLayersMenu: View {
                     }
                 }
             }
+            Toggle(isOn: $model.adsbStreamingEnabled) { Label("Traffic (online ADS-B)", systemImage: "airplane.circle") }
+            if model.adsbStreamingEnabled {
+                if model.stratuxEnabled {
+                    Text("Your Stratux is providing traffic — online ADS-B fills in only when the receiver is off.")
+                } else if let at = model.aircraftUpdatedAt {
+                    Text("\(model.aircraft.count) aircraft near you · \(ADSBService.attribution) · \(Self.relative.localizedString(for: at, relativeTo: Date()))")
+                } else {
+                    Text("Streaming nearby traffic from airplanes.live (needs internet)…")
+                }
+            }
             Toggle(isOn: $model.showHazards) { Label("Natural hazards (NASA)", systemImage: "flame") }
             if model.showHazards, let at = model.hazardsUpdatedAt {
                 Text("Hazards updated \(Self.relative.localizedString(for: at, relativeTo: Date()))")
