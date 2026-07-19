@@ -33,12 +33,14 @@ packages:
   argmax-oss-swift:
     url: https://github.com/argmaxinc/argmax-oss-swift.git
     from: "1.0.0"
-  # EXPERIMENTAL (branch experimental/maplibre-globe-prototype — DO NOT MERGE): MapLibre Native, the
-  # open-source GPU chart renderer we're spiking as a possible MKMapView replacement (globe projection +
-  # on-demand rendering). Prebuilt XCFramework distribution. NOTE: MapLibre Native 6.27 is Web-Mercator only.
-  MapLibre:
-    url: https://github.com/maplibre/maplibre-gl-native-distribution
-    from: "6.0.0"
+  # GLOBE FORK (branch experimental/globe-fork): MapLibre Native is now consumed from a LOCALLY-BUILT
+  # xcframework (Vendor/MapLibre.xcframework, git-ignored) instead of the SPM distribution, so we can link our
+  # own fork that adds globe projection. Built by ~/CommSight/maplibre-native via
+  #   bazelisk build //platform/ios:MapLibre.dynamic --//:renderer=metal --compilation_mode=opt ...
+  # See ios/docs/GLOBE_FORK_PLAN.md. (The old SPM package is retained here, commented, for one-line rollback.)
+  # MapLibre:
+  #   url: https://github.com/maplibre/maplibre-gl-native-distribution
+  #   from: "6.0.0"
   # llama.cpp powers the local CPU context-fixer LLM (LocalLLMCorrector / LlamaContext).
   # NOTE: not a SwiftPM package. Upstream dropped its Package.swift, and the StanfordBDHG
   # mirror's xcframework leaks C++ headers (grammar-parser.h) into the C `llama` module, so
@@ -151,9 +153,10 @@ targets:
     dependencies:
       - package: argmax-oss-swift
         product: WhisperKit
-      # EXPERIMENTAL (DO NOT MERGE): MapLibre Native GPU renderer spike (MapLibrePrototypeView).
-      - package: MapLibre
-        product: MapLibre
+      # GLOBE FORK: MapLibre Native from our locally-built xcframework (see packages: note + GLOBE_FORK_PLAN.md).
+      # Same framework:+embed: idiom as llama below. Rollback = restore `- package: MapLibre / product: MapLibre`.
+      - framework: Vendor/MapLibre.xcframework
+        embed: true
       # Local CPU context-fixer LLM. Vendored dynamic xcframework (built by
       # Tools/build_llama_xcframework.sh, git-ignored). Embedded into the app's Frameworks/
       # (install_name @rpath/llama.framework/llama → resolved by the default app rpath).
