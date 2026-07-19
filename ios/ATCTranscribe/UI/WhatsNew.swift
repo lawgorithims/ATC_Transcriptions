@@ -32,6 +32,14 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 70, version: "1.0", headline: "Weather radar",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "cloud.rain",
+                    title: "Live precipitation radar on the map",
+                    detail: "Turn on \"Weather radar\" in the map's Layers menu to see live precipitation (rain/snow) painted over your chart, updated continuously from a public radar feed. It's translucent so the chart still reads underneath, and it needs an internet connection."),
+            ]),
+        ReleaseNote(
             build: 69, version: "1.0", headline: "Online traffic layer",
             highlights: [
                 WhatsNewHighlight(
