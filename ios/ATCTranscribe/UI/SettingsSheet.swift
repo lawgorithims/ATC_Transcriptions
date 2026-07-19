@@ -39,6 +39,13 @@ struct SettingsSheet: View {
                                  id: "settings-cat-general") {
                         categoryPage("General") { generalCategory }
                     }
+                    // Hidden Developer section — unlocked by the same 7-tap version gesture as the test bench.
+                    if model.diagnosticsEnabled {
+                        categoryLink("Developer · Globe", "globe.americas.fill", "Experimental globe engine · battery A/B",
+                                     id: "settings-cat-developer") {
+                            categoryPage("Developer · Globe") { developerCategory }
+                        }
+                    }
                 }
                 .padding(16)
             }
@@ -89,6 +96,47 @@ struct SettingsSheet: View {
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
+    }
+
+    /// DEVELOPER-ONLY globe test harness (hidden behind the 7-tap unlock). Flip the Map tab between flat
+    /// Mercator and the experimental globe engine, and open the live battery readout for the on-device A/B —
+    /// the vehicle for validating the MapLibre-globe fork (see ios/docs/GLOBE_FORK_PLAN.md).
+    @ViewBuilder private var developerCategory: some View {
+        let p = model.palette
+        #if canImport(MapLibre)
+        Card(title: "Map projection") {
+            VStack(alignment: .leading, spacing: 10) {
+                Toggle(isOn: $model.useGlobeProjection) {
+                    Text("Globe projection (experimental)").font(.caption).foregroundStyle(p.text)
+                }
+                .tint(p.accent)
+                .accessibilityIdentifier("globe-projection-toggle")
+                Text(model.useMapLibreMap
+                     ? "Curves the chart onto a sphere. INERT on the current MapLibre SDK (renders flat) until the custom globe fork lands — see ios/docs/GLOBE_FORK_PLAN.md. Flipping remounts the map."
+                     : "Requires the New GPU map (MapLibre) engine — turn it on in General → Map engine first.")
+                    .font(.caption2).foregroundStyle(p.textDim)
+            }
+        }
+        #else
+        Card(title: "Map projection") {
+            Text("MapLibre is not linked in this build.").font(.caption2).foregroundStyle(p.textDim)
+        }
+        #endif
+        Card(title: "Battery A/B") {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Compare globe vs flat idle cost with transcription OFF. mapFPS ≈ 0 at idle is the goal.")
+                    .font(.caption2).foregroundStyle(p.textDim)
+                NavigationLink { BatteryDiagnosticsView().environmentObject(model) } label: {
+                    HStack {
+                        Text("Live battery diagnostics").font(.callout).foregroundStyle(p.text)
+                        Spacer()
+                        Image(systemName: "chevron.right").font(.caption).foregroundStyle(p.textDim)
+                    }
+                }
+                .buttonStyle(.plainHaptic)
+                .accessibilityIdentifier("dev-battery-diagnostics")
+            }
+        }
     }
 
     // MARK: Categories

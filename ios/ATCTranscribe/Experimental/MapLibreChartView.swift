@@ -43,6 +43,7 @@ struct MapLibreChartView: UIViewRepresentable {
     var onRenderStalled: () -> Void = {}                           // map drew 0 frames → host falls back to classic map
     var onVisibleRegion: (MKMapRect) -> Void = { _ in }            // settle → host persists model.lastMapCamera
     var renderMeter: MapRenderMeter? = nil                         // battery diagnostics: per-frame counter → map fps
+    var globeProjection: Bool = false                             // DEV: emit projection:globe (inert on stock 6.27.0)
 
     func makeCoordinator() -> Coordinator { Coordinator(store: store, routeCoords: routeCoords) }
 
@@ -57,6 +58,7 @@ struct MapLibreChartView: UIViewRepresentable {
         context.coordinator.onRenderStalled = onRenderStalled   // set BEFORE mount (watchdog is armed in createMap)
         context.coordinator.onVisibleRegion = onVisibleRegion
         context.coordinator.renderMeter = renderMeter
+        context.coordinator.globeProjection = globeProjection   // read once at style install (createMap)
         context.coordinator.mount(in: container, initialCenter: initialCenter, routeFirst: routeCoords.first)
         return container
     }
@@ -250,6 +252,7 @@ struct MapLibreChartView: UIViewRepresentable {
         var renderCount = 0
         var onRenderStalled: (() -> Void)?
         var renderMeter: MapRenderMeter?           // shared frame counter for the battery diagnostics (map fps)
+        var globeProjection = false                // DEV: consumed once at writeStyle (createMap); remount to re-apply
         func mapView(_ mapView: MLNMapView, didFinishRenderingFrame fullyRendered: Bool) {
             renderCount += 1; renderMeter?.tick()
         }
@@ -291,7 +294,7 @@ struct MapLibreChartView: UIViewRepresentable {
                 guard port > 0 else { self.onRenderStalled?(); return }
                 guard self.serverPort == 0 else { return }                 // install the style ONCE
                 self.serverPort = port
-                guard let styleURL = Self.writeStyle(port: port) else { self.onRenderStalled?(); return }
+                guard let styleURL = Self.writeStyle(port: port, globe: self.globeProjection) else { self.onRenderStalled?(); return }
                 m.styleURL = styleURL
             }
             applyLatest()   // push whatever updateUIView cached before the map existed
@@ -324,19 +327,21 @@ struct MapLibreChartView: UIViewRepresentable {
 
         // MARK: style + layers
 
-        private static func writeStyle(port: UInt16) -> URL? {
+        private static func writeStyle(port: UInt16, globe: Bool) -> URL? {
             // FULLY OFFLINE style: FAA sectional raster from the loopback server over a #0b1a2b sea, with a
             // bundled vector land base (setupLandBase, added at didFinishLoading) drawn between. NO network
             // dependency — glyphs + FAA tiles are loopback, land is bundled. Only ever called with a bound
             // port (>0), so both loopback URLs are always connectable.
             assert(port > 0, "writeStyle requires a bound loopback port")
-            // NOTE: MapLibre Native iOS 6.27.0 is Web-Mercator ONLY — it has NO globe projection (globe shipped
-            // in MapLibre GL JS/web, not the native renderer; it's an unshipped Native roadmap item, and there is
-            // no style key OR runtime API to enable it on this SDK). So the map is a flat chart, not a sphere.
+            // GLOBE DEV HARNESS: when the hidden Developer "Globe" toggle is on we emit the style-spec
+            // `projection:globe` key. On the SHIPPING MapLibre Native iOS 6.27.0 SDK this is Web-Mercator only
+            // → the key is silently ignored → renders FLAT (the graceful no-op the harness relies on). The
+            // custom fork (ios/docs/GLOBE_FORK_PLAN.md) will honor it and curve the map. Remount to re-apply.
+            let projection = globe ? "\"projection\": { \"type\": \"globe\" },\n              " : ""
             let style = """
             {
               "version": 8,
-              "glyphs": "http://127.0.0.1:\(port)/font/{fontstack}/{range}.pbf",
+              \(projection)"glyphs": "http://127.0.0.1:\(port)/font/{fontstack}/{range}.pbf",
               "sources": {
                 "faa": { "type": "raster", "tiles": ["http://127.0.0.1:\(port)/{z}/{x}/{y}"],
                          "tileSize": 256, "maxzoom": 16, "attribution": "FAA charts (offline pack)" }

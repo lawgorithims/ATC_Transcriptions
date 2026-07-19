@@ -593,11 +593,20 @@ final class AppModel: ObservableObject {
         mapLibreRetriesLeft -= 1
         mapLibreRenderFailed = false     // republish → MapHostView re-swaps to MapLibre → fresh createMap
     }
+
+    /// DEVELOPER-ONLY (hidden behind the 7-tap `diagnosticsEnabled` gate). When on, the MapLibre style emits
+    /// the style-spec `projection:globe` key so the Map tab renders on the custom globe fork instead of flat
+    /// Mercator (the fork xcframework is linked in this build). Adaptive globeness: curves onto a sphere at low
+    /// zoom, seamlessly flattens to today's chart at chart zooms — see ios/docs/GLOBE_FORK_PLAN.md. Persisted,
+    /// default off.
+    @Published var useGlobeProjection = UserDefaults.standard.bool(forKey: "atc.map.globe") {
+        didSet { UserDefaults.standard.set(useGlobeProjection, forKey: "atc.map.globe") }
+    }
+
     /// Live precipitation-radar overlay (RainViewer, internet). Persisted, default off; the RainViewerService
     /// fetches the latest frame while it's on + foregrounded + not thermally throttled.
     @Published var showWxRadar = UserDefaults.standard.bool(forKey: "atc.map.wxRadar") {
         didSet { UserDefaults.standard.set(showWxRadar, forKey: "atc.map.wxRadar"); syncRadar() }
-    }
     /// NASA GIBS satellite smoke/true-colour overlay (a separate layer from the radar stub above). A
     /// translucent, prior-day satellite image over the chart — situational context, NOT current weather.
     /// Pure remote tiles (no poller), opt-in, default off; persisted. Reconciled in `ChartMapView`.

@@ -145,7 +145,9 @@ struct MapHostView: View {
     /// same chrome — every top-bar/menu/widget interaction reaches the map only via `model` + `widgets.mapProbe`.
     @ViewBuilder private var mapContent: some View {
         #if canImport(MapLibre)
-        if model.useMapLibreMap && !model.mapLibreRenderFailed { mapLibreMap } else { chartMapView }
+        // `.id(useGlobeProjection)`: flipping the hidden Developer Globe toggle remounts the map so writeStyle
+        // re-runs with/without the projection:globe key (writeStyle is read once at style install in createMap).
+        if model.useMapLibreMap && !model.mapLibreRenderFailed { mapLibreMap.id(model.useGlobeProjection) } else { chartMapView }
         #else
         chartMapView
         #endif
@@ -242,7 +244,8 @@ struct MapHostView: View {
                 // classic-map fallback lands on the same view (M7 camera contract — parity with ChartMapView).
                 model.lastMapCamera = SavedMapCamera(rect: rect, now: Date())
             },
-            renderMeter: model.renderMeter)   // battery diagnostics: per-frame counter → map fps
+            renderMeter: model.renderMeter,   // battery diagnostics: per-frame counter → map fps
+            globeProjection: model.useGlobeProjection)   // DEV harness: flat vs globe (inert on stock 6.27.0)
     }
     #endif
 
