@@ -73,17 +73,28 @@ struct LoggedFlightDetailView: View {
     @EnvironmentObject var logbook: Logbook
     @State private var flight: LoggedFlight
     @State private var notes: String
+    @State private var replayIdx: Double = 0        // current breadcrumb index for the replay scrubber
+    @State private var playing = false
+    private let ticker = Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()
 
     init(flight: LoggedFlight) {
         _flight = State(initialValue: flight)
         _notes = State(initialValue: flight.notes)
     }
 
+    private var replayPoint: Breadcrumb? {
+        let i = Int(replayIdx)
+        return flight.breadcrumb.indices.contains(i) ? flight.breadcrumb[i] : nil
+    }
+
     var body: some View {
         let p = model.palette
         return ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                if let region = flight.mapRegion { trailMap(region, p).frame(height: 220).clipShape(RoundedRectangle(cornerRadius: 12)) }
+                if let region = flight.mapRegion {
+                    trailMap(region, p).frame(height: 220).clipShape(RoundedRectangle(cornerRadius: 12))
+                    replayControl(p)
+                }
                 Card(title: "Metrics") {
                     VStack(alignment: .leading, spacing: 8) {
                         KV("Date", LogbookTabView.day.string(from: flight.startedAt))
@@ -126,7 +137,8 @@ struct LoggedFlightDetailView: View {
         .background(p.bg)
         .navigationTitle(flight.routeSummary)
         .navigationBarTitleDisplayMode(.inline)
-        .onDisappear { commitNotes() }
+        .onDisappear { playing = false; commitNotes() }
+        .onReceive(ticker) { _ in advanceReplay() }
     }
 
     private func trailMap(_ region: (center: Coord, spanLat: Double, spanLon: Double), _ p: Palette) -> some View {
@@ -138,8 +150,62 @@ struct LoggedFlightDetailView: View {
             MapPolyline(coordinates: coords).stroke(.orange, lineWidth: 3)
             if let s = coords.first { Marker("Start", systemImage: "airplane.departure", coordinate: s).tint(.green) }
             if let e = coords.last { Marker("End", systemImage: "airplane.arrival", coordinate: e).tint(.red) }
+            if let pt = replayPoint {           // the moving aircraft during replay, pointed along its track
+                Annotation("", coordinate: pt.clCoord) {
+                    Image(systemName: "airplane").font(.title3).foregroundStyle(.cyan)
+                        .rotationEffect(.degrees((pt.track ?? 0) - 90))
+                }
+            }
         }
     }
+
+    /// Replay scrubber: play/pause + a slider over the breadcrumb, with the position/altitude/speed/time at
+    /// the current point — replays the flight from the recorded position/alt/speed data.
+    private func replayControl(_ p: Palette) -> some View {
+        let count = flight.breadcrumb.count
+        return Card(title: "Replay") {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 12) {
+                    Button { playing.toggle() } label: {
+                        Image(systemName: playing ? "pause.circle.fill" : "play.circle.fill")
+                            .font(.title).foregroundStyle(p.accent)
+                    }.buttonStyle(.plainHaptic).accessibilityIdentifier("replay-play")
+                    if count > 1 {
+                        Slider(value: $replayIdx, in: 0...Double(count - 1), step: 1)
+                            .tint(p.accent)
+                            .onChange(of: replayIdx) { _, _ in if playing { playing = false } }
+                    }
+                }
+                if let pt = replayPoint {
+                    HStack(spacing: 14) {
+                        replayKV("TIME", Self.hms.string(from: pt.t))
+                        replayKV("ALT", pt.altFt.map { "\(Int($0.rounded())) ft" } ?? "—")
+                        replayKV("GS", pt.speedKt.map { "\(Int($0.rounded())) kt" } ?? "—")
+                        replayKV("TRK", pt.track.map { String(format: "%03.0f°", $0) } ?? "—")
+                    }
+                }
+            }
+        }
+    }
+    private func replayKV(_ label: String, _ value: String) -> some View {
+        let p = model.palette
+        return VStack(alignment: .leading, spacing: 1) {
+            Text(label).font(.system(size: 9, weight: .semibold)).foregroundStyle(p.textDim).tracking(0.5)
+            Text(value).font(.caption.monospaced().weight(.semibold)).foregroundStyle(p.text)
+        }
+    }
+
+    /// Advance the replay while playing — a whole flight replays in ~30 s regardless of length; stops at the end.
+    private func advanceReplay() {
+        guard playing else { return }
+        let count = flight.breadcrumb.count
+        guard count > 1 else { playing = false; return }
+        let step = max(1.0, Double(count) / 300.0)
+        replayIdx = min(replayIdx + step, Double(count - 1))
+        if replayIdx >= Double(count - 1) { playing = false }
+    }
+
+    static let hms: DateFormatter = { let f = DateFormatter(); f.dateFormat = "HH:mm:ss"; return f }()
 
     private func setAircraft(callsign: String?, type: String?) {
         flight.aircraftCallsign = callsign; flight.aircraftType = type

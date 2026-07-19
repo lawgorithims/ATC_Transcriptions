@@ -292,6 +292,7 @@ final class AppModel: ObservableObject {
     /// The ForeFlight-style trip overview for the filed route (DIST always; ETE/ETA/FUEL when the
     /// selected aircraft has performance numbers). Recomputed off-main whenever the plan changes.
     @Published private(set) var tripStats: TripStats?
+    @Published private(set) var resolvedRoute: [ResolvedLeg] = []   // cached filed route (for the live GPS-bar ETAs)
     private var tripStatsEpoch = 0
     /// Drives the full-screen route map (`RouteMapSheet`) — the filed route, the selectable FAA chart
     /// layer, and live traffic. Transient (not persisted); opened from the flight-plan strip's Map
@@ -546,6 +547,9 @@ final class AppModel: ObservableObject {
     /// scene-refresh condition) so the Map tab falls back to the classic map for the rest of this launch — the
     /// pilot is never left with a blank chart. Cleared on relaunch (retries MapLibre) or on an explicit toggle.
     @Published var mapLibreRenderFailed = false
+    /// Bounded MapLibre re-arms after a render-stall fallback (per launch): a genuine blank-until-scene-refresh
+    /// dormancy self-heals on the next foreground instead of stranding the CPU-hungry classic map all flight.
+    private var mapLibreRetriesLeft = 2
     @Published var showWxRadar = UserDefaults.standard.bool(forKey: "atc.map.wxRadar") {   // stub overlay for now
         didSet { UserDefaults.standard.set(showWxRadar, forKey: "atc.map.wxRadar") }
     }
@@ -1149,6 +1153,10 @@ final class AppModel: ObservableObject {
         if stratuxStatus == .connected { parts.append("stratux") }
         if deviceLocation.coord != nil { parts.append("gps") }
         if thermalSerious { parts.append("HOT") }
+        // WHY the map engine is what it is (mk == classic MKMapView, the idle-CPU suspect): a chosen toggle
+        // vs a latched render-stall fallback vs MapLibre actually running. Rides in the exported activity CSV.
+        let eng = !useMapLibreMap ? "mk(off)" : (mapLibreRenderFailed ? "mk(stalled)" : "ml")
+        parts.append("eng:\(eng)")
         return parts.joined(separator: " ")
     }
 
@@ -2048,20 +2056,29 @@ final class AppModel: ObservableObject {
     /// approach INCLUDING its missed-approach segment to the total.
     func refreshTripStats() {
         tripStatsEpoch += 1
-        guard let plan = flightPlan, !plan.isEmpty else { tripStats = nil; return }
+        guard let plan = flightPlan, !plan.isEmpty else { tripStats = nil; resolvedRoute = []; return }
         let epoch = tripStatsEpoch
         let sendable = ForeFlightExport.sendablePlan(plan)
         let kts = selectedAircraft?.cruiseKts
         let gph = selectedAircraft?.burnGPH
         Task {
-            let stats = await Task.detached(priority: .utility) {
+            let out = await Task.detached(priority: .utility) { () -> (TripStats?, [ResolvedLeg]) in
                 _ = NavDatabase.count                                     // warm the nav DB off-main
-                let points = ProcedureRoute.resolve(sendable).map(\.coord)
-                return TripStats.compute(points: points, cruiseKts: kts, burnGPH: gph)
+                let legs = ProcedureRoute.resolve(sendable)
+                return (TripStats.compute(points: legs.map(\.coord), cruiseKts: kts, burnGPH: gph), legs)
             }.value
             guard epoch == tripStatsEpoch else { return }                 // superseded → discard
-            tripStats = stats
+            tripStats = out.0
+            resolvedRoute = out.1                                         // cached for the live GPS-bar ETAs
         }
+    }
+
+    /// Live ETAs down the filed route from PRESENT POSITION at the CURRENT ground speed — feeds the GPS bar.
+    /// nil when there's no route / fix / usable ground speed. Cheap: reads the cached resolvedRoute.
+    var liveETAs: RouteETAs? {
+        let gs = GPSReadout.merge(stratux: stratuxGPS, device: deviceLocation.fix).groundSpeedKt
+        return RouteETAs.compute(route: resolvedRoute.map { ($0.ident, $0.coord) },
+                                 present: presentPosition, groundSpeedKt: gs)
     }
 
     // MARK: Chart prefetch (background — so the map opens instantly)
@@ -2392,6 +2409,11 @@ final class AppModel: ObservableObject {
             prefetchChartsOnLaunch()        // top up charts around the (possibly moved) position
             if deviceGPSPausedForBackground { deviceGPSPausedForBackground = false; deviceLocation.start() }
             flightRecorder.setForegrounded(true)   // resume breadcrumb sampling
+            // Give MapLibre another chance after a render-stall fallback (bounded): clearing the flag republishes
+            // → MapHostView re-swaps to the MapLibre map → a fresh createMap re-arms the staggered watchdog.
+            if useMapLibreMap, mapLibreRenderFailed, mapLibreRetriesLeft > 0 {
+                mapLibreRetriesLeft -= 1; mapLibreRenderFailed = false
+            }
             // A first-load watchdog that deferred while backgrounded re-arms now, so a genuinely hung
             // compile is still surfaced (and one that finished in the background just fails the guard).
             if let w = pendingLoadWatchdog {
