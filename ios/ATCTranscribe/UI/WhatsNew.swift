@@ -32,6 +32,22 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 68, version: "1.0", headline: "Route ETAs & flight replay",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "clock.arrow.circlepath",
+                    title: "Live ETAs on the GPS bar",
+                    detail: "With a flight plan loaded, the GPS bar now shows your ETA to the next waypoint, your ETA to the destination, and the local arrival time at the destination — all from your present position and current ground speed."),
+                WhatsNewHighlight(
+                    icon: "play.circle.fill",
+                    title: "Replay a logged flight",
+                    detail: "Open any flight in the Logbook and press play — an aircraft retraces your route with the recorded altitude, ground speed and track at each point. Scrub the slider to any moment."),
+                WhatsNewHighlight(
+                    icon: "bolt.badge.clock",
+                    title: "Battery improvements",
+                    detail: "Tracked down a real-flight battery drain: the map now pauses when you're on another tab, the efficient map engine recovers on its own instead of getting stuck on the older one, and the diagnostics now record which map engine ran — so we can keep tightening it."),
+            ]),
+        ReleaseNote(
             build: 66, version: "1.0", headline: "Flight recorder & logbook",
             highlights: [
                 WhatsNewHighlight(
