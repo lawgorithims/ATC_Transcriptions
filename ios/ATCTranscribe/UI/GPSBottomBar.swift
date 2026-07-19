@@ -10,16 +10,17 @@ struct GPSBottomBar: View {
     var body: some View {
         let p = model.palette
         let r = GPSReadout.merge(stratux: model.stratuxGPS, device: deviceFix)
-        return HStack(spacing: 12) {
-            signalCell(r)
-            Divider().frame(height: 22)
-            metric("ALT", r.altitudeFtMSL.map { "\(Int($0.rounded())) ft" } ?? "—")
-            metric("GS", r.groundSpeedKt.map { "\(Int($0.rounded())) kt" } ?? "—")
-            metric("TRK", r.trackDeg.map { String(format: "%03.0f°", $0) } ?? "—")
+        return HStack(spacing: 8) {
+            signalBox(r)
+            metricBox("ALT", r.altitudeFtMSL.map { "\(Int($0.rounded())) ft" } ?? "—")
+            metricBox("GS", r.groundSpeedKt.map { "\(Int($0.rounded())) kt" } ?? "—")
+            metricBox("TRK", r.trackDeg.map { String(format: "%03.0f°", $0) } ?? "—")
             Spacer(minLength: 0)
-            if model.isRecording { RecordingIndicator(startedAt: model.recordingStartedAt, palette: p) }
+            if model.isRecording {
+                RecordingIndicator(startedAt: model.recordingStartedAt, palette: p).modifier(BoxCell(p: p))
+            }
         }
-        .padding(.horizontal, 14).padding(.vertical, 6)
+        .padding(.horizontal, 12).padding(.vertical, 8)   // ~25% taller than before (was vertical 6, no boxes)
         .frame(maxWidth: .infinity)
         .background(.ultraThinMaterial)
         .overlay(alignment: .top) { Rectangle().fill(p.border).frame(height: 0.5) }
@@ -27,31 +28,59 @@ struct GPSBottomBar: View {
         .onReceive(model.deviceLocation.$fix) { deviceFix = $0 }
     }
 
-    @ViewBuilder private func signalCell(_ r: GPSReadout) -> some View {
+    /// Signal box: the 4-bar indicator + the quality WORD (No signal / Weak / Marginal / Good) + the source.
+    private func signalBox(_ r: GPSReadout) -> some View {
         let p = model.palette
-        HStack(spacing: 6) {
+        return HStack(spacing: 7) {
             HStack(alignment: .bottom, spacing: 2) {
                 ForEach(0..<4, id: \.self) { i in
                     RoundedRectangle(cornerRadius: 1)
                         .fill(i < r.fixQuality.bars ? Self.qualityColor(r.fixQuality, p) : p.textDim.opacity(0.25))
-                        .frame(width: 3.5, height: 5 + CGFloat(i) * 3.5)
+                        .frame(width: 4, height: 6 + CGFloat(i) * 4)
                 }
             }
-            Text(sourceBadge(r.source)).font(.caption2.weight(.semibold)).foregroundStyle(p.textDim).tracking(0.5)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(Self.signalWord(r.fixQuality)).font(.caption.weight(.semibold)).foregroundStyle(p.text)
+                Text(sourceBadge(r.source)).font(.system(size: 9, weight: .semibold)).foregroundStyle(p.textDim).tracking(0.5)
+            }
         }
+        .modifier(BoxCell(p: p))
     }
-    private func metric(_ label: String, _ value: String) -> some View {
+
+    private func metricBox(_ label: String, _ value: String) -> some View {
         let p = model.palette
-        return VStack(alignment: .leading, spacing: 0) {
+        return VStack(alignment: .leading, spacing: 1) {
             Text(label).font(.system(size: 9, weight: .semibold)).foregroundStyle(p.textDim).tracking(0.5)
-            Text(value).font(.caption.monospaced().weight(.semibold)).foregroundStyle(p.text)
+            Text(value).font(.callout.monospaced().weight(.semibold)).foregroundStyle(p.text)
         }
+        .modifier(BoxCell(p: p))
     }
+
     private func sourceBadge(_ s: GPSReadout.Source) -> String {
-        switch s { case .stratux: return "STX"; case .device: return "GPS"; case .none: return "—" }
+        switch s { case .stratux: return "STRATUX"; case .device: return "DEVICE"; case .none: return "—" }
+    }
+    /// The plain-English signal word the pilot asked for, collapsing the 5 quality tiers to 4 words.
+    static func signalWord(_ q: FixQuality) -> String {
+        switch q {
+        case .none: return "No signal"
+        case .poor: return "Weak"
+        case .fair: return "Marginal"
+        case .good, .excellent: return "Good"
+        }
     }
     private static func qualityColor(_ q: FixQuality, _ p: Palette) -> Color {
-        switch q { case .none: return p.textDim; case .poor: return p.warn; case .fair: return p.warn; default: return p.good }
+        switch q { case .none: return p.textDim; case .poor, .fair: return p.warn; default: return p.good }
+    }
+}
+
+/// One boxed cell in the GPS bar — a subtle rounded chip so each datapoint reads as its own box.
+private struct BoxCell: ViewModifier {
+    let p: Palette
+    func body(content: Content) -> some View {
+        content
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .background(p.surface.opacity(0.55), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(p.border, lineWidth: 0.5))
     }
 }
 
