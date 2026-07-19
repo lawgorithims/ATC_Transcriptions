@@ -348,6 +348,12 @@ final class AppModel: ObservableObject {
     /// map fps (to tell an idle map compositing continuously from a paused one). NOT @Published — reading it
     /// per frame must never re-render a view.
     let renderMeter = MapRenderMeter()
+    /// Flight recorder (breadcrumb + metrics) and the logbook it saves finished flights to. Nested stores
+    /// (same pattern as widgetStore/deviceLocation) — observers subscribe to them directly.
+    let flightRecorder = FlightRecorder()
+    let logbook = Logbook()
+    /// A just-finished flight awaiting the save-to-logbook prompt (drives the SaveFlightSheet). Transient.
+    @Published var pendingLoggedFlight: LoggedFlight?
     private var deviceGPSPausedForBackground = false   // GPS was running when we backgrounded → resume on foreground
     /// Auto-download the filed route's plates when a plan is entered (the "pack your flight bag" flow).
     @Published var autoPackFlightBag = (UserDefaults.standard.object(forKey: "atc.autoPackBag") as? Bool ?? true) {
@@ -516,6 +522,10 @@ final class AppModel: ObservableObject {
     /// Map overlay toggles shared by the always-on home map and the top-bar layers menu. Persisted.
     @Published var showAirspace = (UserDefaults.standard.object(forKey: "atc.map.airspace") as? Bool) ?? true {
         didSet { UserDefaults.standard.set(showAirspace, forKey: "atc.map.airspace") }
+    }
+    /// Live GPS bar pinned above the bottom tab bar (app-wide, semitransparent). Persisted, default off.
+    @Published var showGPSBar = (UserDefaults.standard.object(forKey: "atc.gpsBar") as? Bool) ?? false {
+        didSet { UserDefaults.standard.set(showGPSBar, forKey: "atc.gpsBar") }
     }
     @Published var showNearby = (UserDefaults.standard.object(forKey: "atc.map.nearby") as? Bool) ?? true {
         didSet { UserDefaults.standard.set(showNearby, forKey: "atc.map.nearby") }
@@ -1092,6 +1102,10 @@ final class AppModel: ObservableObject {
             needsOnboarding = explicitModel == nil && !Self.onboardingDismissed
         }
         didFinishInit = true   // from here, a showDebug toggle may add the debug widgets
+        // Feed the flight recorder the merged GPS (it never opens its own CoreLocation session). Surface a
+        // flight that was awaiting its save prompt at a crash so it isn't lost.
+        flightRecorder.fixProvider = { [weak self] in self?.currentBreadcrumbFix() }
+        if let recovered = flightRecorder.recoveredPendingSave { pendingLoggedFlight = recovered }
         // Bring the traffic providers in line with the restored state: the Stratux link is decoupled
         // from Start (see `stratuxTrafficActive`), so an enabled link must connect at launch — nothing
         // else fires an edge on a plain foreground launch (`scenePhaseActive` starts true, making the
@@ -1897,6 +1911,31 @@ final class AppModel: ObservableObject {
         if let s = stratuxGPS, s.hasFix { return s.coordinate }
         return deviceLocation.coord
     }
+
+    // MARK: flight recording (REC control + GPS bar read these; the map bridges flightRecorder.$trail)
+
+    var isRecording: Bool { flightRecorder.isRecording }
+    var recordingStartedAt: Date? { flightRecorder.startedAt }
+
+    /// The current merged fix for the recorder to sample — coord from presentPosition (same source order as
+    /// the map ownship) paired with the merged alt/speed/track so they agree. nil when there's no GPS.
+    func currentBreadcrumbFix() -> BreadcrumbFix? {
+        guard let coord = presentPosition, coord.lat.isFinite, coord.lon.isFinite else { return nil }
+        let r = GPSReadout.merge(stratux: stratuxGPS, device: deviceLocation.fix)
+        return BreadcrumbFix(coord: coord, altFt: r.altitudeFtMSL, speedKt: r.groundSpeedKt,
+                             track: r.trackDeg, source: r.source)
+    }
+
+    /// REC control action: start recording (ensuring the shared GPS feed is up — idempotent, no 2nd session),
+    /// or stop and hand the finished flight to the save-to-logbook prompt.
+    func toggleFlightRecording() {
+        if flightRecorder.isRecording {
+            pendingLoggedFlight = flightRecorder.stopRecording()
+        } else {
+            deviceLocation.start()
+            flightRecorder.startRecording(aircraftCallsign: selectedAircraft?.callsign)
+        }
+    }
     /// Direct-to originates at PRESENT POSITION (ForeFlight parity), falling back to the filed departure if
     /// there's no GPS fix. Both callers (map "Direct-To" + voice "cleared direct") route through here.
     func directTo(_ ident: String) { editPlan { $0.directTo(ident, from: presentPosition) } }
@@ -2352,6 +2391,7 @@ final class AppModel: ObservableObject {
             syncTFRs()
             prefetchChartsOnLaunch()        // top up charts around the (possibly moved) position
             if deviceGPSPausedForBackground { deviceGPSPausedForBackground = false; deviceLocation.start() }
+            flightRecorder.setForegrounded(true)   // resume breadcrumb sampling
             // A first-load watchdog that deferred while backgrounded re-arms now, so a genuinely hung
             // compile is still surfaced (and one that finished in the background just fails the guard).
             if let w = pendingLoadWatchdog {
@@ -2369,6 +2409,7 @@ final class AppModel: ObservableObject {
         case .background:
             guard scenePhaseActive else { return }
             scenePhaseActive = false
+            flightRecorder.setForegrounded(false)   // flush the trail to disk before GPS pauses (below)
             clearTraffic()
             // Stop capture so the feed isn't streamed/played in the background, and release the audio
             // session so the `audio` background mode can't keep the app awake (the battery drain + the

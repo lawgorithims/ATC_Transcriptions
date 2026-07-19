@@ -27,6 +27,9 @@ struct MapHostView: View {
     // republish the parent) so a fix change re-renders the map. Stratux is preferred when connected.
     @State private var deviceCoord: Coord?
     @State private var deviceCourse: Double?
+    /// The flight recorder's breadcrumb, bridged from the nested recorder (like deviceCoord). Append-only
+    /// during a recording, [] otherwise — the maps guard on its COUNT so it doesn't re-tessellate per tick.
+    @State private var breadcrumb: [Coord] = []
 
     struct PlateAnchors: Equatable { var tl: CGPoint; var tr: CGPoint }
 
@@ -61,6 +64,7 @@ struct MapHostView: View {
         .onAppear { model.deviceLocation.start() }
         .onReceive(model.deviceLocation.$coord) { deviceCoord = $0 }
         .onReceive(model.deviceLocation.$courseDeg) { deviceCourse = $0 }
+        .onReceive(model.flightRecorder.$trail) { breadcrumb = $0.map { Coord(lat: $0.lat, lon: $0.lon) } }
         // The plate's ✕ / opacity controls ride the PLATE's own top corners (screen-points streamed
         // from the map's region callbacks). SwiftUI-layered — not annotation subviews — so their
         // gestures never fight MapKit's pan recognizer (which cancels UIControl tracking inside
@@ -104,6 +108,7 @@ struct MapHostView: View {
     private var chartMapView: some View {
         ChartMapView(layer: model.chartLayer, readers: store.readers, route: route,
                      procedure: model.previewedProcedureLegs,   // resolved once off-main in AppModel (L8)
+                     breadcrumb: breadcrumb,                     // flight-recorder trail
                      showAirspace: model.showAirspace, showNearby: model.showNearby,
                      showAirways: model.showAirways,
                      initialCenter: model.stratuxGPS?.coordinate ?? deviceCoord,
@@ -143,6 +148,7 @@ struct MapHostView: View {
             store: store,
             layer: model.chartLayer,
             routeCoords: route.map { CLLocationCoordinate2D(latitude: $0.coord.lat, longitude: $0.coord.lon) },
+            breadcrumbCoords: breadcrumb.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) },
             ownship: (model.stratuxGPS?.coordinate ?? deviceCoord).map {
                 CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon)
             },

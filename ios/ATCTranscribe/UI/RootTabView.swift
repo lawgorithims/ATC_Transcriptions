@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// The app's top-level tabs (a ForeFlight-style bottom bar), left → right.
-enum RootTab: String, Hashable, CaseIterable { case transcript, map, plates, airports, notes }
+enum RootTab: String, Hashable, CaseIterable { case transcript, map, plates, airports, notes, logbook }
 
 /// Root view: a ForeFlight-style bottom tab bar under two full-screen tabs — "Map" (the existing
 /// console: transcript, flight plan, floating widgets, live audio) and "Plates" (a searchable FAA
@@ -43,14 +43,27 @@ struct RootTabView: View {
                 .opacity(model.selectedTab == .notes ? 1 : 0)
                 .allowsHitTesting(model.selectedTab == .notes)
                 .accessibilityHidden(model.selectedTab != .notes)
+
+            LogbookTabView()
+                .opacity(model.selectedTab == .logbook ? 1 : 0)
+                .allowsHitTesting(model.selectedTab == .logbook)
+                .accessibilityHidden(model.selectedTab != .logbook)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            BottomTabBar(selection: $model.selectedTab, palette: model.palette)
+            // The live GPS bar (when toggled) rides in the SAME bottom inset as the tab bar, just above it —
+            // guaranteeing it reserves space and never overlaps the map's bottom widgets or the tab bar.
+            VStack(spacing: 0) {
+                if model.showGPSBar {
+                    GPSBottomBar().transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+                BottomTabBar(selection: $model.selectedTab, palette: model.palette)
+            }
         }
         .ignoresSafeArea(.keyboard, edges: .bottom)   // the bar stays pinned; the search keyboard covers it
         .tint(model.palette.accent)
         .preferredColorScheme(model.theme == .day ? .light : .dark)
         .animation(.easeInOut(duration: 0.15), value: model.selectedTab)
+        .animation(.easeInOut(duration: 0.2), value: model.showGPSBar)
     }
 }
 
@@ -69,6 +82,7 @@ private struct BottomTabBar: View {
             item(.plates, icon: "books.vertical.fill", label: "Plates")
             item(.airports, icon: "airplane", label: "Airports")
             item(.notes, icon: "square.and.pencil", label: "Notes")
+            item(.logbook, icon: "book.closed.fill", label: "Logbook")
         }
         .padding(.top, 7)
         .padding(.bottom, 3)

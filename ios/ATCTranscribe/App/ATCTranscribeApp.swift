@@ -39,9 +39,11 @@ struct ATCTranscribeApp: App {
     }
 
     private var appRoot: some View {
-            RootTabView()                               // Transcript · Map · Plates · Airports · Notes tabs
+            RootTabView()                               // Transcript · Map · Plates · Airports · Notes · Logbook
                 .environmentObject(model)
                 .environmentObject(model.widgetStore)   // isolated widget-layout/probe store (see WidgetStore)
+                .environmentObject(model.flightRecorder) // REC control + GPS bar + map breadcrumb observe this
+                .environmentObject(model.logbook)       // saved flights (the Logbook tab)
                 .environmentObject(downloads)
                 .environmentObject(notes)               // hand-written notes library (PencilKit)
                 .environmentObject(metars)              // live METAR + flight category for airport captions

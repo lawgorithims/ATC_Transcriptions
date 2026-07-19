@@ -487,6 +487,7 @@ struct ChartMapView: UIViewRepresentable {
     let readers: [MBTilesReader]
     let route: [ResolvedLeg]
     var procedure: [ResolvedLeg] = []                // a previewed coded procedure (approach/SID/STAR), georeferenced
+    var breadcrumb: [Coord] = []                     // flight-recorder trail (translucent orange)
     let showAirspace: Bool
     let showNearby: Bool
     var showAirways: Bool = true     // enroute V/J/T/Q routes as tappable lines (zoom-gated)
@@ -614,6 +615,21 @@ struct ChartMapView: UIViewRepresentable {
                     mv.setRegion(r, animated: true)
                     c.didFrame = true
                 }
+            }
+        }
+
+        // Live flight-recorder breadcrumb (where the aircraft HAS BEEN). The point count is the change
+        // signature: append-only during a recording + reset-to-empty on stop, so a changed count is the ONLY
+        // way the trail differs — cheapest guard, no key array to build.
+        if breadcrumb.count != c.lastTrackCount {
+            c.lastTrackCount = breadcrumb.count
+            if let to = c.trackOverlay { mv.removeOverlay(to); c.trackOverlay = nil }
+            if breadcrumb.count >= 2 {
+                let coords = breadcrumb.map { $0.clCoordinate }
+                let line = TrackPolyline(coordinates: coords, count: coords.count)
+                if let ro = c.routeOverlay { mv.insertOverlay(line, below: ro) }   // magenta route stays on top
+                else { mv.addOverlay(line, level: .aboveLabels) }
+                c.trackOverlay = line
             }
         }
 
@@ -776,6 +792,8 @@ struct ChartMapView: UIViewRepresentable {
         var procedureOverlay: MKPolyline?
         var procedureFixes: [ProcedureFixAnnotation] = []
         var lastProcKey: [String] = []
+        var trackOverlay: TrackPolyline?             // flight-recorder breadcrumb
+        var lastTrackCount = -1                       // count = the change signature (append-only + reset)
         var routeIdents: Set<String> = []
         var didFrame = false
         var didContext = false
@@ -1235,6 +1253,12 @@ struct ChartMapView: UIViewRepresentable {
                 r.lineWidth = 1.6
                 return r
             }
+            if let track = overlay as? TrackPolyline {            // flight-recorder breadcrumb — translucent orange
+                let r = MKPolylineRenderer(polyline: track)
+                r.strokeColor = UIColor(red: 1.0, green: 0.62, blue: 0.20, alpha: 0.85)
+                r.lineWidth = 4
+                return r
+            }
             if let line = overlay as? MKPolyline {
                 let r = MKPolylineRenderer(polyline: line)
                 if line === procedureOverlay {                    // previewed procedure — cyan dashed
@@ -1690,6 +1714,10 @@ final class NearbyMarkerView: MKAnnotationView {
 }
 
 /// An enroute airway polyline — carries its ident so the renderer and the tap probe can identify it.
+/// The flight-recorder breadcrumb polyline — a distinct subclass so the renderer types it (translucent
+/// orange) rather than treating it as the magenta filed route.
+final class TrackPolyline: MKPolyline {}
+
 final class AirwayPolyline: MKPolyline {
     var ident = ""
     var area = "USA"       // ARINC area — carried to the tap card so the MEA lookup is region-correct
