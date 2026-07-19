@@ -32,6 +32,14 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 69, version: "1.0", headline: "Online traffic layer",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "airplane.circle",
+                    title: "See nearby traffic without a Stratux",
+                    detail: "Turn on \"Traffic (online ADS-B)\" in the map's Layers menu to stream nearby aircraft from a public ADS-B feed and see them on the map. It follows your position and needs only an internet connection — no receiver required. If you do have a Stratux connected, its on-board traffic is used instead. (It now works anytime the app is open, not just while transcribing.)"),
+            ]),
+        ReleaseNote(
             build: 68, version: "1.0", headline: "Route ETAs & flight replay",
             highlights: [
                 WhatsNewHighlight(
