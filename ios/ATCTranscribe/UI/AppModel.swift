@@ -536,6 +536,13 @@ final class AppModel: ObservableObject {
     /// scene-refresh condition) so the Map tab falls back to the classic map for the rest of this launch — the
     /// pilot is never left with a blank chart. Cleared on relaunch (retries MapLibre) or on an explicit toggle.
     @Published var mapLibreRenderFailed = false
+    /// DEVELOPER-ONLY (hidden behind the 7-tap `diagnosticsEnabled` gate). When on, the MapLibre style emits
+    /// the style-spec `projection:globe` key so the Map tab renders on the (forked) globe engine instead of
+    /// flat Mercator. INERT on the shipping MapLibre Native 6.27.0 SDK (Web-Mercator only → renders flat, a
+    /// graceful no-op) until the custom fork lands — see ios/docs/GLOBE_FORK_PLAN.md. Persisted, default off.
+    @Published var useGlobeProjection = UserDefaults.standard.bool(forKey: "atc.map.globe") {
+        didSet { UserDefaults.standard.set(useGlobeProjection, forKey: "atc.map.globe") }
+    }
     @Published var showWxRadar = UserDefaults.standard.bool(forKey: "atc.map.wxRadar") {   // stub overlay for now
         didSet { UserDefaults.standard.set(showWxRadar, forKey: "atc.map.wxRadar") }
     }
