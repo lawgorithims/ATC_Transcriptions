@@ -32,11 +32,14 @@ struct WXTabView: View {
     @EnvironmentObject var model: AppModel
     @StateObject private var cache = WXImageCache()
     @StateObject private var favorites = WXFavorites()
+    @State private var updating = false
+    @State private var updateProgress: (done: Int, total: Int)?
 
     /// Release time in the iPad's LOCAL time zone (short date + time, e.g. "Jul 19, 2:45 PM").
     static let releaseTime: DateFormatter = {
         let f = DateFormatter(); f.dateStyle = .short; f.timeStyle = .short; return f
     }()
+    private static let relative = RelativeDateTimeFormatter()
 
     var body: some View {
         let p = model.palette
@@ -45,6 +48,7 @@ struct WXTabView: View {
                 NavigationStack {
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 0) {
+                            updateHeader(p)
                             let favs = favorites.products(from: WXCatalog.all)
                             if !favs.isEmpty {
                                 section(title: "Favorites", symbol: "star.fill", tint: .yellow, products: favs, p)
@@ -76,6 +80,116 @@ struct WXTabView: View {
 
     private func syncProtected() {
         cache.protectedURLs = Set(favorites.products(from: WXCatalog.all).map { $0.url() })
+    }
+
+    // MARK: manual update + freshness
+
+    /// The URLs the manual update should refresh: every CACHED variant (any altitude/forecast the pilot has
+    /// open) plus each favorite's default variant (so a favorited-but-never-opened chart still gets staged).
+    /// Keyed on real cached urls, NOT product defaults — so freshness can't call a chart "up to date" while
+    /// the specific FL variant the pilot flies with is stale.
+    private func trackedURLs() -> Set<String> {
+        var urls = Set(cache.cachedEntries().map { $0.url })
+        for u in favorites.products(from: WXCatalog.all).map({ $0.url() }) { urls.insert(u) }
+        return urls
+    }
+
+    /// Aggregate freshness over the CACHED variants (mapped to category via the catalog's reverse url map),
+    /// plus any favorited-but-uncached chart as `unknown`. Pure in-memory (no disk stat per render).
+    private func aggregateFreshness(now: Date) -> WXFreshness {
+        var items: [WXFreshness] = []
+        for (url, fetched) in cache.cachedEntries() {                 // bounded by cache size (rule 2)
+            guard let cat = WXCatalog.urlCategory[url] else { continue }
+            items.append(WXFreshness.of(category: cat, fetchedAt: fetched, now: now))
+        }
+        for u in favorites.products(from: WXCatalog.all).map({ $0.url() }) where cache.fetchedAt(u) == nil {
+            items.append(.unknown)
+        }
+        return WXFreshness.aggregate(items)
+    }
+
+    /// The banner button: a colored dot (up-to-date / may-be-stale / out-of-date), a hint, and a refresh
+    /// control that re-downloads the tracked charts. Wrapped in a TimelineView so the color ages over time
+    /// even without interaction. NOTE: this NEVER clears the cache — a failed refresh keeps the offline copy.
+    private func updateHeader(_ p: Palette) -> some View {
+        TimelineView(.periodic(from: .now, by: 60)) { ctx in
+            let fresh = aggregateFreshness(now: ctx.date)
+            Button {
+                Task { await updateCharts() }
+            } label: {
+                HStack(spacing: 11) {
+                    Circle().fill(Self.color(fresh, p)).frame(width: 11, height: 11)
+                        .overlay(Circle().stroke(.white.opacity(0.25), lineWidth: 0.5))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(Self.title(fresh)).font(.subheadline.weight(.semibold)).foregroundStyle(p.text)
+                        Text(subtitle(fresh, now: ctx.date))
+                            .font(.caption2).foregroundStyle(p.textDim)
+                    }
+                    Spacer()
+                    if updating {
+                        if let up = updateProgress {
+                            Text("\(up.done)/\(up.total)").font(.caption.monospacedDigit()).foregroundStyle(p.textDim)
+                        }
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: "arrow.clockwise.circle.fill").font(.title3).foregroundStyle(p.accent)
+                    }
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity)
+                .background(p.surface, in: RoundedRectangle(cornerRadius: 12))
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(Self.color(fresh, p).opacity(0.55), lineWidth: 1))
+            }
+            .buttonStyle(.plainHaptic)
+            .disabled(updating)
+            .padding(.horizontal, 16).padding(.top, 12)
+            .accessibilityIdentifier("wx-update-button")
+            .accessibilityLabel("Update charts. \(Self.title(fresh))")
+        }
+    }
+
+    private func subtitle(_ f: WXFreshness, now: Date) -> String {
+        if updating { return "Downloading the latest charts…" }
+        let newest = cache.cachedEntries().map { $0.fetchedAt }.max()
+        switch f {
+        case .unknown: return "Open charts to cache them for offline use"
+        case .fresh:   return newest.map { "Checked \(Self.relative.localizedString(for: $0, relativeTo: now)) · tap to refresh" } ?? "Tap to refresh"
+        case .aging:   return "Some charts may be out of date — tap to update"
+        case .stale:   return "Charts are out of date — tap to update now"
+        }
+    }
+
+    private static func title(_ f: WXFreshness) -> String {
+        switch f {
+        case .fresh:   return "Charts up to date"
+        case .aging:   return "Charts may be out of date"
+        case .stale:   return "Charts out of date"
+        case .unknown: return "Update charts"
+        }
+    }
+    private static func color(_ f: WXFreshness, _ p: Palette) -> Color {
+        switch f {
+        case .fresh:   return p.good
+        case .aging:   return p.warn
+        case .stale:   return p.bad
+        case .unknown: return p.textDim
+        }
+    }
+
+    /// Re-download the pilot's actual cached variants + favorites (force refresh). Offline-safe: `cache.load`
+    /// falls back to the existing copy on any failure and NEVER deletes it — a botched update can't lose a
+    /// chart the pilot staged. Bounded by the cache size + favorites (rule 2).
+    private func updateCharts() async {
+        let urls = Array(trackedURLs())
+        guard !urls.isEmpty, !updating else { return }
+        updating = true; updateProgress = (0, urls.count)
+        Haptics.impact(.light)
+        var done = 0
+        for u in urls {                                          // bounded by cache size + favorites (rule 2)
+            _ = await cache.load(u, forceRefresh: true)
+            done += 1; updateProgress = (done, urls.count)
+        }
+        updating = false; updateProgress = nil
     }
 
     /// A flat section (header + divided rows) — replaces the old per-category rounded box so Favorites and

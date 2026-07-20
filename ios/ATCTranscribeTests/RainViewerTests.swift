@@ -46,6 +46,20 @@ final class RainViewerTests: XCTestCase {
         XCTAssertTrue(RainViewerService.radarFrames(from: Data("nope".utf8)).isEmpty)
     }
 
+    func testRepresentativeTileMapsCenterToSlippyCoords() {
+        // No center → a CONUS overview at z4, in-range.
+        let conus = RainViewerService.representativeTile(center: nil)
+        XCTAssertEqual(conus.z, 4)
+        XCTAssertTrue((0..<16).contains(conus.x) && (0..<16).contains(conus.y))
+        // A center → z6, in-range, and a westerly center yields a smaller x tile than an easterly one.
+        let bos = RainViewerService.representativeTile(center: (42.36, -71.06))
+        let sf = RainViewerService.representativeTile(center: (37.77, -122.42))
+        XCTAssertEqual(bos.z, 6)
+        XCTAssertTrue((0..<64).contains(bos.x) && (0..<64).contains(bos.y))
+        XCTAssertLessThan(sf.x, bos.x, "San Francisco is west of Boston → smaller tile x")
+        XCTAssertLessThan(bos.y, sf.y, "Boston is north of SF → smaller tile y")
+    }
+
     func testParseLastModifiedHeader() {
         let d = WXImageCache.parseLastModified("Sun, 19 Jul 2026 23:45:59 GMT")
         XCTAssertNotNil(d)

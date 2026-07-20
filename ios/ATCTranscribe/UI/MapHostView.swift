@@ -30,17 +30,10 @@ struct MapHostView: View {
     /// The flight recorder's breadcrumb, bridged from the nested recorder (like deviceCoord). Append-only
     /// during a recording, [] otherwise — the maps guard on its COUNT so it doesn't re-tessellate per tick.
     @State private var breadcrumb: [Coord] = []
-    /// The live precipitation-radar tile URL, bridged from the nested RainViewerService (nil = layer off).
+    /// The live precipitation-radar tile URL, bridged from RainViewerService — the ONE radar value the map
+    /// ENGINES consume. The corner status pill + the loop scrubber observe the service directly (see
+    /// `RadarStatusPill` / `RadarLoopBar`), so they don't need per-field @State bridges here.
     @State private var radarTemplate: String?
-    /// Radar fetch failed with nothing to show (bridged) — drives the "radar unavailable" pill.
-    @State private var radarFailed = false
-    /// Show a brief "radar live" confirmation after the first frame arrives — clear skies paint NOTHING, so
-    /// without this a working radar is indistinguishable from a broken one.
-    @State private var radarLiveUntil: Date?
-    /// Radar loop-animation state, bridged from the nested RainViewerService (past → now → forecast).
-    @State private var radarAnimating = false
-    @State private var radarFrameLabel = ""
-    @State private var radarCanAnimate = false
 
     struct PlateAnchors: Equatable { var tl: CGPoint; var tr: CGPoint }
 
@@ -79,25 +72,13 @@ struct MapHostView: View {
         // GPS). Bridged into @State so a fix change re-renders → updateUIView moves the marker. GPS is
         // paused in the background by AppModel.handleScenePhase (battery).
         .onAppear { model.deviceLocation.start() }
-        .onReceive(model.deviceLocation.$coord) { deviceCoord = $0 }
+        .onReceive(model.deviceLocation.$coord) { c in
+            deviceCoord = c
+            if let c { model.rainViewer.prefetchCenter = (c.lat, c.lon) }   // aim the radar-loop prefetch nearby
+        }
         .onReceive(model.deviceLocation.$courseDeg) { deviceCourse = $0 }
         .onReceive(model.flightRecorder.$trail) { breadcrumb = $0.map { Coord(lat: $0.lat, lon: $0.lon) } }
-        .onReceive(model.rainViewer.$tileTemplate) { t in
-            // First frame after a cold/blank start → confirm "live" briefly (clear skies draw nothing, so
-            // the pill is the only evidence the layer works). Auto-dismisses via the scheduled task below.
-            if radarTemplate == nil, t != nil, model.showWxRadar {
-                let mark = Date().addingTimeInterval(5)
-                radarLiveUntil = mark
-                // Clear only if THIS confirmation is still the current one — a radar off/on within 5.5s
-                // otherwise lets the first timer wipe the second cycle's pill.
-                Task { try? await Task.sleep(nanoseconds: 5_500_000_000); if radarLiveUntil == mark { radarLiveUntil = nil } }
-            }
-            radarTemplate = t
-        }
-        .onReceive(model.rainViewer.$failed) { radarFailed = $0 }
-        .onReceive(model.rainViewer.$animating) { radarAnimating = $0 }
-        .onReceive(model.rainViewer.$frameLabel) { radarFrameLabel = $0 }
-        .onReceive(model.rainViewer.$canAnimate) { radarCanAnimate = $0 }
+        .onReceive(model.rainViewer.$tileTemplate) { radarTemplate = $0 }   // feed the map engines the current frame
         // The plate's ✕ / opacity controls ride the PLATE's own top corners (screen-points streamed
         // from the map's region callbacks). SwiftUI-layered — not annotation subviews — so their
         // gestures never fight MapKit's pan recognizer (which cancels UIControl tracking inside
@@ -112,8 +93,15 @@ struct MapHostView: View {
             // isn't stranded over a blank background at stale anchor coords when the map is off.
             if live, let s = model.plateOverlay, let a = plateAnchors, !model.showPlateMenu {
                 GeometryReader { geo in
-                    let x = min(max(a.tr.x - 24, 36), geo.size.width - 36)
-                    let y = min(max(a.tr.y + 24, 130), geo.size.height - 96)   // clear top bars + bottom tab bar
+                    // Pin the gear to the plate's EXACT top-right corner (center tucked just inside by a
+                    // half-button) and track it 1:1 as the plate pans/zooms. Clamp INSIDE the map chrome —
+                    // NOT the physical screen edge — because the gear is the ONLY way to reach the plate
+                    // menu: it must never slide under the opaque TopBar/strips (top) or the GPS + tab bar
+                    // (bottom), where it would be un-tappable. Within that band it sits exactly on the corner.
+                    let m: CGFloat = 18
+                    let x = min(max(a.tr.x - m, 40), geo.size.width - 40)
+                    let bottomChrome = model.showGPSBar ? 150.0 : 96.0        // GPS bar (when shown) + tab bar
+                    let y = min(max(a.tr.y + m, 132), geo.size.height - bottomChrome)   // 132: clear TopBar + strips
                     PlateCornerSettingsButton(opacity: s.opacity)
                         .environmentObject(model)
                         .position(x: x, y: y)
@@ -121,7 +109,18 @@ struct MapHostView: View {
             }
         }
         .overlay(alignment: .top) { statusPills }
-        .overlay(alignment: .bottom) { radarAnimControl }
+        .overlay(alignment: .topTrailing) {
+            if live {
+                RadarStatusPill(rainViewer: model.rainViewer, widgets: widgets,
+                                show: model.showWxRadar, thermalWarm: model.thermalSerious, palette: model.palette)
+            }
+        }
+        .overlay(alignment: .bottom) {
+            if live {
+                RadarLoopBar(rainViewer: model.rainViewer, widgets: widgets,
+                             show: model.showWxRadar, gpsBar: model.showGPSBar, palette: model.palette)
+            }
+        }
         .task { await buildRoute() }
         .onChange(of: model.flightPlan) { _, _ in Task { await buildRoute() } }      // edits redraw the route
         .onChange(of: model.chartLayer) { _, new in
@@ -233,7 +232,6 @@ struct MapHostView: View {
             VStack(spacing: 6) {
                 chartStatusPill
                 trafficStatusPill
-                radarStatusPill
             }
             .padding(.top, 150)   // clear the top chrome (TopBar + input/flight-plan strips)
         }
@@ -273,23 +271,6 @@ struct MapHostView: View {
         }
     }
 
-    /// Weather-radar state. Clear skies paint NOTHING, so confirm "live" briefly on the first frame.
-    @ViewBuilder private var radarStatusPill: some View {
-        if model.showWxRadar {
-            if radarTemplate == nil {
-                if model.thermalSerious {
-                    statusPill("Weather radar paused (device warm)", "thermometer.high")   // not a failure — deliberately paused
-                } else if radarFailed {
-                    statusPill("Weather radar unavailable — retrying…", "wifi.exclamationmark")
-                } else {
-                    statusPill("Loading weather radar…", "cloud.rain", spin: true)
-                }
-            } else if let until = radarLiveUntil, until > Date() {
-                statusPill("Weather radar live — precipitation will paint over the chart", "cloud.rain")
-            }
-        }
-    }
-
     private func statusPill(_ text: String, _ icon: String, spin: Bool = false) -> some View {
         HStack(spacing: 8) {
             if spin { ProgressView().controlSize(.small) } else { Image(systemName: icon) }
@@ -299,33 +280,6 @@ struct MapHostView: View {
         .background(.ultraThinMaterial, in: Capsule())
         .foregroundStyle(.primary)
         .shadow(radius: 4)
-    }
-
-    /// A compact loop-animation control for the weather radar — play/pause the past→now→forecast sequence so
-    /// the pilot can see which way the weather is moving. Rides just above the GPS bar; only while the radar
-    /// layer is on and there's a frame drawn. Frame time label reads relative to now ("−40 min" … "+20 min").
-    @ViewBuilder private var radarAnimControl: some View {
-        if live, model.showWxRadar, radarTemplate != nil, radarCanAnimate {
-            Button {
-                Haptics.impact(.light); model.rainViewer.toggleAnimation()
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: radarAnimating ? "pause.fill" : "play.fill").font(.caption.weight(.bold))
-                    Text(radarAnimating ? (radarFrameLabel.isEmpty ? "Radar" : "Radar \(radarFrameLabel)") : "Play radar loop")
-                        .font(.caption.weight(.medium))
-                }
-                .padding(.horizontal, 14).padding(.vertical, 8)
-                .background(.ultraThinMaterial, in: Capsule())
-                .foregroundStyle(.primary)
-                .shadow(radius: 4)
-            }
-            .buttonStyle(.plainHaptic)
-            .accessibilityIdentifier("radar-anim-toggle")
-            // The map body .ignoresSafeArea(), so this overlay's bottom is the PHYSICAL screen edge — a bare
-            // 12pt left it hidden behind (and un-tappable under) the opaque bottom tab bar (~84pt) + the GPS
-            // bar (~56pt) when shown (a red-hat finding on the build-72 radar control). Clear both.
-            .padding(.bottom, model.showGPSBar ? 150 : 96)
-        }
     }
 
     private func buildRoute() async {
@@ -339,4 +293,118 @@ struct MapHostView: View {
         route = model.flightPlan.map { ProcedureRoute.resolve($0) } ?? []
         await store.setLayer(model.chartLayer, routeRects: ChartGeo.routeRects(route))
     }
+}
+
+/// The weather-radar STATUS chip, pinned to the map's top-trailing CORNER (out of the way of the
+/// center-top chart/traffic pills). Shows a buffering %, or the loading / unavailable / paused-when-warm
+/// states — and hides once the radar is live + buffered (the loop bar is then the persistent indicator).
+/// Shifts inward when a widget is docked as a right side-pane so it's never hidden behind it.
+private struct RadarStatusPill: View {
+    @ObservedObject var rainViewer: RainViewerService
+    @ObservedObject var widgets: WidgetStore
+    let show: Bool
+    let thermalWarm: Bool
+    let palette: Palette
+
+    var body: some View {
+        Group {
+            if show, let content = state {
+                HStack(spacing: 8) {
+                    if content.spin { ProgressView().controlSize(.small) } else { Image(systemName: content.icon) }
+                    Text(content.text).font(.caption.weight(.medium))
+                }
+                .padding(.horizontal, 12).padding(.vertical, 7)
+                .background(.ultraThinMaterial, in: Capsule())
+                .foregroundStyle(.primary)
+                .shadow(radius: 4)
+                .padding(.top, 150)                         // clear the top chrome (TopBar + strips)
+                .padding(.trailing, trailingInset)          // clear a docked right side-pane
+                .accessibilityIdentifier("radar-status-pill")
+            }
+        }
+    }
+
+    /// Trailing inset so the chip clears a right-docked widget pane (approx its stored/default width).
+    private var trailingInset: CGFloat {
+        guard widgets.rightPane != nil else { return 12 }
+        return (widgets.rightPaneWidth > 0 ? widgets.rightPaneWidth : 320) + 12
+    }
+
+    private var state: (text: String, icon: String, spin: Bool)? {
+        if let prog = rainViewer.bufferProgress {           // buffering the loop → a real %
+            return ("Radar loop \(Int((prog * 100).rounded()))%", "cloud.rain", true)
+        }
+        if rainViewer.tileTemplate == nil {
+            if thermalWarm { return ("Radar paused (device warm)", "thermometer.high", false) }
+            if rainViewer.failed { return ("Radar unavailable — retrying", "wifi.exclamationmark", false) }
+            return ("Loading radar…", "cloud.rain", true)
+        }
+        return nil                                          // live + buffered → the loop bar is the indicator
+    }
+}
+
+/// The weather-radar LOOP scrubber — a docked bar above the GPS bar with play/pause, a time-scale slider to
+/// jump between frames (past → now → forecast), and the selected frame's time. Replaces the build-72
+/// center-bottom play button. Insets horizontally to clear docked side-panes.
+private struct RadarLoopBar: View {
+    @ObservedObject var rainViewer: RainViewerService
+    @ObservedObject var widgets: WidgetStore
+    let show: Bool
+    let gpsBar: Bool
+    let palette: Palette
+
+    var body: some View {
+        Group {
+            if show, rainViewer.canAnimate {
+                let count = rainViewer.frames.count
+                let idx = Binding<Double>(
+                    get: { Double(min(rainViewer.currentIndex, max(count - 1, 0))) },
+                    set: { rainViewer.scrub(to: Int($0.rounded())) })
+                HStack(spacing: 12) {
+                    Button {
+                        Haptics.impact(.light); rainViewer.toggleAnimation()
+                    } label: {
+                        Image(systemName: rainViewer.animating ? "pause.fill" : "play.fill")
+                            .font(.system(size: 16, weight: .bold)).frame(width: 30, height: 30)
+                    }
+                    .buttonStyle(.plainHaptic)
+                    .accessibilityIdentifier("radar-loop-play")
+
+                    VStack(spacing: 1) {
+                        Slider(value: idx, in: 0...Double(max(count - 1, 1)), step: 1)
+                            .tint(palette.accent)
+                            .accessibilityIdentifier("radar-loop-slider")
+                        HStack {
+                            Text("past").font(.system(size: 9)).foregroundStyle(palette.textDim)
+                            Spacer()
+                            Text(rainViewer.frameLabel.isEmpty ? "now" : rainViewer.frameLabel)
+                                .font(.caption2.weight(.semibold).monospacedDigit()).foregroundStyle(palette.text)
+                            Spacer()
+                            Text("forecast").font(.system(size: 9)).foregroundStyle(palette.textDim)
+                        }
+                    }
+                    // Jump back to the live "now" frame.
+                    Button { Haptics.impact(.light); rainViewer.resetToNow() } label: {
+                        Image(systemName: "clock.arrow.circlepath").font(.system(size: 15, weight: .semibold))
+                            .frame(width: 28, height: 28)
+                    }
+                    .buttonStyle(.plainHaptic)
+                    .accessibilityIdentifier("radar-loop-now")
+                }
+                .padding(.horizontal, 14).padding(.vertical, 8)
+                .background(.ultraThinMaterial, in: Capsule())
+                .foregroundStyle(.primary)
+                .shadow(radius: 4)
+                .frame(maxWidth: 460)
+                .padding(.horizontal, 16)
+                .padding(.leading, widgets.leftPane != nil ? paneWidth(widgets.leftPaneWidth) : 0)
+                .padding(.trailing, widgets.rightPane != nil ? paneWidth(widgets.rightPaneWidth) : 0)
+                // The map .ignoresSafeArea(), so clear the bottom tab bar (~84) + the GPS bar (~56) when shown.
+                .padding(.bottom, gpsBar ? 150 : 96)
+                .accessibilityIdentifier("radar-loop-bar")
+            }
+        }
+    }
+
+    private func paneWidth(_ stored: CGFloat) -> CGFloat { stored > 0 ? stored : 320 }
 }
