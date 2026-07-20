@@ -34,6 +34,9 @@ struct MapHostView: View {
     /// ENGINES consume. The corner status pill + the loop scrubber observe the service directly (see
     /// `RadarStatusPill` / `RadarLoopBar`), so they don't need per-field @State bridges here.
     @State private var radarTemplate: String?
+    /// Screen-point of the search-result highlight (streamed from the active engine, like the plate anchors),
+    /// so the SwiftUI pulsing marker rides the map. nil when there's no highlight or it's off-screen-computed.
+    @State private var searchPoint: CGPoint?
 
     struct PlateAnchors: Equatable { var tl: CGPoint; var tr: CGPoint }
 
@@ -108,6 +111,13 @@ struct MapHostView: View {
                 }
             }
         }
+        // The pulsing search-result highlight: rides the map at the streamed screen point, drawn regardless
+        // of which layers are on. Not hit-testable so it never eats a map tap.
+        .overlay {
+            if live, let hl = model.searchHighlight, let pt = searchPoint {
+                SearchHighlightMarker(kind: hl.kind).position(x: pt.x, y: pt.y).allowsHitTesting(false)
+            }
+        }
         .overlay(alignment: .top) { statusPills }
         .overlay(alignment: .topTrailing) {
             if live {
@@ -168,6 +178,10 @@ struct MapHostView: View {
                              if plateAnchors != mapped { plateAnchors = mapped }
                          }
                      },
+                     searchHighlight: model.searchHighlight.map {
+                         CLLocationCoordinate2D(latitude: $0.coord.lat, longitude: $0.coord.lon)
+                     },
+                     onSearchPoint: { p in Task { @MainActor in if searchPoint != p { searchPoint = p } } },
                      model: model)
     }
 
@@ -210,6 +224,10 @@ struct MapHostView: View {
                     if plateAnchors != mapped { plateAnchors = mapped }
                 }
             },
+            searchHighlight: model.searchHighlight.map {
+                CLLocationCoordinate2D(latitude: $0.coord.lat, longitude: $0.coord.lon)
+            },
+            onSearchPoint: { p in Task { @MainActor in if searchPoint != p { searchPoint = p } } },
             onRenderStalled: {
                 // The MapLibre map produced no frames (MLNMapView blank-until-scene-refresh) — fall back to the
                 // classic map for this session so the pilot always has a working chart.
@@ -292,6 +310,53 @@ struct MapHostView: View {
         // filed departure→enroute→destination — see `ProcedureRoute`.
         route = model.flightPlan.map { ProcedureRoute.resolve($0) } ?? []
         await store.setLayer(model.chartLayer, routeRects: ChartGeo.routeRects(route))
+    }
+}
+
+/// A highlighted, gently PULSING marker for the current map-search result — shown at the searched
+/// airport/navaid/fix even when its normal layer is off, so "I searched for it but don't see it" can't
+/// happen. Engine-agnostic (positioned by MapHostView from a streamed screen point). Non-interactive.
+struct SearchHighlightMarker: View {
+    let kind: MapObjectKind
+    @State private var pulse = false
+
+    var body: some View {
+        let color = Self.color(kind)
+        ZStack {
+            // Expanding ring that fades out — the "pulse".
+            Circle().stroke(color, lineWidth: 2.5)
+                .frame(width: 30, height: 30)
+                .scaleEffect(pulse ? 2.1 : 1.0)
+                .opacity(pulse ? 0 : 0.9)
+            // Soft halo + the crisp icon disc (mirrors the search sheet's badge).
+            Circle().fill(color.opacity(0.22)).frame(width: 40, height: 40)
+            ZStack {
+                Circle().fill(color).frame(width: 26, height: 26)
+                    .overlay(Circle().stroke(.white, lineWidth: 2))
+                Image(systemName: Self.icon(kind)).font(.system(size: 12, weight: .bold)).foregroundStyle(.white)
+            }
+            .shadow(color: .black.opacity(0.4), radius: 3, y: 1)
+        }
+        .onAppear {
+            withAnimation(.easeOut(duration: 1.5).repeatForever(autoreverses: false)) { pulse = true }
+        }
+    }
+
+    static func color(_ kind: MapObjectKind) -> Color {
+        switch kind {
+        case .airport: return .hex(0xE879F9)
+        case .vor:     return .hex(0x34D399)
+        case .fix:     return .hex(0x60A5FA)
+        default:       return .hex(0xF59E0B)
+        }
+    }
+    static func icon(_ kind: MapObjectKind) -> String {
+        switch kind {
+        case .airport: return "airplane"
+        case .vor:     return "hexagon"
+        case .fix:     return "triangle"
+        default:       return "mappin"
+        }
     }
 }
 

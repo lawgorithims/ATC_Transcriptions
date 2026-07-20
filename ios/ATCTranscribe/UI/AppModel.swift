@@ -323,6 +323,10 @@ final class AppModel: ObservableObject {
 
     /// Recenter the home map here (a search result). Transient.
     @Published var mapFocus: Coord?
+    /// A picked search result, drawn as a highlighted PULSING marker on the map REGARDLESS of layer toggles
+    /// (so "nearby off" doesn't hide the thing you searched for). Cleared when its object card is dismissed
+    /// or a different object is selected; a result the pilot files into the route persists via the route pins.
+    @Published var searchHighlight: IdentifiedObject?
     /// One-shot "frame this map rect" request (e.g. a plate sent to the map frames the WHOLE plate so
     /// its corner controls arrive on-screen). Consumed + cleared by `ChartMapView` — never persists,
     /// so a map rebuild (thermal / route-map dismiss) can't re-frame over the pilot's own pan.
@@ -418,11 +422,23 @@ final class AppModel: ObservableObject {
     /// status. Cleared before rewiring in `setupLive`.
     private var sessionCancellables: Set<AnyCancellable> = []
 
-    /// A search result / programmatic selection: center the map on it and open its info panel.
+    /// A search result / programmatic selection: drop a pulsing highlight on it, center the map, and open
+    /// its info panel. The highlight makes the searched thing visible even when its map layer is off.
     func selectMapObject(_ o: IdentifiedObject) {
+        // Search results are built with onRoute:false — recompute real membership so the card offers
+        // "Remove from route" correctly and the clear-logic knows a filed result should persist as a pin.
+        let obj = IdentifiedObject(kind: o.kind, ident: o.ident, coord: o.coord,
+                                   onRoute: flightPlan?.contains(o.ident) ?? false,
+                                   airspace: o.airspace, traffic: o.traffic, hazard: o.hazard,
+                                   tfr: o.tfr, airwayArea: o.airwayArea)
+        searchHighlight = obj
         mapFocus = o.coord
-        widgetStore.mapProbe = MapProbeResult(id: "sel-\(o.id)", objects: [o])
+        widgetStore.mapProbe = MapProbeResult(id: "sel-\(obj.id)", objects: [obj])
     }
+
+    /// Remove the pulsing search highlight (its card was dismissed or another object selected). A result
+    /// the pilot filed into the route stays visible on its own as a route waypoint pin.
+    func clearSearchHighlight() { searchHighlight = nil }
 
     // MARK: - Plate overlay (superimpose an approach plate on the map — reference aid)
 

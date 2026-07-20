@@ -501,6 +501,8 @@ struct ChartMapView: UIViewRepresentable {
     var restoreCamera: SavedMapCamera? = nil         // M7: re-frame to the user's last pan/zoom after a thermal rebuild
     var plateOverlay: PlateOverlayState? = nil       // a georeferenced approach plate superimposed on the map
     var onPlateAnchors: ((CGPoint, CGPoint)?) -> Void = { _ in }   // plate top-corner screen-points → host chrome
+    var searchHighlight: CLLocationCoordinate2D? = nil            // a pulsing search-result marker (layer-independent)
+    var onSearchPoint: (CGPoint?) -> Void = { _ in }             // its screen-point → the SwiftUI pulsing overlay
     @ObservedObject var model: AppModel
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -563,6 +565,9 @@ struct ChartMapView: UIViewRepresentable {
         c.onVisibleRegion = onVisibleRegion
         c.onTapObjects = onTapObjects
         c.onPlateAnchors = onPlateAnchors
+        c.onSearchPoint = onSearchPoint
+        c.searchHighlightCoord = searchHighlight
+        c.emitSearchPoint(mv)                             // keep the pulsing search marker glued to its spot
         c.routeLegs = route                               // hit-test source for filed waypoints
         c.routeIdents = Set(route.map { $0.ident })
         let realistic = model.terrain3DEnabled && !model.thermalSerious
@@ -795,6 +800,14 @@ struct ChartMapView: UIViewRepresentable {
             onPlateAnchors((mv.convert(corners.tl, toPointTo: mv),
                             mv.convert(corners.tr, toPointTo: mv)))
         }
+
+        var searchHighlightCoord: CLLocationCoordinate2D?
+        var onSearchPoint: (CGPoint?) -> Void = { _ in }
+        /// Stream the search highlight's screen point (or nil) so the SwiftUI pulsing marker rides the map.
+        func emitSearchPoint(_ mv: MKMapView) {
+            guard let cc = searchHighlightCoord else { onSearchPoint(nil); return }
+            onSearchPoint(mv.convert(cc, toPointTo: mv))
+        }
         var routeOverlay: MKPolyline?
         var waypointAnnotations: [WaypointAnnotation] = []
         var lastRouteKey: [String] = []
@@ -986,11 +999,13 @@ struct ChartMapView: UIViewRepresentable {
             regionDebounce = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
             emitPlateAnchors(mv)
+            emitSearchPoint(mv)
         }
 
         /// Fires continuously DURING a pan/zoom — keeps the plate's corner controls glued to the plate.
         func mapViewDidChangeVisibleRegion(_ mv: MKMapView) {
             emitPlateAnchors(mv)
+            emitSearchPoint(mv)
         }
 
         /// Recompute the in-view context layers (airspace outlines [Class B/C/D + special use] + nearby navaids/airports)

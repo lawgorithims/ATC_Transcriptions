@@ -37,6 +37,8 @@ struct MapLibreChartView: UIViewRepresentable {
     var restoreCamera: SavedMapCamera? = nil          // restore the pilot's last pan/zoom across remounts (M7)
     var onTapObjects: ([IdentifiedObject]) -> Void = { _ in }
     var onPlateAnchors: ((CGPoint, CGPoint)?) -> Void = { _ in }   // plate top-corner screen-points → host chrome
+    var searchHighlight: CLLocationCoordinate2D? = nil            // a pulsing search-result marker (layer-independent)
+    var onSearchPoint: (CGPoint?) -> Void = { _ in }             // its screen-point → the SwiftUI pulsing overlay
     var onRenderStalled: () -> Void = {}                           // map drew 0 frames → host falls back to classic map
     var onVisibleRegion: (MKMapRect) -> Void = { _ in }            // settle → host persists model.lastMapCamera
     var renderMeter: MapRenderMeter? = nil                         // battery diagnostics: per-frame counter → map fps
@@ -61,12 +63,13 @@ struct MapLibreChartView: UIViewRepresentable {
     func updateUIView(_ uiView: UIView, context: Context) {
         let c = context.coordinator
         c.onVisibleRegion = onVisibleRegion
+        c.onSearchPoint = onSearchPoint
         c.cacheInputs(layer: layer, routeCoords: routeCoords, breadcrumbCoords: breadcrumbCoords,
                       radarTemplate: radarTemplate, ownship: ownship, ownshipCourse: ownshipCourse,
                       traffic: traffic, tfrs: showTFRs ? tfrs : [], showAirspace: showAirspace,
                       showNearby: showNearby, showAirways: showAirways, plateOverlay: plateOverlay,
                       routeIdents: routeIdents, focus: focus, restoreCamera: restoreCamera,
-                      onTap: onTapObjects, onAnchors: onPlateAnchors)
+                      onTap: onTapObjects, onAnchors: onPlateAnchors, searchHighlight: searchHighlight)
         guard c.map != nil else { return }      // map not built yet (scene still activating) → apply on createMap
         c.applyLatest()
     }
@@ -134,12 +137,21 @@ struct MapLibreChartView: UIViewRepresentable {
                          showNearby: Bool, showAirways: Bool, plateOverlay: PlateOverlayState?,
                          routeIdents: Set<String>, focus: Coord?, restoreCamera: SavedMapCamera?,
                          onTap: @escaping ([IdentifiedObject]) -> Void,
-                         onAnchors: @escaping ((CGPoint, CGPoint)?) -> Void) {
+                         onAnchors: @escaping ((CGPoint, CGPoint)?) -> Void,
+                         searchHighlight: CLLocationCoordinate2D?) {
             inLayer = layer; inRoute = routeCoords; inBreadcrumb = breadcrumbCoords; inRadarTemplate = radarTemplate
             inOwnship = ownship; inOwnCourse = ownshipCourse
             inTraffic = traffic; inTFRs = tfrs; inShowAirspace = showAirspace; inShowNearby = showNearby
             inShowAirways = showAirways; inPlate = plateOverlay; inFocus = focus; self.restoreCamera = restoreCamera
             self.routeIdents = routeIdents; self.onTapObjects = onTap; self.onPlateAnchors = onAnchors
+            inSearchHighlight = searchHighlight
+        }
+        var inSearchHighlight: CLLocationCoordinate2D?
+        var onSearchPoint: (CGPoint?) -> Void = { _ in }
+        /// Stream the search highlight's screen point (or nil) so the SwiftUI pulsing marker rides the map.
+        func emitSearchPoint(_ map: MLNMapView) {
+            guard let cc = inSearchHighlight else { onSearchPoint(nil); return }
+            onSearchPoint(map.convert(cc, toPointTo: map))
         }
 
         /// Apply the cached inputs to the live map (from updateUIView, and once more right after createMap).
@@ -153,6 +165,7 @@ struct MapLibreChartView: UIViewRepresentable {
             updateRoute(inRoute, on: map)
             updateTrack(inBreadcrumb, on: map)
             updateRadar(inRadarTemplate, on: map)
+            emitSearchPoint(map)               // keep the pulsing search marker glued to its spot
             applyOverlayToggles(inShowAirspace, inShowNearby, inShowAirways, on: map)
             updateOwnship(inOwnship, course: inOwnCourse, on: map)
             updateTraffic(inTraffic, on: map)
@@ -344,6 +357,7 @@ struct MapLibreChartView: UIViewRepresentable {
         /// refresh instead of firing redundant network downloads + off-main DB scans on every settle.
         func mapView(_ mapView: MLNMapView, regionDidChangeAnimated animated: Bool) {
             emitPlateAnchors(mapView)              // keep the plate corner gear pinned (NOT debounced — must be live)
+            emitSearchPoint(mapView)
             regionDebounce?.cancel()
             let work = DispatchWorkItem { [weak self, weak mapView] in
                 guard let self, let mapView else { return }
@@ -365,7 +379,7 @@ struct MapLibreChartView: UIViewRepresentable {
 
         /// Stream the plate corner gear's screen anchors continuously during an active pan/zoom (cheap:
         /// projects 2 points, guarded to no-op when no plate is loaded), so the gear rides the plate live.
-        func mapViewRegionIsChanging(_ mapView: MLNMapView) { emitPlateAnchors(mapView) }
+        func mapViewRegionIsChanging(_ mapView: MLNMapView) { emitPlateAnchors(mapView); emitSearchPoint(mapView) }
 
         // MARK: airspace + airways overlays (milestone 2)
 
