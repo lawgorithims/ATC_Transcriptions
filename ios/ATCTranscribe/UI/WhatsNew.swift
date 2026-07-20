@@ -32,6 +32,18 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 75, version: "1.0", headline: "Plates: back, swipe, edge-to-edge",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "chevron.left",
+                    title: "Back button + swipe-back in binders",
+                    detail: "Opening an airport binder now gives a proper back button, and you can swipe from the left edge to go back to your binder list \u{2014} the same gesture as everywhere else in iOS."),
+                WhatsNewHighlight(
+                    icon: "rectangle.grid.2x2.fill",
+                    title: "Edge-to-edge plate thumbnails",
+                    detail: "Plate thumbnails now fill their tiles with no white border around the chart, sized to each plate\u{2019}s own shape \u{2014} two clean columns in portrait, three in landscape, grouped by category (Approaches by runway, Departures, Arrivals)."),
+            ]),
+        ReleaseNote(
             build: 74, version: "1.0", headline: "WX updates, radar scrubber, bigger plates",
             highlights: [
                 WhatsNewHighlight(
