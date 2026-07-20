@@ -100,16 +100,23 @@ final class GIBSTileOverlay: MKTileOverlay {
     /// Crop the `src` sub-rectangle (in the ancestor's 256-pt space) and scale it to a full 256×256 tile.
     /// Mirrors `MBTilesTileOverlay.overzoomedTile`; runs on MapKit's tile queue (off-screen render is safe).
     private static func crop(_ img: UIImage, src: (ax: Int, ay: Int, sub: Double, ox: Double, oy: Double)) -> Data? {
+        overzoomCrop(img, src: src, opaque: true)   // GIBS jpegs are opaque satellite imagery
+    }
+
+    /// Shared crop+upscale for remote-tile overzoom (GIBS smoke + the RainViewer radar). `opaque: false`
+    /// preserves transparency (radar tiles are mostly-clear PNGs — an opaque render would black-fill them).
+    static func overzoomCrop(_ img: UIImage, src: (ax: Int, ay: Int, sub: Double, ox: Double, oy: Double),
+                             opaque: Bool) -> Data? {
         assert(src.sub > 0, "sub-tile size positive")
         assert(src.ox >= 0 && src.oy >= 0, "sub-tile origin non-negative")
         let tile: CGFloat = 256
-        let fmt = UIGraphicsImageRendererFormat.default(); fmt.scale = 1; fmt.opaque = true
+        let fmt = UIGraphicsImageRendererFormat.default(); fmt.scale = 1; fmt.opaque = opaque
         let out = UIGraphicsImageRenderer(size: CGSize(width: tile, height: tile), format: fmt).image { _ in
             let draw = tile / CGFloat(src.sub)                  // scale so the sub-rect fills 256×256
             let size = CGSize(width: img.size.width * draw, height: img.size.height * draw)
             img.draw(in: CGRect(x: -CGFloat(src.ox) * draw, y: -CGFloat(src.oy) * draw,
                                 width: size.width, height: size.height))
         }
-        return out.jpegData(compressionQuality: 0.8)
+        return opaque ? out.jpegData(compressionQuality: 0.8) : out.pngData()
     }
 }
