@@ -826,8 +826,11 @@ struct MapLibreChartView: UIViewRepresentable {
             if let l = style.layer(withIdentifier: "wxradar-layer") { style.removeLayer(l) }
             if let s = style.source(withIdentifier: "wxradar") { style.removeSource(s) }
             guard let template else { return }   // nil → radar off (removed above)
+            // maximumZoomLevel 7: RainViewer's free tier serves a "Zoom Level Not Supported" PLACEHOLDER
+            // IMAGE past z7 (verified byte-identical tiles z8+), which would tile that error text across the
+            // chart. Capped, MapLibre natively overzooms (upscales) the z7 tiles at closer zooms instead.
             let src = MLNRasterTileSource(identifier: "wxradar", tileURLTemplates: [template],
-                                          options: [.tileSize: 256])
+                                          options: [.tileSize: 256, .maximumZoomLevel: 7])
             style.addSource(src)
             let layer = MLNRasterStyleLayer(identifier: "wxradar-layer", source: src)
             layer.rasterOpacity = NSExpression(forConstantValue: 0.6)   // translucent — chart reads underneath

@@ -621,8 +621,14 @@ struct ChartMapView: UIViewRepresentable {
 
         // Live flight-recorder breadcrumb (where the aircraft HAS BEEN). The point count is the change
         // signature: append-only during a recording + reset-to-empty on stop, so a changed count is the ONLY
-        // way the trail differs — cheapest guard, no key array to build.
-        if breadcrumb.count != c.lastTrackCount {
+        // way the trail differs. BATTERY: a remove+re-add invalidates MapKit's overlay tiles and re-tessellates
+        // the WHOLE (growing) polyline, so batch it — rebuild every 5 appends (~10 s of trail lag, invisible at
+        // chart zoom) instead of every recorder tick; a reset (count drops) or the first drawable pair applies
+        // immediately.
+        let trackRebuild = breadcrumb.count < c.lastTrackCount                       // stopped/cleared
+            || (c.lastTrackCount < 2 && breadcrumb.count >= 2)                       // first drawable points
+            || breadcrumb.count - c.lastTrackCount >= 5                              // batched appends
+        if trackRebuild {
             c.lastTrackCount = breadcrumb.count
             if let to = c.trackOverlay { mv.removeOverlay(to); c.trackOverlay = nil }
             if breadcrumb.count >= 2 {
@@ -1207,9 +1213,7 @@ struct ChartMapView: UIViewRepresentable {
             radarTemplate = template
             if let o = radarOverlay { mv.removeOverlay(o); radarOverlay = nil }
             guard let template else { return }
-            let o = RadarTileOverlay(urlTemplate: template)
-            o.canReplaceMapContent = false           // draws OVER the chart, never replaces it
-            o.tileSize = CGSize(width: 256, height: 256)
+            let o = RadarTileOverlay(urlTemplate: template)   // z-clamp + overzoom configured in its init
             mv.insertOverlay(o, at: overlays.count, level: .aboveLabels)
             radarOverlay = o
         }
@@ -1749,8 +1753,40 @@ final class NearbyMarkerView: MKAnnotationView {
 final class TrackPolyline: MKPolyline {}
 
 /// The RainViewer precipitation-radar tile overlay — a distinct subclass so the renderer draws it
-/// translucent (not as an opaque chart layer). RainViewer tiles use a standard {z}/{x}/{y} URL template.
-final class RadarTileOverlay: MKTileOverlay {}
+/// translucent (not as an opaque chart layer). RainViewer tiles use a standard {z}/{x}/{y} URL template,
+/// BUT the free tier only serves real radar up to z7 — beyond that it returns a placeholder tile with
+/// "Zoom Level Not Supported" baked into the IMAGE (verified: z8+ tiles are byte-identical placeholders),
+/// which tiled that error text across the whole chart at normal zoom. So: never request past z7; instead
+/// crop+upscale the deepest real tile (the exact GIBS-smoke overzoom pattern — radar is blobby, upscales fine).
+final class RadarTileOverlay: MKTileOverlay {
+    static let maxNativeZ = 7            // RainViewer serves placeholders past this (empirically verified)
+    static let overzoomLevels = 6        // keep radar visible (progressively softer) through ~z13 chart zoom
+
+    override init(urlTemplate: String?) {
+        super.init(urlTemplate: urlTemplate)
+        canReplaceMapContent = false     // draws OVER the chart, never replaces it
+        tileSize = CGSize(width: 256, height: 256)
+        maximumZ = Self.maxNativeZ + Self.overzoomLevels
+    }
+
+    override func loadTile(at path: MKTileOverlayPath, result: @escaping (Data?, Error?) -> Void) {
+        assert(path.z >= 0, "tile zoom non-negative")
+        // At or below native, fetch the RainViewer tile directly (default template behaviour).
+        guard path.z > Self.maxNativeZ else { super.loadTile(at: path, result: result); return }
+        // Past native: fetch the deepest REAL ancestor tile, crop the sub-rect, scale to 256 — never let
+        // MapKit request a placeholder tile.
+        guard let src = MBTilesTileOverlay.overzoomSource(z: path.z, x: path.x, y: path.y, maxZoom: Self.maxNativeZ) else {
+            result(nil, nil); return
+        }
+        assert(src.sub > 0, "overzoom sub-rect positive")
+        let ancestor = MKTileOverlayPath(x: src.ax, y: src.ay, z: Self.maxNativeZ,
+                                         contentScaleFactor: path.contentScaleFactor)
+        super.loadTile(at: ancestor) { data, err in
+            guard let data, let img = UIImage(data: data) else { result(data, err); return }
+            result(GIBSTileOverlay.overzoomCrop(img, src: src, opaque: false), nil)   // false: keep transparency
+        }
+    }
+}
 
 final class AirwayPolyline: MKPolyline {
     var ident = ""
