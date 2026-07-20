@@ -86,8 +86,11 @@ struct MapHostView: View {
             // First frame after a cold/blank start → confirm "live" briefly (clear skies draw nothing, so
             // the pill is the only evidence the layer works). Auto-dismisses via the scheduled task below.
             if radarTemplate == nil, t != nil, model.showWxRadar {
-                radarLiveUntil = Date().addingTimeInterval(5)
-                Task { try? await Task.sleep(nanoseconds: 5_500_000_000); radarLiveUntil = nil }
+                let mark = Date().addingTimeInterval(5)
+                radarLiveUntil = mark
+                // Clear only if THIS confirmation is still the current one — a radar off/on within 5.5s
+                // otherwise lets the first timer wipe the second cycle's pill.
+                Task { try? await Task.sleep(nanoseconds: 5_500_000_000); if radarLiveUntil == mark { radarLiveUntil = nil } }
             }
             radarTemplate = t
         }
@@ -274,7 +277,9 @@ struct MapHostView: View {
     @ViewBuilder private var radarStatusPill: some View {
         if model.showWxRadar {
             if radarTemplate == nil {
-                if radarFailed {
+                if model.thermalSerious {
+                    statusPill("Weather radar paused (device warm)", "thermometer.high")   // not a failure — deliberately paused
+                } else if radarFailed {
                     statusPill("Weather radar unavailable — retrying…", "wifi.exclamationmark")
                 } else {
                     statusPill("Loading weather radar…", "cloud.rain", spin: true)
@@ -316,7 +321,10 @@ struct MapHostView: View {
             }
             .buttonStyle(.plainHaptic)
             .accessibilityIdentifier("radar-anim-toggle")
-            .padding(.bottom, 12)
+            // The map body .ignoresSafeArea(), so this overlay's bottom is the PHYSICAL screen edge — a bare
+            // 12pt left it hidden behind (and un-tappable under) the opaque bottom tab bar (~84pt) + the GPS
+            // bar (~56pt) when shown (a red-hat finding on the build-72 radar control). Clear both.
+            .padding(.bottom, model.showGPSBar ? 150 : 96)
         }
     }
 

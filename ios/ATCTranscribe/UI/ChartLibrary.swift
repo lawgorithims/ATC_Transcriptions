@@ -111,11 +111,37 @@ final class ChartLibrary: ObservableObject {
 
     // MARK: On-disk cache
 
-    private var dir: URL {
-        let d = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("charts", isDirectory: true)
+    /// `Application Support/charts/` — NOT `.cachesDirectory`, which iOS silently PURGES under storage
+    /// pressure (a red-hat finding: a pilot's multi-GB offline kit could vanish with no warning, leaving
+    /// no base charts in flight with no signal). Mirrors `PlateStore`/`ModelStore`. Excluded from iCloud
+    /// backup (large + re-downloadable). Migrates any packs left in the old caches location on first use so
+    /// an upgrade never re-downloads what's already on disk. Computed once (lazy) — the migration runs once.
+    private lazy var dir: URL = {
+        let base = (try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                                 appropriateFor: nil, create: true))
+            ?? FileManager.default.temporaryDirectory
+        var d = base.appendingPathComponent("charts", isDirectory: true)
         try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+        Self.migrateFromCaches(into: d)
+        var values = URLResourceValues(); values.isExcludedFromBackup = true
+        try? d.setResourceValues(values)
         return d
+    }()
+
+    /// Move any `.mbtiles` packs left in the legacy `.cachesDirectory/charts` into the new durable dir,
+    /// then remove the old dir. Best-effort per file (a failed move just leaves that pack to re-download).
+    private static func migrateFromCaches(into newDir: URL) {
+        let old = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("charts", isDirectory: true)
+        guard old != newDir,
+              let files = try? FileManager.default.contentsOfDirectory(at: old, includingPropertiesForKeys: nil)
+        else { return }
+        for f in files where f.pathExtension == "mbtiles" {            // bounded by disk contents (rule 2)
+            let dst = newDir.appendingPathComponent(f.lastPathComponent)
+            if FileManager.default.fileExists(atPath: dst.path) { try? FileManager.default.removeItem(at: f) }
+            else { try? FileManager.default.moveItem(at: f, to: dst) }
+        }
+        try? FileManager.default.removeItem(at: old)                   // clear the now-empty legacy dir
     }
 
     /// On-disk name carries the AIRAC cycle so a new cycle can't be served from a stale cached file.
@@ -129,12 +155,30 @@ final class ChartLibrary: ObservableObject {
         FileManager.default.fileExists(atPath: localURL(e).path)
     }
 
-    /// Delete cached packs from previous cycles so the pilot never reads an expired chart off disk.
+    /// Delete cached packs from previous cycles so the pilot never reads an expired chart off disk — but
+    /// NEVER a PINNED pack (an explicit offline download). At an AIRAC rollover the pilot often opens the
+    /// map while briefly online BEFORE the new cycle is downloaded; the old code then wiped the whole pinned
+    /// US kit in the background, and if signal dropped they'd fly with zero charts (a red-hat finding). A
+    /// pinned old-cycle pack is kept as a labeled-expired fallback — the reader only ever opens the
+    /// current-cycle filename, so a lingering old pack is never silently served as current. Incidental
+    /// (un-pinned) prefetch packs are still pruned to reclaim space.
     private func pruneOldCycleFiles() {
         guard let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else { return }
-        for f in files where f.pathExtension == "mbtiles" && !f.lastPathComponent.hasSuffix("-\(cycle).mbtiles") {
+        let suffix = "-\(cycle).mbtiles"
+        // Read the PERSISTED pin ids, not the in-memory `pinned`: prune runs BEFORE loadPinned() (and
+        // loadPinned drops the in-memory set on a cycle change), so only UserDefaults still knows which packs
+        // the pilot explicitly downloaded. Those must survive the rollover; incidental prefetch is prunable.
+        let pinnedIDs = Set(UserDefaults.standard.stringArray(forKey: pinnedKey) ?? [])
+        for f in files where f.pathExtension == "mbtiles" && !f.lastPathComponent.hasSuffix(suffix) {
+            if Self.packID(f.lastPathComponent).map(pinnedIDs.contains) == true { continue }   // keep pilot's downloads
             try? FileManager.default.removeItem(at: f)
         }
+    }
+
+    /// The pack id from an on-disk `<id>-<cycle>.mbtiles` filename (id may contain dashes → split at the LAST).
+    nonisolated static func packID(_ name: String) -> String? {
+        guard name.hasSuffix(".mbtiles"), let dash = name.range(of: "-", options: .backwards) else { return nil }
+        return String(name[name.startIndex..<dash.lowerBound])
     }
 
     /// Ensure a pack is on disk, downloading it if missing. Integrity-checked (openable + has tile

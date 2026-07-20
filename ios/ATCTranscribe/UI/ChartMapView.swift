@@ -627,7 +627,8 @@ struct ChartMapView: UIViewRepresentable {
         // immediately.
         let trackRebuild = breadcrumb.count < c.lastTrackCount                       // stopped/cleared
             || (c.lastTrackCount < 2 && breadcrumb.count >= 2)                       // first drawable points
-            || breadcrumb.count - c.lastTrackCount >= 5                              // batched appends
+            || breadcrumb.count < 16                                                 // early trail: draw every point
+            || breadcrumb.count - c.lastTrackCount >= 5                              // batched appends (long trail)
         if trackRebuild {
             c.lastTrackCount = breadcrumb.count
             if let to = c.trackOverlay { mv.removeOverlay(to); c.trackOverlay = nil }

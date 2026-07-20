@@ -66,8 +66,16 @@ struct WXTabView: View {
                     .navigationTitle("Weather")
                 }
                 .accessibilityIdentifier("tab-wx")
+                // Keep the image cache's protected set in sync with favorites so a favorited chart the pilot
+                // staged for offline use is NEVER evicted (their default-variant URL is protected).
+                .onAppear { syncProtected() }
+                .onChange(of: favorites.ids) { _, _ in syncProtected() }
             }
         }
+    }
+
+    private func syncProtected() {
+        cache.protectedURLs = Set(favorites.products(from: WXCatalog.all).map { $0.url() })
     }
 
     /// A flat section (header + divided rows) — replaces the old per-category rounded box so Favorites and
@@ -112,7 +120,7 @@ struct WXTabView: View {
                         }
                     }
                     Spacer()
-                    if cache.cached(product.url()) != nil {
+                    if cache.isCached(product.url()) {   // decode-free — never decodes a multi-MB image in a row
                         Image(systemName: "arrow.down.circle.fill").font(.caption).foregroundStyle(p.good)
                             .accessibilityLabel("Available offline")
                     }
@@ -242,12 +250,16 @@ struct WXProductView: View {
     }
 
     private func load(refresh: Bool) async {
-        let url = product.url(a: a, b: b)
+        let startA = a, startB = b
+        let url = product.url(a: startA, b: startB)
         loadFailed = false
         // Paint the cached copy instantly, then refresh over the network.
         if !refresh, let disk = cache.cached(url) { current = disk }
         loading = true
         let result = await cache.load(url, forceRefresh: refresh)
+        // The pilot may have switched the level/forecast picker mid-download — a superseded load must NOT
+        // clobber the now-visible chart with the wrong altitude's image (a red-hat finding).
+        guard a == startA, b == startB else { return }
         loading = false
         if let result { current = result } else if current == nil { loadFailed = true }
     }

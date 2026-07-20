@@ -32,6 +32,22 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 73, version: "1.0", headline: "Offline safety + battery + WX polish",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "externaldrive.badge.checkmark",
+                    title: "Your downloaded charts are now protected",
+                    detail: "Downloaded chart packs were living in a folder iOS can silently erase when storage runs low — they now live in protected storage that survives, and an existing download is migrated automatically. A chart-cycle rollover also no longer wipes your pinned downloads. Removing downloads now asks first."),
+                WhatsNewHighlight(
+                    icon: "bolt.badge.checkmark",
+                    title: "Battery: the map recovers to the efficient engine",
+                    detail: "If the GPU map stalled at launch, the app was stranded on the older, power-hungry map engine for the whole flight. It now automatically retries the efficient engine whenever you return to the Map tab."),
+                WhatsNewHighlight(
+                    icon: "cloud.sun.fill",
+                    title: "Weather tab: favorites + fixes",
+                    detail: "Star your go-to charts into a Favorites list on top; favorited charts are kept offline and never evicted. Fixed the GPS bar covering the bottom of charts in landscape, the radar-loop button hiding behind the tab bar, and radar dropping out when zoomed in or panned."),
+            ]),
+        ReleaseNote(
             build: 72, version: "1.0", headline: "Radar loop, ETE, chart times",
             highlights: [
                 WhatsNewHighlight(
