@@ -334,7 +334,9 @@ final class AppModel: ObservableObject {
     @Published var showPlateMenu = false
     /// Which bottom-bar tab is showing (Map / Plates). Switched to `.map` when a plate is sent to
     /// the map so the pilot sees the overlay.
-    @Published var selectedTab: RootTab = .map
+    @Published var selectedTab: RootTab = .map {
+        didSet { if selectedTab == .map, oldValue != .map { retryMapLibreOnReturnToMap() } }
+    }
     /// A transient one-shot: "open the Plates tab on this airport." Set by a map→Plates hand-off (or
     /// the `--start-tab plates <ICAO>` QA arg); `PlatesTabView` CONSUMES it (applies it, then clears it
     /// back to nil) so a repeat hand-off to the same airport still fires. nil = no pending request.
@@ -550,8 +552,22 @@ final class AppModel: ObservableObject {
     /// pilot is never left with a blank chart. Cleared on relaunch (retries MapLibre) or on an explicit toggle.
     @Published var mapLibreRenderFailed = false
     /// Bounded MapLibre re-arms after a render-stall fallback (per launch): a genuine blank-until-scene-refresh
-    /// dormancy self-heals on the next foreground instead of stranding the CPU-hungry classic map all flight.
-    private var mapLibreRetriesLeft = 2
+    /// dormancy self-heals instead of stranding the CPU-hungry classic map all flight. The build-71 flight
+    /// proved the OLD design stranded `mk(stalled)` for a whole 6-hour session — the only re-arm was gated
+    /// behind a background→foreground transition a foregrounded cockpit session never produces. Now ALSO
+    /// re-armed on every return to the Map tab (a fresh coordinator is built then anyway), which is the common
+    /// gesture; the budget is generous and resets each foreground.
+    private static let mapLibreRetryBudget = 5
+    private var mapLibreRetriesLeft = mapLibreRetryBudget
+
+    /// Returning to the Map tab rebuilds a fresh MapLibre coordinator, so a cold-launch stall that stranded us
+    /// on the classic map should get a fresh attempt here — the re-mount runs AFTER launch contention, so it
+    /// almost always renders. Bounded so a genuinely-broken MapLibre can't thrash the engine every switch.
+    private func retryMapLibreOnReturnToMap() {
+        guard useMapLibreMap, mapLibreRenderFailed, mapLibreRetriesLeft > 0 else { return }
+        mapLibreRetriesLeft -= 1
+        mapLibreRenderFailed = false     // republish → MapHostView re-swaps to MapLibre → fresh createMap
+    }
     /// Live precipitation-radar overlay (RainViewer, internet). Persisted, default off; the RainViewerService
     /// fetches the latest frame while it's on + foregrounded + not thermally throttled.
     @Published var showWxRadar = UserDefaults.standard.bool(forKey: "atc.map.wxRadar") {
@@ -2436,7 +2452,9 @@ final class AppModel: ObservableObject {
             syncRadar()                            // resume the weather-radar fetch
             // Give MapLibre another chance after a render-stall fallback (bounded): clearing the flag republishes
             // → MapHostView re-swaps to the MapLibre map → a fresh createMap re-arms the staggered watchdog.
-            if useMapLibreMap, mapLibreRenderFailed, mapLibreRetriesLeft > 0 {
+            // Also REFRESH the retry budget: a new foreground is a fresh chance for cold-launch stalls to heal.
+            mapLibreRetriesLeft = Self.mapLibreRetryBudget
+            if useMapLibreMap, mapLibreRenderFailed {
                 mapLibreRetriesLeft -= 1; mapLibreRenderFailed = false
             }
             // A first-load watchdog that deferred while backgrounded re-arms now, so a genuinely hung

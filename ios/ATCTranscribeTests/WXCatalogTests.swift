@@ -62,4 +62,27 @@ import XCTest
     func testCachedReturnsNilForUnknownURL() {
         XCTAssertNil(tempCache().cached("https://example.gov/never-fetched.gif"))
     }
+
+    // MARK: favorites
+
+    func testFavoritesToggleAndPersistInCatalogOrder() {
+        let key = "atc.wx.favorites"
+        UserDefaults.standard.removeObject(forKey: key)
+        defer { UserDefaults.standard.removeObject(forKey: key) }
+        let fav = WXFavorites()
+        XCTAssertFalse(fav.isFavorite("sat-ir"))
+        fav.toggle("sat-ir"); fav.toggle("prog-sfc")
+        XCTAssertTrue(fav.isFavorite("sat-ir"))
+        // products() returns catalog order regardless of toggle order, and only real products.
+        let ids = fav.products(from: WXCatalog.all).map(\.id)
+        XCTAssertTrue(ids.contains("sat-ir") && ids.contains("prog-sfc"))
+        XCTAssertEqual(ids, WXCatalog.all.map(\.id).filter { ids.contains($0) }, "favorites keep catalog order")
+        // A stale/unknown id never surfaces a product.
+        fav.toggle("does-not-exist")
+        XCTAssertFalse(fav.products(from: WXCatalog.all).map(\.id).contains("does-not-exist"))
+        // Toggling off removes it; persistence survives a fresh instance.
+        fav.toggle("sat-ir")
+        XCTAssertFalse(fav.isFavorite("sat-ir"))
+        XCTAssertTrue(WXFavorites().isFavorite("prog-sfc"), "favorites persist across launches")
+    }
 }
