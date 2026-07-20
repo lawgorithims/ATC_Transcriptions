@@ -7,11 +7,15 @@ import Foundation
 @MainActor final class RainViewerService: ObservableObject {
     /// The current radar raster URL template ("…/{z}/{x}/{y}/…png"), or nil when off / not yet fetched.
     @Published private(set) var tileTemplate: String?
+    /// True when the LAST fetch failed AND we have nothing to show (drives the "radar unavailable" pill —
+    /// a failure with a last-good template keeps showing the old frame instead).
+    @Published private(set) var failed = false
     /// Attribution required by RainViewer's free tier.
     static let attribution = "Radar: RainViewer"
 
     private var refreshTask: Task<Void, Never>?
     private static let refreshSeconds: UInt64 = 300         // frames update ~every 10 min; refresh every 5
+    private static let retrySeconds: UInt64 = 15            // faster retry while we have NOTHING to show yet
 
     /// Edge-triggered: start refreshing when the layer turns on, stop + clear when off (idle cost = zero).
     func setEnabled(_ on: Bool) {
@@ -23,19 +27,25 @@ import Foundation
         refreshTask = Task { [weak self] in
             while !Task.isCancelled {                            // bounded by cancellation (rule 2)
                 await self?.refresh()
-                try? await Task.sleep(nanoseconds: Self.refreshSeconds * 1_000_000_000)
+                // Retry fast while we have NOTHING to show (first fetch failed), else the normal cadence.
+                let interval = await (self?.tileTemplate == nil) ? Self.retrySeconds : Self.refreshSeconds
+                try? await Task.sleep(nanoseconds: interval * 1_000_000_000)
             }
         }
     }
-    private func stop() { refreshTask?.cancel(); refreshTask = nil; tileTemplate = nil }
+    private func stop() { refreshTask?.cancel(); refreshTask = nil; tileTemplate = nil; failed = false }
 
     private func refresh() async {
         guard let url = URL(string: "https://api.rainviewer.com/public/weather-maps.json") else { return }
         var req = URLRequest(url: url); req.timeoutInterval = 12
         guard let (data, resp) = try? await URLSession.shared.data(for: req),
               (resp as? HTTPURLResponse)?.statusCode == 200,
-              let template = Self.latestRadarTemplate(from: data) else { return }   // keep the last good on failure
+              let template = Self.latestRadarTemplate(from: data) else {
+            failed = (tileTemplate == nil)                       // keep the last good frame on failure
+            return
+        }
         tileTemplate = template
+        failed = false
     }
 
     /// Parse RainViewer's weather-maps.json → the newest radar frame's `{z}/{x}/{y}` PNG template. Pure so

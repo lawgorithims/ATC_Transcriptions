@@ -32,6 +32,11 @@ struct MapHostView: View {
     @State private var breadcrumb: [Coord] = []
     /// The live precipitation-radar tile URL, bridged from the nested RainViewerService (nil = layer off).
     @State private var radarTemplate: String?
+    /// Radar fetch failed with nothing to show (bridged) — drives the "radar unavailable" pill.
+    @State private var radarFailed = false
+    /// Show a brief "radar live" confirmation after the first frame arrives — clear skies paint NOTHING, so
+    /// without this a working radar is indistinguishable from a broken one.
+    @State private var radarLiveUntil: Date?
 
     struct PlateAnchors: Equatable { var tl: CGPoint; var tr: CGPoint }
 
@@ -73,7 +78,16 @@ struct MapHostView: View {
         .onReceive(model.deviceLocation.$coord) { deviceCoord = $0 }
         .onReceive(model.deviceLocation.$courseDeg) { deviceCourse = $0 }
         .onReceive(model.flightRecorder.$trail) { breadcrumb = $0.map { Coord(lat: $0.lat, lon: $0.lon) } }
-        .onReceive(model.rainViewer.$tileTemplate) { radarTemplate = $0 }
+        .onReceive(model.rainViewer.$tileTemplate) { t in
+            // First frame after a cold/blank start → confirm "live" briefly (clear skies draw nothing, so
+            // the pill is the only evidence the layer works). Auto-dismisses via the scheduled task below.
+            if radarTemplate == nil, t != nil, model.showWxRadar {
+                radarLiveUntil = Date().addingTimeInterval(5)
+                Task { try? await Task.sleep(nanoseconds: 5_500_000_000); radarLiveUntil = nil }
+            }
+            radarTemplate = t
+        }
+        .onReceive(model.rainViewer.$failed) { radarFailed = $0 }
         // The plate's ✕ / opacity controls ride the PLATE's own top corners (screen-points streamed
         // from the map's region callbacks). SwiftUI-layered — not annotation subviews — so their
         // gestures never fight MapKit's pan recognizer (which cancels UIControl tracking inside
@@ -96,7 +110,7 @@ struct MapHostView: View {
                 }
             }
         }
-        .overlay(alignment: .top) { chartStatusPill }
+        .overlay(alignment: .top) { statusPills }
         .task { await buildRoute() }
         .onChange(of: model.flightPlan) { _, _ in Task { await buildRoute() } }      // edits redraw the route
         .onChange(of: model.chartLayer) { _, new in
@@ -200,22 +214,65 @@ struct MapHostView: View {
     }
     #endif
 
-    /// A small status pill when the FAA chart can't draw yet (download in progress / failed / zoomed out),
-    /// so a slow or absent pack reads as an ACTIONABLE state instead of a silent blank (the build-63 IFR-low
-    /// confusion). Engine-agnostic — `store.phase` is set by ChartStore regardless of MapLibre vs MKMapView.
-    @ViewBuilder private var chartStatusPill: some View {
+    /// The stacked map-status pills (chart / traffic / radar), so a slow or absent feed reads as an
+    /// ACTIONABLE state instead of a silent blank — "no planes drawn" must be distinguishable between
+    /// "still loading", "feed down", and "genuinely no aircraft nearby" (the pilot's explicit ask).
+    @ViewBuilder private var statusPills: some View {
         if live {
-            switch store.phase {
-            case .loadingCatalog: statusPill("Loading chart index…", "arrow.down.circle", spin: true)
-            case .downloading:    statusPill("Loading charts for this area…", "arrow.down.circle", spin: true)
-            case .zoomOut where model.chartLayer.isRaster:
-                statusPill("Zoom in to load the chart here", "plus.magnifyingglass")
-            case .empty where model.chartLayer.isRaster:
-                statusPill(route.isEmpty ? "Pan and zoom in to load charts" : "No \(model.chartLayer.title) charts here", "map")
-            case .failed:
-                statusPill("Chart download failed — tap to retry", "wifi.exclamationmark")
-                    .onTapGesture { Task { await store.setLayer(model.chartLayer, routeRects: ChartGeo.routeRects(route)) } }
-            default: EmptyView()
+            VStack(spacing: 6) {
+                chartStatusPill
+                trafficStatusPill
+                radarStatusPill
+            }
+            .padding(.top, 150)   // clear the top chrome (TopBar + input/flight-plan strips)
+        }
+    }
+
+    /// Chart download state — engine-agnostic (`store.phase` is set by ChartStore for both engines).
+    @ViewBuilder private var chartStatusPill: some View {
+        switch store.phase {
+        case .loadingCatalog: statusPill("Loading chart index…", "arrow.down.circle", spin: true)
+        case .downloading:    statusPill("Loading charts for this area…", "arrow.down.circle", spin: true)
+        case .zoomOut where model.chartLayer.isRaster:
+            statusPill("Zoom in to load the chart here", "plus.magnifyingglass")
+        case .empty where model.chartLayer.isRaster:
+            statusPill(route.isEmpty ? "Pan and zoom in to load charts" : "No \(model.chartLayer.title) charts here", "map")
+        case .failed:
+            statusPill("Chart download failed — tap to retry", "wifi.exclamationmark")
+                .onTapGesture { Task { await store.setLayer(model.chartLayer, routeRects: ChartGeo.routeRects(route)) } }
+        default: EmptyView()
+        }
+    }
+
+    /// Online ADS-B traffic state. Hidden while the Stratux link provides traffic (its own widget shows
+    /// status) and once aircraft are actually drawn (the planes are their own evidence).
+    @ViewBuilder private var trafficStatusPill: some View {
+        if model.adsbStreamingEnabled, !model.stratuxEnabled {
+            if case .error = model.adsbStatus {
+                statusPill("Traffic unavailable — check connection", "wifi.exclamationmark")
+            } else if model.aircraftUpdatedAt == nil {
+                if model.presentPosition == nil && model.airport.isEmpty {
+                    statusPill("Traffic is waiting for a GPS fix…", "location.slash")
+                } else {
+                    statusPill("Loading traffic…", "airplane", spin: true)
+                }
+            } else if model.aircraft.isEmpty {
+                statusPill("Traffic live — no aircraft nearby", "airplane")
+            }
+        }
+    }
+
+    /// Weather-radar state. Clear skies paint NOTHING, so confirm "live" briefly on the first frame.
+    @ViewBuilder private var radarStatusPill: some View {
+        if model.showWxRadar {
+            if radarTemplate == nil {
+                if radarFailed {
+                    statusPill("Weather radar unavailable — retrying…", "wifi.exclamationmark")
+                } else {
+                    statusPill("Loading weather radar…", "cloud.rain", spin: true)
+                }
+            } else if let until = radarLiveUntil, until > Date() {
+                statusPill("Weather radar live — precipitation will paint over the chart", "cloud.rain")
             }
         }
     }
@@ -229,7 +286,6 @@ struct MapHostView: View {
         .background(.ultraThinMaterial, in: Capsule())
         .foregroundStyle(.primary)
         .shadow(radius: 4)
-        .padding(.top, 150)   // clear the top chrome (TopBar + input/flight-plan strips)
     }
 
     private func buildRoute() async {
