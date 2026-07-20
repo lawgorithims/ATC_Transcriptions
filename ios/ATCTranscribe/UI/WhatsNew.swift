@@ -32,6 +32,14 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 76, version: "1.0", headline: "Search results pin on the map",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "mappin.circle.fill",
+                    title: "Searched waypoints show a pulsing marker",
+                    detail: "When you search the map for an airport, VOR, or fix, it now drops a highlighted, gently pulsing marker right where it is \u{2014} even if that layer is turned off \u{2014} so you can always see what you searched for. The marker clears when you close its card, unless you\u{2019}ve added it to your flight plan (then it stays as a route point)."),
+            ]),
+        ReleaseNote(
             build: 75, version: "1.0", headline: "Plates: back, swipe, edge-to-edge",
             highlights: [
                 WhatsNewHighlight(

@@ -93,6 +93,12 @@ struct ConsoleView: View {
         .sheet(item: $model.pendingLoggedFlight) { flight in   // recording stopped → save-to-logbook prompt
             SaveFlightSheet(flight: flight).environmentObject(model)
         }
+        // The pulsing search highlight lives only while ITS object card is the active probe. When that card
+        // is closed (probe → nil) or a different object is selected (probe id changes), drop the highlight —
+        // a result the pilot filed into the route keeps showing on its own as a route waypoint pin.
+        .onChange(of: widgets.mapProbe?.id) { _, id in
+            if id != model.searchHighlight.map({ "sel-\($0.id)" }) { model.clearSearchHighlight() }
+        }
         .animation(.easeInOut(duration: 0.25), value: model.theme)
         .onAppear {
             Haptics.prepare()   // warm the Taptic engine so the first button tap is felt (iPhone only)
