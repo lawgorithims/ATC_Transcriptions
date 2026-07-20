@@ -32,6 +32,22 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 72, version: "1.0", headline: "Radar loop, ETE, chart times",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "play.circle",
+                    title: "Animated weather radar",
+                    detail: "Play the radar as a loop (past \u{2192} now \u{2192} short-term forecast) so you can see which way the storms are moving. Tap the radar-loop button on the map when the radar layer is on. The radar also stays put now when you zoom in instead of dropping out."),
+                WhatsNewHighlight(
+                    icon: "timer",
+                    title: "Time remaining (ETE) on the GPS bar",
+                    detail: "The GPS bar now shows the time REMAINING to the next waypoint and to the destination as a countdown (e.g. \"1:23\"), alongside the clock arrival time \u{2014} not just clock times."),
+                WhatsNewHighlight(
+                    icon: "clock.badge.checkmark",
+                    title: "Chart release times + shareable battery log",
+                    detail: "Each weather chart shows when NOAA released it, in your iPad\u{2019}s local time. And the battery diagnostics can now be shared as a file (AirDrop / Mail / Save to Files), including the per-activity CPU breakdown \u{2014} no more copying long logs by hand."),
+            ]),
+        ReleaseNote(
             build: 71, version: "1.0", headline: "Weather briefing tab",
             highlights: [
                 WhatsNewHighlight(

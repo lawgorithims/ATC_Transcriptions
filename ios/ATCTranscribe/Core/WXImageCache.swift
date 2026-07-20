@@ -1,11 +1,13 @@
 import UIKit
 import CryptoKit
 
-/// A weather image resolved by the cache: the bitmap, when it was DOWNLOADED (the "date stamp" — most NOAA
+/// A weather image resolved by the cache: the bitmap, when it was DOWNLOADED (the "date stamp"), when NOAA
+/// RELEASED it (the image's HTTP Last-Modified — the issuance/render time the pilot cares about; most NOAA
 /// charts also burn their valid time into the image itself), and whether it came from disk (offline).
 struct WXCachedImage {
     let image: UIImage
     let fetchedAt: Date
+    let releasedAt: Date?      // source Last-Modified (issuance time), shown in the iPad's local time
     let fromCache: Bool
 }
 
@@ -16,7 +18,7 @@ struct WXCachedImage {
 @MainActor final class WXImageCache: ObservableObject {
     static let maxEntries = 200                       // ~a full catalog sweep incl. variants; bounded (rule 2)
 
-    private struct Entry: Codable { let file: String; let fetchedAt: Date }
+    private struct Entry: Codable { let file: String; let fetchedAt: Date; var releasedAt: Date? }
     private var index: [String: Entry] = [:]          // url → entry
     private let dir: URL
     private var indexURL: URL { dir.appendingPathComponent("index.json") }
@@ -44,27 +46,45 @@ struct WXCachedImage {
         guard let e = index[urlString],
               let data = try? Data(contentsOf: dir.appendingPathComponent(e.file)),
               let img = UIImage(data: data) else { return nil }
-        return WXCachedImage(image: img, fetchedAt: e.fetchedAt, fromCache: true)
+        return WXCachedImage(image: img, fetchedAt: e.fetchedAt, releasedAt: e.releasedAt, fromCache: true)
     }
+
+    /// The source RELEASE time of a cached product (Last-Modified), without loading the image — lets the
+    /// product list show "released HH:MM" after a name once it's been viewed once.
+    func releasedAt(_ urlString: String) -> Date? { index[urlString]?.releasedAt }
 
     private func download(_ urlString: String) async -> WXCachedImage? {
         guard let url = URL(string: urlString) else { return nil }
         var req = URLRequest(url: url); req.timeoutInterval = 20
         guard let (data, resp) = try? await URLSession.shared.data(for: req),
-              (resp as? HTTPURLResponse)?.statusCode == 200,
+              let http = resp as? HTTPURLResponse, http.statusCode == 200,
               data.count > 500,                        // reject error stubs
               let img = UIImage(data: data) else { return nil }
-        store(urlString, data: data)
-        return WXCachedImage(image: img, fetchedAt: Date(), fromCache: false)
+        let released = Self.parseLastModified(http.value(forHTTPHeaderField: "Last-Modified"))
+        store(urlString, data: data, releasedAt: released)
+        return WXCachedImage(image: img, fetchedAt: Date(), releasedAt: released, fromCache: false)
     }
 
-    private func store(_ urlString: String, data: Data) {
+    private func store(_ urlString: String, data: Data, releasedAt: Date?) {
         let file = Self.fileName(for: urlString)
         guard (try? data.write(to: dir.appendingPathComponent(file), options: .atomic)) != nil else { return }
-        index[urlString] = Entry(file: file, fetchedAt: Date())
+        index[urlString] = Entry(file: file, fetchedAt: Date(), releasedAt: releasedAt)
         evictIfNeeded()
         persistIndex()
     }
+
+    /// Parse an HTTP Last-Modified header ("Sun, 19 Jul 2026 23:45:59 GMT") → Date. nil when absent/unparseable.
+    nonisolated static func parseLastModified(_ header: String?) -> Date? {
+        guard let header, !header.isEmpty else { return nil }
+        return lastModifiedFormatter.date(from: header)
+    }
+    private static let lastModifiedFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(identifier: "GMT")
+        f.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        return f
+    }()
 
     /// Drop the oldest entries past the cap (bounded loop; index size is itself bounded by the cap + 1).
     private func evictIfNeeded() {

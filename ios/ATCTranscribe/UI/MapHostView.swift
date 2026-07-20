@@ -37,6 +37,10 @@ struct MapHostView: View {
     /// Show a brief "radar live" confirmation after the first frame arrives — clear skies paint NOTHING, so
     /// without this a working radar is indistinguishable from a broken one.
     @State private var radarLiveUntil: Date?
+    /// Radar loop-animation state, bridged from the nested RainViewerService (past → now → forecast).
+    @State private var radarAnimating = false
+    @State private var radarFrameLabel = ""
+    @State private var radarCanAnimate = false
 
     struct PlateAnchors: Equatable { var tl: CGPoint; var tr: CGPoint }
 
@@ -88,6 +92,9 @@ struct MapHostView: View {
             radarTemplate = t
         }
         .onReceive(model.rainViewer.$failed) { radarFailed = $0 }
+        .onReceive(model.rainViewer.$animating) { radarAnimating = $0 }
+        .onReceive(model.rainViewer.$frameLabel) { radarFrameLabel = $0 }
+        .onReceive(model.rainViewer.$canAnimate) { radarCanAnimate = $0 }
         // The plate's ✕ / opacity controls ride the PLATE's own top corners (screen-points streamed
         // from the map's region callbacks). SwiftUI-layered — not annotation subviews — so their
         // gestures never fight MapKit's pan recognizer (which cancels UIControl tracking inside
@@ -111,6 +118,7 @@ struct MapHostView: View {
             }
         }
         .overlay(alignment: .top) { statusPills }
+        .overlay(alignment: .bottom) { radarAnimControl }
         .task { await buildRoute() }
         .onChange(of: model.flightPlan) { _, _ in Task { await buildRoute() } }      // edits redraw the route
         .onChange(of: model.chartLayer) { _, new in
@@ -286,6 +294,30 @@ struct MapHostView: View {
         .background(.ultraThinMaterial, in: Capsule())
         .foregroundStyle(.primary)
         .shadow(radius: 4)
+    }
+
+    /// A compact loop-animation control for the weather radar — play/pause the past→now→forecast sequence so
+    /// the pilot can see which way the weather is moving. Rides just above the GPS bar; only while the radar
+    /// layer is on and there's a frame drawn. Frame time label reads relative to now ("−40 min" … "+20 min").
+    @ViewBuilder private var radarAnimControl: some View {
+        if live, model.showWxRadar, radarTemplate != nil, radarCanAnimate {
+            Button {
+                Haptics.impact(.light); model.rainViewer.toggleAnimation()
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: radarAnimating ? "pause.fill" : "play.fill").font(.caption.weight(.bold))
+                    Text(radarAnimating ? (radarFrameLabel.isEmpty ? "Radar" : "Radar \(radarFrameLabel)") : "Play radar loop")
+                        .font(.caption.weight(.medium))
+                }
+                .padding(.horizontal, 14).padding(.vertical, 8)
+                .background(.ultraThinMaterial, in: Capsule())
+                .foregroundStyle(.primary)
+                .shadow(radius: 4)
+            }
+            .buttonStyle(.plainHaptic)
+            .accessibilityIdentifier("radar-anim-toggle")
+            .padding(.bottom, 12)
+        }
     }
 
     private func buildRoute() async {

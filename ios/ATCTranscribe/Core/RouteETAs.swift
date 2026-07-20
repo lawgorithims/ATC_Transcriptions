@@ -72,6 +72,16 @@ struct RouteETAs: Equatable {
     func nextETAText(now: Date) -> String { Self.eta(toNextMin, now: now) }
     /// Clock ETA at the destination (current time zone), or "—".
     func destETAText(now: Date) -> String { Self.eta(toDestMin, now: now) }
+
+    /// TIME REMAINING (estimated time enroute) to the next waypoint as a DURATION — "6 min" / "1:23", or "—".
+    func nextETEText() -> String { Self.ete(toNextMin) }
+    /// TIME REMAINING to the destination as a duration — the pilot's "how long until I get there", or "—".
+    func destETEText() -> String { Self.ete(toDestMin) }
+    /// Format minutes-remaining as a compact duration: "<60 → "45 min", ≥60 → "h:mm".
+    private static func ete(_ minutes: Int?) -> String {
+        guard let m = minutes, m >= 0 else { return "—" }
+        return m < 60 ? "\(m) min" : String(format: "%d:%02d", m / 60, m % 60)
+    }
     /// Arrival clock at the destination in the DESTINATION's LOCAL time zone (crossing time zones), or "—".
     func destLocalText(now: Date) -> String {
         guard let m = toDestMin else { return "—" }
