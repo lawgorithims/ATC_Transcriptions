@@ -256,9 +256,17 @@ struct MapLibreChartView: UIViewRepresentable {
             applyLatest()   // push whatever updateUIView cached before the map existed
             // Arm the render watchdog: if the map hasn't drawn a single frame ~2.2s after creation, it's the
             // MLNMapView-blank-until-scene-refresh condition — hand back to the classic map (never a blank chart).
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) { [weak self] in
-                guard let self, self.renderCount == 0 else { return }
-                self.onRenderStalled?()
+            // Zero-frame watchdog: MERCATOR ONLY. It exists to catch the Simulator's "MLNMapView stays blank
+            // until a scene refresh" state (the map's own display-link render bails on an applicationState /
+            // isForeground check, so didFinishRenderingFrame never fires and renderCount stays 0). For the
+            // globe (dev harness, opt-in) that same zero count false-reverts a map that IS drawing, producing
+            // the "globe for a second then flat" bug — so we do NOT run the frame-count watchdog under globe.
+            // Genuine load failures still trip mapViewDidFailLoadingMap immediately for both projections.
+            if !self.globeProjection {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) { [weak self] in
+                    guard let self, self.renderCount == 0 else { return }
+                    self.onRenderStalled?()
+                }
             }
         }
 
