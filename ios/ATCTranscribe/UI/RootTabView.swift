@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// The app's top-level tabs (a ForeFlight-style bottom bar), left → right.
-enum RootTab: String, Hashable, CaseIterable { case transcript, map, plates, airports, notes, logbook }
+enum RootTab: String, Hashable, CaseIterable { case transcript, map, plates, airports, notes, logbook, wx }
 
 /// Root view: a ForeFlight-style bottom tab bar under two full-screen tabs — "Map" (the existing
 /// console: transcript, flight plan, floating widgets, live audio) and "Plates" (a searchable FAA
@@ -48,6 +48,11 @@ struct RootTabView: View {
                 .opacity(model.selectedTab == .logbook ? 1 : 0)
                 .allowsHitTesting(model.selectedTab == .logbook)
                 .accessibilityHidden(model.selectedTab != .logbook)
+
+            WXTabView()
+                .opacity(model.selectedTab == .wx ? 1 : 0)
+                .allowsHitTesting(model.selectedTab == .wx)
+                .accessibilityHidden(model.selectedTab != .wx)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             // The live GPS bar (when toggled) rides in the SAME bottom inset as the tab bar, just above it —
@@ -82,6 +87,7 @@ private struct BottomTabBar: View {
             item(.plates, icon: "books.vertical.fill", label: "Plates")
             item(.airports, icon: "airplane", label: "Airports")
             item(.notes, icon: "square.and.pencil", label: "Notes")
+            item(.wx, icon: "cloud.sun.fill", label: "WX")
             item(.logbook, icon: "book.closed.fill", label: "Logbook")
         }
         .padding(.top, 7)
