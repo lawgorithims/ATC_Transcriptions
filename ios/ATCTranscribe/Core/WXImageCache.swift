@@ -75,6 +75,15 @@ struct WXCachedImage {
     /// product list show "released HH:MM" after a name once it's been viewed once.
     func releasedAt(_ urlString: String) -> Date? { index[urlString]?.releasedAt }
 
+    /// When this product was last DOWNLOADED — drives the update button's freshness (age vs category cadence).
+    func fetchedAt(_ urlString: String) -> Date? { index[urlString]?.fetchedAt }
+
+    /// Every cached url with its download time — an in-memory index scan (no disk stat). Drives the WX
+    /// freshness dot + the manual update over the pilot's ACTUAL cached variants, not just default axes.
+    func cachedEntries() -> [(url: String, fetchedAt: Date)] {
+        index.map { ($0.key, $0.value.fetchedAt) }
+    }
+
     private func touch(_ urlString: String) {
         guard var e = index[urlString] else { return }
         e.lastAccess = Date(); index[urlString] = e            // persisted opportunistically on the next store

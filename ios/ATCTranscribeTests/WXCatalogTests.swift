@@ -85,4 +85,40 @@ import XCTest
         XCTAssertFalse(fav.isFavorite("sat-ir"))
         XCTAssertTrue(WXFavorites().isFavorite("prog-sfc"), "favorites persist across launches")
     }
+
+    // MARK: freshness (update button)
+
+    func testFreshnessThresholdsByCategoryCadence() {
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        func age(_ min: Double) -> Date { now.addingTimeInterval(-min * 60) }
+        // Satellite budget 20 min: <20 fresh, 20–40 aging, ≥40 stale.
+        XCTAssertEqual(WXFreshness.of(category: .satellite, fetchedAt: age(5), now: now), .fresh)
+        XCTAssertEqual(WXFreshness.of(category: .satellite, fetchedAt: age(25), now: now), .aging)
+        XCTAssertEqual(WXFreshness.of(category: .satellite, fetchedAt: age(60), now: now), .stale)
+        // Prog charts budget 360 min: a 2-hour-old prog is still fresh (slow cadence).
+        XCTAssertEqual(WXFreshness.of(category: .progs, fetchedAt: age(120), now: now), .fresh)
+        // Never fetched → unknown.
+        XCTAssertEqual(WXFreshness.of(category: .winds, fetchedAt: nil, now: now), .unknown)
+    }
+
+    func testFreshnessAggregateWorstKnownWins() {
+        XCTAssertEqual(WXFreshness.aggregate([]), .unknown)
+        XCTAssertEqual(WXFreshness.aggregate([.unknown, .unknown]), .unknown)
+        XCTAssertEqual(WXFreshness.aggregate([.fresh, .unknown]), .fresh)     // unknown ignored if any cached
+        XCTAssertEqual(WXFreshness.aggregate([.fresh, .aging]), .aging)
+        XCTAssertEqual(WXFreshness.aggregate([.fresh, .aging, .stale]), .stale)
+    }
+
+    func testUrlCategoryMapsEveryVariantNotJustDefault() {
+        // A non-default variant (winds-aloft FL300 / +12 h) maps to its category — so freshness/update can
+        // reflect the specific altitude the pilot actually cached, not only the default FL050.
+        let winds = WXCatalog.all.first { $0.id == "winds-wafs" }!
+        XCTAssertEqual(WXCatalog.urlCategory[winds.url(a: 4, b: 1)], .winds)
+        // Every product's default url is categorized too.
+        for p in WXCatalog.all {
+            XCTAssertEqual(WXCatalog.urlCategory[p.url()], p.category, "\(p.id) default url uncategorized")
+        }
+        // More variant entries than products (multi-axis products expand).
+        XCTAssertGreaterThan(WXCatalog.urlCategory.count, WXCatalog.all.count)
+    }
 }

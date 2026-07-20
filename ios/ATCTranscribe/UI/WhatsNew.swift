@@ -32,6 +32,22 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 74, version: "1.0", headline: "WX updates, radar scrubber, bigger plates",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "arrow.clockwise.circle.fill",
+                    title: "Update button for weather charts",
+                    detail: "The WX tab has a one-tap update that re-downloads your charts, with a status color: green when your charts are current, yellow when some may be aging, red when they\u{2019}re out of date. It never clears a cached chart \u{2014} a failed refresh keeps the copy you already have."),
+                WhatsNewHighlight(
+                    icon: "slider.horizontal.below.rectangle",
+                    title: "Radar loop scrubber + tidier status",
+                    detail: "Scrub the weather-radar loop frame-by-frame on a time slider (past \u{2192} now \u{2192} forecast) to see exactly where the weather is heading. The radar \u{201c}loading\u{201d} status moved to a top corner with a buffering %, out of the way of the map."),
+                WhatsNewHighlight(
+                    icon: "rectangle.grid.2x2",
+                    title: "Bigger plate thumbnails + zoom slider",
+                    detail: "Plate binders now show large thumbnails \u{2014} two columns in portrait, three in landscape \u{2014} with a lower-right slider to size them to your liking. And the plate\u{2019}s corner gear now stays pinned to the chart\u{2019}s corner instead of drifting as you zoom."),
+            ]),
+        ReleaseNote(
             build: 73, version: "1.0", headline: "Offline safety + battery + WX polish",
             highlights: [
                 WhatsNewHighlight(

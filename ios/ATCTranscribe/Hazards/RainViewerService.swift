@@ -10,46 +10,73 @@ struct RadarFrame: Equatable {
 
 /// Live precipitation-radar tiles from RainViewer (free, no API key). RainViewer's tile path carries the
 /// FRAME TIMESTAMP and rolls over every ~10 min, so we can't hardcode a `{z}/{x}/{y}` template — we fetch
-/// `weather-maps.json` for the frame list (last ~2 h of observed + ~30 min of nowcast), then publish a
-/// standard raster template both map engines can consume. Refreshed on a timer only while the layer is on
-/// + foregrounded (no idle cost). The frames also drive an optional loop animation so the pilot can see
-/// which way the weather is moving.
+/// `weather-maps.json` for the frame list (last ~2 h observed + ~30 min nowcast), then publish a standard
+/// raster template both map engines can consume. Refreshed on a timer only while the layer is on +
+/// foregrounded (no idle cost). The frames drive a scrub-able loop so the pilot can see + step through the
+/// weather's movement, and a light representative-tile prefetch reports a buffering % and makes the loop
+/// play smoothly the first time.
 @MainActor final class RainViewerService: ObservableObject {
-    /// The template the map should draw RIGHT NOW — the newest frame at rest, or the current animation
-    /// frame while looping. Bridged to both map engines. nil when off / not yet fetched.
+    /// The template the map should draw RIGHT NOW — the selected frame. Bridged to both map engines. nil
+    /// when off / not yet fetched.
     @Published private(set) var tileTemplate: String?
-    /// True when the LAST fetch failed AND we have nothing to show (drives the "radar unavailable" pill —
-    /// a failure with a last-good template keeps showing the old frame instead).
+    /// True when the LAST fetch failed AND we have nothing to show (drives the "radar unavailable" pill).
     @Published private(set) var failed = false
     /// Whether the loop animation is currently playing.
     @Published private(set) var animating = false
-    /// A short label for the frame on screen, relative to now: "−40 min", "now", "+20 min", or "".
+    /// The ordered frames (observed past first, then forecast) — the scrubber's ticks.
+    @Published private(set) var frames: [RadarFrame] = []
+    /// Index of the frame currently shown (into `frames`) — the scrubber's position.
+    @Published private(set) var currentIndex = 0
+    /// A short label for the current frame relative to now: "−40 min", "now", "+20 min", or "".
     @Published private(set) var frameLabel = ""
+    /// Loop buffering progress (0…1) while prefetching a representative tile per frame; nil when idle/done.
+    @Published private(set) var bufferProgress: Double?
+
     /// True once ≥2 frames are loaded (the animation control is meaningful).
-    @Published private(set) var canAnimate = false
+    var canAnimate: Bool { frames.count >= 2 }
+    /// The index of the newest OBSERVED (non-forecast) frame — the "now" anchor for the loop + labels.
+    private(set) var nowIndex = 0
+    /// Map center the host last reported, used to pick a representative tile to prefetch (nil → CONUS).
+    var prefetchCenter: (lat: Double, lon: Double)?
 
     /// Attribution required by RainViewer's free tier.
     static let attribution = "Radar: RainViewer"
 
-    private var frames: [RadarFrame] = []
-    private var nowFrameIndex = 0                            // index of the newest OBSERVED (past) frame
-    private var animIndex = 0
+    private var scrubbing = false                          // a manual scrub pins the frame across refreshes
+    private var lastPrefetchNewest: Date?                  // frames already warmed → don't re-prefetch/re-flash
+    private var didFirstBuffer = false                     // show the buffering % only on the FIRST pass
     private var refreshTask: Task<Void, Never>?
     private var animTask: Task<Void, Never>?
-    private static let refreshSeconds: UInt64 = 300         // frames update ~every 10 min; refresh every 5
-    private static let retrySeconds: UInt64 = 15            // faster retry while we have NOTHING to show yet
-    private static let frameNanos: UInt64 = 500_000_000     // 0.5 s per frame while animating
-    private static let holdNanos: UInt64 = 1_400_000_000    // pause on the newest frame each loop
+    private var prefetchTask: Task<Void, Never>?
+    private static let refreshSeconds: UInt64 = 300        // frames update ~every 10 min; refresh every 5
+    private static let retrySeconds: UInt64 = 15           // faster retry while we have NOTHING to show yet
+    private static let frameNanos: UInt64 = 500_000_000    // 0.5 s per frame while animating
+    private static let holdNanos: UInt64 = 1_400_000_000   // pause on the newest frame each loop
 
     /// Edge-triggered: start refreshing when the layer turns on, stop + clear when off (idle cost = zero).
-    func setEnabled(_ on: Bool) {
-        if on { start() } else { stop() }
-    }
+    func setEnabled(_ on: Bool) { if on { start() } else { stop() } }
 
-    /// Play / pause the past→now→forecast loop. No-op if there aren't enough frames.
+    /// Play / pause the past→now→forecast loop. No-op if there aren't enough frames. PAUSING snaps the map
+    /// back to the live "now" frame — a moving-map precip overlay must not sit frozen on a forecast frame
+    /// when the pilot just stops the loop (to hold a specific frame they drag the SLIDER, which pins it).
     func toggleAnimation() {
         guard canAnimate else { return }
-        if animating { stopAnimation(resetToNow: true) } else { startAnimation() }
+        if animating { resetToNow() } else { startAnimation() }
+    }
+
+    /// Manually jump to a frame (the scrubber) — pauses the auto-loop and pins the frame across refreshes.
+    func scrub(to index: Int) {
+        guard !frames.isEmpty else { return }
+        stopAnimation()
+        scrubbing = true
+        apply(index: max(0, min(index, frames.count - 1)))
+    }
+
+    /// Snap the scrubber back to "now" and resume live refresh-follows-newest behaviour.
+    func resetToNow() {
+        stopAnimation()
+        scrubbing = false
+        if frames.indices.contains(nowIndex) { apply(index: nowIndex) }
     }
 
     private func start() {
@@ -64,9 +91,11 @@ struct RadarFrame: Equatable {
     }
     private func stop() {
         refreshTask?.cancel(); refreshTask = nil
-        stopAnimation(resetToNow: false)
-        frames = []; canAnimate = false; frameLabel = ""
-        tileTemplate = nil; failed = false
+        stopAnimation()
+        prefetchTask?.cancel(); prefetchTask = nil
+        frames = []; scrubbing = false; frameLabel = ""; bufferProgress = nil
+        lastPrefetchNewest = nil; didFirstBuffer = false
+        tileTemplate = nil; failed = false; currentIndex = 0
     }
 
     private func refresh() async {
@@ -76,20 +105,27 @@ struct RadarFrame: Equatable {
               (resp as? HTTPURLResponse)?.statusCode == 200 else {
             failed = (tileTemplate == nil); return
         }
+        // The layer may have been turned OFF while this fetch was in flight — stop() already cleared state,
+        // so bail instead of re-populating tileTemplate/frames and spawning a prefetch for a stopped service.
+        if Task.isCancelled { return }
         let list = Self.radarFrames(from: data)
         guard let newest = list.last(where: { !$0.isForecast }) ?? list.last else {
             failed = (tileTemplate == nil); return                // keep the last good frame on failure
         }
         frames = list
-        nowFrameIndex = list.firstIndex(of: newest) ?? max(0, list.count - 1)
-        canAnimate = list.count >= 2
+        nowIndex = list.firstIndex(of: newest) ?? max(0, list.count - 1)
         failed = false
-        if animating {                                            // keep looping across a refresh
-            animIndex = min(animIndex, list.count - 1)
-        } else {
-            tileTemplate = newest.template                        // at rest → show "now"
-            frameLabel = ""
-        }
+        if !animating && !scrubbing { apply(index: nowIndex) }    // follow "now" unless the pilot took control
+        else { apply(index: min(currentIndex, list.count - 1)) }  // keep the pinned/animating position valid
+        prefetch()
+    }
+
+    /// Set the shown frame + derive the template & label. Single choke point so tileTemplate/label never drift.
+    private func apply(index: Int) {
+        guard frames.indices.contains(index) else { return }
+        currentIndex = index
+        tileTemplate = frames[index].template
+        frameLabel = Self.label(for: frames[index])
     }
 
     // MARK: animation
@@ -97,35 +133,23 @@ struct RadarFrame: Equatable {
     private func startAnimation() {
         guard animTask == nil, frames.count >= 2 else { return }
         animating = true
-        animIndex = 0
+        scrubbing = false
+        var i = 0
         animTask = Task { [weak self] in
             while !Task.isCancelled {                              // bounded by cancellation (rule 2)
-                guard let advance = await self?.showAnimationFrame() else { return }
-                try? await Task.sleep(nanoseconds: advance)
+                guard let n = await self?.frames.count, n >= 2 else { return }
+                let idx = i % n
+                await MainActor.run { self?.apply(index: idx) }
+                let hold = await (self?.nowIndex == idx) ? Self.holdNanos : Self.frameNanos
+                try? await Task.sleep(nanoseconds: hold)
+                i = (i + 1) % max(n, 1)
             }
         }
     }
 
-    /// Show the current animation frame + advance the index; returns how long to hold it. Longest hold on the
-    /// newest observed frame so the loop reads as "…building up to now, then a peek at the forecast."
-    private func showAnimationFrame() -> UInt64 {
-        guard !frames.isEmpty else { return Self.frameNanos }
-        let i = min(animIndex, frames.count - 1)
-        let f = frames[i]
-        tileTemplate = f.template
-        frameLabel = Self.label(for: f)
-        let hold = (i == nowFrameIndex) ? Self.holdNanos : Self.frameNanos
-        animIndex = (i + 1) % frames.count
-        return hold
-    }
-
-    private func stopAnimation(resetToNow: Bool) {
+    private func stopAnimation() {
         animTask?.cancel(); animTask = nil
         animating = false
-        if resetToNow, frames.indices.contains(nowFrameIndex) {
-            tileTemplate = frames[nowFrameIndex].template
-            frameLabel = ""
-        }
     }
 
     /// "−40 min" / "now" / "+20 min" for a frame relative to the current wall clock (rounded to 10 min).
@@ -133,6 +157,56 @@ struct RadarFrame: Equatable {
         let deltaMin = Int((f.time.timeIntervalSinceNow / 60).rounded())
         if abs(deltaMin) <= 5 { return "now" }
         return deltaMin < 0 ? "−\(-deltaMin) min" : "+\(deltaMin) min"
+    }
+
+    // MARK: prefetch (buffer % + smoother first loop)
+
+    /// Warm one representative tile per frame so the loop plays smoothly the first time and the loading pill
+    /// can show a real %. Light: one small tile per frame (~a dozen). Runs only when the FRAME SET actually
+    /// changed (not on every 5-min refresh of the same frames), and surfaces the % only on the FIRST pass —
+    /// subsequent new-frame warms are silent, so the corner pill never re-flashes over already-live radar.
+    private func prefetch() {
+        prefetchTask?.cancel()
+        let list = frames
+        guard let newest = list.last?.time else { bufferProgress = nil; return }
+        guard newest != lastPrefetchNewest else { return }        // these exact frames already warmed
+        lastPrefetchNewest = newest
+        let showPct = !didFirstBuffer
+        let (z, x, y) = Self.representativeTile(center: prefetchCenter)
+        if showPct { bufferProgress = 0 }
+        prefetchTask = Task { [weak self] in
+            var done = 0
+            for f in list {                                       // bounded by frames.count (rule 2)
+                if Task.isCancelled { return }
+                let tile = f.template
+                    .replacingOccurrences(of: "{z}", with: "\(z)")
+                    .replacingOccurrences(of: "{x}", with: "\(x)")
+                    .replacingOccurrences(of: "{y}", with: "\(y)")
+                if let u = URL(string: tile) {
+                    var r = URLRequest(url: u); r.timeoutInterval = 10
+                    _ = try? await URLSession.shared.data(for: r)  // warms URLCache; result ignored
+                }
+                if Task.isCancelled { return }                    // don't write a stale % after a newer prefetch reset it
+                done += 1
+                if showPct {
+                    let frac = Double(done) / Double(list.count)
+                    await MainActor.run { self?.bufferProgress = frac < 1 ? frac : nil }
+                }
+            }
+            await MainActor.run { self?.didFirstBuffer = true; self?.bufferProgress = nil }
+        }
+    }
+
+    /// A single slippy tile covering the given center (z6 regional), or a CONUS overview (z4) with no center.
+    nonisolated static func representativeTile(center: (lat: Double, lon: Double)?) -> (z: Int, x: Int, y: Int) {
+        let z = center == nil ? 4 : 6
+        let lat = center?.lat ?? 39.5, lon = center?.lon ?? -98.35     // geographic center of CONUS
+        let n = Double(1 << z)
+        let x = Int(floor((lon + 180.0) / 360.0 * n))
+        let latRad = lat * .pi / 180
+        let y = Int(floor((1 - log(tan(latRad) + 1 / cos(latRad)) / .pi) / 2 * n))
+        let cap = (1 << z) - 1
+        return (z, min(max(x, 0), cap), min(max(y, 0), cap))
     }
 
     // MARK: parsing (pure / testable)

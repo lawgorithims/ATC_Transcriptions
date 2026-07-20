@@ -71,12 +71,62 @@ enum WXCategory: String, CaseIterable, Identifiable {
         case .pireps:     return "person.wave.2"
         }
     }
+
+    /// Roughly how often NOAA re-issues this category, in minutes — the freshness budget for the WX tab's
+    /// update button. A cached chart older than this reads as "may be out of date"; older than 2× as "out
+    /// of date". Deliberately generous (favor NOT nagging) since these are briefing aids, not primary nav.
+    var freshMinutes: Int {
+        switch self {
+        case .satellite:                       return 20     // GOES refreshes ~5 min
+        case .gfa, .icing, .turbulence, .airmets: return 90  // hourly-ish renders / G-AIRMET issuances
+        case .convective, .precip:             return 180
+        case .progs, .winds:                   return 360    // ~twice-daily cycles
+        case .pireps:                          return 60
+        }
+    }
+}
+
+/// Aggregate freshness of the pilot's tracked WX charts, driving the update button's color + copy.
+enum WXFreshness { case fresh, aging, stale, unknown }   // green · yellow · red · gray
+
+extension WXFreshness {
+    /// Freshness of ONE cached chart from its age vs the category's re-issue cadence. Pure/testable.
+    static func of(category: WXCategory, fetchedAt: Date?, now: Date) -> WXFreshness {
+        guard let fetchedAt else { return .unknown }
+        let ageMin = now.timeIntervalSince(fetchedAt) / 60
+        let budget = Double(category.freshMinutes)
+        if ageMin < budget { return .fresh }
+        if ageMin < budget * 2 { return .aging }
+        return .stale
+    }
+    /// Combine per-chart freshness into the button's single bucket: worst known wins; unknown is ignored
+    /// unless NOTHING is cached (then it's unknown → "download to use offline"). Pure/testable.
+    static func aggregate(_ items: [WXFreshness]) -> WXFreshness {
+        let known = items.filter { $0 != .unknown }
+        if known.isEmpty { return .unknown }
+        if known.contains(.stale) { return .stale }
+        if known.contains(.aging) { return .aging }
+        return .fresh
+    }
 }
 
 /// The static product catalog. Grouped accessor for the tab's category list.
 enum WXCatalog {
     static func products(in category: WXCategory) -> [WXProduct] { all.filter { $0.category == category } }
     static var categories: [WXCategory] { WXCategory.allCases.filter { !products(in: $0).isEmpty } }
+
+    /// Reverse map from EVERY cataloged variant URL → its category, built once. Lets the WX tab compute
+    /// freshness (and target the update) from the actual CACHED urls — any altitude / forecast-hour variant
+    /// the pilot has open — instead of only each product's default variant.
+    static let urlCategory: [String: WXCategory] = {
+        var m: [String: WXCategory] = [:]
+        for p in all {                                            // bounded: static catalog (rule 2)
+            let aN = p.axisA?.options.count ?? 1
+            let bN = p.axisB?.options.count ?? 1
+            for a in 0..<aN { for b in 0..<bN { m[p.url(a: a, b: b)] = p.category } }
+        }
+        return m
+    }()
 
     private static let nesdis = "NOAA/NESDIS STAR (GOES)"
     private static let wpc = "NOAA/NWS Weather Prediction Center"

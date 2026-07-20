@@ -14,6 +14,10 @@ struct PlatesTabView: View {
     @State private var showFlightBag = false
     @State private var nearbyBinders: [String] = []  // nearest charted fields, recomputed as the GPS fix moves
     @State private var lastNearbyCoord: Coord?       // movement gate for the (off-main) nearby scan
+    // Thumbnail min-width (persisted). ~340 yields 2 columns in iPad portrait / 3 in landscape from the
+    // adaptive grid; the lower-right slider lets the pilot trade columns for size (Word's zoom slider).
+    @AppStorage("atc.plates.thumbSize") private var thumbSize: Double = 340
+    private static let thumbMin = 210.0, thumbMax = 560.0
 
     /// The nearest airport that publishes plates within `withinNM` of a position — reuses the bundled
     /// nav DB's airport index (no new spatial data). nil when none is close.
@@ -216,6 +220,26 @@ struct PlatesTabView: View {
             .padding(12)
         }
         .scrollContentBackground(.hidden)
+        // A Word-style zoom slider pinned to the lower-right corner: resize the plate thumbnails live
+        // (fewer, bigger columns ⇄ more, smaller). Persisted via `thumbSize`.
+        .overlay(alignment: .bottomTrailing) { thumbZoomControl }
+    }
+
+    /// The lower-right thumbnail-size slider (flanked by small/large glyphs), floating over the binder.
+    private var thumbZoomControl: some View {
+        let p = model.palette
+        return HStack(spacing: 8) {
+            Image(systemName: "minus.magnifyingglass").font(.caption2).foregroundStyle(p.textDim)
+            Slider(value: $thumbSize, in: Self.thumbMin...Self.thumbMax).frame(width: 130).tint(p.accent)
+                .accessibilityIdentifier("plate-thumb-size")
+            Image(systemName: "plus.magnifyingglass").font(.callout).foregroundStyle(p.textDim)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay(Capsule().stroke(p.border, lineWidth: 0.5))
+        .shadow(radius: 4)
+        .padding(.trailing, 14).padding(.bottom, 14)
+        .accessibilityLabel("Resize plate thumbnails")
     }
 
     @ViewBuilder private func chartGroup(_ heading: String, count: Int, items: [AirportProcedure]) -> some View {
@@ -238,9 +262,9 @@ struct PlatesTabView: View {
     /// A lazily-rendered grid of large plate thumbnails (only visible cells download + render, so a big
     /// binder never renders 70 PDFs at once).
     private func thumbGrid(_ items: [AirportProcedure]) -> some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 12)], alignment: .leading, spacing: 12) {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: thumbSize), spacing: 12)], alignment: .leading, spacing: 12) {
             ForEach(items) { proc in
-                PlateThumb(proc: proc) { plate = proc }.environmentObject(model)
+                PlateThumb(proc: proc, height: thumbSize * 1.18) { plate = proc }.environmentObject(model)
             }
         }
     }
@@ -347,6 +371,7 @@ private struct FlightBagButton: View {
 struct PlateThumb: View {
     @EnvironmentObject var model: AppModel
     let proc: AirportProcedure
+    var height: CGFloat = 200                 // tunable via the Plates zoom slider
     var onTap: () -> Void
 
     @State private var image: UIImage?
@@ -367,7 +392,7 @@ struct PlateThumb: View {
                         Image(systemName: "doc.richtext").font(.largeTitle).foregroundStyle(.gray)
                     }
                 }
-                .frame(height: 200)
+                .frame(height: height)
                 .frame(maxWidth: .infinity)
                 .clipShape(RoundedRectangle(cornerRadius: 7))
                 .overlay(RoundedRectangle(cornerRadius: 7).stroke(p.border, lineWidth: 0.5))
@@ -391,8 +416,10 @@ struct PlateThumb: View {
     private func load() async {
         image = nil; phase = .loading
         guard let url = await PlateStore.ensureOnDisk(proc) else { phase = .none; return }
+        // Render generously (700px) so a thumbnail stays crisp at the largest slider size (~660pt) without
+        // re-rendering when the pilot resizes. LazyVGrid renders only visible cells, so memory stays bounded.
         let rendered = await Task.detached(priority: .utility) {
-            PlateImageRenderer.firstPageImage(pdfURL: url, maxDimension: 500)
+            PlateImageRenderer.firstPageImage(pdfURL: url, maxDimension: 700)
         }.value
         guard !Task.isCancelled else { return }
         if let rendered { image = rendered; phase = .ready } else { phase = .none }
