@@ -32,6 +32,22 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 71, version: "1.0", headline: "Weather briefing tab",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "cloud.sun.fill",
+                    title: "New WX tab — NOAA charts, cached for offline",
+                    detail: "A weather-imagery briefing room: GOES satellite (color, infrared, water vapor, regional close-ups), GFA cloud & surface-weather forecasts, WPC prog charts out to 60 h, convective forecasts (TCF 4/6/8 h + SPC Day 1–3 outlooks), precipitation probability & amounts, winds aloft for nine flight levels, icing & freezing levels, turbulence & LLWS, and active AIRMETs/SIGMETs. Every chart you open is saved on the device, so you can review it later with no signal — each shows when it was downloaded."),
+                WhatsNewHighlight(
+                    icon: "cloud.rain",
+                    title: "Radar zoom fix",
+                    detail: "The weather-radar layer no longer tiles \"Zoom Level Not Supported\" across the chart when zoomed in — the radar now upscales smoothly past its native resolution."),
+                WhatsNewHighlight(
+                    icon: "airplane",
+                    title: "Traffic & radar loading status",
+                    detail: "The map now says when traffic or radar is still loading, when a feed is unavailable, and when traffic is live with no aircraft nearby — so an empty sky is never ambiguous."),
+            ]),
+        ReleaseNote(
             build: 70, version: "1.0", headline: "Weather radar",
             highlights: [
                 WhatsNewHighlight(
