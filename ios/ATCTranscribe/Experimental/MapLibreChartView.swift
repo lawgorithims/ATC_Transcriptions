@@ -306,11 +306,14 @@ struct MapLibreChartView: UIViewRepresentable {
         /// first frame under cold-launch contention (WhisperKit compile + NavDB warm + listener bind + style
         /// parse) shouldn't be misclassified as a permanent failure. Only the LAST check falls back, giving
         /// ~6.6s of grace; any frame in between → healthy → no-op. Hard failures (bind/style/load-error) still
-        /// fall back immediately via their own paths.
+        /// fall back immediately via their own paths. MERCATOR ONLY — under the globe (dev harness, opt-in) the
+        /// same zero-frame count false-reverts a map that IS drawing → the "globe for a second then flat" bug;
+        /// genuine load failures still trip mapViewDidFailLoadingMap immediately for both projections.
         private static let maxStallChecks = 3
         private func armRenderWatchdog() {
             assert(Self.maxStallChecks >= 1, "watchdog needs >=1 check")
             assert(renderCount >= 0, "renderCount underflow")
+            guard !self.globeProjection else { return }   // globe: skip the mercator-only zero-frame watchdog
             for i in 1...Self.maxStallChecks {                          // bounded (rule 2), no recursion
                 DispatchQueue.main.asyncAfter(deadline: .now() + 2.2 * Double(i)) { [weak self] in
                     guard let self, self.renderCount == 0 else { return }   // any frame → healthy
