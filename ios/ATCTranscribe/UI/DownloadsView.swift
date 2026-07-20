@@ -19,6 +19,8 @@ struct DownloadsView: View {
     @State private var scanningPlates = false
     @State private var confirmRegion: String?
     @State private var confirmBulkLayer: ChartLayer?
+    @State private var confirmRemoveCharts = false
+    @State private var confirmRemovePlates = false
 
     /// Downloaded-vs-total plate count for a region (computed off-main — a region is hundreds of airports).
     struct PlateRegionStatus: Equatable { var total: Int; var downloaded: Int }
@@ -80,6 +82,22 @@ struct DownloadsView: View {
             Button("Cancel", role: .cancel) {}
         } message: { layer in
             Text("You're on a cellular connection. Downloading every \(layer.title) region (\(size(library.remainingBytes([layer])))) may use your mobile data.")
+        }
+        .confirmationDialog("Remove all downloaded charts?", isPresented: $confirmRemoveCharts, titleVisibility: .visible) {
+            Button("Remove \(size(library.cachedBytes)) of charts", role: .destructive) {
+                library.removeAllCachedCharts()
+            }
+            Button("Keep", role: .cancel) {}
+        } message: {
+            Text("Deletes every downloaded chart pack, including pinned offline downloads. You'll need a connection to get them back — do this only on the ground.")
+        }
+        .confirmationDialog("Clear all downloaded plates?", isPresented: $confirmRemovePlates, titleVisibility: .visible) {
+            Button("Clear \(bag.cachedCount) plates", role: .destructive) {
+                bag.clearCache(); Task { await refreshPlateStatus() }
+            }
+            Button("Keep", role: .cancel) {}
+        } message: {
+            Text("Deletes every downloaded approach plate. You'll need a connection to get them back — do this only on the ground.")
         }
     }
 
@@ -276,14 +294,16 @@ struct DownloadsView: View {
                 Spacer()
                 Text("\(bag.cachedCount) · \(byteStr(bag.cachedBytes))").font(.caption.monospaced()).foregroundStyle(p.textDim)
             }
+            // Destructive wipes require a confirm (matching the DOWNLOAD actions above) — one cockpit
+            // fat-finger otherwise destroys a multi-GB offline kit that can't be re-downloaded in flight.
             if library.cachedBytes > 0 {
                 Button("Remove downloaded charts", role: .destructive) {
-                    Haptics.impact(.light); library.removeAllCachedCharts()
+                    Haptics.impact(.light); confirmRemoveCharts = true
                 }.disabled(library.bulk.isRunning)
             }
             if bag.cachedCount > 0 {
                 Button("Clear downloaded plates", role: .destructive) {
-                    Haptics.impact(.light); bag.clearCache(); Task { await refreshPlateStatus() }
+                    Haptics.impact(.light); confirmRemovePlates = true
                 }.disabled(bag.isRunning)
             }
         }

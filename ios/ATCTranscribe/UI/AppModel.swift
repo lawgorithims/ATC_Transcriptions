@@ -1335,6 +1335,7 @@ final class AppModel: ObservableObject {
         self.engine = engine
         self.modelDirs = models
         self.activeModel = active
+        UserDefaults.standard.set(0, forKey: "atc.modelCorruptCount.\(active)")   // a clean load clears the strike count
         self.llmDeferred = deferLLM   // built lazily on the first Start (kept off the launch path for heat)
         // Stop the old session's source explicitly. `TranscriptionSession` has no deinit and its
         // run-loop Task strongly holds the pipeline + source, so dropping the reference alone would
@@ -3003,14 +3004,24 @@ final class AppModel: ObservableObject {
             detail = "\(reason) Download the Small model to continue."
             needsOnboarding = true
         } else {
-            // The Small (required) model itself failed to LOAD despite being on disk — its files are
-            // corrupt/incomplete, so a picker retry would just re-fail. Wipe the folder so it stops
-            // reading as "ready", drop the stale resolution, and re-show the download gate — which now
-            // offers a working Download button for a clean copy instead of a dead-end message.
+            // The Small (required) model failed to LOAD despite being on disk. This CAN be genuine corruption
+            // — but it can also be a TRANSIENT failure (thermal/OOM/mmap race, or a false watchdog timeout),
+            // and in the lean TestFlight build Small is the ONLY model, unrecoverable offline. So DON'T wipe
+            // the sole model on the first failure (a red-hat finding): drop the resolution + offer a retry,
+            // and only wipe for a clean re-download after it fails to load TWICE in a row (transient failures
+            // clear the strike on the next good load; genuine corruption fails every time).
             loadStartIntent = false     // dead-end recovery — don't let a stale Start auto-capture a later load
-            try? FileManager.default.removeItem(at: ModelStore.whisperDir(ModelCatalog.small.variant ?? "small"))
             modelDirs["small"] = nil
-            detail = "\(reason) The Small model looks corrupt — re-download it to continue."
+            let strikeKey = "atc.modelCorruptCount.small"
+            let strikes = UserDefaults.standard.integer(forKey: strikeKey) + 1
+            UserDefaults.standard.set(strikes, forKey: strikeKey)
+            if strikes >= 2 {
+                UserDefaults.standard.set(0, forKey: strikeKey)
+                try? FileManager.default.removeItem(at: ModelStore.whisperDir(ModelCatalog.small.variant ?? "small"))
+                detail = "\(reason) The Small model looks corrupt — re-download it to continue."
+            } else {
+                detail = "\(reason) The Small model didn't load — reopen the app to retry, or re-download it."
+            }
             needsOnboarding = true
         }
     }

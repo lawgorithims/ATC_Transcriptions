@@ -98,4 +98,13 @@ final class ChartLibraryTests: XCTestCase {
         XCTAssertTrue(route.contains { ny.mapRect.intersects($0) }, "NY route crosses the New York sectional")
         XCTAssertFalse(route.contains { la.mapRect.intersects($0) }, "…and not the Los Angeles sectional")
     }
+    func testPackIDParsesFilenameForPinProtection() {
+        // The pin-protection prune reads the pack id from the on-disk filename; ids may contain dashes,
+        // so the split must be at the LAST dash (before the cycle) — a wrong split would strip pin
+        // protection and let a rollover wipe the pilot's downloads.
+        XCTAssertEqual(ChartLibrary.packID("New_York_SEC-2508.mbtiles"), "New_York_SEC")
+        XCTAssertEqual(ChartLibrary.packID("vfr-sec-den-2508.mbtiles"), "vfr-sec-den")   // dashed id
+        XCTAssertNil(ChartLibrary.packID("index.json"))
+        XCTAssertNil(ChartLibrary.packID("nodash.mbtiles"))
+    }
 }

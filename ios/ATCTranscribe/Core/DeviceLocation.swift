@@ -23,9 +23,12 @@ final class DeviceLocation: NSObject, ObservableObject, CLLocationManagerDelegat
         super.init()
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyNearestTenMeters
-        // Duty-cycle: only deliver a fix once the position moves ~15 m, so a parked/idle aircraft doesn't
-        // stream sub-metre jitter that re-renders the map every second (battery). The activity type lets iOS
-        // duty-cycle the GPS radio itself when stationary; auto-pause is off so an EFB never silently stops.
+        // The 15 m distance filter suppresses sub-metre jitter deliveries so a parked aircraft doesn't
+        // re-render the map every second. NOTE: with `pausesLocationUpdatesAutomatically = false` the GPS
+        // radio itself is NOT duty-cycled — that's a deliberate tradeoff (an EFB must never silently stop
+        // tracking on the ramp/run-up), accepting the steady radio draw. `activityType` only tunes iOS's
+        // filtering heuristics, it does not pause the radio while auto-pause is off. (This out-of-process
+        // `locationd` cost is invisible to the in-app CPU sampler — it is a battery, not a cpu%, contributor.)
         manager.distanceFilter = 15
         manager.activityType = .otherNavigation
         manager.pausesLocationUpdatesAutomatically = false

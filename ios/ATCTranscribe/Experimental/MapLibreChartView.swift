@@ -799,7 +799,12 @@ struct MapLibreChartView: UIViewRepresentable {
                           .maximumZoomLevel: NSNumber(value: faaMax + MBTilesTileOverlay.overzoomLevels)])
             style.addSource(fresh)
             let faaRaster = MLNRasterStyleLayer(identifier: "faa", source: fresh)   // BOTTOM (below the first vector layer)
-            if let bottom = style.layer(withIdentifier: "airways-line") { style.insertLayer(faaRaster, below: bottom) }
+            // Anchor the OPAQUE FAA chart BELOW the translucent radar when the radar exists — else a pack
+            // remount (pan to new coverage, VFR⇄IFR switch, late download) re-inserts faa above the radar
+            // (they shared the "airways-line" anchor) and the precipitation vanishes until the next ~10-min
+            // frame rollover (a red-hat finding). Falls back to the old anchor when radar is off.
+            if let radar = style.layer(withIdentifier: "wxradar-layer") { style.insertLayer(faaRaster, below: radar) }
+            else if let bottom = style.layer(withIdentifier: "airways-line") { style.insertLayer(faaRaster, below: bottom) }
             else { style.addLayer(faaRaster) }
         }
 
