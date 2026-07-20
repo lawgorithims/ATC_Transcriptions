@@ -111,20 +111,54 @@ enum WXCatalog {
                   note: "Surface weather, visibility and obscurations.", attribution: awc),
     ]
 
-    // MARK: Icing / Turbulence (the official rendered charts are the G-AIRMET sheets — the FL-by-FL
-    // CIP/FIP/GTG grids only exist as transparent map overlays post-redesign and need basemap compositing)
+    // MARK: Icing / Turbulence — the real FL-by-FL charts (rendered 1000×720 with legend + valid time;
+    // URL patterns from AWC's own graphics-page builder, curl-verified)
+    private static let icingLevels = WXAxis(name: "Altitude", options: [
+        ("1,000 ft", "010"), ("3,000 ft", "030"), ("6,000 ft", "060"), ("9,000 ft", "090"),
+        ("12,000 ft", "120"), ("15,000 ft", "150"), ("FL180", "180"), ("FL210", "210"),
+        ("FL240", "240"), ("FL270", "270"), ("Column max", "max")])
     private static let icing: [WXProduct] = [
-        WXProduct(id: "ice-gairmet", name: "Icing & freezing level (G-AIRMET)", category: .icing,
+        WXProduct(id: "ice-cip", name: "Current icing (CIP) — by altitude", category: .icing,
+                  urlTemplate: "https://aviationweather.gov/data/products/icing/F00_cip_{A}_{B}.gif",
+                  axisA: icingLevels,
+                  axisB: WXAxis(name: "Field", options: [("Severity", "sev"), ("Probability", "prob"), ("Severity + SLD", "sevsld")]),
+                  note: "Current icing analysis per altitude. SLD = supercooled large droplets. Updates hourly.",
+                  attribution: awc),
+        WXProduct(id: "ice-fip", name: "Forecast icing (FIP) — by altitude", category: .icing,
+                  urlTemplate: "https://aviationweather.gov/data/products/icing/F{B}_fip_{A}_sev.gif",
+                  axisA: icingLevels,
+                  axisB: WXAxis(name: "Forecast", options: [
+                    ("+3 h", "03"), ("+6 h", "06"), ("+9 h", "09"), ("+12 h", "12"), ("+15 h", "15"), ("+18 h", "18")]),
+                  note: "Forecast icing severity per altitude.", attribution: awc),
+        WXProduct(id: "ice-frzlvl", name: "Freezing levels (G-AIRMET)", category: .icing,
                   urlTemplate: "https://aviationweather.gov/data/products/gairmet/F{B}_gairmet_zulu-f_{A}.gif",
                   axisA: gairmetRegions, axisB: gairmetHours,
-                  note: "G-AIRMET Zulu: forecast icing areas + freezing levels.", attribution: awc),
+                  note: "G-AIRMET Zulu-F: freezing-level contours.", attribution: awc),
+        WXProduct(id: "ice-gairmet", name: "Icing AIRMETs (G-AIRMET)", category: .icing,
+                  urlTemplate: "https://aviationweather.gov/data/products/gairmet/F{B}_gairmet_zulu-i_{A}.gif",
+                  axisA: gairmetRegions, axisB: gairmetHours,
+                  note: "G-AIRMET Zulu-I: forecast moderate-icing areas.", attribution: awc),
     ]
     private static let turbulence: [WXProduct] = [
-        WXProduct(id: "turb-gairmet", name: "Turbulence & LLWS (G-AIRMET)", category: .turbulence,
-                  urlTemplate: "https://aviationweather.gov/data/products/gairmet/F{B}_gairmet_tango_{A}.gif",
-                  axisA: gairmetRegions, axisB: gairmetHours,
-                  note: "G-AIRMET Tango: turbulence (high/low), low-level wind shear and strong surface winds.",
+        WXProduct(id: "turb-gtg", name: "Turbulence (GTG) — by altitude", category: .turbulence,
+                  urlTemplate: "https://aviationweather.gov/data/products/turbulence/F{B}_gtg_{A}_total.gif",
+                  axisA: WXAxis(name: "Altitude", options: [
+                    ("1,000 ft", "010"), ("3,000 ft", "030"), ("6,000 ft", "060"), ("9,000 ft", "090"),
+                    ("12,000 ft", "120"), ("15,000 ft", "150"), ("FL180", "180"), ("FL210", "210"),
+                    ("FL240", "240"), ("FL270", "270"), ("FL300", "300"), ("FL360", "360"),
+                    ("FL420", "420"), ("Max below FL180", "maxb"), ("Max above FL180", "maxa")]),
+                  axisB: WXAxis(name: "Forecast", options: [
+                    ("Now", "00"), ("+3 h", "03"), ("+6 h", "06"), ("+9 h", "09"), ("+12 h", "12"), ("+18 h", "18")]),
+                  note: "Graphical Turbulence Guidance (all sources, EDR scale) per altitude. Updates hourly.",
                   attribution: awc),
+        WXProduct(id: "turb-gairmet-hi", name: "Turbulence AIRMETs — high altitude", category: .turbulence,
+                  urlTemplate: "https://aviationweather.gov/data/products/gairmet/F{B}_gairmet_tango-h_{A}.gif",
+                  axisA: gairmetRegions, axisB: gairmetHours,
+                  note: "G-AIRMET Tango (high): moderate turbulence above FL180.", attribution: awc),
+        WXProduct(id: "turb-gairmet-lo", name: "Turbulence AIRMETs — low altitude", category: .turbulence,
+                  urlTemplate: "https://aviationweather.gov/data/products/gairmet/F{B}_gairmet_tango-l_{A}.gif",
+                  axisA: gairmetRegions, axisB: gairmetHours,
+                  note: "G-AIRMET Tango (low): moderate turbulence below FL180.", attribution: awc),
     ]
 
     // MARK: AIRMETs / SIGMETs
@@ -133,9 +167,15 @@ enum WXCatalog {
                   urlTemplate: "https://aviationweather.gov/data/products/gairmet/F{B}_gairmet_sierra_{A}.gif",
                   axisA: gairmetRegions, axisB: gairmetHours,
                   note: "G-AIRMET Sierra: IFR conditions + mountain obscuration.", attribution: awc),
+        WXProduct(id: "gairmet-llws", name: "LLWS & surface winds (G-AIRMET)", category: .airmets,
+                  urlTemplate: "https://aviationweather.gov/data/products/gairmet/F{B}_gairmet_tango-s_{A}.gif",
+                  axisA: gairmetRegions, axisB: gairmetHours,
+                  note: "G-AIRMET Tango (surface): low-level wind shear + strong surface winds.", attribution: awc),
         WXProduct(id: "sigmet-all", name: "Active SIGMETs (US)", category: .airmets,
-                  urlTemplate: "https://aviationweather.gov/data/products/sigmet/sigmet_all.gif",
-                  note: "All active SIGMETs; refreshed every few minutes.", attribution: awc),
+                  urlTemplate: "https://aviationweather.gov/data/products/sigmet/sigmet_{A}.gif",
+                  axisA: WXAxis(name: "Type", options: [
+                    ("All", "all"), ("Convective", "cb"), ("Icing", "ic"), ("IFR / dust", "if"), ("Turbulence", "tb")]),
+                  note: "Active SIGMETs; refreshed every few minutes.", attribution: awc),
     ]
 
     // MARK: Satellite (stable "latest" URLs, ~5 min refresh; timestamp burned into the image banner)
@@ -182,10 +222,14 @@ enum WXCatalog {
     private static let convective: [WXProduct] = [
         WXProduct(id: "conv-tcf", name: "Convective forecast — 4/6/8 hr (TCF)", category: .convective,
                   urlTemplate: "https://aviationweather.gov/data/products/tcf/F{A}_tcf.gif",
-                  axisA: WXAxis(name: "Forecast", options: [
-                    ("+4 h", "04"), ("+6 h", "06"), ("+8 h", "08"), ("+10 h", "10"), ("+12 h", "12")]),
+                  axisA: WXAxis(name: "Forecast", options: [("+4 h", "04"), ("+6 h", "06"), ("+8 h", "08")]),
                   note: "Traffic-flow convective forecast: coverage, tops and movement. Issued ~every 2 h.",
                   attribution: awc),
+        WXProduct(id: "conv-etcf", name: "Extended convective — 10–30 hr (eTCF)", category: .convective,
+                  urlTemplate: "https://aviationweather.gov/data/products/etcf/F{A}_etcf.gif",
+                  axisA: WXAxis(name: "Forecast", options: [
+                    ("+10 h", "10"), ("+14 h", "14"), ("+18 h", "18"), ("+22 h", "22"), ("+26 h", "26"), ("+30 h", "30")]),
+                  note: "Extended convective forecast out to 30 h.", attribution: awc),
         WXProduct(id: "conv-day1", name: "Convective outlook — Day 1", category: .convective,
                   urlTemplate: "https://www.spc.noaa.gov/products/outlook/day1otlk.png",
                   note: "Categorical severe risk covering the next ~4–24 h.", attribution: spc),
