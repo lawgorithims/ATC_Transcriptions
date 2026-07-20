@@ -32,6 +32,18 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 77, version: "1.0", headline: "Zoom controls + tidier layers menu",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "plus.magnifyingglass",
+                    title: "Manual zoom + center-on-aircraft",
+                    detail: "A slim, semi-transparent control bar on the right edge of the map lets you zoom in / out and re-center on your aircraft with a tap \u{2014} handy with gloves or in turbulence. Turn it on or off in the map layers menu."),
+                WhatsNewHighlight(
+                    icon: "square.3.layers.3d",
+                    title: "Two-column layers menu",
+                    detail: "The map layers menu is now two columns \u{2014} base maps on the left, overlays and map controls on the right \u{2014} so it\u{2019}s far quicker to scan and less cluttered."),
+            ]),
+        ReleaseNote(
             build: 76, version: "1.0", headline: "Search results pin on the map",
             highlights: [
                 WhatsNewHighlight(
