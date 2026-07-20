@@ -48,4 +48,14 @@ final class RouteETAsTests: XCTestCase {
         let e = RouteETAs.compute(route: route, present: Coord(lat: 42, lon: -71.9), groundSpeedKt: 100)!
         XCTAssertNotEqual(e.destETAText(now: now), "—")          // a real clock time, not the nil dash
     }
+
+    func testETETextIsADurationNotAClock() {
+        // ~89 NM to destination at 100 kt ≈ 53 min → "<60 min" duration form, never a clock (no ":" for <60).
+        let near = RouteETAs.compute(route: route, present: Coord(lat: 42, lon: -71.9), groundSpeedKt: 100)!
+        XCTAssertTrue(near.destETEText().hasSuffix(" min"), "sub-hour ETE should read like '53 min', got \(near.destETEText())")
+        XCTAssertNotEqual(near.nextETEText(), "—")
+        // Slow ground speed over the full route pushes past an hour → "h:mm" form.
+        let slow = RouteETAs.compute(route: route, present: Coord(lat: 42, lon: -71.99), groundSpeedKt: 40)!
+        XCTAssertTrue(slow.destETEText().contains(":"), "multi-hour ETE should read like '2:14', got \(slow.destETEText())")
+    }
 }

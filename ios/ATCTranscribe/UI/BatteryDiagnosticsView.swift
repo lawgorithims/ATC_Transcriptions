@@ -7,6 +7,10 @@ struct BatteryDiagnosticsView: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var battery: BatteryDiagnostics
     @State private var copied = false
+    @State private var sharePayload: SharePayload?
+
+    /// Wraps the export file URL so `.sheet(item:)` can present the share sheet.
+    struct SharePayload: Identifiable { let id = UUID(); let url: URL }
 
     var body: some View {
         let p = model.palette
@@ -79,7 +83,7 @@ struct BatteryDiagnosticsView: View {
                         VStack(alignment: .leading, spacing: 7) {
                             Text("Isolates the drain: compare CPU (Whisper/ANE) and map fps (idle redraw) across what the app was doing.")
                                 .font(.caption2).foregroundStyle(p.textDim)
-                            ForEach(Self.byActivity(battery.samples), id: \.tag) { row in
+                            ForEach(BatteryDiagnostics.activityAverages(battery.samples), id: \.tag) { row in
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(row.tag).font(.caption2.weight(.semibold)).foregroundStyle(p.text)
                                         .fixedSize(horizontal: false, vertical: true)
@@ -97,11 +101,20 @@ struct BatteryDiagnosticsView: View {
                         UIPasteboard.general.string = battery.exportText()
                         copied = true; Haptics.impact(.light)
                     } label: {
-                        Label(copied ? "Copied" : "Copy log", systemImage: copied ? "checkmark" : "doc.on.doc")
+                        Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
                             .font(.callout)
                     }
                     .buttonStyle(.plainHaptic)
                     .accessibilityIdentifier("battery-diag-copy")
+                    // Share the full report (per-activity CPU averages + raw CSV) as a .csv FILE — AirDrop /
+                    // Mail / Save to Files onto a computer, far easier than a 100-line clipboard paste.
+                    Button {
+                        if let url = battery.exportFileURL() { sharePayload = SharePayload(url: url); Haptics.impact(.light) }
+                    } label: {
+                        Label("Share", systemImage: "square.and.arrow.up").font(.callout)
+                    }
+                    .buttonStyle(.plainHaptic)
+                    .accessibilityIdentifier("battery-diag-share")
                     Spacer()
                     Button(role: .destructive) { battery.clear(); copied = false } label: {
                         Label("Clear", systemImage: "trash").font(.callout)
@@ -115,29 +128,25 @@ struct BatteryDiagnosticsView: View {
         .background(p.bg)
         .navigationTitle("Battery diagnostics")
         .navigationBarTitleDisplayMode(.inline)
+        .sheet(item: $sharePayload) { payload in
+            ActivityShareView(items: [payload.url])
+        }
     }
 
     private static func thermalLabel(_ raw: Int) -> String {
         switch raw { case 0: return "Nominal"; case 1: return "Fair"; case 2: return "Serious"; default: return "Critical" }
     }
 
-    struct ActivityRow { let tag: String; let cpu: Double; let fps: Double; let whisper: Double; let count: Int }
-    /// Average CPU / map-fps / whisper% grouped by the activity tag, busiest groups first. Bounded loops.
-    private static func byActivity(_ samples: [BatteryDiagnostics.Sample]) -> [ActivityRow] {
-        var g: [String: (cpu: Double, fps: Double, whisper: Double, n: Int)] = [:]
-        for s in samples.suffix(720) {                                // bounded by the ring (rule 2)
-            var v = g[s.activity] ?? (0, 0, 0, 0)
-            v.cpu += s.cpu; v.fps += s.mapFPS; v.whisper += s.whisperPct; v.n += 1
-            g[s.activity] = v
-        }
-        assert(g.count <= 720, "activity grouping overflow")
-        let rows = g.map { (k, v) -> ActivityRow in
-            let n = Double(max(v.n, 1))
-            return ActivityRow(tag: k, cpu: v.cpu / n, fps: v.fps / n, whisper: v.whisper / n, count: v.n)
-        }
-        return Array(rows.sorted { $0.count > $1.count }.prefix(12))   // bounded display
-    }
     private static let clock: DateFormatter = {
         let f = DateFormatter(); f.dateFormat = "HH:mm"; return f
     }()
+}
+
+/// Bridges UIActivityViewController into SwiftUI so the diagnostics log can be shared as a file.
+struct ActivityShareView: UIViewControllerRepresentable {
+    let items: [Any]
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+    func updateUIViewController(_ vc: UIActivityViewController, context: Context) {}
 }

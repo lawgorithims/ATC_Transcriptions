@@ -15,12 +15,15 @@ struct GPSBottomBar: View {
             metricBox("ALT", r.altitudeFtMSL.map { "\(Int($0.rounded())) ft" } ?? "—")
             metricBox("GS", r.groundSpeedKt.map { "\(Int($0.rounded())) kt" } ?? "—")
             metricBox("TRK", r.trackDeg.map { String(format: "%03.0f°", $0) } ?? "—")
-            // Live ETAs down the filed route at the current ground speed (only while a route + fix + GS exist).
+            // Live progress down the filed route at the current ground speed (only while a route + fix + GS
+            // exist). TIME REMAINING (ETE, a duration) to the next waypoint and to the destination — the
+            // pilot's "how long until I'm there" — plus the clock ARRIVAL time at the destination (its local
+            // time zone). ETE was the missing piece: the boxes used to show only clock times.
             if let eta = model.liveETAs {
                 let now = Date()
-                metricBox("→ \(eta.nextIdent)", eta.nextETAText(now: now))    // ETA at the next waypoint
-                metricBox("→ \(eta.destIdent)", eta.destETAText(now: now))    // ETA at the destination
-                metricBox("\(eta.destIdent) LCL", eta.destLocalText(now: now)) // arrival in the destination's local time
+                metricBox("ETE \(eta.nextIdent)", eta.nextETEText())          // time remaining to next waypoint
+                metricBox("ETE \(eta.destIdent)", eta.destETEText())          // time remaining to destination
+                metricBox("ARR \(eta.destIdent)", eta.destLocalText(now: now)) // clock arrival (destination local time)
             }
             Spacer(minLength: 0)
             if model.isRecording {

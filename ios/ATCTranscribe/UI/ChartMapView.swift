@@ -1760,24 +1760,30 @@ final class TrackPolyline: MKPolyline {}
 /// crop+upscale the deepest real tile (the exact GIBS-smoke overzoom pattern — radar is blobby, upscales fine).
 final class RadarTileOverlay: MKTileOverlay {
     static let maxNativeZ = 7            // RainViewer serves placeholders past this (empirically verified)
-    static let overzoomLevels = 6        // keep radar visible (progressively softer) through ~z13 chart zoom
+    static let maxOverzoom = 9           // draw radar (upscaled from z7) through ~z16 — never blank on zoom-in
 
     override init(urlTemplate: String?) {
         super.init(urlTemplate: urlTemplate)
         canReplaceMapContent = false     // draws OVER the chart, never replaces it
         tileSize = CGSize(width: 256, height: 256)
-        maximumZ = Self.maxNativeZ + Self.overzoomLevels
+        minimumZ = 1
+        // maximumZ well past native so MapKit KEEPS requesting deep tiles (which we overzoom below) instead
+        // of dropping the overlay when the chart is zoomed in past the radar's native z7 — the "radar unloads
+        // when I zoom in" report. Beyond this ceiling MapKit upscales the deepest crop itself (still drawn).
+        maximumZ = Self.maxNativeZ + Self.maxOverzoom
     }
 
     override func loadTile(at path: MKTileOverlayPath, result: @escaping (Data?, Error?) -> Void) {
         assert(path.z >= 0, "tile zoom non-negative")
         // At or below native, fetch the RainViewer tile directly (default template behaviour).
         guard path.z > Self.maxNativeZ else { super.loadTile(at: path, result: result); return }
-        // Past native: fetch the deepest REAL ancestor tile, crop the sub-rect, scale to 256 — never let
-        // MapKit request a placeholder tile.
-        guard let src = MBTilesTileOverlay.overzoomSource(z: path.z, x: path.x, y: path.y, maxZoom: Self.maxNativeZ) else {
-            result(nil, nil); return
-        }
+        // Past native: ALWAYS fetch the z7 ancestor + crop the sub-rect (self-contained — never returns nil,
+        // so the radar is persistent at every zoom instead of vanishing past a cap).
+        let dz = path.z - Self.maxNativeZ
+        let scale = 1 << dz                                          // sub-tiles per ancestor edge
+        let sub = 256.0 / Double(scale)                             // sub-tile size in the ancestor's pixels
+        let src = (ax: path.x >> dz, ay: path.y >> dz, sub: sub,
+                   ox: Double(path.x % scale) * sub, oy: Double(path.y % scale) * sub)
         assert(src.sub > 0, "overzoom sub-rect positive")
         let ancestor = MKTileOverlayPath(x: src.ax, y: src.ay, z: Self.maxNativeZ,
                                          contentScaleFactor: path.contentScaleFactor)

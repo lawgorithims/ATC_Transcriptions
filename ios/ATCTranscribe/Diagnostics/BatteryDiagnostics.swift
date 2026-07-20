@@ -98,6 +98,17 @@ struct BatteryActivitySnapshot {
         if let r = dischargeRate { lines.append(String(format: "Recent discharge: %.1f %%/hr", r)) }
         lines.append("")
         if let m = metricSummary { lines.append("MetricKit (latest daily payload):"); lines.append(m); lines.append("") }
+        // Per-activity averages (the CPU/map/Whisper breakdown shown on screen) — the highest-signal summary
+        // for tracing a drain, so it travels WITH the raw CSV instead of being screen-only.
+        let byAct = Self.activityAverages(samples)
+        if !byAct.isEmpty {
+            lines.append("By activity (averages):")
+            for r in byAct {
+                lines.append(String(format: "  %@ — CPU %.0f%% · map %.1f fps · whisper %.0f%% · %d min",
+                                    r.tag, r.cpu, r.fps, r.whisper, r.count))
+            }
+            lines.append("")
+        }
         lines.append("time,level%,charging,thermal,cpu%,mapfps,whisper%,engine,activity")
         let df = ISO8601DateFormatter()
         for s in samples.suffix(Self.maxSamples) {                            // bounded (rule 2)
@@ -107,6 +118,32 @@ struct BatteryActivitySnapshot {
                          "\(String(format: "%.0f", s.whisperPct)),\(s.engine),\(s.activity)")
         }
         return lines.joined(separator: "\n")
+    }
+
+    /// Write the report to a temp .csv file for the Share sheet (AirDrop / Mail / Save to Files) — far easier
+    /// than pasting 100+ clipboard lines onto a computer. Returns nil if the write fails.
+    func exportFileURL() -> URL? {
+        let name = "commsight-battery-\(Int(Date().timeIntervalSince1970)).csv"
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+        guard (try? exportText().write(to: url, atomically: true, encoding: .utf8)) != nil else { return nil }
+        return url
+    }
+
+    struct ActivityAvg { let tag: String; let cpu: Double; let fps: Double; let whisper: Double; let count: Int }
+    /// Average CPU / map-fps / whisper% grouped by activity tag, busiest first. Bounded loops (rule 2).
+    static func activityAverages(_ samples: [Sample]) -> [ActivityAvg] {
+        var g: [String: (cpu: Double, fps: Double, whisper: Double, n: Int)] = [:]
+        for s in samples.suffix(maxSamples) {                                 // bounded by the ring
+            var v = g[s.activity] ?? (0, 0, 0, 0)
+            v.cpu += s.cpu; v.fps += s.mapFPS; v.whisper += s.whisperPct; v.n += 1
+            g[s.activity] = v
+        }
+        assert(g.count <= maxSamples, "activity grouping overflow")
+        let rows = g.map { (k, v) -> ActivityAvg in
+            let n = Double(max(v.n, 1))
+            return ActivityAvg(tag: k, cpu: v.cpu / n, fps: v.fps / n, whisper: v.whisper / n, count: v.n)
+        }
+        return Array(rows.sorted { $0.count > $1.count }.prefix(12))
     }
 
     // MARK: sampler

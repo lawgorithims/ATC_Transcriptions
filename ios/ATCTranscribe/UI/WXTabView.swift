@@ -9,6 +9,11 @@ struct WXTabView: View {
     @EnvironmentObject var model: AppModel
     @StateObject private var cache = WXImageCache()
 
+    /// Release time in the iPad's LOCAL time zone (short date + time, e.g. "Jul 19, 2:45 PM").
+    static let releaseTime: DateFormatter = {
+        let f = DateFormatter(); f.dateStyle = .short; f.timeStyle = .short; return f
+    }()
+
     var body: some View {
         let p = model.palette
         return Group {
@@ -42,7 +47,15 @@ struct WXTabView: View {
             ForEach(WXCatalog.products(in: cat)) { product in
                 NavigationLink { WXProductView(product: product).environmentObject(cache) } label: {
                     HStack {
-                        Text(product.name).font(.callout).foregroundStyle(p.text)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(product.name).font(.callout).foregroundStyle(p.text)
+                            // The chart's RELEASE time (NOAA Last-Modified) in the iPad's local time, after
+                            // the name — known once the product has been opened at least once.
+                            if let rel = cache.releasedAt(product.url()) {
+                                Text("Released \(Self.releaseTime.string(from: rel))")
+                                    .font(.system(size: 11)).foregroundStyle(p.textDim)
+                            }
+                        }
                         Spacer()
                         if cache.cached(product.url()) != nil {
                             Image(systemName: "arrow.down.circle.fill").font(.caption).foregroundStyle(p.good)
@@ -80,6 +93,12 @@ struct WXProductView: View {
         let p = model.palette
         return ScrollView {
             VStack(alignment: .leading, spacing: 12) {
+                // Release time (NOAA Last-Modified), in the iPad's local time, right after the chart name.
+                if let rel = current?.releasedAt {
+                    Label("Released \(WXTabView.releaseTime.string(from: rel)) local", systemImage: "clock.badge.checkmark")
+                        .font(.caption).foregroundStyle(p.textDim)
+                        .accessibilityIdentifier("wx-released")
+                }
                 if let axis = product.axisA { axisPicker(axis, selection: $a, p) }
                 if let axis = product.axisB { axisPicker(axis, selection: $b, p) }
                 imagePane(p)
