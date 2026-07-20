@@ -7,9 +7,11 @@ import SwiftUI
 struct PlatesTabView: View {
     @EnvironmentObject var model: AppModel
     @State private var query = ""
-    @State private var airport: String?             // the OPEN binder's airport (nil = the binder list)
+    // Airport binders are PUSHED onto this path (one ident) so iOS gives a native back button AND the
+    // interactive edge-swipe-back for free — the binder used to be a manual state-swap with neither.
+    @State private var navPath: [String] = []
+    private var airport: String? { navPath.last }   // the OPEN binder's airport (nil = the binder list)
     @State private var plate: AirportProcedure?     // the plate open full-screen
-    @State private var userPinned = false           // the pilot opened a specific binder (from search/handoff)
     @State private var searchActive = false         // drives `.searchable` focus so we can dismiss it on tab-leave
     @State private var showFlightBag = false
     @State private var nearbyBinders: [String] = []  // nearest charted fields, recomputed as the GPS fix moves
@@ -62,17 +64,11 @@ struct PlatesTabView: View {
     }
 
     private var content: some View {
-        NavigationStack {
+        NavigationStack(path: $navPath) {
             Group {
-                if !query.isEmpty {
-                    airportPicker
-                } else if let apt = airport {
-                    binderDetail(apt)
-                } else {
-                    binderList
-                }
+                if !query.isEmpty { airportPicker } else { binderList }
             }
-            .navigationTitle(query.isEmpty ? (airport ?? "Binders") : "Search")
+            .navigationTitle("Binders")
             .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $query, isPresented: $searchActive,
                         placement: .navigationBarDrawer(displayMode: .always),
@@ -81,12 +77,17 @@ struct PlatesTabView: View {
                 ToolbarItem(placement: .topBarLeading) {
                     FlightBagButton(bag: model.plateBag, accent: model.palette.accent) { showFlightBag = true }
                 }
-                if airport != nil, query.isEmpty {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Button { airport = nil; userPinned = true } label: { Label("Binders", systemImage: "books.vertical") }
-                            .accessibilityIdentifier("plate-change-airport")
+            }
+            // The binder is a PUSHED destination → automatic "‹ Binders" back button + edge-swipe-back.
+            .navigationDestination(for: String.self) { apt in
+                binderDetail(apt)
+                    .navigationTitle(apt)
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {           // keep the Flight Bag reachable inside a binder (native back takes leading)
+                        ToolbarItem(placement: .topBarTrailing) {
+                            FlightBagButton(bag: model.plateBag, accent: model.palette.accent) { showFlightBag = true }
+                        }
                     }
-                }
             }
             .sheet(isPresented: $showFlightBag) {
                 FlightBagView(bag: model.plateBag, currentAirport: airport).environmentObject(model)
@@ -124,7 +125,7 @@ struct PlatesTabView: View {
         guard let want = model.platesAirport else { return }
         model.platesAirport = nil
         if !Procedures.forAirport(want).isEmpty {
-            airport = want; userPinned = true; query = ""
+            navPath = [want]; query = ""
             model.noteAirportViewed(want)
         }
     }
@@ -156,7 +157,7 @@ struct PlatesTabView: View {
             } else {
                 ForEach(Array(hits)) { o in
                     Button {
-                        airport = o.ident; userPinned = true; query = ""
+                        query = ""; navPath = [o.ident]; model.noteAirportViewed(o.ident)
                     } label: {
                         HStack(spacing: 10) {
                             Image(systemName: "airplane.circle.fill").foregroundStyle(model.palette.accent)
@@ -262,9 +263,12 @@ struct PlatesTabView: View {
     /// A lazily-rendered grid of large plate thumbnails (only visible cells download + render, so a big
     /// binder never renders 70 PDFs at once).
     private func thumbGrid(_ items: [AirportProcedure]) -> some View {
+        // ~340pt minimum → 2 columns in iPad portrait, 3 in landscape; the lower-right slider (thumbSize)
+        // trades columns for size. Each thumbnail sizes itself to the plate's own aspect ratio, so there is
+        // no letterbox/whitespace around the chart.
         LazyVGrid(columns: [GridItem(.adaptive(minimum: thumbSize), spacing: 12)], alignment: .leading, spacing: 12) {
             ForEach(items) { proc in
-                PlateThumb(proc: proc, height: thumbSize * 1.18) { plate = proc }.environmentObject(model)
+                PlateThumb(proc: proc) { plate = proc }.environmentObject(model)
             }
         }
     }
@@ -317,7 +321,7 @@ struct PlatesTabView: View {
     private func binderRow(_ ident: String) -> some View {
         let p = model.palette
         let count = Procedures.forAirport(ident).count
-        return Button { airport = ident; userPinned = true; model.noteAirportViewed(ident) } label: {
+        return Button { navPath.append(ident); model.noteAirportViewed(ident) } label: {
             HStack(spacing: 12) {
                 AirportDiagramImage(ident: ident, height: 84).environmentObject(model)
                 VStack(alignment: .leading, spacing: 2) {
@@ -371,28 +375,31 @@ private struct FlightBagButton: View {
 struct PlateThumb: View {
     @EnvironmentObject var model: AppModel
     let proc: AirportProcedure
-    var height: CGFloat = 200                 // tunable via the Plates zoom slider
     var onTap: () -> Void
 
     @State private var image: UIImage?
+    @State private var aspect: CGFloat = 0.773        // w/h; FAA plate portrait default until the image loads
     @State private var phase: Phase = .loading
     private enum Phase { case loading, ready, none }
 
     var body: some View {
         let p = model.palette
-        Button { onTap() } label: {
+        return Button { onTap() } label: {
             VStack(alignment: .leading, spacing: 5) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 7).fill(Color.white)
+                    Color.white
                     if let image {
-                        Image(uiImage: image).resizable().aspectRatio(contentMode: .fit).padding(2)
+                        // The cell takes the plate's own aspect ratio, so the chart fills it edge-to-edge with
+                        // NO letterbox/whitespace around it (the old fixed-height cell letterboxed a portrait
+                        // plate inside a white card).
+                        Image(uiImage: image).resizable().scaledToFill()
                     } else if phase == .loading {
                         ProgressView()
                     } else {
                         Image(systemName: "doc.richtext").font(.largeTitle).foregroundStyle(.gray)
                     }
                 }
-                .frame(height: height)
+                .aspectRatio(aspect, contentMode: .fit)
                 .frame(maxWidth: .infinity)
                 .clipShape(RoundedRectangle(cornerRadius: 7))
                 .overlay(RoundedRectangle(cornerRadius: 7).stroke(p.border, lineWidth: 0.5))
@@ -402,6 +409,7 @@ struct PlateThumb: View {
                         if PlateStore.isCached(proc) { Image(systemName: "arrow.down.circle.fill").foregroundStyle(p.good) }
                     }
                     .font(.caption2).padding(5)
+                    .background(.ultraThinMaterial, in: Capsule()).padding(4)   // legible over the chart, not floating on white
                 }
                 Text(proc.name).font(.caption2).foregroundStyle(p.text).lineLimit(2)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -416,12 +424,18 @@ struct PlateThumb: View {
     private func load() async {
         image = nil; phase = .loading
         guard let url = await PlateStore.ensureOnDisk(proc) else { phase = .none; return }
-        // Render generously (700px) so a thumbnail stays crisp at the largest slider size (~660pt) without
+        // Render generously (800px) so a thumbnail stays crisp at the largest 2-column slider size without
         // re-rendering when the pilot resizes. LazyVGrid renders only visible cells, so memory stays bounded.
         let rendered = await Task.detached(priority: .utility) {
-            PlateImageRenderer.firstPageImage(pdfURL: url, maxDimension: 700)
+            PlateImageRenderer.firstPageImage(pdfURL: url, maxDimension: 800)
         }.value
         guard !Task.isCancelled else { return }
-        if let rendered { image = rendered; phase = .ready } else { phase = .none }
+        if let rendered {
+            image = rendered
+            if rendered.size.height > 0 {                  // match the cell to the plate so there's no whitespace
+                aspect = max(0.4, min(rendered.size.width / rendered.size.height, 2.2))
+            }
+            phase = .ready
+        } else { phase = .none }
     }
 }
