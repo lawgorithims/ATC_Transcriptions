@@ -278,6 +278,11 @@ struct SavedMapCamera: Equatable {
 
 /// A selectable base layer. `standard`/`satellite` are Apple's base map; the FAA layers are our
 /// self-hosted raster charts (packs downloaded on demand from HuggingFace, then offline).
+/// A one-shot camera command from the side control bar. Token-based so tapping "+" repeatedly re-fires
+/// even though the kind is unchanged; whichever engine is active consumes it by comparing the token.
+enum MapCommandKind { case zoomIn, zoomOut, centerOwnship }
+struct MapCommandRequest: Equatable { let token: Int; let kind: MapCommandKind }
+
 enum ChartLayer: String, CaseIterable, Identifiable {
     case sectional, ifrLow, ifrHigh, standard, satellite
     var id: String { rawValue }
@@ -560,6 +565,26 @@ struct ChartMapView: UIViewRepresentable {
         }
     }
 
+    /// Apply a side-bar camera command on the classic MKMapView: halve/double the region span (zoom), or
+    /// re-frame around the ownship at a ~12 NM span. Span is clamped so a runaway can't zoom past sanity.
+    static func applyMapCommand(_ kind: MapCommandKind, _ mv: MKMapView, ownship: CLLocationCoordinate2D?) {
+        switch kind {
+        case .zoomIn:  zoomRegion(mv, factor: 0.5)
+        case .zoomOut: zoomRegion(mv, factor: 2.0)
+        case .centerOwnship:
+            guard let o = ownship else { return }
+            mv.setRegion(MKCoordinateRegion(center: o, span: MKCoordinateSpan(latitudeDelta: 0.2, longitudeDelta: 0.2)),
+                         animated: true)
+        }
+    }
+    private static func zoomRegion(_ mv: MKMapView, factor: Double) {
+        var r = mv.region
+        let lat = max(min(r.span.latitudeDelta * factor, 120), 0.0025)
+        let lon = max(min(r.span.longitudeDelta * factor, 120), 0.0025)
+        r.span = MKCoordinateSpan(latitudeDelta: lat, longitudeDelta: lon)
+        mv.setRegion(r, animated: true)
+    }
+
     func updateUIView(_ mv: MKMapView, context: Context) {
         let c = context.coordinator
         c.onVisibleRegion = onVisibleRegion
@@ -714,6 +739,13 @@ struct ChartMapView: UIViewRepresentable {
                                             span: MKCoordinateSpan(latitudeDelta: 0.5, longitudeDelta: 0.5)), animated: true)
         }
 
+        // Manual side-bar camera command (zoom / center-on-ownship). Token-guarded so each tap fires once.
+        if let cmd = model.mapCommand, cmd.token != c.lastMapCommandToken {
+            c.lastMapCommandToken = cmd.token
+            let own = ownship.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) }
+            Self.applyMapCommand(cmd.kind, mv, ownship: own)
+        }
+
         // One-shot frame request (a plate sent to the map frames the WHOLE plate so its corner controls
         // are on-screen). Consumed immediately — cleared outside the view update to avoid re-publishing.
         if let r = model.mapFrameRect {
@@ -803,6 +835,7 @@ struct ChartMapView: UIViewRepresentable {
 
         var searchHighlightCoord: CLLocationCoordinate2D?
         var onSearchPoint: (CGPoint?) -> Void = { _ in }
+        var lastMapCommandToken = 0
         /// Stream the search highlight's screen point (or nil) so the SwiftUI pulsing marker rides the map.
         func emitSearchPoint(_ mv: MKMapView) {
             guard let cc = searchHighlightCoord else { onSearchPoint(nil); return }

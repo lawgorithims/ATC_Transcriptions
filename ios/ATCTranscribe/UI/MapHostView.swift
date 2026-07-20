@@ -37,6 +37,8 @@ struct MapHostView: View {
     /// Screen-point of the search-result highlight (streamed from the active engine, like the plate anchors),
     /// so the SwiftUI pulsing marker rides the map. nil when there's no highlight or it's off-screen-computed.
     @State private var searchPoint: CGPoint?
+    /// Show the manual zoom / center-on-aircraft control bar on the map (toggled in the layers menu).
+    @AppStorage("atc.map.zoomControls") private var showZoomControls = true
 
     struct PlateAnchors: Equatable { var tl: CGPoint; var tr: CGPoint }
 
@@ -131,6 +133,7 @@ struct MapHostView: View {
                              show: model.showWxRadar, gpsBar: model.showGPSBar, palette: model.palette)
             }
         }
+        .overlay(alignment: .trailing) { if live, showZoomControls { mapSideControls } }
         .task { await buildRoute() }
         .onChange(of: model.flightPlan) { _, _ in Task { await buildRoute() } }      // edits redraw the route
         .onChange(of: model.chartLayer) { _, new in
@@ -228,6 +231,7 @@ struct MapHostView: View {
                 CLLocationCoordinate2D(latitude: $0.coord.lat, longitude: $0.coord.lon)
             },
             onSearchPoint: { p in Task { @MainActor in if searchPoint != p { searchPoint = p } } },
+            mapCommand: model.mapCommand,
             onRenderStalled: {
                 // The MapLibre map produced no frames (MLNMapView blank-until-scene-refresh) — fall back to the
                 // classic map for this session so the pilot always has a working chart.
@@ -287,6 +291,38 @@ struct MapHostView: View {
                 statusPill("Traffic live — no aircraft nearby", "airplane")
             }
         }
+    }
+
+    /// The map's manual camera controls — zoom in (+), zoom out (−), and center-on-aircraft — stacked flush
+    /// to the right wall, biased into the lower half (clear of the top-corner Stratux card, the bottom-corner
+    /// widgets, and the bottom bars). The bar background is semi-transparent (thin material) while the +/− and
+    /// aircraft glyphs stay fully opaque, per the brief. Also a stable tap target for iOS-simulator UI tests.
+    private var mapSideControls: some View {
+        VStack(spacing: 0) {
+            sideButton("plus", id: "map-zoom-in", label: "Zoom in") { model.sendMapCommand(.zoomIn) }
+            Divider().frame(width: 28).overlay(model.palette.border)
+            sideButton("minus", id: "map-zoom-out", label: "Zoom out") { model.sendMapCommand(.zoomOut) }
+            Divider().frame(width: 28).overlay(model.palette.border)
+            sideButton("location.fill", id: "map-center-ownship", label: "Center on aircraft") { model.sendMapCommand(.centerOwnship) }
+        }
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))   // semi-transparent bar
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(model.palette.border, lineWidth: 0.5))
+        .shadow(radius: 4)
+        .padding(.trailing, 12)
+        .offset(y: 80)                                    // bias below center → lower-right, clear of the corners
+    }
+
+    private func sideButton(_ icon: String, id: String, label: String, _ action: @escaping () -> Void) -> some View {
+        Button { Haptics.impact(.light); action() } label: {
+            Image(systemName: icon)
+                .font(.system(size: 19, weight: .bold))
+                .foregroundStyle(model.palette.text)     // OPAQUE glyph over the translucent bar
+                .frame(width: 46, height: 46)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plainHaptic)
+        .accessibilityIdentifier(id)
+        .accessibilityLabel(label)
     }
 
     private func statusPill(_ text: String, _ icon: String, spin: Bool = false) -> some View {

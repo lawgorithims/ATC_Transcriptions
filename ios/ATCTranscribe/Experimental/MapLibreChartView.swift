@@ -39,6 +39,7 @@ struct MapLibreChartView: UIViewRepresentable {
     var onPlateAnchors: ((CGPoint, CGPoint)?) -> Void = { _ in }   // plate top-corner screen-points → host chrome
     var searchHighlight: CLLocationCoordinate2D? = nil            // a pulsing search-result marker (layer-independent)
     var onSearchPoint: (CGPoint?) -> Void = { _ in }             // its screen-point → the SwiftUI pulsing overlay
+    var mapCommand: MapCommandRequest? = nil                      // one-shot side-bar camera command (zoom / center)
     var onRenderStalled: () -> Void = {}                           // map drew 0 frames → host falls back to classic map
     var onVisibleRegion: (MKMapRect) -> Void = { _ in }            // settle → host persists model.lastMapCamera
     var renderMeter: MapRenderMeter? = nil                         // battery diagnostics: per-frame counter → map fps
@@ -64,6 +65,7 @@ struct MapLibreChartView: UIViewRepresentable {
         let c = context.coordinator
         c.onVisibleRegion = onVisibleRegion
         c.onSearchPoint = onSearchPoint
+        c.inMapCommand = mapCommand
         c.cacheInputs(layer: layer, routeCoords: routeCoords, breadcrumbCoords: breadcrumbCoords,
                       radarTemplate: radarTemplate, ownship: ownship, ownshipCourse: ownshipCourse,
                       traffic: traffic, tfrs: showTFRs ? tfrs : [], showAirspace: showAirspace,
@@ -154,6 +156,21 @@ struct MapLibreChartView: UIViewRepresentable {
             onSearchPoint(map.convert(cc, toPointTo: map))
         }
 
+        var inMapCommand: MapCommandRequest?
+        var lastMapCommandToken = 0
+        /// Apply a side-bar camera command on the GPU map: step the zoom level, or re-frame on the ownship.
+        func applyMapCommand(_ map: MLNMapView) {
+            guard let cmd = inMapCommand, cmd.token != lastMapCommandToken else { return }
+            lastMapCommandToken = cmd.token
+            switch cmd.kind {
+            case .zoomIn:  map.setZoomLevel(min(map.zoomLevel + 1, 18), animated: true)
+            case .zoomOut: map.setZoomLevel(max(map.zoomLevel - 1, 1), animated: true)
+            case .centerOwnship:
+                guard let o = inOwnship else { return }
+                map.setCenter(o, zoomLevel: max(map.zoomLevel, 10), animated: true)
+            }
+        }
+
         /// Apply the cached inputs to the live map (from updateUIView, and once more right after createMap).
         func applyLatest() {
             guard let map else { return }
@@ -166,6 +183,7 @@ struct MapLibreChartView: UIViewRepresentable {
             updateTrack(inBreadcrumb, on: map)
             updateRadar(inRadarTemplate, on: map)
             emitSearchPoint(map)               // keep the pulsing search marker glued to its spot
+            applyMapCommand(map)               // one-shot side-bar zoom / center-on-ownship
             applyOverlayToggles(inShowAirspace, inShowNearby, inShowAirways, on: map)
             updateOwnship(inOwnship, course: inOwnCourse, on: map)
             updateTraffic(inTraffic, on: map)

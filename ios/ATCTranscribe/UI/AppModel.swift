@@ -323,6 +323,15 @@ final class AppModel: ObservableObject {
 
     /// Recenter the home map here (a search result). Transient.
     @Published var mapFocus: Coord?
+    /// A one-shot manual camera command from the map's side control bar (zoom in/out, center on ownship).
+    /// Token-based so a repeated tap re-fires; the active engine consumes it by comparing the token.
+    @Published var mapCommand: MapCommandRequest?
+    private var mapCommandCounter = 0
+    /// Fire a map camera command (from the side control bar). Bumps the token so the engine always re-applies.
+    func sendMapCommand(_ kind: MapCommandKind) {
+        mapCommandCounter += 1
+        mapCommand = MapCommandRequest(token: mapCommandCounter, kind: kind)
+    }
     /// A picked search result, drawn as a highlighted PULSING marker on the map REGARDLESS of layer toggles
     /// (so "nearby off" doesn't hide the thing you searched for). Cleared when its object card is dismissed
     /// or a different object is selected; a result the pilot files into the route persists via the route pins.
