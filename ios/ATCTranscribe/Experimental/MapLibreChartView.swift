@@ -612,6 +612,12 @@ struct MapLibreChartView: UIViewRepresentable {
             own.iconImageName = NSExpression(forConstantValue: "own-ship")
             own.iconRotation = NSExpression(forKeyPath: "rot")             // pre-baked (course - 90)
             own.iconRotationAlignment = NSExpression(forConstantValue: "map")
+            // Screen-flat billboard (heading via rotation-alignment=map). Pitch-alignment defaults to "auto",
+            // which inherits rotation-alignment="map" -> pitch-with-map. That resolves the ownship's anchor through
+            // the map-pixel label plane, so on the globe it floats off the sphere (and on a pitched flat map it would
+            // tilt away). Pinning pitch-alignment=viewport keeps it a top-down screen billboard so the globe fork
+            // projects its anchor onto the sphere; visually identical on the flat top-down map (pitch 0).
+            own.iconPitchAlignment = NSExpression(forConstantValue: "viewport")
             own.iconAllowsOverlap = NSExpression(forConstantValue: true)
             own.iconIgnoresPlacement = NSExpression(forConstantValue: true)
             style.addLayer(own)
