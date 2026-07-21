@@ -607,6 +607,7 @@ final class AppModel: ObservableObject {
     /// fetches the latest frame while it's on + foregrounded + not thermally throttled.
     @Published var showWxRadar = UserDefaults.standard.bool(forKey: "atc.map.wxRadar") {
         didSet { UserDefaults.standard.set(showWxRadar, forKey: "atc.map.wxRadar"); syncRadar() }
+    }
     /// NASA GIBS satellite smoke/true-colour overlay (a separate layer from the radar stub above). A
     /// translucent, prior-day satellite image over the chart — situational context, NOT current weather.
     /// Pure remote tiles (no poller), opt-in, default off; persisted. Reconciled in `ChartMapView`.
