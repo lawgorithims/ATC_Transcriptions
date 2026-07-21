@@ -337,20 +337,28 @@ struct MapLibreChartView: UIViewRepresentable {
             // port (>0), so both loopback URLs are always connectable.
             assert(port > 0, "writeStyle requires a bound loopback port")
             // GLOBE DEV HARNESS: when the hidden Developer "Globe" toggle is on we emit the style-spec
-            // `projection:globe` key. On the SHIPPING MapLibre Native iOS 6.27.0 SDK this is Web-Mercator only
-            // → the key is silently ignored → renders FLAT (the graceful no-op the harness relies on). The
-            // custom fork (ios/docs/GLOBE_FORK_PLAN.md) will honor it and curve the map. Remount to re-apply.
+            // `projection:globe` key, which the custom MapLibre fork (ios/docs/GLOBE_FORK_PLAN.md, linked as
+            // Vendor/MapLibre.xcframework) honors — curving the map onto a sphere. Remount to re-apply.
             let projection = globe ? "\"projection\": { \"type\": \"globe\" },\n              " : ""
+            // Sea colour: on the globe the background renders as the SPHERE surface (ocean), and the area outside
+            // the sphere is "space" (the app's near-black palette bg, #0B1117). The flat sea #0b1a2b is almost
+            // that same near-black, so on the globe the ocean melts into space. Use a deeper, clearly-blue ocean
+            // on the globe so the sphere reads as a planet against the void; the flat chart keeps its dark sea.
+            let sea = globe ? "#0f3a63" : "#0b1a2b"
+            // On the globe, request FAA tiles through the "/uz/" underzoom path so the chart drapes over the whole
+            // sphere when zoomed out (low-res context, MBTilesHTTPServer composites minZoom tiles). Flat map is
+            // unchanged: plain "/{z}/{x}/{y}", no underzoom. minzoom:0 lets the raster source request low zooms.
+            let faaTiles = globe ? "uz/{z}/{x}/{y}" : "{z}/{x}/{y}"
             let style = """
             {
               "version": 8,
               \(projection)"glyphs": "http://127.0.0.1:\(port)/font/{fontstack}/{range}.pbf",
               "sources": {
-                "faa": { "type": "raster", "tiles": ["http://127.0.0.1:\(port)/{z}/{x}/{y}"],
-                         "tileSize": 256, "maxzoom": 16, "attribution": "FAA charts (offline pack)" }
+                "faa": { "type": "raster", "tiles": ["http://127.0.0.1:\(port)/\(faaTiles)"],
+                         "tileSize": 256, "minzoom": 0, "maxzoom": 16, "attribution": "FAA charts (offline pack)" }
               },
               "layers": [
-                { "id": "bg", "type": "background", "paint": { "background-color": "#0b1a2b" } },
+                { "id": "bg", "type": "background", "paint": { "background-color": "\(sea)" } },
                 { "id": "faa", "type": "raster", "source": "faa" }
               ]
             }
