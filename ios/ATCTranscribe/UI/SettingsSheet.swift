@@ -112,7 +112,7 @@ struct SettingsSheet: View {
                 .tint(p.accent)
                 .accessibilityIdentifier("globe-projection-toggle")
                 Text(model.useMapLibreMap
-                     ? "Curves the chart onto a sphere. INERT on the current MapLibre SDK (renders flat) until the custom globe fork lands — see ios/docs/GLOBE_FORK_PLAN.md. Flipping remounts the map."
+                     ? "Curves the chart onto a sphere (custom globe fork). Turn on, then on the Map PINCH-ZOOM OUT until the chart curves into a full globe — drag to rotate it, pinch back in and it flattens seamlessly to the flat chart. Curvature shows below ~z6; at normal chart zooms it's imperceptible by design. Flipping remounts the map."
                      : "Requires the New GPU map (MapLibre) engine — turn it on in General → Map engine first.")
                     .font(.caption2).foregroundStyle(p.textDim)
             }
