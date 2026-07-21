@@ -99,11 +99,16 @@ final class MBTilesHTTPServer {
         let comps = path.split(separator: "/").map { $0.split(separator: ".").first.map(String.init) ?? String($0) }
         guard comps.count >= 3, let z = Int(comps[comps.count - 3]),
               let x = Int(comps[comps.count - 2]), let y = Int(comps[comps.count - 1]) else { return nil }
+        // GLOBE money-shot: the globe style requests through a "/uz/{z}/{x}/{y}" prefix so that when zoomed OUT
+        // past a pack's minZoom we composite + downsample its minZoom tiles into a low-res chart draped on the
+        // sphere (context, not detail). The flat map keeps the plain "/{z}/{x}/{y}" URL → unchanged (no underzoom).
+        let underzoom = comps.first == "uz"
         let readers = currentReaders()
         assert(readers.count <= 64, "unexpectedly many chart packs mounted")
         assert(z >= 0 && z <= 24, "tile: out-of-range zoom")
         for r in readers.prefix(64) {                                    // bounded (rule 2)
-            guard z >= r.minZoom, z <= r.maxZoom + MBTilesTileOverlay.overzoomLevels else { continue }
+            let minServe = underzoom ? max(0, r.minZoom - Self.underzoomLevels) : r.minZoom
+            guard z >= minServe, z <= r.maxZoom + MBTilesTileOverlay.overzoomLevels else { continue }
             let key = "\(r.packID)/\(z)/\(x)/\(y)" as NSString
             if let hit = pngCache.object(forKey: key) {
                 if hit.length == 0 { continue }        // cached NEGATIVE (this pack has no such tile) → try the next
@@ -115,6 +120,11 @@ final class MBTilesHTTPServer {
                 // MBTilesTileOverlay.overzoomedTile) so the chart stays visible on close-in/approach zoom
                 // instead of vanishing to bare OSM. Without this the +overzoomLevels band was dead allowance.
                 out = Self.overzoomedPNG(reader: r, z: z, x: x, y: y)
+            } else if z < r.minZoom {
+                // Below the pack (only reached under the "/uz/" globe prefix): composite the 2^k × 2^k block of
+                // minZoom tiles covering this low-zoom tile, each downsampled, so the whole chart drapes on the
+                // globe zoomed out. Bounded to underzoomLevels (<=8×8). Transparent where the pack has no data.
+                out = Self.underzoomedPNG(reader: r, z: z, x: x, y: y)
             } else if let raw = r.tileData(z: z, x: x, y: y) {           // reader flips XYZ→TMS internally
                 if r.format == "png" || r.format == "jpg" || r.format == "jpeg" {
                     out = raw
@@ -151,6 +161,36 @@ final class MBTilesHTTPServer {
                                 width: size.width, height: size.height))
         }
         return outImg.pngData()
+    }
+
+    /// How many zoom levels BELOW a pack's minZoom the "/uz/" globe path will synthesize (a low-res chart draped
+    /// on the zoomed-out sphere). k levels down composites a 2^k × 2^k block, so 3 == at most an 8×8 = 64-tile
+    /// mosaic per output tile — bounded, and only the tiles the pack actually has are drawn (rest transparent).
+    static let underzoomLevels = 3
+
+    /// Build a z(<minZoom) tile by compositing the covering minZoom tiles, each downsampled into its cell. Returns
+    /// nil when the pack has NO covering tile here (→ transparent, land base shows through). Bounded (n<=8).
+    private static func underzoomedPNG(reader r: MBTilesReader, z: Int, x: Int, y: Int) -> Data? {
+        assert(z < r.minZoom, "underzoomedPNG called at/above the pack's minZoom")
+        let k = r.minZoom - z
+        guard k >= 1, k <= underzoomLevels else { return nil }
+        let n = 1 << k                                   // minZoom tiles per side (2, 4, or 8)
+        let tile: CGFloat = 256
+        let cell = tile / CGFloat(n)                     // each source tile's footprint in the 256px output
+        let baseX = x * n, baseY = y * n                 // top-left (north-west) covering tile at minZoom (XYZ)
+        var drewAny = false
+        let fmt = UIGraphicsImageRendererFormat.default(); fmt.scale = 1; fmt.opaque = false
+        let outImg = UIGraphicsImageRenderer(size: CGSize(width: tile, height: tile), format: fmt).image { _ in
+            for row in 0..<n {                           // bounded (rule 2): n <= 8
+                for col in 0..<n {                       // bounded (rule 2): n <= 8
+                    guard let raw = r.tileData(z: r.minZoom, x: baseX + col, y: baseY + row),  // XYZ→TMS internal
+                          let img = UIImage(data: raw) else { continue }                       // missing → transparent
+                    img.draw(in: CGRect(x: CGFloat(col) * cell, y: CGFloat(row) * cell, width: cell, height: cell))
+                    drewAny = true
+                }
+            }
+        }
+        return drewAny ? outImg.pngData() : nil
     }
 
     /// "/font/Arial%20Bold/0-255.pbf" → the bundled SDF glyph PBF for that fontstack + range. MapLibre
