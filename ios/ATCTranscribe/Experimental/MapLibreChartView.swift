@@ -282,6 +282,17 @@ struct MapLibreChartView: UIViewRepresentable {
             }
             m.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(handleTap(_:))))
             m.addGestureRecognizer(UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:))))
+            if globeProjection {
+                // Globe: the fork clears "space" (outside the sphere) to transparent, so make the map non-opaque
+                // and float a night-sky starfield BEHIND it — space reads as black with stars while the ocean
+                // sphere sits in front. The flat map stays opaque (the fork fills the whole viewport), so the
+                // starfield never shows there.
+                m.isOpaque = false
+                m.backgroundColor = .clear
+                let sky = StarfieldView(frame: container.bounds)
+                sky.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+                container.addSubview(sky)   // inserted before the map → sits behind it (= "space")
+            }
             container.addSubview(m)
             self.map = m
             // Start the loopback tile server WITHOUT blocking the main thread; install the style only once the
@@ -1283,5 +1294,46 @@ struct MapLibreChartScreen: View {
         ResolvedLeg(ident: "KJFK", kind: .airport, coord: Coord(lat: 40.6413, lon: -73.7781)),
         ResolvedLeg(ident: "KDCA", kind: .airport, coord: Coord(lat: 38.8521, lon: -77.0377)),
     ]
+}
+
+/// A static night-sky backdrop for the globe: a near-black field scattered with faint stars, floated BEHIND the
+/// (non-opaque) MLNMapView so "space" outside the sphere reads as a night sky instead of the ocean colour. Star
+/// positions are generated once in unit space (resize is a free rescale) and drawn stably across redraws.
+final class StarfieldView: UIView {
+    private static let space = UIColor(red: 0.02, green: 0.03, blue: 0.06, alpha: 1)  // deep night-sky navy
+    private let stars: [(pos: CGPoint, r: CGFloat, a: CGFloat)]
+    override init(frame: CGRect) {
+        var rng = SystemRandomNumberGenerator()
+        var s: [(CGPoint, CGFloat, CGFloat)] = []
+        for i in 0..<420 {                                  // bounded star count
+            // A few big bright stars, many small faint ones — a real night-sky spread. Radii are in POINTS.
+            let big = i % 12 == 0
+            s.append((CGPoint(x: .random(in: 0...1, using: &rng), y: .random(in: 0...1, using: &rng)),
+                      big ? .random(in: 1.6...2.8, using: &rng) : .random(in: 0.6...1.6, using: &rng),
+                      big ? .random(in: 0.8...1.0, using: &rng) : .random(in: 0.35...0.9, using: &rng)))
+        }
+        stars = s
+        super.init(frame: frame)
+        backgroundColor = Self.space
+        isUserInteractionEnabled = false
+        contentMode = .redraw
+    }
+    required init?(coder: NSCoder) { nil }
+    override func draw(_ rect: CGRect) {
+        guard let ctx = UIGraphicsGetCurrentContext() else { return }
+        ctx.setFillColor(Self.space.cgColor); ctx.fill(rect)
+        for star in stars {                                  // bounded (rule 2)
+            let c = CGPoint(x: star.pos.x * rect.width, y: star.pos.y * rect.height)
+            if star.r > 1.5 {                                // soft glow on the bright stars → night-sky sparkle
+                ctx.setShadow(offset: .zero, blur: star.r * 2.6,
+                              color: UIColor(white: 0.85, alpha: min(1, star.a)).cgColor)
+            } else {
+                ctx.setShadow(offset: .zero, blur: 0, color: nil)
+            }
+            ctx.setFillColor(UIColor(white: 1, alpha: star.a).cgColor)
+            ctx.fillEllipse(in: CGRect(x: c.x - star.r, y: c.y - star.r, width: star.r * 2, height: star.r * 2))
+        }
+        ctx.setShadow(offset: .zero, blur: 0, color: nil)
+    }
 }
 #endif
