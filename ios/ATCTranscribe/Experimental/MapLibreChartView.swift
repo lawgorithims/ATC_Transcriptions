@@ -102,6 +102,19 @@ struct MapLibreChartView: UIViewRepresentable {
         private var plateCornersCoord: (tl: CLLocationCoordinate2D, tr: CLLocationCoordinate2D)?  // chrome anchors
         private var serverPort: UInt16 = 0         // bound loopback port, delivered async by the tile server
         private var servedReadersSig: String?      // (layer + sorted mounted packIDs) last handed to the tile server
+        // Bundled always-present RASTER bases for the globe (loaded once): a global Blue Marble satellite backstop
+        // + a low-res whole-US chart base per layer. Appended LAST (lowest priority, first-match-wins) so the FAA
+        // raster returns an OPAQUE tile at every globe zoom → it covers the vector land-fill, hiding the fill
+        // subdivision fragmentation, and shows satellite/charts where the pilot has downloaded nothing.
+        private lazy var bundledSatelliteBase: MBTilesReader? =
+            Bundle.main.url(forResource: "satellite_base", withExtension: "mbtiles", subdirectory: "basemap")
+                .flatMap { MBTilesReader(path: $0.path) }
+        private lazy var bundledVFRBase: MBTilesReader? =
+            Bundle.main.url(forResource: "vfr_base", withExtension: "mbtiles", subdirectory: "basemap")
+                .flatMap { MBTilesReader(path: $0.path) }
+        private lazy var bundledIFRLowBase: MBTilesReader? =
+            Bundle.main.url(forResource: "ifrlow_base", withExtension: "mbtiles", subdirectory: "basemap")
+                .flatMap { MBTilesReader(path: $0.path) }
         private var regionDebounce: DispatchWorkItem?  // coalesces a burst of region-settle events (pan/zoom)
         private var layer: ChartLayer = .sectional     // FAA base layer; drives ensureVisiblePacks
         private var appliedLayer: ChartLayer?          // last-applied — a change re-requests packs for the new layer
@@ -475,6 +488,10 @@ struct MapLibreChartView: UIViewRepresentable {
         /// No-ops (map still renders bg+faa) if the bundled asset is missing/unparseable — never crashes.
         private func setupLandBase(_ style: MLNStyle) {
             guard style.source(withIdentifier: "land") == nil else { return }   // per-id idempotency (defensive)
+            // Globe with a bundled raster base: the satellite/chart base IS the land (rendered on the clean tile
+            // mesh), so the vector land base is redundant AND z-fights the raster at the same sphere depth (faint
+            // triangles). Skip it on the globe; the flat map still uses it (no raster base there).
+            if globeProjection && bundledSatelliteBase != nil { return }
             guard let url = Bundle.main.url(forResource: "ne_land", withExtension: "geojson", subdirectory: "basemap"),
                   let data = try? Data(contentsOf: url),
                   let shape = try? MLNShape(data: data, encoding: String.Encoding.utf8.rawValue) else {
@@ -844,10 +861,42 @@ struct MapLibreChartView: UIViewRepresentable {
         /// publishes, instead of a blank chart until the pilot pans (the build-63 IFR-low-wouldn't-load bug; the
         /// classic ChartMapView reconciles its `readers` prop every updateUIView, which the port had dropped).
         /// A (layer + sorted packID) signature makes an unchanged set a cheap no-op. Bounded (≤64), ≥2 asserts.
+        /// Bundled CHART base readers appended after the downloaded packs (GLOBE only), lowest priority: the
+        /// per-layer low-res chart base. Composited OVER the separate satellite layer (setupSatelliteLayer), so
+        /// its transparent collars reveal satellite, not sea. Satellite is NOT a chart reader (own bottom layer).
+        /// Flat map is unchanged (returns []).
+        private func bundledBaseReaders() -> [MBTilesReader] {
+            guard globeProjection else { return [] }
+            switch layer {
+            case .sectional: if let r = bundledVFRBase { return [r] }
+            case .ifrLow:    if let r = bundledIFRLowBase { return [r] }
+            default: break
+            }
+            return []
+        }
+
+        /// The satellite base as a SEPARATE opaque bottom raster layer (served on the server's "/sat/" path), so
+        /// the chart layer's transparent collars composite over satellite instead of the sea. GLOBE only, once.
+        private func setupSatelliteLayer(_ style: MLNStyle) {
+            server.setSatelliteReader((globeProjection ? bundledSatelliteBase : nil))
+            guard globeProjection, bundledSatelliteBase != nil, serverPort > 0,
+                  style.source(withIdentifier: "satellite") == nil else { return }
+            let src = MLNRasterTileSource(identifier: "satellite",
+                tileURLTemplates: ["http://127.0.0.1:\(serverPort)/sat/{z}/{x}/{y}"],
+                options: [.tileSize: 256, .minimumZoomLevel: 0,
+                          .maximumZoomLevel: NSNumber(value: 5 + MBTilesTileOverlay.overzoomLevels)])
+            style.addSource(src)
+            let layer = MLNRasterStyleLayer(identifier: "satellite", source: src)   // bottom raster (above bg)
+            if let bg = style.layer(withIdentifier: "bg") { style.insertLayer(layer, above: bg) }
+            else { style.addLayer(layer) }
+        }
+
         @MainActor private func syncFAASource(on map: MLNMapView) {
             guard serverPort > 0, let style = map.style else { return }
-            let readers = store.readers
-            assert(readers.count <= 64, "syncFAASource: unexpectedly many packs mounted")
+            setupSatelliteLayer(style)                         // globe: opaque satellite bottom layer (once)
+            var readers = store.readers
+            readers.append(contentsOf: bundledBaseReaders())   // globe: low-res chart base composited over satellite
+            assert(readers.count <= 128, "syncFAASource: unexpectedly many packs mounted")
             let sig = "\(layer.rawValue)#" + readers.map(\.packID).sorted().joined(separator: ",")
             guard sig != servedReadersSig else { return }          // same set + layer → nothing to remount
             servedReadersSig = sig
