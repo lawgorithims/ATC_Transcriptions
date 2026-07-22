@@ -11,10 +11,10 @@
 |---|---|
 | Fork repo (local only) | `~/CommSight/maplibre-native` |
 | Fork branch | `globe/main` |
-| Fork commit | `fd9f5d93783d5527b0c582b539930ba30b145a20` |
+| Fork commit | `e0e46cc3254013fc896404fc7c96c38eaf0de0a0` |
 | Upstream base | `4ec05558c849954b551c55300b31a48616d4da35` (maplibre/maplibre-native) |
-| Delta vs upstream | 40 commits, 89 files |
-| xcframework binary sha256 | `9453aa297168548e11d2237df2ef340caccf472eed491b8830e045ee6b956c2a` |
+| Delta vs upstream | 43 commits, 92 files |
+| xcframework binary sha256 | `12731ad3815b78bb5e6a7994fa4d9dfb8d24d78487178641cfc337da60913a27` (rebuild in progress) |
 | Recorded | 2026-07-22T19:41:14Z |
 
 ## ⚠️ Release-integrity risks (open)
