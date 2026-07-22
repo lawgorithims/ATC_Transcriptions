@@ -115,6 +115,11 @@ struct MapLibreChartView: UIViewRepresentable {
         private lazy var bundledIFRLowBase: MBTilesReader? =
             Bundle.main.url(forResource: "ifrlow_base", withExtension: "mbtiles", subdirectory: "basemap")
                 .flatMap { MBTilesReader(path: $0.path) }
+        private lazy var bundledIFRHighBase: MBTilesReader? =
+            Bundle.main.url(forResource: "ifrhigh_base", withExtension: "mbtiles", subdirectory: "basemap")
+                .flatMap { MBTilesReader(path: $0.path) }
+        /// Server path segment per chart layer for the bundled bases (see setupChartBaseLayers).
+        private static let baseNames: [ChartLayer: String] = [.sectional: "vfr", .ifrLow: "ifrlow", .ifrHigh: "ifrhigh"]
         private var regionDebounce: DispatchWorkItem?  // coalesces a burst of region-settle events (pan/zoom)
         private var layer: ChartLayer = .sectional     // FAA base layer; drives ensureVisiblePacks
         private var appliedLayer: ChartLayer?          // last-applied — a change re-requests packs for the new layer
@@ -861,18 +866,39 @@ struct MapLibreChartView: UIViewRepresentable {
         /// publishes, instead of a blank chart until the pilot pans (the build-63 IFR-low-wouldn't-load bug; the
         /// classic ChartMapView reconciles its `readers` prop every updateUIView, which the port had dropped).
         /// A (layer + sorted packID) signature makes an unchanged set a cheap no-op. Bounded (≤64), ≥2 asserts.
-        /// Bundled CHART base readers appended after the downloaded packs (GLOBE only), lowest priority: the
-        /// per-layer low-res chart base. Composited OVER the separate satellite layer (setupSatelliteLayer), so
-        /// its transparent collars reveal satellite, not sea. Satellite is NOT a chart reader (own bottom layer).
-        /// Flat map is unchanged (returns []).
-        private func bundledBaseReaders() -> [MBTilesReader] {
-            guard globeProjection else { return [] }
-            switch layer {
-            case .sectional: if let r = bundledVFRBase { return [r] }
-            case .ifrLow:    if let r = bundledIFRLowBase { return [r] }
-            default: break
+        /// The bundled chart bases (VFR / IFR-low / IFR-high) as SEPARATE, ALWAYS-LOADED raster layers, each on
+        /// its own "/base/<name>/" server path. All three stay mounted and tile-loaded at once; switching the
+        /// chart layer only flips `rasterOpacity` — NOT `visibility`, which would make MapLibre unload the tiles
+        /// and reintroduce the very fetch-decode-upload stall we're removing. So changing chart layer is instant
+        /// with no re-request. They sit above satellite and below the downloaded-pack "faa" layer, so the pilot's
+        /// downloads always win. Composited over satellite, so transparent chart collars reveal terrain, not sea.
+        /// GLOBE only (the flat map keeps its existing vector-land + downloaded-pack behaviour).
+        private func setupChartBaseLayers(_ style: MLNStyle) {
+            guard globeProjection, serverPort > 0 else { server.setBaseReaders([:]); return }
+            var mounted: [String: MBTilesReader] = [:]
+            for (lyr, name) in Self.baseNames {
+                let reader: MBTilesReader? = (lyr == .sectional) ? bundledVFRBase
+                                           : (lyr == .ifrLow)   ? bundledIFRLowBase : bundledIFRHighBase
+                guard let reader else { continue }
+                mounted[name] = reader
+                let ident = "base-\(name)"
+                if style.source(withIdentifier: ident) == nil {
+                    let src = MLNRasterTileSource(identifier: ident,
+                        tileURLTemplates: ["http://127.0.0.1:\(serverPort)/base/\(name)/{z}/{x}/{y}"],
+                        options: [.tileSize: 256,
+                                  .minimumZoomLevel: NSNumber(value: reader.minZoom),
+                                  .maximumZoomLevel: NSNumber(value: reader.maxZoom + MBTilesTileOverlay.overzoomLevels)])
+                    style.addSource(src)
+                    let rl = MLNRasterStyleLayer(identifier: ident, source: src)
+                    if let sat = style.layer(withIdentifier: "satellite") { style.insertLayer(rl, above: sat) }
+                    else if let bg = style.layer(withIdentifier: "bg") { style.insertLayer(rl, above: bg) }
+                    else { style.addLayer(rl) }
+                }
+                if let rl = style.layer(withIdentifier: ident) as? MLNRasterStyleLayer {
+                    rl.rasterOpacity = NSExpression(forConstantValue: (lyr == layer) ? 1.0 : 0.0)
+                }
             }
-            return []
+            server.setBaseReaders(mounted)
         }
 
         /// The satellite base as a SEPARATE opaque bottom raster layer (served on the server's "/sat/" path), so
@@ -894,8 +920,8 @@ struct MapLibreChartView: UIViewRepresentable {
         @MainActor private func syncFAASource(on map: MLNMapView) {
             guard serverPort > 0, let style = map.style else { return }
             setupSatelliteLayer(style)                         // globe: opaque satellite bottom layer (once)
-            var readers = store.readers
-            readers.append(contentsOf: bundledBaseReaders())   // globe: low-res chart base composited over satellite
+            setupChartBaseLayers(style)                        // globe: all 3 bases preloaded, opacity-switched
+            let readers = store.readers                        // faa source = the pilot's DOWNLOADED packs only
             assert(readers.count <= 128, "syncFAASource: unexpectedly many packs mounted")
             let sig = "\(layer.rawValue)#" + readers.map(\.packID).sorted().joined(separator: ",")
             guard sig != servedReadersSig else { return }          // same set + layer → nothing to remount

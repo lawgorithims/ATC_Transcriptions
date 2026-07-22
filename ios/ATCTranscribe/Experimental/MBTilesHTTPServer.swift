@@ -45,6 +45,15 @@ final class MBTilesHTTPServer {
     func setSatelliteReader(_ r: MBTilesReader?) { lock.lock(); satelliteReader = r; lock.unlock() }
     private func currentSatelliteReader() -> MBTilesReader? { lock.lock(); defer { lock.unlock() }; return satelliteReader }
 
+    // The bundled per-layer chart bases (vfr / ifrlow / ifrhigh), each served on its OWN
+    // "/base/<name>/{z}/{x}/{y}" path so the map can keep a raster layer per base permanently loaded and switch
+    // between them by opacity alone — no reader swap, no tile re-request, so changing chart layer is instant.
+    private var baseReaders: [String: MBTilesReader] = [:]
+    func setBaseReaders(_ m: [String: MBTilesReader]) { lock.lock(); baseReaders = m; lock.unlock() }
+    private func currentBaseReader(_ name: String) -> MBTilesReader? {
+        lock.lock(); defer { lock.unlock() }; return baseReaders[name]
+    }
+
     /// Start the loopback listener WITHOUT blocking the caller. `onReady` is invoked on the MAIN queue with
     /// the bound port once the listener reaches `.ready` (or 0 on failure) — the caller installs the MapLibre
     /// style then. This replaces the old synchronous `DispatchSemaphore.wait(timeout: 2)`, which parked the
@@ -109,9 +118,17 @@ final class MBTilesHTTPServer {
         // past a pack's minZoom we composite + downsample its minZoom tiles into a low-res chart draped on the
         // sphere (context, not detail). The flat map keeps the plain "/{z}/{x}/{y}" URL → unchanged (no underzoom).
         let underzoom = comps.first == "uz"
-        // "/sat/" → the dedicated satellite base reader ONLY (its own bottom layer). Everything else scans the
-        // mounted chart packs. Satellite has z0, so it never needs underzoom; z>maxZoom overzooms as usual.
-        let readers = comps.first == "sat" ? (currentSatelliteReader().map { [$0] } ?? []) : currentReaders()
+        // "/sat/" → the dedicated satellite base reader ONLY (its own bottom layer); "/base/<name>/" → that one
+        // bundled chart base (its own always-loaded layer). Everything else scans the mounted chart packs.
+        // Satellite/bases have their own minZoom; z>maxZoom overzooms as usual.
+        let readers: [MBTilesReader]
+        if comps.first == "sat" {
+            readers = currentSatelliteReader().map { [$0] } ?? []
+        } else if comps.first == "base", comps.count >= 5 {
+            readers = currentBaseReader(comps[1]).map { [$0] } ?? []
+        } else {
+            readers = currentReaders()
+        }
         assert(readers.count <= 64, "unexpectedly many chart packs mounted")
         assert(z >= 0 && z <= 24, "tile: out-of-range zoom")
         for r in readers.prefix(64) {                                    // bounded (rule 2)
