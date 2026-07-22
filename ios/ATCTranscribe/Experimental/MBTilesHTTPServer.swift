@@ -101,23 +101,31 @@ final class MBTilesHTTPServer {
                 } else {
                     self.respond(conn, status: "404 Not Found", body: nil)
                 }
-            } else if let tile = self.tile(forPath: path) {
-                self.respond(conn, status: "200 OK", contentType: "image/png", body: tile)
+            } else if let (tile, mime) = self.tile(forPath: path) {
+                self.respond(conn, status: "200 OK", contentType: mime, body: tile)
             } else {
                 self.respond(conn, status: "404 Not Found", body: nil)   // no chart coverage here → transparent
             }
         }
     }
 
-    /// "/8/74/97" or "/8/74/97.png" → PNG tile bytes from the first pack that has it. Bounded scan.
-    private func tile(forPath path: String) -> Data? {
+    /// The MIME actually served for a tile from `r` at zoom `z`. The overzoom branch composites pixels and
+    /// always re-encodes to PNG; the in-range branch serves the pack's own bytes (see the passthrough
+    /// in `tile(forPath:)`). Serving the truthful type beats the old hardcoded "image/png" for JPEG/WebP bytes.
+    private static func mime(for r: MBTilesReader, z: Int) -> String {
+        if z > r.maxZoom { return "image/png" }                     // composited (upscaled) by us
+        switch r.format {
+        case "png": return "image/png"
+        case "jpg", "jpeg": return "image/jpeg"
+        default: return MBTilesTileOverlay.webpNativePassthrough ? "image/webp" : "image/png"
+        }
+    }
+
+    /// "/8/74/97" or "/8/74/97.png" → tile bytes + MIME from the first pack that has it. Bounded scan.
+    private func tile(forPath path: String) -> (Data, String)? {
         let comps = path.split(separator: "/").map { $0.split(separator: ".").first.map(String.init) ?? String($0) }
         guard comps.count >= 3, let z = Int(comps[comps.count - 3]),
               let x = Int(comps[comps.count - 2]), let y = Int(comps[comps.count - 1]) else { return nil }
-        // GLOBE money-shot: the globe style requests through a "/uz/{z}/{x}/{y}" prefix so that when zoomed OUT
-        // past a pack's minZoom we composite + downsample its minZoom tiles into a low-res chart draped on the
-        // sphere (context, not detail). The flat map keeps the plain "/{z}/{x}/{y}" URL → unchanged (no underzoom).
-        let underzoom = comps.first == "uz"
         // "/sat/" → the dedicated satellite base reader ONLY (its own bottom layer); "/base/<name>/" → that one
         // bundled chart base (its own always-loaded layer). Everything else scans the mounted chart packs.
         // Satellite/bases have their own minZoom; z>maxZoom overzooms as usual.
@@ -132,12 +140,11 @@ final class MBTilesHTTPServer {
         assert(readers.count <= 64, "unexpectedly many chart packs mounted")
         assert(z >= 0 && z <= 24, "tile: out-of-range zoom")
         for r in readers.prefix(64) {                                    // bounded (rule 2)
-            let minServe = underzoom ? max(0, r.minZoom - Self.underzoomLevels) : r.minZoom
-            guard z >= minServe, z <= r.maxZoom + MBTilesTileOverlay.overzoomLevels else { continue }
+            guard z >= r.minZoom, z <= r.maxZoom + MBTilesTileOverlay.overzoomLevels else { continue }
             let key = "\(r.packID)/\(z)/\(x)/\(y)" as NSString
             if let hit = pngCache.object(forKey: key) {
                 if hit.length == 0 { continue }        // cached NEGATIVE (this pack has no such tile) → try the next
-                return hit as Data
+                return (hit as Data, Self.mime(for: r, z: z))
             }
             let out: Data?
             if z > r.maxZoom {
@@ -145,13 +152,17 @@ final class MBTilesHTTPServer {
                 // MBTilesTileOverlay.overzoomedTile) so the chart stays visible on close-in/approach zoom
                 // instead of vanishing to bare OSM. Without this the +overzoomLevels band was dead allowance.
                 out = Self.overzoomedPNG(reader: r, z: z, x: x, y: y)
-            } else if z < r.minZoom {
-                // Below the pack (only reached under the "/uz/" globe prefix): composite the 2^k × 2^k block of
-                // minZoom tiles covering this low-zoom tile, each downsampled, so the whole chart drapes on the
-                // globe zoomed out. Bounded to underzoomLevels (<=8×8). Transparent where the pack has no data.
-                out = Self.underzoomedPNG(reader: r, z: z, x: x, y: y)
             } else if let raw = r.tileData(z: z, x: x, y: y) {           // reader flips XYZ→TMS internally
                 if r.format == "png" || r.format == "jpg" || r.format == "jpeg" {
+                    out = raw
+                } else if MBTilesTileOverlay.webpNativePassthrough {
+                    // Serve WebP AS-IS. ImageIO has decoded WebP since iOS 14 (deployment target is 17) and the
+                    // shipped MapLibre imports CGImageSourceCreateWithData with zero libwebp symbols, so it goes
+                    // through ImageIO too — the decoder sniffs the bytes. Transcoding here inflated every tile
+                    // 6.9-8.5x and cost 4-8ms, paid on all three always-loaded bases, and blew the 48MB
+                    // pngCache (~26MB of WebP becomes ~200MB of PNG). The MapKit path already ships this
+                    // passthrough A/B-verified; `atc.chartCompat` remains the escape hatch for both.
+                    // NOTE: only this in-range branch can pass through — the overzoom branch composites pixels.
                     out = raw
                 } else {
                     // WebP → PNG for MapLibre. A DECODE FAILURE must NOT be served as a mislabeled image/png
@@ -161,7 +172,10 @@ final class MBTilesHTTPServer {
             } else {
                 out = nil                                                // this pack lacks the tile; try the next
             }
-            if let out { pngCache.setObject(out as NSData, forKey: key, cost: out.count); return out }
+            if let out {
+                pngCache.setObject(out as NSData, forKey: key, cost: out.count)
+                return (out, Self.mime(for: r, z: z))
+            }
             // Cache the miss (empty sentinel) so an uncovered tile isn't re-scanned via SQLite every request
             // (a pan over open water re-requests the same empties constantly). NSCache still bounds growth.
             pngCache.setObject(NSData(), forKey: key, cost: 1)
@@ -188,35 +202,7 @@ final class MBTilesHTTPServer {
         return outImg.pngData()
     }
 
-    /// How many zoom levels BELOW a pack's minZoom the "/uz/" globe path will synthesize (a low-res chart draped
-    /// on the zoomed-out sphere). k levels down composites a 2^k × 2^k block, so 3 == at most an 8×8 = 64-tile
-    /// mosaic per output tile — bounded, and only the tiles the pack actually has are drawn (rest transparent).
-    static let underzoomLevels = 3
 
-    /// Build a z(<minZoom) tile by compositing the covering minZoom tiles, each downsampled into its cell. Returns
-    /// nil when the pack has NO covering tile here (→ transparent, land base shows through). Bounded (n<=8).
-    private static func underzoomedPNG(reader r: MBTilesReader, z: Int, x: Int, y: Int) -> Data? {
-        assert(z < r.minZoom, "underzoomedPNG called at/above the pack's minZoom")
-        let k = r.minZoom - z
-        guard k >= 1, k <= underzoomLevels else { return nil }
-        let n = 1 << k                                   // minZoom tiles per side (2, 4, or 8)
-        let tile: CGFloat = 256
-        let cell = tile / CGFloat(n)                     // each source tile's footprint in the 256px output
-        let baseX = x * n, baseY = y * n                 // top-left (north-west) covering tile at minZoom (XYZ)
-        var drewAny = false
-        let fmt = UIGraphicsImageRendererFormat.default(); fmt.scale = 1; fmt.opaque = false
-        let outImg = UIGraphicsImageRenderer(size: CGSize(width: tile, height: tile), format: fmt).image { _ in
-            for row in 0..<n {                           // bounded (rule 2): n <= 8
-                for col in 0..<n {                       // bounded (rule 2): n <= 8
-                    guard let raw = r.tileData(z: r.minZoom, x: baseX + col, y: baseY + row),  // XYZ→TMS internal
-                          let img = UIImage(data: raw) else { continue }                       // missing → transparent
-                    img.draw(in: CGRect(x: CGFloat(col) * cell, y: CGFloat(row) * cell, width: cell, height: cell))
-                    drewAny = true
-                }
-            }
-        }
-        return drewAny ? outImg.pngData() : nil
-    }
 
     /// "/font/Arial%20Bold/0-255.pbf" → the bundled SDF glyph PBF for that fontstack + range. MapLibre
     /// needs these to render any symbol-layer TEXT; we serve them from the app bundle so labels work offline.
