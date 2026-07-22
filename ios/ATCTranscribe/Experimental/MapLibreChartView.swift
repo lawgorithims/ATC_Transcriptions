@@ -120,6 +120,17 @@ struct MapLibreChartView: UIViewRepresentable {
                 .flatMap { MBTilesReader(path: $0.path) }
         /// Server path segment per chart layer for the bundled bases (see setupChartBaseLayers).
         private static let baseNames: [ChartLayer: String] = [.sectional: "vfr", .ifrLow: "ifrlow", .ifrHigh: "ifrhigh"]
+
+        /// Web-Mercator latitude limit. Anything beyond this is not representable and makes mbgl::LatLng throw.
+        private static let maxMercatorLat = 85.05112878
+        private static func clampLat(_ v: Double) -> Double {
+            guard v.isFinite else { return 0 }
+            return min(maxMercatorLat, max(-maxMercatorLat, v))
+        }
+        private static func clampLon(_ v: Double) -> Double {
+            guard v.isFinite else { return 0 }
+            return min(180, max(-180, v))
+        }
         private var regionDebounce: DispatchWorkItem?  // coalesces a burst of region-settle events (pan/zoom)
         private var layer: ChartLayer = .sectional     // FAA base layer; drives ensureVisiblePacks
         private var appliedLayer: ChartLayer?          // last-applied — a change re-requests packs for the new layer
@@ -219,11 +230,22 @@ struct MapLibreChartView: UIViewRepresentable {
         private func frameIfNeeded(on map: MLNMapView) {
             guard !didFrame else { return }
             if let cam = restoreCamera, SavedMapCamera.cameraIsFresh(savedAt: cam.savedAt, now: Date()) {
+                // CLAMP (crash fix): MKCoordinateRegion(rect) reports a MERCATOR-midpoint center with an
+                // ARITHMETIC latitudeDelta, so reconstructing center ± delta/2 overshoots ±90° for any wide or
+                // latitude-asymmetric view (measured: a 24.5° span at sw 60/ne 85 already yields ne 90.15).
+                // MLNCoordinateBounds is an unvalidated C struct and MLNMapView does not catch, so the
+                // out-of-range value reaches mbgl::LatLng, throws std::domain_error, and terminates the app —
+                // reachable on the SHIPPED flat map by pinch-out → tab switch (the map is rebuilt and restores).
                 let r = cam.region
-                let sw = CLLocationCoordinate2D(latitude: r.center.latitude - r.span.latitudeDelta / 2,
-                                                longitude: r.center.longitude - r.span.longitudeDelta / 2)
-                let ne = CLLocationCoordinate2D(latitude: r.center.latitude + r.span.latitudeDelta / 2,
-                                                longitude: r.center.longitude + r.span.longitudeDelta / 2)
+                let sw = CLLocationCoordinate2D(
+                    latitude: Self.clampLat(r.center.latitude - r.span.latitudeDelta / 2),
+                    longitude: Self.clampLon(r.center.longitude - r.span.longitudeDelta / 2))
+                let ne = CLLocationCoordinate2D(
+                    latitude: Self.clampLat(r.center.latitude + r.span.latitudeDelta / 2),
+                    longitude: Self.clampLon(r.center.longitude + r.span.longitudeDelta / 2))
+                assert(sw.latitude <= ne.latitude, "restore: inverted latitude bounds")
+                assert(CLLocationCoordinate2DIsValid(sw) && CLLocationCoordinate2DIsValid(ne),
+                       "restore: invalid restored bounds")
                 map.setVisibleCoordinateBounds(MLNCoordinateBounds(sw: sw, ne: ne), animated: false)
                 didFrame = true; return
             }
@@ -645,6 +667,12 @@ struct MapLibreChartView: UIViewRepresentable {
             traffic.iconImageName = NSExpression(forConstantValue: "own-traffic")
             traffic.iconRotation = NSExpression(forKeyPath: "rot")          // pre-baked (track - 90)
             traffic.iconRotationAlignment = NSExpression(forConstantValue: "map")
+            // Same reason as ownship below: pitch-alignment defaults to "auto" -> inherits rotation-alignment
+            // "map" -> pitch-with-map, which makes the globe fork skip the sphere reprojection AND the far-side
+            // horizon cull for this layer. Traffic would then be placed by the flat Mercator label plane while
+            // ownship sits on the sphere — a radial 1/cos(lat) range error between them (~30% at lat 40, ~2x at
+            // Anchorage). On a traffic display that is WRONG data, so pin it to the same frame as ownship.
+            traffic.iconPitchAlignment = NSExpression(forConstantValue: "viewport")
             traffic.iconAllowsOverlap = NSExpression(forConstantValue: true)   // traffic must never collide away
             traffic.iconIgnoresPlacement = NSExpression(forConstantValue: true)
             style.addLayer(traffic)
