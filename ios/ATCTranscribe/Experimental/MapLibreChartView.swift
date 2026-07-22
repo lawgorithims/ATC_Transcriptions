@@ -396,10 +396,11 @@ struct MapLibreChartView: UIViewRepresentable {
             // that same near-black, so on the globe the ocean melts into space. Use a deeper, clearly-blue ocean
             // on the globe so the sphere reads as a planet against the void; the flat chart keeps its dark sea.
             let sea = globe ? "#0f3a63" : "#0b1a2b"
-            // On the globe, request FAA tiles through the "/uz/" underzoom path so the chart drapes over the whole
-            // sphere when zoomed out (low-res context, MBTilesHTTPServer composites minZoom tiles). Flat map is
-            // unchanged: plain "/{z}/{x}/{y}", no underzoom. minzoom:0 lets the raster source request low zooms.
-            let faaTiles = globe ? "uz/{z}/{x}/{y}" : "{z}/{x}/{y}"
+            // Chart tiles use the plain "{z}/{x}/{y}" path on BOTH projections. (An earlier globe-only "/uz/"
+            // underzoom path was never reachable — syncFAASource rebuilt the source with a prefix-less template
+            // before any reader was mounted — and the bundled raster bases superseded it: the globe now gets its
+            // zoomed-out chart from the always-mounted low-res bases, not from synthesised sub-minZoom tiles.)
+            let faaTiles = "{z}/{x}/{y}"
             let style = """
             {
               "version": 8,
@@ -515,10 +516,11 @@ struct MapLibreChartView: UIViewRepresentable {
         /// No-ops (map still renders bg+faa) if the bundled asset is missing/unparseable — never crashes.
         private func setupLandBase(_ style: MLNStyle) {
             guard style.source(withIdentifier: "land") == nil else { return }   // per-id idempotency (defensive)
-            // Globe with a bundled raster base: the satellite/chart base IS the land (rendered on the clean tile
-            // mesh), so the vector land base is redundant AND z-fights the raster at the same sphere depth (faint
-            // triangles). Skip it on the globe; the flat map still uses it (no raster base there).
-            if globeProjection && bundledSatelliteBase != nil { return }
+            // Globe with a bundled raster base: while a RASTER chart layer is selected the satellite/chart base
+            // IS the land, so the vector land is redundant AND z-fights the raster at the same sphere depth
+            // (faint triangles). But "Standard map"/"Satellite" are first-class rows in the layers menu and have
+            // no raster chart base, and skipping the land outright left them showing a 32x-upscaled photo with no
+            // coastline. So always BUILD it and toggle visibility per layer in applyLandBaseVisibility().
             guard let url = Bundle.main.url(forResource: "ne_land", withExtension: "geojson", subdirectory: "basemap"),
                   let data = try? Data(contentsOf: url),
                   let shape = try? MLNShape(data: data, encoding: String.Encoding.utf8.rawValue) else {
@@ -915,7 +917,12 @@ struct MapLibreChartView: UIViewRepresentable {
                         tileURLTemplates: ["http://127.0.0.1:\(serverPort)/base/\(name)/{z}/{x}/{y}"],
                         options: [.tileSize: 256,
                                   .minimumZoomLevel: NSNumber(value: reader.minZoom),
-                                  .maximumZoomLevel: NSNumber(value: reader.maxZoom + MBTilesTileOverlay.overzoomLevels)])
+                                  // TRUE maxzoom (no +overzoomLevels): tile_pyramid clamps ideal->maxzoom and
+                                  // MapLibre magnifies the deepest real tile on the GPU at zero CPU cost. The
+                                  // +N is a MapKit-only workaround; keeping it here forced every z8-z12 request
+                                  // through overzoomedPNG (SQLite + WebP decode + CoreGraphics + re-encode) for
+                                  // pixel-identical output, paid on all three always-loaded bases.
+                                  .maximumZoomLevel: NSNumber(value: reader.maxZoom)])
                     style.addSource(src)
                     let rl = MLNRasterStyleLayer(identifier: ident, source: src)
                     if let sat = style.layer(withIdentifier: "satellite") { style.insertLayer(rl, above: sat) }
@@ -927,6 +934,17 @@ struct MapLibreChartView: UIViewRepresentable {
                 }
             }
             server.setBaseReaders(mounted)
+            applyLandBaseVisibility(style)
+        }
+
+        /// The vector land base is hidden exactly when an opaque raster chart base is drawing under the globe
+        /// (it would be invisible anyway and z-fights the raster). For the non-raster rows — "Standard map" and
+        /// "Satellite" — it is the only land there is, so it must come back.
+        private func applyLandBaseVisibility(_ style: MLNStyle) {
+            let hide = globeProjection && bundledSatelliteBase != nil && layer.isRaster
+            for id in ["land-fill", "coastline"] {
+                style.layer(withIdentifier: id)?.isVisible = !hide
+            }
         }
 
         /// The satellite base as a SEPARATE opaque bottom raster layer (served on the server's "/sat/" path), so
@@ -937,8 +955,9 @@ struct MapLibreChartView: UIViewRepresentable {
                   style.source(withIdentifier: "satellite") == nil else { return }
             let src = MLNRasterTileSource(identifier: "satellite",
                 tileURLTemplates: ["http://127.0.0.1:\(serverPort)/sat/{z}/{x}/{y}"],
+                // TRUE maxzoom (see the chart bases above) — MapLibre magnifies past it for free.
                 options: [.tileSize: 256, .minimumZoomLevel: 0,
-                          .maximumZoomLevel: NSNumber(value: 5 + MBTilesTileOverlay.overzoomLevels)])
+                          .maximumZoomLevel: NSNumber(value: bundledSatelliteBase?.maxZoom ?? 5)])
             style.addSource(src)
             let layer = MLNRasterStyleLayer(identifier: "satellite", source: src)   // bottom raster (above bg)
             if let bg = style.layer(withIdentifier: "bg") { style.insertLayer(layer, above: bg) }
