@@ -12,8 +12,8 @@ of public upstream, so the renderer can be fully reconstructed from this repo pl
 | | |
 |---|---|
 | Upstream base | `4ec05558c849954b551c55300b31a48616d4da35` (maplibre/maplibre-native) |
-| Fork tip | `46e455b29bf6d7596ba3f69385beb12476563369` (`globe/main`) |
-| Contents | 42 commits, 89 files |
+| Fork tip | `e0e46cc3254013fc896404fc7c96c38eaf0de0a0` (`globe/main`) |
+| Contents | 43 commits, 92 files |
 
 ## Restore
 
