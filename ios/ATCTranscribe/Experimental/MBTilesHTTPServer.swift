@@ -39,6 +39,12 @@ final class MBTilesHTTPServer {
     func setReaders(_ r: [MBTilesReader]) { lock.lock(); readers = r; lock.unlock() }
     private func currentReaders() -> [MBTilesReader] { lock.lock(); defer { lock.unlock() }; return readers }
 
+    // The GLOBE base satellite reader, served on a SEPARATE "/sat/{z}/{x}/{y}" path so it renders as its own
+    // opaque bottom layer — the chart layer's transparent collars then composite over satellite, not the sea.
+    private var satelliteReader: MBTilesReader?
+    func setSatelliteReader(_ r: MBTilesReader?) { lock.lock(); satelliteReader = r; lock.unlock() }
+    private func currentSatelliteReader() -> MBTilesReader? { lock.lock(); defer { lock.unlock() }; return satelliteReader }
+
     /// Start the loopback listener WITHOUT blocking the caller. `onReady` is invoked on the MAIN queue with
     /// the bound port once the listener reaches `.ready` (or 0 on failure) — the caller installs the MapLibre
     /// style then. This replaces the old synchronous `DispatchSemaphore.wait(timeout: 2)`, which parked the
@@ -103,7 +109,9 @@ final class MBTilesHTTPServer {
         // past a pack's minZoom we composite + downsample its minZoom tiles into a low-res chart draped on the
         // sphere (context, not detail). The flat map keeps the plain "/{z}/{x}/{y}" URL → unchanged (no underzoom).
         let underzoom = comps.first == "uz"
-        let readers = currentReaders()
+        // "/sat/" → the dedicated satellite base reader ONLY (its own bottom layer). Everything else scans the
+        // mounted chart packs. Satellite has z0, so it never needs underzoom; z>maxZoom overzooms as usual.
+        let readers = comps.first == "sat" ? (currentSatelliteReader().map { [$0] } ?? []) : currentReaders()
         assert(readers.count <= 64, "unexpectedly many chart packs mounted")
         assert(z >= 0 && z <= 24, "tile: out-of-range zoom")
         for r in readers.prefix(64) {                                    // bounded (rule 2)
