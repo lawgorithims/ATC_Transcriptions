@@ -116,6 +116,31 @@ xcodebuild archive \
 ARC_RC=$?
 [ "$ARC_RC" -eq 0 ] || die "archive failed (rc=$ARC_RC)"
 
+# ---- 1b. fold the MapLibre fork dSYM into the archive ----
+# The map renderer is a PREBUILT xcframework, so Xcode generates no dSYM for it and App Store
+# Connect cannot symbolicate crashes inside it — which is most of the map code every pilot runs.
+# The fork is built with --apple_generate_dsym; the matching bundle is staged next to the
+# xcframework it belongs to. The UUID guard is the point: a stale dSYM silently mis-symbolicates,
+# which is worse than none, so a mismatch warns and ships without rather than shipping a lie.
+MAPLIBRE_DSYM="${MAPLIBRE_DSYM:-Vendor/MapLibre.framework.dSYM}"
+APP_ML="$ARCHIVE/Products/Applications/$SCHEME.app/Frameworks/MapLibre.framework/MapLibre"
+if [ -d "$MAPLIBRE_DSYM" ] && [ -f "$APP_ML" ]; then
+  BIN_UUID="$(dwarfdump --uuid "$APP_ML" 2>/dev/null | awk '{print $2}' | sort -u | tr '\n' ' ')"
+  SYM_UUID="$(dwarfdump --uuid "$MAPLIBRE_DSYM" 2>/dev/null | awk '{print $2}' | sort -u | tr '\n' ' ')"
+  if [ -n "$BIN_UUID" ] && [ "$BIN_UUID" = "$SYM_UUID" ]; then
+    mkdir -p "$ARCHIVE/dSYMs"
+    rm -rf "$ARCHIVE/dSYMs/MapLibre.framework.dSYM"
+    cp -R "$MAPLIBRE_DSYM" "$ARCHIVE/dSYMs/MapLibre.framework.dSYM"
+    log "folded MapLibre dSYM into archive (uuid ${BIN_UUID% })"
+  else
+    printf '\033[1;33mWARNING: MapLibre dSYM UUID mismatch (binary=%s dSYM=%s) — shipping WITHOUT\n\
+renderer symbols. Rebuild the fork and re-stage %s.\033[0m\n' "$BIN_UUID" "$SYM_UUID" "$MAPLIBRE_DSYM" >&2
+  fi
+else
+  printf '\033[1;33mWARNING: no MapLibre dSYM at %s — ASC cannot symbolicate renderer crashes.\n\
+See ios/docs/FORK.md.\033[0m\n' "$MAPLIBRE_DSYM" >&2
+fi
+
 # ---- 2. export signed-for-App-Store + upload ----
 # ExportOptions.plist is method=app-store-connect, destination=upload, signingStyle=automatic.
 # -allowProvisioningUpdates mints the cloud DISTRIBUTION cert + profile (no devices needed).
