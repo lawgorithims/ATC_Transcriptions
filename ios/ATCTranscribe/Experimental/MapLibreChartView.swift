@@ -990,8 +990,17 @@ struct MapLibreChartView: UIViewRepresentable {
             // remount (pan to new coverage, VFR⇄IFR switch, late download) re-inserts faa above the radar
             // (they shared the "airways-line" anchor) and the precipitation vanishes until the next ~10-min
             // frame rollover (a red-hat finding). Falls back to the old anchor when radar is off.
+            // The overlaid PLATE is the other layer that must stay above the chart. Both anchors above are
+            // absent in a legitimate state (radar off, and the vector overlays not yet built for this
+            // region/zoom), and the old fallback then APPENDED the opaque sectional on top of everything —
+            // burying a georeferenced approach plate completely. Measured stack in that state:
+            //   bg > satellite > base-* > annotations.points > plate-raster > faa
+            // The plate still drew, and its corner gear still tracked it, so nothing looked broken; the
+            // sectional simply covered it. It re-fires whenever the pack set changes — a download
+            // completing, panning into new coverage, a VFR⇄IFR switch — so a plate could vanish mid-flight.
             if let radar = style.layer(withIdentifier: "wxradar-layer") { style.insertLayer(faaRaster, below: radar) }
             else if let bottom = style.layer(withIdentifier: "airways-line") { style.insertLayer(faaRaster, below: bottom) }
+            else if let plate = style.layer(withIdentifier: "plate-raster") { style.insertLayer(faaRaster, below: plate) }
             else { style.addLayer(faaRaster) }
         }
 
