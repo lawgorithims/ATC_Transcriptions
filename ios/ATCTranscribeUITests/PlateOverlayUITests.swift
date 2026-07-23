@@ -1,33 +1,77 @@
 import XCTest
 
 /// End-to-end proof that the plate-on-map opacity ACTUALLY fades the plate (the regression the pilot hit
-/// twice) AND that the new plate menu works. The decisive check: overlay a black-and-white KBOS plate on
-/// the COLORED VFR sectional, open the plate menu from the plate's corner gear, swing opacity to the
-/// floor, and assert the sectional's COLOR shows through — mean color saturation under the plate jumps.
-/// A B&W plate is ~zero saturation; the sectional's tan/green/blue is unmistakable, so this can't pass
-/// unless the map is genuinely visible through the faded plate.
+/// twice) AND that the plate menu is REACHABLE. The decisive check: overlay a black-and-white KBOS plate
+/// on the COLORED VFR sectional, swing opacity to the floor, and assert the sectional's COLOR shows
+/// through — mean color saturation under the plate jumps. A B&W plate is ~zero saturation; the
+/// sectional's tan/green/blue is unmistakable, so this can't pass unless the map is genuinely visible
+/// through the faded plate.
+///
+/// Split into three tests deliberately. The opacity check used to open the menu via the corner gear, so
+/// when the gear became unreachable (it was drawn UNDER the console chrome, and the LiveATC URL field ate
+/// its taps) this file failed at the gear and the safety-critical opacity assertion never ran at all — a
+/// layout bug masking a rendering regression. The opacity test now opens the menu with `--plate-menu` and
+/// never touches the gear; reachability is asserted separately, by both routes a pilot has.
 final class PlateOverlayUITests: XCTestCase {
 
     override func setUp() { continueAfterFailure = false }
 
-    func testPlateMenuOpacityRevealsColoredVFRUnderneath() {
+    private func launch(_ extra: [String]) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchArguments += ["-atc.onboardingDismissed", "YES", "--reset-widgets",
                                 "--chart-layer", "vfr",
-                                "--preview-plate", "KBOS", "00058IL4R.PDF"]
+                                "--preview-plate", "KBOS", "00058IL4R.PDF"] + extra
         app.launch()
-
         // A location prompt may cover the map on a fresh install. Dismiss it via Springboard directly.
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
         let allow = springboard.buttons["Allow While Using App"]
         if allow.waitForExistence(timeout: 5) { allow.tap() }
+        return app
+    }
 
-        // The gear button riding the plate's top-right corner appears once the plate is overlaid.
+    /// The unoccludable route: the console strip lives INSIDE the chrome, so no map geometry can hide it.
+    func testPlateMenuIsReachableFromTheConsoleStrip() {
+        let app = launch([])
+        let strip = app.buttons["plate-strip"]
+        XCTAssertTrue(strip.waitForExistence(timeout: 45),
+                      "no 'Plate on map' strip — the pilot has no persistent, unoccludable way in")
+        strip.tap()
+        XCTAssertTrue(app.otherElements["plate-menu"].waitForExistence(timeout: 5),
+                      "the console strip must open the plate menu")
+        XCTAssertTrue(app.sliders["plate-opacity-slider"].exists, "menu should carry the opacity slider")
+    }
+
+    /// The on-map route: the gear must sit BELOW the console chrome, and tapping it must actually open the
+    /// menu. The oracle is the runtime chrome frame plus the menu appearing — never `isHittable`, which
+    /// reported TRUE for a button buried under the InputBar whose taps went to a text field.
+    func testCornerGearSitsBelowTheConsoleChromeAndOpensTheMenu() {
+        let app = launch([])
         let gear = app.buttons["plate-settings-button"]
         XCTAssertTrue(gear.waitForExistence(timeout: 45), "plate overlay never appeared — download failed?")
 
-        // Wait for the VFR sectional tiles to render: poll an OFF-PLATE region (right edge) until it
-        // shows the sectional's color. Bounded (Power of 10).
+        // Measure the chrome at RUNTIME rather than hard-coding a height: that is the same mistake the
+        // shipped code made. The input strip is the tallest routinely-expanded piece of top chrome.
+        let inputBar = app.descendants(matching: .any).matching(identifier: "input-bar").firstMatch
+        if inputBar.exists {
+            XCTAssertGreaterThanOrEqual(gear.frame.minY, inputBar.frame.maxY,
+                                        "the gear is drawn under the console chrome, where its taps are eaten")
+        }
+        gear.tap()
+        XCTAssertTrue(app.otherElements["plate-menu"].waitForExistence(timeout: 5),
+                      "tapping the corner gear must open the plate menu")
+    }
+
+    func testPlateMenuOpacityRevealsColoredVFRUnderneath() {
+        // --plate-menu opens the menu directly, so this safety-critical check never routes through the
+        // gear's geometry. (The gear is hidden by construction while the menu is open.)
+        let app = launch(["--plate-menu"])
+
+        // The menu is already open (--plate-menu), so the opacity slider is the entry point.
+        let slider = app.sliders["plate-opacity-slider"]
+        XCTAssertTrue(slider.waitForExistence(timeout: 20), "plate menu / opacity slider did not appear")
+
+        // Wait for the VFR sectional tiles to render: poll an OFF-PLATE region until it shows the
+        // sectional's color. Bounded (Power of 10).
         var tilesReady = false, polls = 0
         while polls < 30 {                                    // ≤ 30 × 5 s for the ~50 MB pack
             if Self.meanSaturation(app.screenshot().image, band: Self.offPlateBand) > 0.05 { tilesReady = true; break }
@@ -40,30 +84,31 @@ final class PlateOverlayUITests: XCTestCase {
         add(XCTAttachment(screenshot: shotDefault))
         let satDefault = Self.meanSaturation(shotDefault.image, band: Self.plateBand)
 
-        // Open the plate menu from the plate's corner gear; the opacity slider lives in the menu (in
-        // normal screen space — no MapKit gesture conflict). Swing it to the 0.15 floor.
-        gear.tap()
-        let slider = app.sliders["plate-opacity-slider"]
-        XCTAssertTrue(slider.waitForExistence(timeout: 5), "plate menu / opacity slider did not appear")
+        // Swing the opacity to its 0.15 floor.
         slider.adjust(toNormalizedSliderPosition: 0.0)
         sleep(2)                                             // the overlay rebuilds at the new alpha
         let shotFaded = app.screenshot()
         add(XCTAttachment(screenshot: shotFaded))
         let satFaded = Self.meanSaturation(shotFaded.image, band: Self.plateBand)
-        print("DIAG satDefault:", satDefault, "satFaded:", satFaded)
 
         // THE check: color from the VFR chart is visible through the faded plate. An opaque plate that
         // ignores the slider (both prior regressions) leaves the band's saturation unchanged.
         XCTAssertGreaterThan(satFaded, satDefault + 0.03,
                              "VFR color did not show through the faded plate (default \(satDefault), faded \(satFaded))")
 
-        // Invert colours — toggles without crashing (the inverted page renders off-main).
-        app.buttons["plate-menu-invert"].tap()
+        // Invert colours — toggles without crashing (the inverted page renders off-main). Guarded: an
+        // unguarded tap on a missing element dies with an unmatched-element crash rather than a readable
+        // assertion, because continueAfterFailure is false.
+        let invert = app.buttons["plate-menu-invert"]
+        XCTAssertTrue(invert.waitForExistence(timeout: 5), "invert-colours control missing from the plate menu")
+        invert.tap()
         sleep(1)
 
-        // Hide the plate — plate + gear + menu all clear.
-        app.buttons["plate-menu-hide"].tap()
-        XCTAssertTrue(waitGone(gear, timeout: 5), "plate did not clear after Hide plate")
+        // Hide the plate — plate + strip + menu all clear.
+        let hide = app.buttons["plate-menu-hide"]
+        XCTAssertTrue(hide.waitForExistence(timeout: 5), "hide-plate control missing from the plate menu")
+        hide.tap()
+        XCTAssertTrue(waitGone(app.buttons["plate-strip"], timeout: 5), "plate did not clear after Hide plate")
     }
 
     // MARK: sampling
