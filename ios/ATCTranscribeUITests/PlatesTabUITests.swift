@@ -27,7 +27,14 @@ final class PlatesTabUITests: XCTestCase {
         let runwayHeader = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Runway '")).firstMatch
         XCTAssertTrue(runwayHeader.waitForExistence(timeout: 5), "approaches are not grouped by runway")
 
-        // Search switches the airport (the reported "stuck on one airport" bug).
+        // Search switches the airport (the reported "stuck on one airport" bug). The search bar lives on
+        // the ROOT "Binders" list, not inside a pushed binder — opening on KBOS means we are one level
+        // deep, so pop back first. (Asserting the field from the binder detail is why this read as
+        // "search field missing" even though search works.)
+        let backToBinders = app.navigationBars.buttons["Binders"].firstMatch
+        XCTAssertTrue(backToBinders.waitForExistence(timeout: 5), "binder detail should offer a back button to Binders")
+        backToBinders.tap()
+
         let search = app.searchFields.firstMatch
         XCTAssertTrue(search.waitForExistence(timeout: 5), "search field missing")
         search.tap()
