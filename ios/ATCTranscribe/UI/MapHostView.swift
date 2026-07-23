@@ -16,7 +16,15 @@ struct MapHostView: View {
     /// Plain reference (NOT observed): the map only WRITES the tapped-object probe here — it must not
     /// re-render / re-reconcile just because a widget's layout changed.
     let widgets: WidgetStore
+    /// MEASURED height of the console's opaque top chrome (`ConsoleView.topChromeHeight`). The map is
+    /// full-bleed UNDER that chrome, so every control this view floats over the map must start below it.
+    /// Defaulted so the memberwise init keeps working for existing call sites.
+    var topChrome: CGFloat = 0
     @Environment(\.scenePhase) private var scenePhase
+
+    /// The chrome height to lay out against, floored so the very first frame (before the measurement
+    /// lands) still clears the TopBar instead of pinning controls to the screen top.
+    private var mapTopInset: CGFloat { max(topChrome, 96) }
 
     @StateObject private var store = ChartStore(library: ChartLibrary.shared)
     @State private var route: [ResolvedLeg] = []
@@ -98,18 +106,17 @@ struct MapHostView: View {
             // isn't stranded over a blank background at stale anchor coords when the map is off.
             if live, let s = model.plateOverlay, let a = plateAnchors, !model.showPlateMenu {
                 GeometryReader { geo in
-                    // Pin the gear to the plate's EXACT top-right corner (center tucked just inside by a
-                    // half-button) and track it 1:1 as the plate pans/zooms. Clamp INSIDE the map chrome —
-                    // NOT the physical screen edge — because the gear is the ONLY way to reach the plate
-                    // menu: it must never slide under the opaque TopBar/strips (top) or the GPS + tab bar
-                    // (bottom), where it would be un-tappable. Within that band it sits exactly on the corner.
-                    let m: CGFloat = 18
-                    let x = min(max(a.tr.x - m, 40), geo.size.width - 40)
+                    // Pin the gear to the plate's top-right corner and track it 1:1 as the plate pans and
+                    // zooms — but keep the WHOLE hit box inside the map's usable band. The top of that
+                    // band is MEASURED (the chrome is TopBar plus up to five strips, so every constant is
+                    // wrong in some state); the bottom stays a constant because the measured tab-bar top
+                    // is 73.5pt, so 96/150 already over-clears and errs safe.
                     let bottomChrome = model.showGPSBar ? 150.0 : 96.0        // GPS bar (when shown) + tab bar
-                    let y = min(max(a.tr.y + m, 132), geo.size.height - bottomChrome)   // 132: clear TopBar + strips
+                    let c = PlateGearGeometry.center(anchor: a.tr, viewport: geo.size,
+                                                     topInset: mapTopInset, bottomInset: bottomChrome)
                     PlateCornerSettingsButton(opacity: s.opacity)
                         .environmentObject(model)
-                        .position(x: x, y: y)
+                        .position(x: c.x, y: c.y)
                 }
             }
         }
@@ -124,7 +131,8 @@ struct MapHostView: View {
         .overlay(alignment: .topTrailing) {
             if live {
                 RadarStatusPill(rainViewer: model.rainViewer, widgets: widgets,
-                                show: model.showWxRadar, thermalWarm: model.thermalSerious, palette: model.palette)
+                                show: model.showWxRadar, thermalWarm: model.thermalSerious, palette: model.palette,
+                                topInset: mapTopInset)
             }
         }
         .overlay(alignment: .bottom) {
@@ -258,7 +266,10 @@ struct MapHostView: View {
                 chartStatusPill
                 trafficStatusPill
             }
-            .padding(.top, 150)   // clear the top chrome (TopBar + input/flight-plan strips)
+            // MEASURED chrome, not a guess: with the input strip expanded the chrome is ~280pt, so the
+            // old constant 150 buried these pills behind the bars in exactly the states where a "chart
+            // feed down" warning matters most.
+            .padding(.top, mapTopInset)
         }
     }
 
@@ -409,6 +420,9 @@ private struct RadarStatusPill: View {
     let show: Bool
     let thermalWarm: Bool
     let palette: Palette
+    /// Measured console-chrome height, passed down from MapHostView. Defaulted so the existing call site
+    /// keeps compiling if this pill is ever constructed without it.
+    var topInset: CGFloat = 150
 
     var body: some View {
         Group {
@@ -421,7 +435,7 @@ private struct RadarStatusPill: View {
                 .background(.ultraThinMaterial, in: Capsule())
                 .foregroundStyle(.primary)
                 .shadow(radius: 4)
-                .padding(.top, 150)                         // clear the top chrome (TopBar + strips)
+                .padding(.top, topInset)                    // MEASURED top chrome (see MapHostView)
                 .padding(.trailing, trailingInset)          // clear a docked right side-pane
                 .accessibilityIdentifier("radar-status-pill")
             }

@@ -1,5 +1,15 @@
 import SwiftUI
 
+/// Height of the console's opaque top chrome, reported up from the chrome itself so the full-bleed map
+/// underneath can keep its own controls clear of the bars. `max` because only one chrome view reports,
+/// and the tallest reading is the one that actually occludes.
+struct TopChromeHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 /// The live console — a SwiftUI port of the browser UI (`server/static/*`): brand +
 /// status pills, a source/controls bar, the live transcript, and a latency/host
 /// sidebar. Adapts to a 2-column layout on iPad (regular width) and a stacked scroll
@@ -16,41 +26,34 @@ struct ConsoleView: View {
     /// wrapped in `withAnimation` at the tap site, which is what drives these transitions.
     static let barTransition: AnyTransition = .move(edge: .top).combined(with: .opacity)
 
+    /// MEASURED height of the opaque top chrome, handed to the full-bleed map so its own controls stay
+    /// out from under the bars. Starts at 0 and is corrected on the first layout pass; `MapHostView`
+    /// floors it, so the pre-measurement frame is safe rather than pinned to the screen top.
+    @State private var topChromeHeight: CGFloat = 0
+
     var body: some View {
         let p = model.palette
         ZStack {
             // The map is the home screen — always behind everything, with the widgets floating over it.
-            MapHostView(widgets: widgets).environmentObject(model)
+            // It is FULL-BLEED: the chrome below is painted OVER it, so the map must be told how tall that
+            // chrome is or its own controls end up behind the bars (see topChromeHeight).
+            MapHostView(widgets: widgets, topChrome: topChromeHeight).environmentObject(model)
             VStack(spacing: 0) {
-                // The plate menu (dropped from the top) OVERRIDES the console top bar while it's open.
-                if let plate = model.plateOverlay, model.showPlateMenu {
-                    PlateMenuBar(state: plate).environmentObject(model)
-                        .transition(Self.barTransition)
-                        .twoFingerSwipeDown {           // two-finger drag-down also closes the menu
-                            withAnimation(.easeInOut(duration: 0.2)) { model.showPlateMenu = false }
-                        }
-                } else {
-                    VStack(spacing: 0) {
-                        TopBar()
-                        // The Input strip (source picker + setup) is the one genuinely bar-shaped control; it stays
-                        // as a toggleable strip under the top bar. Everything else is now a floating widget.
-                        if model.showInputBar { InputBar().transition(Self.barTransition) }
-                        if model.showFlightPlanBar { FlightPlanBar().transition(Self.barTransition) }
-                        if let proc = model.previewedProcedure { procedureStrip(proc) }
-                        if let sug = model.efbSuggestion { efbSuggestionBanner(sug) }
-                        if let hz = model.hazardAlert, !hz.isEmpty { hazardBanner(hz) }
-                    }
-                    // Two-finger drag UP over the top bars collapses the expandable strips (TopBar's toggles
-                    // reopen them). Single-finger interaction with the strips is unaffected.
-                    .twoFingerSwipeUp {
-                        guard model.showInputBar || model.showFlightPlanBar else { return }
-                        Haptics.impact(.light)
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            model.showInputBar = false
-                            model.showFlightPlanBar = false
+                topChrome
+                    // MEASURE the opaque chrome and hand its height to the map. The map can't derive this:
+                    // the band is TopBar plus up to five conditional strips, each of which re-wraps with
+                    // Dynamic Type and content, so every constant guess is wrong in some state — which is
+                    // precisely how the plate gear ended up unreachable behind the InputBar.
+                    .background(GeometryReader { g in
+                        Color.clear.preference(key: TopChromeHeightKey.self, value: g.size.height)
+                    })
+                    .onPreferenceChange(TopChromeHeightKey.self) { h in
+                        // Hop off the layout pass before touching @State, and ignore sub-point jitter so a
+                        // re-wrapping caption can't drive a render loop.
+                        Task { @MainActor in
+                            if abs(topChromeHeight - h) > 0.5 { topChromeHeight = h }
                         }
                     }
-                }
                 homeArea
             }
         }
@@ -144,6 +147,81 @@ struct ConsoleView: View {
     /// Below the top bar: floating widgets over the map (regular width), or a bottom transcript card with
     /// the map showing above it (compact). The area is transparent, so taps on the open map reach it.
     ///
+    /// The console's OPAQUE top chrome — everything painted over the full-bleed map. Lifted into one
+    /// view so a single `.background(GeometryReader)` measures BOTH branches (the plate menu and the
+    /// TopBar+strips stack) and the map gets one honest number instead of a constant that is only right
+    /// in the strips-collapsed state.
+    @ViewBuilder private var topChrome: some View {
+        // The plate menu (dropped from the top) OVERRIDES the console top bar while it's open.
+        if let plate = model.plateOverlay, model.showPlateMenu {
+            PlateMenuBar(state: plate).environmentObject(model)
+                .transition(Self.barTransition)
+                .twoFingerSwipeDown {           // two-finger drag-down also closes the menu
+                    withAnimation(.easeInOut(duration: 0.2)) { model.showPlateMenu = false }
+                }
+        } else {
+            VStack(spacing: 0) {
+                TopBar()
+                // The Input strip (source picker + setup) is the one genuinely bar-shaped control; it stays
+                // as a toggleable strip under the top bar. Everything else is now a floating widget.
+                if model.showInputBar { InputBar().transition(Self.barTransition) }
+                if model.showFlightPlanBar { FlightPlanBar().transition(Self.barTransition) }
+                if let plate = model.plateOverlay { plateStrip(plate) }
+                if let proc = model.previewedProcedure { procedureStrip(proc) }
+                if let sug = model.efbSuggestion { efbSuggestionBanner(sug) }
+                if let hz = model.hazardAlert, !hz.isEmpty { hazardBanner(hz) }
+            }
+            // Two-finger drag UP over the top bars collapses the expandable strips (TopBar's toggles
+            // reopen them). Single-finger interaction with the strips is unaffected.
+            .twoFingerSwipeUp {
+                guard model.showInputBar || model.showFlightPlanBar else { return }
+                Haptics.impact(.light)
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    model.showInputBar = false
+                    model.showFlightPlanBar = false
+                }
+            }
+        }
+    }
+
+    /// Shown whenever a plate is superimposed on the map. Two jobs, both of which were missing:
+    ///
+    /// 1. It is the persistent "a plate is on the map" indicator — until now NOTHING in the chrome said
+    ///    so; the words "Plate on map" lived only inside the menu you had to already have open.
+    /// 2. It is an entry point to the plate menu that CANNOT be occluded, because it lives inside the
+    ///    same opaque chrome that swallowed the corner gear. The gear rides map geometry, so it depends
+    ///    on a measurement, a coordinate space and two engines' anchor streams; this depends on nothing.
+    ///    Opacity / invert / hide must never be reachable only through geometry that can go wrong.
+    ///
+    /// Deliberately NOT gated on size class, `showInputBar`, or any pilot-toggleable flag — the moment it
+    /// can be switched off it stops being a guarantee.
+    private func plateStrip(_ plate: PlateOverlayState) -> some View {
+        let p = model.palette
+        return HStack(spacing: 8) {
+            Image(systemName: "doc.richtext").foregroundStyle(p.accent)
+            Button {
+                Haptics.impact(.light)
+                withAnimation(.easeInOut(duration: 0.2)) { model.showPlateMenu = true }
+            } label: {
+                HStack(spacing: 6) {
+                    Text("Plate on map · \(plate.airport) · \(plate.name)")
+                        .font(.caption.weight(.semibold)).foregroundStyle(p.text).lineLimit(1)
+                    Image(systemName: "slider.horizontal.3").font(.caption2).foregroundStyle(p.textDim)
+                    Spacer(minLength: 4)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plainHaptic).accessibilityIdentifier("plate-strip")
+            Button { Haptics.impact(.light); model.clearPlateOverlay() } label: {
+                Image(systemName: "xmark.circle.fill").foregroundStyle(p.textDim)
+            }
+            .buttonStyle(.plainHaptic).accessibilityIdentifier("clear-plate")
+        }
+        .padding(.horizontal, 12).padding(.vertical, 7)
+        .background(p.surface)
+        .transition(Self.barTransition)
+    }
+
     /// Standby dims + disables this whole area (the top bar above it stays usable) and floats the Resume
     /// banner over it — on BOTH layouts. The overlay lives here, not on `transcriptArea`, because the
     /// transcript card only exists on the compact path; hanging standby off it meant entering standby on

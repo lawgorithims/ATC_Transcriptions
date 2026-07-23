@@ -173,6 +173,57 @@ struct PlateCornerSettingsButton: View {
     }
 }
 
+/// Where the on-plate gear sits: on the plate's top-right corner when that corner is in the map's usable
+/// band, clamped to the nearest edge of the band otherwise.
+///
+/// This exists because the map is FULL-BLEED underneath the console: the opaque top chrome (TopBar plus
+/// up to five strips) is painted OVER the map, so an anchor inside that band puts the gear BEHIND the
+/// chrome — invisible, and its taps eaten by whatever field is on top. That is exactly how the plate
+/// menu became unreachable: a plate framed at `a.tr.y ≈ 146` put the gear's centre at (714, 164), inside
+/// the LiveATC URL field, which swallowed the tap while XCUI still reported the button hittable.
+///
+/// Pure geometry so it is unit-testable — the arithmetic used to live inside a `GeometryReader` closure
+/// in `MapHostView`, where no test could reach it and the bug sat unnoticed through seven shipped builds.
+enum PlateGearGeometry {
+    /// The button's full hit box: a 36pt disc inside a 14pt halo on every side.
+    static let hitSize: CGFloat = 64
+    /// How far the centre tucks inside the plate's corner, so the disc overlaps the plate rather than
+    /// floating off it.
+    static let cornerInset: CGFloat = 18
+    /// Breathing room between the hit box and the band's edge.
+    static let edgeMargin: CGFloat = 8
+
+    /// The gear's centre for a plate whose top-right corner is at `anchor`.
+    ///
+    /// INVARIANT: the whole `hitSize` box lies inside the band
+    /// `[topInset, viewport.height - bottomInset] x [0, viewport.width]` whenever that band is at least
+    /// `hitSize + 2*edgeMargin` in that axis; when it is not (every strip and banner up at once), the
+    /// axis collapses to the band's midpoint rather than returning an inverted range.
+    static func center(anchor: CGPoint, viewport: CGSize,
+                       topInset: CGFloat, bottomInset: CGFloat) -> CGPoint {
+        assert(viewport.width >= 0 && viewport.height >= 0, "negative viewport")
+        assert(topInset >= 0 && bottomInset >= 0, "negative chrome inset")
+        let half = hitSize / 2 + edgeMargin
+        // A non-finite anchor must never reach `.position`. MLNMapView returns CGPoint(NaN, NaN) for a
+        // coordinate failing CLLocationCoordinate2DIsValid, and Swift's min/max PROPAGATE NaN — so the
+        // clamp below would pass it straight through and strand the button at an undefined location.
+        guard anchor.x.isFinite, anchor.y.isFinite else {
+            return CGPoint(x: half, y: topInset + half)
+        }
+        return CGPoint(x: clamp(anchor.x - cornerInset, half, viewport.width - half),
+                       y: clamp(anchor.y + cornerInset, topInset + half,
+                                viewport.height - bottomInset - half))
+    }
+
+    /// Clamp that collapses to the midpoint when the band inverts, so a chrome taller than the viewport
+    /// can never produce `min(max(v, lo), hi)` with `lo > hi` (which would silently return `lo`).
+    private static func clamp(_ v: CGFloat, _ lo: CGFloat, _ hi: CGFloat) -> CGFloat {
+        assert(v.isFinite, "non-finite value reached clamp")
+        guard lo <= hi else { return (lo + hi) / 2 }
+        return min(max(v, lo), hi)
+    }
+}
+
 /// The plate menu that drops from the top of the screen (overriding the console top bar) when the
 /// plate's gear is tapped: hide the plate, view it full-page in the Plates tab, an opacity slider, an
 /// invert-colours toggle, and a close. Also closable by a two-finger swipe (wired in ConsoleView).
