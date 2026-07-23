@@ -34,8 +34,11 @@ bundle + updates this file).
 2. **Most of the fork delta is unreviewed.** 90+ files differ from upstream — including `subdivision.cpp`,
    `collision_index.cpp`, `placement.cpp`, `render_orchestrator.cpp` and the Metal shaders — all in the binary
    every pilot runs. Only the tile-cover / transform-state / raster-layer slice has been audited.
-3. **dSYM**: the archive did not include the MapLibre.framework dSYM, so ASC can't symbolicate renderer crashes.
-   The fork IS built with dSYMs (`--apple_generate_dsym`) — fold them into the archive's dSYM folder next build.
+3. ~~**dSYM**: the archive did not include the MapLibre.framework dSYM~~ — **CLOSED (build 85)**.
+   `sync_fork.sh` now stages the device dSYM at `ios/Vendor/MapLibre.framework.dSYM` and
+   `ship_testflight.sh` folds it into `<archive>/dSYMs/` after a **UUID match check** (mismatch warns and
+   ships without, rather than mis-symbolicating). `Vendor/*` is gitignored, so the dSYM is local-only and
+   must be re-staged (`sync_fork.sh`) on any machine that rebuilds the renderer.
 
 ## Rebuild
 
