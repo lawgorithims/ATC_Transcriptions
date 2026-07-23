@@ -70,8 +70,13 @@ final class PlateOverlayUITests: XCTestCase {
 
     /// Center of the overlaid plate (the plate is map-focused after --preview-plate).
     private static let plateBand = CGRect(x: 0.38, y: 0.36, width: 0.24, height: 0.20)
-    /// Off-plate map — right edge, above the bottom-right performance widget, below the top bars.
-    private static let offPlateBand = CGRect(x: 0.88, y: 0.55, width: 0.10, height: 0.12)
+    /// Off-plate map — LEFT edge, below the top bars and above the transcript widget.
+    ///
+    /// This was the right edge at y 0.55 until build 77's map zoom/center control bar landed on top of
+    /// it: the band then averaged the grey controls with pale chart and measured 0.049 against the 0.05
+    /// floor, so the check reported "tiles never rendered" while the sectional was plainly drawn. The
+    /// left edge is map-only here and measures ~0.20 — 4× the floor, so UI chrome can't tip it again.
+    private static let offPlateBand = CGRect(x: 0.005, y: 0.28, width: 0.05, height: 0.22)
 
     /// Mean color saturation (0…1) of a fractional band: mean of (max−min)/255 over RGB, strided.
     /// B&W content ≈ 0; the VFR sectional ≫ 0.
