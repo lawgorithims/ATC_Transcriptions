@@ -586,8 +586,10 @@ final class AppModel: ObservableObject {
     @Published var showAirspace = (UserDefaults.standard.object(forKey: "atc.map.airspace") as? Bool) ?? true {
         didSet { UserDefaults.standard.set(showAirspace, forKey: "atc.map.airspace") }
     }
-    /// Live GPS bar pinned above the bottom tab bar (app-wide, semitransparent). Persisted, default off.
-    @Published var showGPSBar = (UserDefaults.standard.object(forKey: "atc.gpsBar") as? Bool) ?? false {
+    /// Live GPS bar pinned above the bottom tab bar (app-wide, semitransparent). Persisted, DEFAULT ON:
+    /// it carries the ALT / AGL / GS / TRK readouts, and while it defaulted off the AGL feature was
+    /// invisible unless the pilot found the toggle buried in the Map tab's Widgets menu.
+    @Published var showGPSBar = (UserDefaults.standard.object(forKey: "atc.gpsBar") as? Bool) ?? true {
         didSet { UserDefaults.standard.set(showGPSBar, forKey: "atc.gpsBar") }
     }
     @Published var showNearby = (UserDefaults.standard.object(forKey: "atc.map.nearby") as? Bool) ?? true {
@@ -627,13 +629,24 @@ final class AppModel: ObservableObject {
         mapLibreRenderFailed = false     // republish → MapHostView re-swaps to MapLibre → fresh createMap
     }
 
-    /// DEVELOPER-ONLY (hidden behind the 7-tap `diagnosticsEnabled` gate). When on, the MapLibre style emits
-    /// the style-spec `projection:globe` key so the Map tab renders on the custom globe fork instead of flat
-    /// Mercator (the fork xcframework is linked in this build). Adaptive globeness: curves onto a sphere at low
-    /// zoom, seamlessly flattens to today's chart at chart zooms — see ios/docs/GLOBE_FORK_PLAN.md. Persisted,
-    /// default off.
-    @Published var useGlobeProjection = UserDefaults.standard.bool(forKey: "atc.map.globe") {
+    /// The Map tab renders on the custom globe fork: the MapLibre style emits the style-spec
+    /// `projection:globe` key. Adaptive globeness — curves onto a sphere at low zoom, seamlessly flattens
+    /// to the chart at chart zooms (ios/docs/GLOBE_FORK_PLAN.md).
+    ///
+    /// Now DEFAULT ON: the globe is the product, not an experiment. It was default-off behind the 7-tap
+    /// diagnostics gate while the fork was being proven; the raster satellite/chart bases, the tile-cover
+    /// fixes and the free-rotation work have since made it the better map at every zoom. Still persisted,
+    /// so a pilot who turns it off keeps it off.
+    @Published var useGlobeProjection = (UserDefaults.standard.object(forKey: "atc.map.globe") as? Bool) ?? true {
         didSet { UserDefaults.standard.set(useGlobeProjection, forKey: "atc.map.globe") }
+    }
+
+    /// Lock the chart north-up. When true the two-finger rotate gesture is DISABLED on the map and the
+    /// camera is snapped back to a 0° bearing — an accidental twist in turbulence can't leave the pilot
+    /// flying a rotated chart. Default ON (north-up is the chart convention); the map's compass button
+    /// unlocks it for those who want to spin the globe. Persisted.
+    @Published var northLocked = (UserDefaults.standard.object(forKey: "atc.map.northLock") as? Bool) ?? true {
+        didSet { UserDefaults.standard.set(northLocked, forKey: "atc.map.northLock") }
     }
 
     /// Live precipitation-radar overlay (RainViewer, internet). Persisted, default off; the RainViewerService

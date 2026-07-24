@@ -240,6 +240,7 @@ struct MapHostView: View {
             showAirspace: model.showAirspace,
             showNearby: model.showNearby,
             showAirways: model.showAirways,
+            northLocked: model.northLocked,
             plateOverlay: model.plateOverlay,
             routeIdents: Set(route.map { $0.ident }),
             initialCenter: model.stratuxGPS?.coordinate ?? deviceCoord,
@@ -336,7 +337,18 @@ struct MapHostView: View {
             Divider().frame(width: 28).overlay(model.palette.border)
             sideButton("minus", id: "map-zoom-out", label: "Zoom out") { model.sendMapCommand(.zoomOut) }
             Divider().frame(width: 28).overlay(model.palette.border)
-            sideButton("location.fill", id: "map-center-ownship", label: "Center on aircraft") { model.sendMapCommand(.centerOwnship) }
+            // North lock. LOCKED (the default) pins the chart north-up and disables the two-finger rotate
+            // gesture outright, so the orientation can't be nudged in turbulence; unlocked restores free
+            // rotation of the globe. Tinted when locked — the one control here with an on/off state.
+            sideButton(model.northLocked ? "location.north.fill" : "location.north",
+                       id: "map-north-lock",
+                       label: model.northLocked ? "Chart locked north-up — tap to allow rotation"
+                                                : "Chart rotation unlocked — tap to lock north-up",
+                       active: model.northLocked) {
+                model.northLocked.toggle()
+            }
+            Divider().frame(width: 28).overlay(model.palette.border)
+            sideButton("scope", id: "map-center-ownship", label: "Center on aircraft") { model.sendMapCommand(.centerOwnship) }
         }
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))   // semi-transparent bar
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(model.palette.border, lineWidth: 0.5))
@@ -345,11 +357,14 @@ struct MapHostView: View {
         .offset(y: 80)                                    // bias below center → lower-right, clear of the corners
     }
 
-    private func sideButton(_ icon: String, id: String, label: String, _ action: @escaping () -> Void) -> some View {
+    /// `active` tints the glyph for a control that has an ON state (the north lock); the plain
+    /// zoom/center buttons are momentary and leave it false.
+    private func sideButton(_ icon: String, id: String, label: String, active: Bool = false,
+                            _ action: @escaping () -> Void) -> some View {
         Button { Haptics.impact(.light); action() } label: {
             Image(systemName: icon)
                 .font(.system(size: 19, weight: .bold))
-                .foregroundStyle(model.palette.text)     // OPAQUE glyph over the translucent bar
+                .foregroundStyle(active ? model.palette.accent : model.palette.text)  // OPAQUE over the bar
                 .frame(width: 46, height: 46)
                 .contentShape(Rectangle())
         }

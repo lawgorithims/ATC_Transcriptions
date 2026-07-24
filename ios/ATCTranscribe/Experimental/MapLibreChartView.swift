@@ -34,6 +34,8 @@ struct MapLibreChartView: UIViewRepresentable {
     var showAirspace: Bool = true                     // MapLayersMenu overlay toggles (parity with ChartMapView)
     var showNearby: Bool = true
     var showAirways: Bool = true
+    /// Lock the chart north-up (disable rotate + snap bearing to 0). See AppModel.northLocked.
+    var northLocked: Bool = true
     var plateOverlay: PlateOverlayState? = nil
     var routeIdents: Set<String> = []
     var initialCenter: Coord? = nil                   // frame here on first load (pilot's GPS) if no route
@@ -72,6 +74,7 @@ struct MapLibreChartView: UIViewRepresentable {
         c.onVisibleRegion = onVisibleRegion
         c.onSearchPoint = onSearchPoint
         c.inMapCommand = mapCommand
+        c.northLocked = northLocked
         c.cacheInputs(layer: layer, routeCoords: routeCoords, breadcrumbCoords: breadcrumbCoords,
                       radarTemplate: radarTemplate, ownship: ownship, ownshipCourse: ownshipCourse,
                       ownshipAccuracyM: ownshipAccuracyM, ownshipIntegrity: ownshipIntegrity,
@@ -105,6 +108,7 @@ struct MapLibreChartView: UIViewRepresentable {
         private var plateInverted: Bool?
         private var plateImageKey: String?         // "pdf|inverted" — refresh the raster on a plate SWAP, not just invert
         private var plateCornersCoord: (tl: CLLocationCoordinate2D, tr: CLLocationCoordinate2D)?  // chrome anchors
+        var northLocked: Bool = true          // mirrors AppModel.northLocked; applied in applyLatest
         private var serverPort: UInt16 = 0         // bound loopback port, delivered async by the tile server
         private var servedReadersSig: String?      // (layer + sorted mounted packIDs) last handed to the tile server
         // Bundled always-present RASTER bases for the globe (loaded once): a global Blue Marble satellite backstop
@@ -222,6 +226,7 @@ struct MapLibreChartView: UIViewRepresentable {
             updateTrack(inBreadcrumb, on: map)
             updateRadar(inRadarTemplate, on: map)
             emitSearchPoint(map)               // keep the pulsing search marker glued to its spot
+            applyNorthLock(map)                // chart north-up lock (rotate gesture + bearing)
             applyMapCommand(map)               // one-shot side-bar zoom / center-on-ownship
             applyOverlayToggles(inShowAirspace, inShowNearby, inShowAirways, on: map)
             updateOwnship(inOwnship, course: inOwnCourse, accuracyM: inOwnAccuracy,
@@ -969,8 +974,16 @@ struct MapLibreChartView: UIViewRepresentable {
         /// The vector land base is hidden exactly when an opaque raster chart base is drawing under the globe
         /// (it would be invisible anyway and z-fights the raster). For the non-raster rows — "Standard map" and
         /// "Satellite" — it is the only land there is, so it must come back.
+        /// Hide the vector land fallback whenever the opaque satellite raster is mounted on the globe.
+        ///
+        /// This used to also require `layer.isRaster`, which is FALSE for `.satellite` — so picking the
+        /// Satellite layer left the opaque Natural Earth `land-fill` drawn ABOVE the Blue Marble raster
+        /// (setupLandBase inserts land above "bg" at style load; setupSatelliteLayer inserts satellite
+        /// above "bg" later, i.e. BELOW land). The result: Satellite and the old Standard map rendered
+        /// byte-identically and neither ever showed Blue Marble. The satellite raster is opaque and
+        /// world-covering, so the land fallback is redundant for EVERY layer once it exists.
         private func applyLandBaseVisibility(_ style: MLNStyle) {
-            let hide = globeProjection && bundledSatelliteBase != nil && layer.isRaster
+            let hide = globeProjection && bundledSatelliteBase != nil
             for id in ["land-fill", "coastline"] {
                 style.layer(withIdentifier: id)?.isVisible = !hide
             }
@@ -1342,6 +1355,16 @@ struct MapLibreChartView: UIViewRepresentable {
         }
 
         /// Recenter on a search-result pick (keeps the current zoom). Only fires when `focus` changes.
+        /// Enforce the north-up lock: disable the rotate gesture and snap any residual bearing back to 0.
+        /// Idempotent and diffed on the map's own state, so it costs nothing on the normal per-frame apply.
+        private func applyNorthLock(_ map: MLNMapView) {
+            assert(Thread.isMainThread, "applyNorthLock off the main thread")
+            if map.isRotateEnabled == northLocked { map.isRotateEnabled = !northLocked }
+            // Snap back only when locked AND actually off north (a 0.5° deadband keeps an in-flight
+            // animation from fighting this every frame).
+            if northLocked, abs(map.direction) > 0.5 { map.setDirection(0, animated: true) }
+        }
+
         func applyFocus(_ focus: Coord?, on map: MLNMapView) {
             guard let focus, focus != lastFocus else { return }
             lastFocus = focus
