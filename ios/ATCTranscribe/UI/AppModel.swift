@@ -2030,6 +2030,94 @@ final class AppModel: ObservableObject {
         previewedProcedure = nil          // it's part of the route now, not just a preview
     }
 
+    // MARK: Active approach (activate → fly it → missed)
+
+    /// The approach the pilot has ACTIVATED, and how they are joining it. Distinct from a merely
+    /// *loaded* procedure: this is the one being flown, it is what arms the missed-approach control,
+    /// and it is what the map draws as the active approach path. Transient by design — an approach is
+    /// a phase of THIS flight, so it is not persisted across launches.
+    @Published var activeApproach: ActiveApproach?
+
+    /// Activate an approach: amend the route to join it at `entry`, load its legs, and arm the missed.
+    ///
+    /// The route amendment is deliberately NOT `FlightPlan.directTo`, which clears the route and makes
+    /// the target the DESTINATION — wrong here, because the IAF is a point on the way to the airport,
+    /// not the airport. Instead the IAF is appended as the last enroute waypoint so the plan still ends
+    /// at the field, and the coded approach legs are loaded on top.
+    ///
+    /// For `.vectors` there is no IAF to fly to: ATC will vector to final, so the route is left alone
+    /// and only the approach itself is loaded.
+    func activateApproach(_ proc: CIFPProcedure, entry: ApproachActivation.Entry) {
+        guard !proc.ident.isEmpty, !proc.airport.isEmpty else { return }   // rule 7
+        assert(proc.kind == "IAP", "activateApproach given a non-approach")
+
+        // Legs: the chosen transition first (how we get in), then the approach proper (final + missed).
+        var fixes: [String] = []
+        var seen = Set<String>()
+        var missedFixes: [String] = []
+        if case .transition(let t) = entry {
+            for leg in CIFP.legs(airport: proc.airport, ident: proc.ident, transition: t).prefix(256) {
+                let f = leg.fix.uppercased()
+                if !f.isEmpty, !f.hasPrefix("RW"), seen.insert(f).inserted { fixes.append(f) }
+            }
+        }
+        if let proper = CIFP.approachProper(airport: proc.airport, ident: proc.ident) {
+            let legs = CIFP.legs(procedureID: proper.id).prefix(256)
+            let split = ApproachActivation.splitMissed(legs.map { (seq: $0.seq, fix: $0.fix, legType: $0.legType) })
+            let missedSeqs = Set(split.missed)
+            for leg in legs {
+                let f = leg.fix.uppercased()
+                guard !f.isEmpty, !f.hasPrefix("RW") else { continue }
+                if missedSeqs.contains(leg.seq) {
+                    if !missedFixes.contains(f) { missedFixes.append(f) }
+                } else if seen.insert(f).inserted {
+                    fixes.append(f)
+                }
+            }
+        }
+
+        let loaded = LoadedProcedure(airport: proc.airport, kind: proc.kind, ident: proc.ident,
+                                     name: proc.name, runway: proc.runway,
+                                     transition: entry.iafFix ?? "", fixes: fixes)
+        editPlan { plan in
+            // Join at the IAF: append it as the last enroute point so the plan still ends at the field.
+            if let iaf = entry.iafFix, !iaf.isEmpty { plan.addWaypoint(iaf) }
+            plan.loadProcedure(loaded)
+        }
+        activeApproach = ActiveApproach(airport: proc.airport, ident: proc.ident, name: proc.name,
+                                        runway: proc.runway, entry: entry, missedFixes: missedFixes)
+        previewedProcedure = nil
+        Haptics.impact(.medium)
+        NSLog("CommSight: approach ACTIVATED %@ %@ entry=%@ legs=%d missed=%d",
+              proc.airport, proc.ident, entry.label, fixes.count, missedFixes.count)
+    }
+
+    /// Cancel the active approach (does not unwind the route — the pilot may still be flying it).
+    func clearActiveApproach() { activeApproach = nil }
+
+    /// Fly the missed approach. Rather than mutating the plan behind the pilot's back, this raises the
+    /// SAME one-tap confirmation an ATC instruction does (`efbSuggestion`), so a go-around is reviewed
+    /// and accepted through the wiring the pilot already knows — and is logged by the same audit trail.
+    /// Accepting routes the aircraft direct to the first missed-approach fix (typically the climb fix,
+    /// ending at the published hold).
+    func armMissedApproach() {
+        guard let a = activeApproach else { return }                      // rule 7
+        guard let first = a.missedFixes.first, !first.isEmpty else {
+            // No coded missed segment (0.3% of approaches): say so rather than invent a path — the
+            // pilot flies the plate's printed missed-approach text.
+            detail = "Missed approach not coded for \(a.ident) — fly the plate's printed procedure."
+            return
+        }
+        let raw = "MISSED APPROACH — \(a.name): climb via the published missed, direct \(first)"
+        let ins = ATCInstruction(kind: .directTo, target: first, qualifier: "", value: nil, unit: "",
+                                 modifier: "", callsign: flightPlan?.callsign ?? "",
+                                 rawTranscript: raw, confidence: .high, addressedToOwnship: true)
+        efbSuggestion = EFBSuggestion(id: "missed-\(a.airport)-\(a.ident)", instruction: ins,
+                                      title: "Fly the missed approach — direct \(first)", source: raw)
+        Haptics.impact(.medium)
+        NSLog("CommSight: missed approach ARMED %@ %@ direct=%@", a.airport, a.ident, first)
+    }
+
     /// Remove a loaded procedure by kind ("SID"/"STAR"/"IAP", or "" for all).
     func clearLoadedProcedure(kind: String) { editPlan { $0.clearProcedure(kind: kind) } }
 

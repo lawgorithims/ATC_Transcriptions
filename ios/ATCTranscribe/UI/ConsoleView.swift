@@ -166,6 +166,7 @@ struct ConsoleView: View {
                 // as a toggleable strip under the top bar. Everything else is now a floating widget.
                 if model.showInputBar { InputBar().transition(Self.barTransition) }
                 if model.showFlightPlanBar { FlightPlanBar().transition(Self.barTransition) }
+                if let appr = model.activeApproach { activeApproachStrip(appr) }
                 if let plate = model.plateOverlay { plateStrip(plate) }
                 if let proc = model.previewedProcedure { procedureStrip(proc) }
                 if let sug = model.efbSuggestion { efbSuggestionBanner(sug) }
@@ -221,6 +222,47 @@ struct ConsoleView: View {
                 Image(systemName: "xmark.circle.fill").foregroundStyle(p.textDim)
             }
             .buttonStyle(.plainHaptic).accessibilityIdentifier("clear-plate")
+        }
+        .padding(.horizontal, 12).padding(.vertical, 7)
+        .background(p.surface)
+        .transition(Self.barTransition)
+    }
+
+    /// Shown while an approach is ACTIVE: which approach is being flown, and the MISSED APPROACH
+    /// control. Lives in the opaque top chrome (like the plate strip) so it can never be occluded by
+    /// map geometry — a go-around is the last moment to be hunting for a button.
+    ///
+    /// "Missed" does NOT mutate the plan directly: it raises the same one-tap confirmation an ATC
+    /// instruction does, so the go-around is reviewed and accepted through wiring the pilot already
+    /// knows, and lands in the same reversible audit trail.
+    private func activeApproachStrip(_ appr: ActiveApproach) -> some View {
+        let p = model.palette
+        return HStack(spacing: 8) {
+            Image(systemName: "paperplane.circle.fill").foregroundStyle(p.good)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Approach · \(appr.shortLabel)")
+                    .font(.caption.weight(.semibold)).foregroundStyle(p.text).lineLimit(1)
+                Text(appr.entry == .vectors ? "Vectors to final" : "Via \(appr.entry.label)")
+                    .font(.system(size: 10)).foregroundStyle(p.textDim)
+            }
+            Spacer(minLength: 4)
+            Button {
+                Haptics.impact(.medium)
+                model.armMissedApproach()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "arrow.uturn.up").font(.caption2.weight(.bold))
+                    Text("MISSED").font(.caption2.weight(.bold))
+                }
+                .padding(.horizontal, 10).padding(.vertical, 5)
+                .background(Capsule().fill(p.warn.opacity(0.22)))
+                .foregroundStyle(p.warn)
+            }
+            .buttonStyle(.plainHaptic).accessibilityIdentifier("missed-approach")
+            Button { Haptics.impact(.light); model.clearActiveApproach() } label: {
+                Image(systemName: "xmark.circle.fill").foregroundStyle(p.textDim)
+            }
+            .buttonStyle(.plainHaptic).accessibilityIdentifier("clear-active-approach")
         }
         .padding(.horizontal, 12).padding(.vertical, 7)
         .background(p.surface)

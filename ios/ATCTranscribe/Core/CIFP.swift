@@ -154,6 +154,42 @@ enum CIFP {
         return []
     }
 
+    /// The published approaches at an airport, one entry per approach IDENT (its transitions collapsed).
+    /// This is the list an "activate approach" picker shows; use `transitions(airport:ident:)` for that
+    /// approach's entry options. Bounded (rule 2).
+    static func approaches(airport: String) -> [CIFPProcedure] {
+        var seen = Set<String>()
+        var out: [CIFPProcedure] = []
+        for p in procedures(airport: airport).prefix(4096) where p.kind == "IAP" {
+            guard seen.insert(p.ident).inserted else { continue }
+            out.append(p)
+        }
+        assert(out.count <= 4096, "approaches: unexpectedly many")
+        return out
+    }
+
+    /// The transition idents (the published IAF entries) for ONE approach. The approach-proper record —
+    /// the one with an empty transition, which carries final + missed — is deliberately excluded.
+    static func transitions(airport: String, ident: String) -> [String] {
+        guard !ident.isEmpty else { return [] }
+        var out: [String] = []
+        for p in procedures(airport: airport).prefix(4096)
+        where p.kind == "IAP" && p.ident == ident && !p.transition.isEmpty {
+            out.append(p.transition)
+        }
+        assert(out.count <= 4096, "transitions: unexpectedly many")
+        return out
+    }
+
+    /// The approach-proper record (empty transition) — final approach with the missed appended.
+    static func approachProper(airport: String, ident: String) -> CIFPProcedure? {
+        for p in procedures(airport: airport).prefix(4096)
+        where p.kind == "IAP" && p.ident == ident && p.transition.isEmpty {
+            return p
+        }
+        return nil
+    }
+
     /// All runway ends for an airport (one row per end; pair them via `RunwayGeometry.pairs`).
     static func runways(airport: String) -> [CIFPRunway] {
         query("SELECT designator,lat,lon,bearing_mag,length_ft FROM runway WHERE airport=?1 ORDER BY designator",
