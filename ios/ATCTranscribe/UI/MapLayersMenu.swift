@@ -57,9 +57,16 @@ struct MapLayersPanel: View {
                     Divider().padding(.vertical, 2)
 
                     header("Map controls", p)
-                    layerToggle($showZoomControls, "Zoom & center buttons", "plus.magnifyingglass", p, id: "layer-zoom-controls")
-                    layerToggle($model.terrain3DEnabled, "3D terrain (Map/Satellite)", "mountain.2", p, id: "layer-terrain")
-                    layerToggle($model.mapBackgroundEnabled, "Live map background", "map", p, id: "layer-mapbg")
+                    layerToggle($showZoomControls, "Map buttons (zoom, north, center)", "plus.magnifyingglass", p, id: "layer-zoom-controls")
+                    // REMOVED with the globe becoming the only engine:
+                    //  • "3D terrain" — it only ever drove MKMapConfiguration.elevationStyle on the FLAT
+                    //    Apple base; the globe engine has no DEM path, so the switch did nothing on the
+                    //    sphere. The elevation DATA it implied is very much alive (Core/TerrainElevation
+                    //    + the bundled grid) and now feeds the AGL readout — it is also what a future
+                    //    synthetic-vision view would build on, so only the dead toggle went away.
+                    //  • "Live map background" — it chose whether the Apple base drew UNDER the FAA
+                    //    raster. On the globe the opaque satellite base is always the bottom layer, so
+                    //    the switch had no observable effect at all.
                 }
                 .padding(.trailing, 2)
             }
@@ -104,7 +111,6 @@ struct MapLayersPanel: View {
         case .sectional: return "map"
         case .ifrLow:    return "arrow.down.right.circle"
         case .ifrHigh:   return "arrow.up.right.circle"
-        case .standard:  return "globe"
         case .satellite: return "globe.americas.fill"
         }
     }

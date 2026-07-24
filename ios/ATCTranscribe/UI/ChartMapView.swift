@@ -283,23 +283,26 @@ struct SavedMapCamera: Equatable {
 enum MapCommandKind { case zoomIn, zoomOut, centerOwnship }
 struct MapCommandRequest: Equatable { let token: Int; let kind: MapCommandKind }
 
+/// The base map under the overlays. `.standard` (the plain vector road-map look) was REMOVED once the
+/// globe became the only engine: on the sphere it drew the Natural Earth land polygon through the fork's
+/// fill subdivision at whole-globe zoom, which is the fragmentation / z-fight path the globe base was
+/// made raster to avoid — it looked broken, and `.satellite` already covers "no aeronautical chart".
+/// A pilot whose saved layer was `standard` decodes to `.sectional` (the rawValue lookup nil-coalesces),
+/// so the upgrade can't strand them on a blank map.
 enum ChartLayer: String, CaseIterable, Identifiable {
-    case sectional, ifrLow, ifrHigh, standard, satellite
+    case sectional, ifrLow, ifrHigh, satellite
     var id: String { rawValue }
     var short: String {
         switch self {
         case .sectional: return "VFR"; case .ifrLow: return "IFR-L"; case .ifrHigh: return "IFR-H"
-        case .standard: return "Map"; case .satellite: return "Sat"
+        case .satellite: return "Sat"
         }
     }
     var title: String {
         switch self {
         case .sectional: return "VFR sectional"; case .ifrLow: return "IFR low"; case .ifrHigh: return "IFR high"
-        case .standard: return "Standard map"; case .satellite: return "Satellite"
+        case .satellite: return "Satellite"
         }
-    }
-    var mapType: MKMapType {
-        switch self { case .satellite: return .hybrid; case .standard: return .standard; default: return .mutedStandard }
     }
     var isRaster: Bool { self == .sectional || self == .ifrLow || self == .ifrHigh }
     func entries(_ cat: ChartCatalog?) -> [ChartCatalog.Entry] {
@@ -316,7 +319,9 @@ enum ChartLayer: String, CaseIterable, Identifiable {
         guard let i = a.firstIndex(of: "--chart-layer"), i + 1 < a.count else { return nil }
         switch a[i + 1] {
         case "ifr": return .ifrLow; case "ifrh": return .ifrHigh; case "sat": return .satellite
-        case "std": return .standard; case "vfr": return .sectional; default: return nil
+        // "std" kept as an alias so older screenshot scripts still run; the Standard base was
+        // removed with the globe, so it resolves to the nearest survivor.
+        case "std": return .satellite; case "vfr": return .sectional; default: return nil
         }
     }
     /// Screenshot/demo: `--chart-center lat,lon` opens the chart framed there (tests free-pan loading
@@ -559,10 +564,6 @@ struct ChartMapView: UIViewRepresentable {
         switch layer {
         case .satellite:
             mv.preferredConfiguration = MKHybridMapConfiguration(elevationStyle: elevation)
-        case .standard:
-            let c = MKStandardMapConfiguration(elevationStyle: elevation, emphasisStyle: .default)
-            c.pointOfInterestFilter = .excludingAll
-            mv.preferredConfiguration = c
         case .sectional, .ifrLow, .ifrHigh:
             let c = MKStandardMapConfiguration(elevationStyle: .flat, emphasisStyle: .muted)
             c.pointOfInterestFilter = .excludingAll
