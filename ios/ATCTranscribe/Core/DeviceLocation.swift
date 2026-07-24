@@ -138,7 +138,14 @@ final class DeviceLocation: NSObject, ObservableObject, CLLocationManagerDelegat
     func locationManagerDidChangeAuthorization(_ m: CLLocationManager) {
         guard running else { return }
         switch m.authorizationStatus {
-        case .authorizedWhenInUse, .authorizedAlways: m.startUpdatingLocation()
+        // MUST go through startFeed(), not startUpdatingLocation() alone: this is the deferred-grant
+        // path taken on a FRESH INSTALL (start() hit `.notDetermined` and only asked for permission).
+        // startFeed() is the sole place the staleness timer is scheduled, and that timer is the only
+        // thing that runs the jam / lost-lock detector. Calling startUpdatingLocation() here would begin
+        // the fix stream with no staleness timer, so a GPS that went quiet in flight during the first
+        // session would never escalate to unreliable — it would keep drawing the last position as
+        // trusted ownship, the exact unsafe-direction failure the timer exists to prevent.
+        case .authorizedWhenInUse, .authorizedAlways: startFeed()
         default:                                       running = false
         }
     }

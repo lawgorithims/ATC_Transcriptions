@@ -93,9 +93,26 @@ struct StratuxSituation: Decodable {
             guard let lat, let lon, !(lat == 0 && lon == 0) else { return nil }
             return Coord(lat: lat, lon: lon)
         }()
+        // Sanitize the numeric fields HERE, at the one boundary between the untrusted `/getSituation`
+        // feed and everything downstream. `/getSituation` is plaintext HTTP from any host on the local
+        // Wi-Fi (a faulty or hostile unit included), and a value like GPSAltitudeMSL = 1e19 decodes as a
+        // finite Double, survives every merge unchecked, and then traps the app-wide GPS bar at
+        // `Int(1e19.rounded())` — a crash in flight. Bounding to sane aviation ranges (and rejecting
+        // non-finite values) protects every consumer at once: the bar, the GPS card, and the AGL row.
+        // `satellites` is already `Int` (a JSON number outside Int range fails to decode), so only the
+        // Double fields can smuggle in a value that traps a later `Int(_:)`.
         return StratuxGPS(coordinate: coord, fixQuality: fixQuality ?? 0,
-                          satellites: satellites ?? 0, altMSLft: altMSLft, groundSpeedKt: groundSpeedKt,
-                          trackDeg: trueCourse)
+                          satellites: max(0, min(satellites ?? 0, 64)),
+                          altMSLft: Self.sane(altMSLft, -2_000, 100_000),
+                          groundSpeedKt: Self.sane(groundSpeedKt, 0, 5_000),
+                          trackDeg: Self.sane(trueCourse, 0, 360))
+    }
+
+    /// A finite value inside [lo, hi], else nil. The point is not the exact bounds — it is that a single
+    /// out-of-range or non-finite number from the wire can never reach a trapping `Int(_:)` conversion.
+    private static func sane(_ v: Double?, _ lo: Double, _ hi: Double) -> Double? {
+        guard let v, v.isFinite, v >= lo, v <= hi else { return nil }
+        return v
     }
 }
 

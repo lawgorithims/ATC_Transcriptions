@@ -33,6 +33,9 @@ struct TerrainGridHeader: Decodable, Equatable {
     /// Hard ceiling on either grid dimension — see `isSelfConsistent`. Generous enough for a global
     /// arc-second grid, small enough that rows * cols * 2 cannot overflow.
     static let maxDimension = 2_000_000
+    /// Ceiling on `cellsPerDegree` before it is multiplied — far above arc-second (3600). Bounds the
+    /// header's one remaining Double-to-Int multiplication against overflow.
+    static let maxCellsPerDegree = 100_000.0
 
     /// Exact size the `.bin` must be. Only meaningful once `isSelfConsistent` has bounded the shape —
     /// it is that guard, not the platform's 64-bit Int, that makes this multiplication safe.
@@ -51,11 +54,17 @@ struct TerrainGridHeader: Decodable, Equatable {
         // promises never to do. The cap is far above any real grid (a global 1-arc-minute grid is
         // 21600 x 10800).
         guard rows <= Self.maxDimension, cols <= Self.maxDimension else { return false }
+        // `cellsPerDegree` must be bounded too, and BEFORE it is multiplied. It is a Double from the
+        // header, so a corrupt value like 1e300 makes `(latMax-latMin)*cellsPerDegree` overflow Int and
+        // `Int(_:)` traps — the same crash-on-bad-data the rows/cols bound closes, one field over. The
+        // ceiling is far above arc-second resolution (3600).
+        guard cellsPerDegree.isFinite, cellsPerDegree <= Self.maxCellsPerDegree else { return false }
         guard latMax > latMin, lonMax > lonMin else { return false }
         guard (-90.0...90.0).contains(latMin), (-90.0...90.0).contains(latMax) else { return false }
         guard (-180.0...180.0).contains(lonMin), (-180.0...180.0).contains(lonMax) else { return false }
         // The shape must be derivable from the bbox — this is the check that catches a hand-edited
-        // bound. `.rounded()` because the builder computes the same product in floating point.
+        // bound. `.rounded()` because the builder computes the same product in floating point. Safe from
+        // overflow now that both the span (bbox is bounded to +/-180) and cellsPerDegree are bounded.
         guard Int(((latMax - latMin) * cellsPerDegree).rounded()) == rows else { return false }
         guard Int(((lonMax - lonMin) * cellsPerDegree).rounded()) == cols else { return false }
         assert(rows * cols > 0, "a consistent header describes at least one cell")

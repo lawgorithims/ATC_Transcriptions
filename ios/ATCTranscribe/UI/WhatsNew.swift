@@ -32,6 +32,22 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 87, version: "1.0", headline: "GPS integrity, height above ground, and a satellite view",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "location.slash",
+                    title: "GPS accuracy & interference warnings",
+                    detail: "CommSight now watches your GPS for trouble: it warns when accuracy degrades below what an approach needs, hides your aircraft rather than showing a position it doesn\u{2019}t trust, and \u{2014} using where the satellites actually are right now \u{2014} tells the difference between signal jamming and possible spoofing. Your position on the map is ringed by its accuracy and colored by how trustworthy it is. Awareness only; always cross-check your navaids."),
+                WhatsNewHighlight(
+                    icon: "mountain.2",
+                    title: "Height above ground (AGL)",
+                    detail: "The GPS bar can now show your height above the terrain, from a built-in elevation map of the Lower 48 \u{2014} handy when the device has no barometer. It reads \u{201C}SFC\u{201D} at the surface and stays blank rather than guess when the GPS altitude isn\u{2019}t good enough. It is a situational aid built from a public terrain model, not a terrain-avoidance system."),
+                WhatsNewHighlight(
+                    icon: "antenna.radiowaves.left.and.right",
+                    title: "Satellites page",
+                    detail: "A new Settings \u{203A} Satellites page shows where the GPS constellation is over you right now \u{2014} a sky plot, how many satellites are usable, and the resulting geometry (HDOP/VDOP/PDOP) \u{2014} then compares that prediction against the accuracy your device is actually reporting. Because Apple doesn\u{2019}t expose live satellite data to apps, these positions are computed from published orbits, and the page says so."),
+            ]),
+        ReleaseNote(
             build: 77, version: "1.0", headline: "Zoom controls + tidier layers menu",
             highlights: [
                 WhatsNewHighlight(

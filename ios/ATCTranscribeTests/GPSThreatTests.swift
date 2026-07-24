@@ -499,3 +499,94 @@ final class GPSThreatFalsePositiveTests: XCTestCase {
         XCTAssertEqual(a.threat, .spoofing, "a confident wrong position is the spoofing signature")
     }
 }
+
+/// Regression tests for red-hat audit findings: the Stratux Int() crash, the terrain header trap, and
+/// the almanac-staleness gate that the classifier documented but never actually enforced.
+final class GPSAuditRegressionTests: XCTestCase {
+
+    private let now = Date(timeIntervalSince1970: 1_700_000_000)
+
+    // MARK: - Stratux value sanitizing (a crash fix)
+
+    /// A finite-but-absurd altitude from /getSituation (1e19 decodes cleanly, then traps Int(1e19)) must
+    /// be dropped at the model boundary, not carried through to crash the app-wide GPS bar.
+    func testStratuxAbsurdAltitudeIsDroppedNotCrashed() {
+        let s = StratuxSituation(lat: 40, lon: -74, fixQuality: 1, satellites: 9,
+                                 altMSLft: 1e19, groundSpeedKt: 1e19, trueCourse: 1e30).gps
+        XCTAssertNil(s.altMSLft, "an out-of-range altitude must sanitize to nil, never reach Int()")
+        XCTAssertNil(s.groundSpeedKt)
+        XCTAssertNil(s.trackDeg)
+        XCTAssertTrue(s.hasFix, "a bad altitude must not invalidate a real position fix")
+    }
+
+    func testStratuxSaneValuesSurvive() {
+        let s = StratuxSituation(lat: 40, lon: -74, fixQuality: 2, satellites: 11,
+                                 altMSLft: 5500, groundSpeedKt: 120, trueCourse: 270).gps
+        XCTAssertEqual(s.altMSLft, 5500)
+        XCTAssertEqual(s.groundSpeedKt, 120)
+        XCTAssertEqual(s.trackDeg, 270)
+    }
+
+    /// The display helper itself must never trap, whatever reaches it.
+    func testGPSBarIntTextNeverTraps() {
+        XCTAssertEqual(GPSBottomBar.intText(1e19, "ft"), "—")
+        XCTAssertEqual(GPSBottomBar.intText(.nan, "ft"), "—")
+        XCTAssertEqual(GPSBottomBar.intText(.infinity, "kt"), "—")
+        XCTAssertEqual(GPSBottomBar.intText(nil, "ft"), "—")
+        XCTAssertEqual(GPSBottomBar.intText(5500.4, "ft"), "5500 ft")
+    }
+
+    // MARK: - Terrain header overflow (a crash fix)
+
+    /// A corrupt header with a huge cellsPerDegree must be refused, not trap in Int((span)*cpd).
+    func testTerrainHeaderHugeCellsPerDegreeIsRejectedNotCrashed() {
+        let h = TerrainGridHeader(version: 1, latMax: 50, latMin: 24, lonMin: -125, lonMax: -66,
+                                  rows: 1560, cols: 3540, cellsPerDegree: 1e300, noData: -32768)
+        XCTAssertFalse(h.isSelfConsistent, "an overflowing cellsPerDegree must be refused before Int()")
+    }
+
+    func testTerrainRealHeaderStillValid() {
+        let h = TerrainGridHeader(version: 1, latMax: 50, latMin: 24, lonMin: -125, lonMax: -66,
+                                  rows: 1560, cols: 3540, cellsPerDegree: 60, noData: -32768)
+        XCTAssertTrue(h.isSelfConsistent)
+    }
+}
+
+/// The almanac-staleness gate lives in AppModel (it needs the model's almanac + fix), but its LOGIC —
+/// "a stale almanac must hand the classifier nil geometry so it cannot claim jamming" — is verifiable
+/// directly against the classifier, which is what actually enforces the safeguard.
+final class GPSThreatStaleGeometryTests: XCTestCase {
+    private let now = Date(timeIntervalSince1970: 1_700_000_000)
+
+    private func blownAccuracyGoodSky(dop: PredictedDOP?, sats: Int?) -> GPSThreatAssessment {
+        let integ = GPSIntegrityAssessment(state: .unreliable, reasons: [.accuracyUnusable],
+                                           at: now, horizontalAccuracyM: 200)
+        return GPSThreatClassifier.classify(integrity: integ, predictedDOP: dop,
+                                            satellitesAboveMask: sats, now: now)
+    }
+
+    /// With FRESH geometry, blown accuracy under a good sky is jamming (the safeguard's "on" state).
+    func testFreshGeometryStillEnablesJamming() {
+        let dop = PredictedDOP(gdop: 2.1, pdop: 1.8, hdop: 1.0, vdop: 1.5, tdop: 1.0)
+        XCTAssertEqual(blownAccuracyGoodSky(dop: dop, sats: 11).threat, .jamming)
+    }
+
+    /// When AppModel gates a stale almanac to nil geometry, the SAME blown accuracy must fall back to
+    /// degraded — geometry the app no longer trusts cannot be used to accuse anything of jamming.
+    func testStaleGeometryGatedToNilCannotClaimJamming() {
+        let a = blownAccuracyGoodSky(dop: nil, sats: nil)
+        XCTAssertEqual(a.threat, .degraded, "nil geometry (stale almanac) must not manufacture jamming")
+        XCTAssertNotEqual(a.threat, .jamming)
+    }
+
+    /// The age arithmetic the gate depends on: a real almanac read months after its epoch is flagged
+    /// past the 90-day line.
+    func testAlmanacAgeCrossesTheGateThreshold() {
+        let entries = GPSAlmanac.parseYUMA(GPSAlmanacPropagationPeriodTests.fixture)
+        guard let e = entries.first else { return XCTFail("fixture must parse") }
+        // The fixture is week 381; ~100 days after its reference epoch it must read as stale.
+        let ref = GPSAlmanac.referenceDate(e, resolvedAt: now)
+        let old = ref.addingTimeInterval(100 * 86_400)
+        XCTAssertGreaterThan(abs(GPSAlmanac.ageDays(e, at: old)), AppModel.almanacThreatMaxAgeDays)
+    }
+}
