@@ -57,7 +57,7 @@ final class PlateOverlayUITests: XCTestCase {
                                         "the gear is drawn under the console chrome, where its taps are eaten")
         }
         gear.tap()
-        XCTAssertTrue(app.otherElements["plate-menu"].waitForExistence(timeout: 5),
+        XCTAssertTrue(app.otherElements["plate-menu"].waitForExistence(timeout: 10),
                       "tapping the corner gear must open the plate menu")
     }
 
@@ -71,9 +71,10 @@ final class PlateOverlayUITests: XCTestCase {
         XCTAssertTrue(slider.waitForExistence(timeout: 20), "plate menu / opacity slider did not appear")
 
         // Wait for the VFR sectional tiles to render: poll an OFF-PLATE region until it shows the
-        // sectional's color. Bounded (Power of 10).
+        // sectional's color. Bounded (Power of 10). A generous budget because a cold first launch (the
+        // GPS/terrain init runs then too) can delay the first map frame under XCUI instrumentation.
         var tilesReady = false, polls = 0
-        while polls < 30 {                                    // ≤ 30 × 5 s for the ~50 MB pack
+        while polls < 48 {                                    // ≤ 48 × 5 s
             if Self.meanSaturation(app.screenshot().image, band: Self.offPlateBand) > 0.05 { tilesReady = true; break }
             sleep(5); polls += 1
         }

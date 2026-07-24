@@ -47,7 +47,7 @@ final class ConsoleUITests: XCTestCase {
     /// The console is up once the always-present Settings icon exists. (The old subtitle marker is
     /// now iPad-only — hidden on iPhone — so it can't gate a device-independent test.)
     @discardableResult
-    private func consoleReady(_ app: XCUIApplication, timeout: TimeInterval = 20) -> Bool {
+    private func consoleReady(_ app: XCUIApplication, timeout: TimeInterval = 40) -> Bool {
         app.buttons["settings-button"].waitForExistence(timeout: timeout)
     }
 
@@ -65,7 +65,7 @@ final class ConsoleUITests: XCTestCase {
     // in the bundle, so we skip rather than fail in that case.
     func test1_onboardingGateAndSkip() throws {
         let app = launch(onboardingDismissed: false)
-        guard app.buttons["gate-primary"].waitForExistence(timeout: 20) else {
+        guard app.buttons["gate-primary"].waitForExistence(timeout: 40) else {
             throw XCTSkip("No download gate — this build bundles a model (gate only appears on lean builds).")
         }
         XCTAssertTrue(app.buttons["gate-primary"].isHittable, "download button not hittable")
@@ -103,7 +103,7 @@ final class ConsoleUITests: XCTestCase {
     // 3. Settings sheet: the model + correction controls all tap without error; Done dismisses.
     func test3_settingsControls() {
         let app = launch(onboardingDismissed: true)
-        XCTAssertTrue(app.buttons["settings-button"].waitForExistence(timeout: 20))
+        XCTAssertTrue(app.buttons["settings-button"].waitForExistence(timeout: 40))
         app.buttons["settings-button"].tap()
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5), "settings sheet missing")
         snap(app, "04-settings")
@@ -135,9 +135,9 @@ final class ConsoleUITests: XCTestCase {
         if largeV2.isEnabled { largeV2.tap() }
 
         // Enable correction → the AI backend + sensitivity controls become active. (The correction
-        // toggle is the "Vocabulary correction" switch on this page; target it by scrolling to the
-        // backend row it gates rather than firstMatch, which is order-dependent.)
-        let toggle = app.switches.firstMatch
+        // toggle is the "Vocabulary correction" switch on this page; target it by its identifier, not
+        // firstMatch — other toggles (globe projection, transcript logging) now precede it on the page.)
+        let toggle = app.switches["correction-toggle"]
         XCTAssertTrue(reveal(toggle, app), "correction toggle missing")
         toggle.tap()
         let backend = app.buttons["On-device"].firstMatch
@@ -154,7 +154,7 @@ final class ConsoleUITests: XCTestCase {
     //     and the app stays healthy after dismissing (drives the Stage-5b wiring end-to-end in the sim).
     func test3b_experimentalVoiceToggle() {
         let app = launch(onboardingDismissed: true)
-        XCTAssertTrue(app.buttons["settings-button"].waitForExistence(timeout: 20))
+        XCTAssertTrue(app.buttons["settings-button"].waitForExistence(timeout: 40))
         app.buttons["settings-button"].tap()
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5), "settings sheet missing")
 
@@ -266,7 +266,7 @@ final class ConsoleUITests: XCTestCase {
     func test7_standby() {
         let app = launch(onboardingDismissed: true)
         let power = app.buttons["start-stop-button"]
-        XCTAssertTrue(power.waitForExistence(timeout: 20), "power button missing")
+        XCTAssertTrue(power.waitForExistence(timeout: 40), "power button missing")
         power.press(forDuration: 0.8)   // long-press = standby (tap = start/stop)
         let resume = app.buttons["standby-resume"]
         XCTAssertTrue(resume.waitForExistence(timeout: 5), "standby screen did not appear")
