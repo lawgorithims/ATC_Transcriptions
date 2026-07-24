@@ -17,7 +17,8 @@
   "seaLevelClamp": true,
   "spikeThresholdM": 300,
   "cleanup": {
-    "clampedBelowSeaLevel": 1619241,
-    "despiked": 435
+    "clampedBelowSeaLevel": 0,
+    "despiked": 0,
+    "noDataCells": 0
   }
 }

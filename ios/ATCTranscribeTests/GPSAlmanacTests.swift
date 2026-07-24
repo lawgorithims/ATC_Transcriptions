@@ -179,16 +179,6 @@ final class GPSAlmanacTests: XCTestCase {
                        "a file stamped ahead of its own applicability reports a negative age")
     }
 
-    func testHalfWeekFoldStaysWithinPlusOrMinusHalfAWeek() {
-        XCTAssertEqual(GPSAlmanac.halfWeekFold(0), 0)
-        XCTAssertEqual(GPSAlmanac.halfWeekFold(604_800), 0, "a whole week folds to zero")
-        XCTAssertEqual(GPSAlmanac.halfWeekFold(400_000), -204_800, accuracy: 1e-9)
-        XCTAssertEqual(GPSAlmanac.halfWeekFold(-400_000), 204_800, accuracy: 1e-9)
-        for step in 0...200 {                                   // bounded (rule 2)
-            let t = -5_000_000.0 + 50_000.0 * Double(step)
-            XCTAssertLessThanOrEqual(abs(GPSAlmanac.halfWeekFold(t)), 302_400.0 + 1e-6)
-        }
-    }
 
     func testEveryEntryFoldsIntoTheValidPropagationWindow() throws {
         for entry in try fullAlmanac() {                        // bounded by the 64-record parser cap
@@ -1010,6 +1000,89 @@ final class GPSAlmanacTests: XCTestCase {
     Mean Anom(rad):             0.1395536400E+001
     Af0(s):                     0.1840591431E-003
     Af1(s/s):                   0.1818989404E-010
+    week:                        381
+    """
+}
+
+/// Regression tests for the ±½-week fold defect: `tk` was folded into ±302 400 s even though it is
+/// already an absolute interval, which aliased the whole sky onto a 7-SOLAR-day period.
+///
+/// These are written to fail loudly if anyone reintroduces the fold, because the bug is invisible near
+/// the almanac epoch — a numeric cross-check against a second implementation that folds the same way
+/// agrees to the digit. The only thing that catches it is asking whether the sky repeats on the
+/// SIDEREAL day (it does) or the solar week (it must not).
+final class GPSAlmanacPropagationPeriodTests: XCTestCase {
+
+    private let siderealDay = 86_164.0905
+    private let observer = Coord(lat: 32.8998, lon: -97.0403)
+    private let t0 = Date(timeIntervalSince1970: 1_784_851_200)   // 2026-07-23T20:00:00Z
+
+    private func sky(_ at: Date) throws -> [PredictedSatellite] {
+        let alm = GPSAlmanac.loadBundled(bundle: Bundle(for: Self.self))
+        let entries = alm.isEmpty ? GPSAlmanac.parseYUMA(Self.fixture) : alm
+        try XCTSkipIf(entries.isEmpty, "no almanac available to this test bundle")
+        return GPSSkyPrediction.satellites(almanac: entries, at: at, observer: observer,
+                                           observerAltitudeM: 200)
+    }
+
+    private func maxElevationDelta(_ a: [PredictedSatellite], _ b: [PredictedSatellite]) -> Double {
+        var byPRN: [Int: Double] = [:]
+        for s in b { byPRN[s.prn] = s.elevationDeg }
+        var worst = 0.0
+        for s in a {                                            // bounded by the almanac size
+            guard let other = byPRN[s.prn] else { continue }
+            worst = max(worst, abs(s.elevationDeg - other))
+        }
+        return worst
+    }
+
+    /// The real physical period: GPS ground tracks repeat on the sidereal day, so one sidereal day
+    /// later the sky must look nearly identical.
+    func testSkyRepeatsOnTheSiderealDay() throws {
+        let a = try sky(t0)
+        let b = try sky(t0.addingTimeInterval(siderealDay))
+        XCTAssertLessThan(maxElevationDelta(a, b), 1.0,
+                          "GPS repeats on the sidereal day — if this drifts, the propagation is wrong")
+    }
+
+    /// The defect's signature. A solar week is 7.0192 sidereal days, so the sky must have MOVED — if it
+    /// is identical, `tk` is being folded by a week again and every prediction past ~3.5 days is fiction.
+    func testSkyDoesNotRepeatOnASolarWeek() throws {
+        let a = try sky(t0)
+        let b = try sky(t0.addingTimeInterval(7 * 86_400))
+        XCTAssertGreaterThan(maxElevationDelta(a, b), 2.0,
+                             "a solar week is not an orbital period — an identical sky means tk was folded")
+    }
+
+    /// The elapsed interval must grow without bound, not wrap. This is the unit-level statement of the
+    /// same thing, so a regression is pinpointed at `secondsFromReference` rather than at the sky.
+    func testSecondsFromReferenceIsNotWrapped() throws {
+        let entries = GPSAlmanac.parseYUMA(Self.fixture)
+        let e = try XCTUnwrap(entries.first)
+        let near = GPSAlmanac.secondsFromReference(e, at: t0)
+        let later = GPSAlmanac.secondsFromReference(e, at: t0.addingTimeInterval(30 * 86_400))
+        XCTAssertEqual(later - near, 30 * 86_400, accuracy: 1e-6,
+                       "tk must be a true elapsed interval; folding it aliases the constellation")
+        XCTAssertGreaterThan(abs(later), 302_400.0,
+                             "30 days from the epoch cannot fit inside a folded half-week")
+    }
+
+    /// One verbatim record so these tests still pin the math if the bundled resource is unavailable to
+    /// the test host.
+    static let fixture = """
+    ******** Week 381 almanac for PRN-01 ********
+    ID:                         01
+    Health:                     000
+    Eccentricity:               0.1834869385E-002
+    Time of Applicability(s):  61440.0000
+    Orbital Inclination(rad):   0.9571225189
+    Rate of Right Ascen(r/s):  -0.7988904198E-008
+    SQRT(A)  (m 1/2):           5153.551758
+    Right Ascen at Week(rad):   0.5049935161E+000
+    Argument of Perigee(rad):   0.189213684
+    Mean Anom(rad):            -0.3930552379E+000
+    Af0(s):                     0.2126693726E-003
+    Af1(s/s):                  -0.1091393642E-010
     week:                        381
     """
 }

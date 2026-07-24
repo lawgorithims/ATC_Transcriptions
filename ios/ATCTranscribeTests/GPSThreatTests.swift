@@ -315,11 +315,13 @@ final class GPSThreatTests: XCTestCase {
     }
 
     func testJammingConfidenceEscalatesWithTheEvidence() {
-        // One coarse-accuracy channel, a merely-good sky, a survivable fix: a whisper.
+        // 45 m is ordinary fused-location noise on an iPhone, not interference. This case used to be
+        // asserted AS jamming, which pinned the false positive in place; the absolute floor
+        // (`Config.jammingFloorM`) is what stops the app shouting at a normal ramp.
         let soft = classify(integrity(.degraded, [.accuracyDegraded], accuracy: 45),
                             pdop: 2.8, hdop: 1.0, sats: 6)
-        XCTAssertEqual(soft.threat, .jamming)
-        XCTAssertEqual(soft.confidence, .low, "a single soft signal must never reach high")
+        XCTAssertEqual(soft.threat, .degraded, "45 m is receiver noise, not an attack")
+        XCTAssertLessThan(soft.confidence, .high, "a single soft signal must never reach high")
         // Same sky, but the fix is now unusable rather than merely coarse.
         let harder = classify(integrity(.unreliable, [.accuracyUnusable], accuracy: 200),
                               pdop: 2.8, hdop: 1.0, sats: 6)
@@ -425,5 +427,75 @@ final class GPSThreatTests: XCTestCase {
                                              satellitesAboveMask: 11, now: t0.addingTimeInterval(1))
         XCTAssertEqual(a.threat, .none)
         XCTAssertFalse(a.warrantsAlert)
+    }
+}
+
+/// Regression tests for two false-positive defects in the interference classifier.
+///
+/// Both were cases where the app shouted "GPS interference" at ordinary receiver behaviour. A safety
+/// warning that fires on a normal urban ramp is not a conservative warning — it is one the pilot learns
+/// to ignore, which is strictly worse than not having it.
+final class GPSThreatFalsePositiveTests: XCTestCase {
+
+    private let now = Date(timeIntervalSince1970: 1_700_000_000)
+
+    private func integrity(accuracy: Double?, reasons: [GPSIntegrityReason],
+                           state: GPSIntegrityState = .degraded) -> GPSIntegrityAssessment {
+        var a = GPSIntegrityAssessment()
+        a.state = state
+        a.reasons = reasons
+        a.horizontalAccuracyM = accuracy
+        a.at = now
+        return a
+    }
+
+    private func goodSky() -> PredictedDOP {
+        PredictedDOP(gdop: 2.1, pdop: 1.8, hdop: 1.0, vdop: 1.5, tdop: 1.0)
+    }
+
+    /// A 31 m fix under a clean sky is an iPhone reporting a fused Wi-Fi/cell/GNSS radius outdoors. It
+    /// is not an attack. Previously this produced "jamming, medium confidence" because the ratio
+    /// ceiling (HDOP 1.0 x 8 x 3 = 24 m) sat below the monitor's own 30 m caution line.
+    func testOrdinaryThirtyMetreAccuracyIsNotJamming() {
+        let a = GPSThreatClassifier.classify(integrity: integrity(accuracy: 31, reasons: [.accuracyDegraded]),
+                                             predictedDOP: goodSky(), satellitesAboveMask: 11, now: now)
+        XCTAssertNotEqual(a.threat, .jamming, "31 m under an open sky is ordinary, not interference")
+        XCTAssertFalse(a.warrantsAlert)
+    }
+
+    /// The quantised 65 m an iPhone commonly reports outdoors — same story, louder.
+    func testQuantisedSixtyFiveMetreAccuracyIsNotJamming() {
+        let a = GPSThreatClassifier.classify(integrity: integrity(accuracy: 65, reasons: [.accuracyDegraded]),
+                                             predictedDOP: goodSky(), satellitesAboveMask: 10, now: now)
+        XCTAssertNotEqual(a.threat, .jamming)
+    }
+
+    /// Past the point the integrity monitor itself stops trusting the fix, with a sky that cannot
+    /// explain it, interference IS the honest reading. This is the other side of the floor: the fix
+    /// must not silence real detection.
+    func testTrulyBlownAccuracyUnderGoodSkyStillReadsAsJamming() {
+        let a = GPSThreatClassifier.classify(integrity: integrity(accuracy: 250,
+                                                                  reasons: [.accuracyUnusable],
+                                                                  state: .unreliable),
+                                             predictedDOP: goodSky(), satellitesAboveMask: 11, now: now)
+        XCTAssertEqual(a.threat, .jamming, "250 m under an 11-satellite PDOP-1.8 sky is not geometry")
+        XCTAssertFalse(a.advisory.isEmpty)
+    }
+
+    /// A MISSING accuracy is missing evidence, not evidence of denial. Previously nil accuracy fell
+    /// through the "geometry does not explain it" branch and produced a jamming verdict out of nothing.
+    func testMissingAccuracyIsNotEvidenceOfJamming() {
+        let a = GPSThreatClassifier.classify(integrity: integrity(accuracy: nil, reasons: [.accuracyDegraded]),
+                                             predictedDOP: goodSky(), satellitesAboveMask: 11, now: now)
+        XCTAssertNotEqual(a.threat, .jamming, "absent data cannot be an accusation")
+    }
+
+    /// Spoofing evidence must still outrank everything, and must not be gated on the accuracy floor —
+    /// a spoofer characteristically reports a CONFIDENT, wrong position.
+    func testSpoofingStillWinsAtGoodAccuracy() {
+        let a = GPSThreatClassifier.classify(integrity: integrity(accuracy: 4, reasons: [.positionJump],
+                                                                  state: .suspect),
+                                             predictedDOP: goodSky(), satellitesAboveMask: 11, now: now)
+        XCTAssertEqual(a.threat, .spoofing, "a confident wrong position is the spoofing signature")
     }
 }
