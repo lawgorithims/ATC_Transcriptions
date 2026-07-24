@@ -30,9 +30,12 @@ struct TerrainGridHeader: Decodable, Equatable {
     /// The only layout this reader knows how to index. A future grid with a different cell encoding
     /// must bump this so an old app refuses the file outright rather than mis-indexing it.
     static let supportedVersion = 1
+    /// Hard ceiling on either grid dimension — see `isSelfConsistent`. Generous enough for a global
+    /// arc-second grid, small enough that rows * cols * 2 cannot overflow.
+    static let maxDimension = 2_000_000
 
-    /// Exact size the `.bin` must be. `Int` is 64-bit on every platform we ship, and CONUS at one
-    /// arc-minute is ~11 MB, so there is no overflow to reason about here.
+    /// Exact size the `.bin` must be. Only meaningful once `isSelfConsistent` has bounded the shape —
+    /// it is that guard, not the platform's 64-bit Int, that makes this multiplication safe.
     var byteCount: Int { rows * cols * 2 }
 
     /// Cross-check the header against ITSELF before trusting any of it. A header is the one part of
@@ -42,6 +45,12 @@ struct TerrainGridHeader: Decodable, Equatable {
     var isSelfConsistent: Bool {
         guard version == Self.supportedVersion else { return false }
         guard rows > 0, cols > 0, cellsPerDegree > 0 else { return false }
+        // Bound the SHAPE before multiplying anywhere. `rows * cols * 2` on a hostile or corrupt header
+        // (rows = cols = 4e18 satisfies every geometric check below) overflows Int and traps — Swift's
+        // `*` is checked in release too, so this would be a crash on malformed data, which this file
+        // promises never to do. The cap is far above any real grid (a global 1-arc-minute grid is
+        // 21600 x 10800).
+        guard rows <= Self.maxDimension, cols <= Self.maxDimension else { return false }
         guard latMax > latMin, lonMax > lonMin else { return false }
         guard (-90.0...90.0).contains(latMin), (-90.0...90.0).contains(latMax) else { return false }
         guard (-180.0...180.0).contains(lonMin), (-180.0...180.0).contains(lonMax) else { return false }
@@ -95,6 +104,7 @@ enum AGLUnavailable: String, Equatable, Sendable, CaseIterable {
     case noAltitude               // the fix carries no MSL altitude at all
     case verticalAccuracyUnknown  // no vertical sigma — we cannot bound the error, so we won't guess
     case verticalAccuracyPoor     // vertical sigma past the usable limit
+    case horizontalAccuracyPoor   // horizontal sigma spans multiple cells — the cell choice is arbitrary
     case outsideCoverage          // beyond the grid bbox, or a no-data cell (ocean / source gap)
 
     /// Short cockpit-readable phrase for the readout's placeholder line.
@@ -105,6 +115,7 @@ enum AGLUnavailable: String, Equatable, Sendable, CaseIterable {
         case .noAltitude:              return "no GPS altitude"
         case .verticalAccuracyUnknown: return "altitude accuracy unknown"
         case .verticalAccuracyPoor:    return "GPS altitude too coarse"
+        case .horizontalAccuracyPoor:  return "GPS position too coarse for terrain"
         case .outsideCoverage:         return "outside terrain coverage"
         }
     }
@@ -126,6 +137,18 @@ struct AGLReading: Equatable, Sendable {
     let trust: AGLTrust
 
     var terrainElevationFt: Double { terrainElevationM * GPSReadout.mToFt }
+
+    /// How much this reading could be OVERSTATING clearance, in feet, combining the fix's vertical
+    /// 1-sigma with the grid's measured peak under-read. The two ADD — the grid does not offset GPS
+    /// error, it compounds it (see `TerrainElevation.peakUnderReadM`) — so this is the number a cautious
+    /// pilot should subtract, and the reason the readout is advisory.
+    var marginFt: Double {
+        (verticalAccuracyM + TerrainElevation.peakUnderReadM) * GPSReadout.mToFt
+    }
+
+    /// The conservative reading: AGL minus the margin, floored at zero. This is what a warning should
+    /// ever be computed from — never `aglFt` — because being early is survivable and being late is not.
+    var conservativeAglFt: Double { max(aglFt - marginFt, 0) }
 
     /// True when the aircraft is below the surface model. This happens routinely and legitimately:
     /// the source is a SURFACE model (tree canopy and buildings are in it) that is additionally
@@ -182,9 +205,29 @@ final class TerrainElevation {
     /// Above this 1-sigma vertical accuracy no reading is produced at all. At 50 m sigma the 95% band
     /// is ±330 ft — a third of a typical pattern altitude, in exactly the low-and-slow regime where an
     /// AGL number is the only reason anyone looks at it. A figure that wrong is worse than a blank,
-    /// because a blank does not invite a decision. (The grid's own error is separate and one-sided:
-    /// max-aggregation makes terrain read high, so AGL errs LOW, which is the safe direction.)
+    /// because a blank does not invite a decision.
     static let maxVerticalAccuracyM = 50.0
+
+    /// How far the grid can UNDER-read real terrain, in metres, and therefore how far AGL can OVERSTATE
+    /// clearance. This is the correction to an earlier, wrong claim in this file that the grid's error
+    /// was one-sided in the safe direction because of max-aggregation. It is not.
+    ///
+    /// Max-aggregation guarantees a cell is at least the highest SAMPLE it saw — not the highest ground
+    /// inside it. The source is an already-smoothed ~245 m-posting DEM, so a sharp summit is missing
+    /// from the samples before aggregation ever runs. Measured against the shipped grid, 17 of 18 CONUS
+    /// summits read BELOW their surveyed elevation (Grand Teton by 161 m / 528 ft), and the grid's global
+    /// maximum, 4368 m, is below Mount Whitney's 4421 m — the grid cannot represent the highest point in
+    /// the country. Over open terrain and at airports the agreement is within tens of metres (Denver
+    /// +2 m, Dallas -1 m); it is peaks specifically that are under-read.
+    ///
+    /// So the error ADDS to the GPS vertical error rather than offsetting it, and near mountains the
+    /// readout is optimistic. `AGLReading.marginFt` carries this outward so the UI can hedge it, and it
+    /// is the reason the readout is advisory and must never be used for terrain avoidance.
+    static let peakUnderReadM = 165.0
+
+    /// Above this horizontal 1-sigma the fix cannot pick a cell (cells are ~1852 m N-S, ~1439 m E-W at
+    /// 39 degrees N). Set to roughly half a cell so the chosen cell is more likely right than not.
+    static let maxHorizontalAccuracyM = 700.0
 
     let status: TerrainGridStatus
     private let header: TerrainGridHeader?
@@ -304,6 +347,13 @@ final class TerrainElevation {
             return .unavailable(.verticalAccuracyUnknown)
         }
         guard vAccM <= Self.maxVerticalAccuracyM else { return .unavailable(.verticalAccuracyPoor) }
+        // The HORIZONTAL error is what selects the cell, and neighbouring cells can differ by a great
+        // deal — measured p99 is 290 m and the worst adjacent pair in the shipped grid differs by
+        // 2026 m (6647 ft). A fix whose horizontal uncertainty spans multiple cells is not selecting a
+        // cell at all, so the terrain it returns is arbitrary and the AGL built on it is fiction.
+        guard fix.horizontalAccuracyM <= Self.maxHorizontalAccuracyM else {
+            return .unavailable(.horizontalAccuracyPoor)
+        }
         guard let terrainM = elevationM(at: fix.coord) else { return .unavailable(.outsideCoverage) }
 
         let degradedFix = integrity.map { $0.state >= .degraded } ?? false

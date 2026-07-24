@@ -77,19 +77,6 @@ enum GPSAlmanac {
     /// WGS-84 Earth gravitational constant. Note this is the GPS ICD value (3.986005e14), NOT the newer
     /// WGS-84(G873) 3.986004418e14 — the broadcast elements are FITTED against the ICD constant, so
     /// substituting the "better" one would make the propagation slightly worse, not better.
-    /// Parse the almanac bundled at `Resources/gps/almanac.yuma.txt` (refreshed by
-    /// `Tools/fetch_gps_almanac.sh`). Returns [] when the resource is missing or unreadable — every
-    /// consumer already treats "no almanac" as "no predicted geometry", which degrades the Satellites
-    /// page and makes the threat classifier refuse to claim jamming rather than guess at it.
-    static func loadBundled(bundle: Bundle = .main) -> [GPSAlmanacEntry] {
-        let url = bundle.url(forResource: "almanac.yuma", withExtension: "txt", subdirectory: "gps")
-            ?? bundle.url(forResource: "almanac.yuma", withExtension: "txt")
-        guard let url, let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
-        let out = parseYUMA(text)
-        assert(out.count <= 64, "an almanac should never carry more than the GPS PRN space")
-        return out
-    }
-
     static let mu = 3.986005e14                  // m^3/s^2
     static let earthRotationRate = 7.2921151467e-5  // rad/s, WGS-84 Omega-dot-e
     static let wgs84SemiMajorAxisM = 6_378_137.0
@@ -110,6 +97,20 @@ enum GPSAlmanac {
 
     static let maxRecords = 64      // GPS tops out at 32 PRNs; the slack absorbs augmented almanacs
     static let maxLines = 4_096     // 64 records x 16 lines, with room for banners and blank lines
+
+    /// Parse the almanac bundled at `Resources/gps/almanac.yuma.txt` (refreshed by
+    /// `Tools/fetch_gps_almanac.sh`). Returns [] when the resource is missing or unreadable — every
+    /// consumer already treats "no almanac" as "no predicted geometry", which degrades the Satellites
+    /// page and makes the threat classifier refuse to claim jamming rather than guess at it.
+    static func loadBundled(bundle: Bundle = .main) -> [GPSAlmanacEntry] {
+        let url = bundle.url(forResource: "almanac.yuma", withExtension: "txt", subdirectory: "gps")
+            ?? bundle.url(forResource: "almanac.yuma", withExtension: "txt")
+        guard let url, let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
+        let out = parseYUMA(text)
+        assert(out.count <= 64, "an almanac should never carry more than the GPS PRN space")
+        return out
+    }
+
 
     // MARK: Parsing
 
@@ -238,28 +239,35 @@ enum GPSAlmanac {
         return date.timeIntervalSince(referenceDate(entry, resolvedAt: date)) / 86_400.0
     }
 
-    /// Time from the almanac's reference epoch, `tk` in the ICD, folded into +/-302 400 s.
+    /// Time from the almanac's reference epoch — `tk` in the ICD — as a TRUE elapsed interval.
     ///
-    /// The fold is what lets a single almanac drive any date: the elements describe a repeating orbit,
-    /// so propagating 3 days forward and 4 days back land on the same geometry, and half a week is the
-    /// shortest equivalent. Doing it with `truncatingRemainder` rather than the ICD's `while` loops
-    /// keeps it closed-form — no unbounded iteration (rule 2).
+    /// It is NOT folded, and that is the whole point of this comment, because folding it is the obvious
+    /// mistake and it is silent. The ICD's +/-302 400 s correction exists only to reconcile a
+    /// second-of-week `t` against a second-of-week `toa` ACROSS A WEEK BOUNDARY, in a receiver that
+    /// never sees the week number. This function already forms the ABSOLUTE difference (it resolves the
+    /// almanac's modulo-1024 week first), so `tk` is already right and a fold can only corrupt it.
+    ///
+    /// The tempting justification for folding — "the orbit repeats, so a week later is the same sky" —
+    /// is false. The GPS ground track repeats on the SIDEREAL day (86 164.0905 s), and one week is
+    /// 7.0192 sidereal days, not 7. Folding by a week therefore slews the whole constellation by about
+    /// 7 degrees of Earth rotation and 13 degrees of mean anomaly. Measured, that error reached 13
+    /// degrees of elevation after a single week and over 100 degrees within a year — and because the
+    /// app bundles a STATIC almanac and propagates it to `Date()`, that is the normal case, not an edge
+    /// case. It also feeds `GPSThreatClassifier`, where fictional "good geometry" turns into a
+    /// fabricated jamming verdict.
+    ///
+    /// Propagating a long way from `toa` is still an accuracy question — the elements themselves go
+    /// stale — which is what `ageDays` is for and why the Satellites page warns past 90 days. That is a
+    /// different problem from aliasing the geometry, and it must not be "fixed" by folding.
     static func secondsFromReference(_ entry: GPSAlmanacEntry, at date: Date) -> Double {
         assert(entry.toa >= 0 && entry.toa < secondsPerWeek, "toa must be a second-of-week")
         assert(secondsPerWeek > 0, "week length must be positive")
         let week = resolvedWeek(rawWeek: entry.week, at: date)
-        return halfWeekFold(gpsSeconds(at: date) - (Double(week) * secondsPerWeek + entry.toa))
+        let tk = gpsSeconds(at: date) - (Double(week) * secondsPerWeek + entry.toa)
+        assert(tk.isFinite, "tk must be finite")
+        return tk
     }
 
-    /// Fold an arbitrary time difference into (-302 400, +302 400] seconds.
-    static func halfWeekFold(_ seconds: Double) -> Double {
-        assert(seconds.isFinite, "cannot fold a non-finite interval")
-        assert(secondsPerWeek > 0, "week length must be positive")
-        var t = seconds.truncatingRemainder(dividingBy: secondsPerWeek)
-        if t > secondsPerWeek / 2 { t -= secondsPerWeek }
-        if t < -secondsPerWeek / 2 { t += secondsPerWeek }
-        return t
-    }
 }
 
 // MARK: - Predicted sky

@@ -196,6 +196,20 @@ enum GPSThreatClassifier {
         /// Accuracy at or below which the receiver is reporting CONFIDENCE. Matched to the integrity
         /// monitor's caution threshold so the two never disagree about what "fine" means.
         var confidentAccuracyM = 30.0
+
+        /// ABSOLUTE floor under any interference claim, in metres. Nothing below this is ever called
+        /// jamming, whatever the ratio test says.
+        ///
+        /// This exists because HDOP x UERE and `CLLocation.horizontalAccuracy` are not the same
+        /// quantity. UERE models a bare-GNSS 1-sigma pseudorange error; CoreLocation reports a FUSED
+        /// Wi-Fi/cell/GNSS confidence radius that an iPhone routinely quotes as 30 m or a quantised
+        /// 65 m outdoors under a completely open sky. Comparing them made the ratio ceiling (HDOP 1.0
+        /// x 8 x 3 = 24 m) sit BELOW the integrity monitor's own 30 m caution line, so every fix the
+        /// monitor merely called degraded was escalated to "GPS interference" — a false alarm on
+        /// ordinary urban ramp noise, in the app's loudest voice. Tying the floor to the monitor's
+        /// UNUSABLE threshold makes the two layers agree: caution is caution, and only an accuracy bad
+        /// enough that the monitor stops trusting the fix at all can be attributed to interference.
+        var jammingFloorM = 100.0
     }
 
     // MARK: - Cockpit copy
@@ -339,8 +353,12 @@ enum GPSThreatClassifier {
         assert(config.poorPDOP > config.goodPDOP, "the PDOP bands must be ordered")
         guard geometry == .good else { return [] }
         var out: [GPSThreatReason] = []
-        if accuracyDenied,
-           !geometryExplains(accuracyM: integrity.horizontalAccuracyM, dop: dop, config: config) {
+        // Three conditions, all required. The accuracy must actually be BAD (`jammingFloorM`, not just
+        // past the caution line); it must be a real measurement — a MISSING accuracy is not evidence of
+        // anything and must never be read as denial; and geometry must fail to explain it.
+        if accuracyDenied, let acc = integrity.horizontalAccuracyM, acc.isFinite,
+           acc > config.jammingFloorM,
+           !geometryExplains(accuracyM: acc, dop: dop, config: config) {
             out.append(.accuracyUnexplainedByGeometry)
         }
         if fixLost { out.append(.fixLostUnexplainedByGeometry) }

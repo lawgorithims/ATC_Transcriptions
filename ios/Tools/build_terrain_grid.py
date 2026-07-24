@@ -198,18 +198,25 @@ def clean(grid):
        cell is only replaced when it towers over its HIGHEST neighbour, and it is replaced by that
        neighbour max rather than the median — still the highest defensible value for the cell.
     """
-    below = int((grid < 0).sum())
-    np.maximum(grid, 0, out=grid)
+    # `where=` is load-bearing. The accumulator is SEEDED with NO_DATA (-32768), so an unmasked
+    # clamp would rewrite every un-fetched cell to 0 — bit-identical to sea level. A tile that failed
+    # to download over Colorado would then read as sea level, and the app would hand the pilot their
+    # entire MSL altitude as clearance, at full confidence, with no way to tell it was a hole. The
+    # sentinel must survive the clamp so the reader can refuse those cells.
+    below = int(((grid < 0) & (grid != NO_DATA)).sum())
+    np.maximum(grid, 0, out=grid, where=(grid != NO_DATA))
 
-    pad = np.pad(grid.astype(np.int32), 1, mode="edge")
+    filled = np.where(grid == NO_DATA, 0, grid).astype(np.int32)   # sentinel must not skew the neighbourhood
+    pad = np.pad(filled, 1, mode="edge")
     stack = np.stack([pad[dy:dy + grid.shape[0], dx:dx + grid.shape[1]]
                       for dy in range(3) for dx in range(3)
                       if not (dy == 1 and dx == 1)])          # the 8 neighbours, bounded and explicit
     nmax = stack.max(axis=0)
-    spikes = grid > (nmax + SPIKE_M)
+    spikes = (grid > (nmax + SPIKE_M)) & (grid != NO_DATA)
     n_spikes = int(spikes.sum())
     grid[spikes] = nmax[spikes].astype(np.int16)
-    return grid, {"clampedBelowSeaLevel": below, "despiked": n_spikes}
+    return grid, {"clampedBelowSeaLevel": below, "despiked": n_spikes,
+                  "noDataCells": int((grid == NO_DATA).sum())}
 
 
 def main():
