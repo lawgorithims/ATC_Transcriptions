@@ -475,14 +475,17 @@ struct ChartMapView: UIViewRepresentable {
         mv.delegate = context.coordinator
         mv.pointOfInterestFilter = .excludingAll
         mv.showsCompass = true
-        mv.showsUserLocation = true
+        // Ownship is drawn from `DeviceLocation` (via `OwnshipAnnotation`), NOT MapKit's blue dot:
+        // MKMapView's `showsUserLocation` runs its own CLLocationManager — a second GPS owner, against
+        // the build-62 single-owner rule — and it plots a position unconditionally, with no way to
+        // colour it by integrity, ring it with its accuracy, or suppress it when the fix isn't usable.
+        mv.showsUserLocation = false
         let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleTap(_:)))
         tap.delegate = context.coordinator           // coexist with MapKit's own pan/zoom recognizers
         mv.addGestureRecognizer(tap)
         let hold = UILongPressGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleLongPress(_:)))
         hold.delegate = context.coordinator
         mv.addGestureRecognizer(hold)
-        context.coordinator.requestLocation()
         Self.configure(mv, for: layer)
         context.coordinator.appliedLayer = layer
         let center = ChartLayer.launchCenter ?? CLLocationCoordinate2D(latitude: 39, longitude: -96)
@@ -624,7 +627,15 @@ struct ChartMapView: UIViewRepresentable {
                                             span: MKCoordinateSpan(latitudeDelta: 0.5, longitudeDelta: 0.5)), animated: true)
         }
 
-        c.syncDynamic(mv, aircraft: model.aircraft, ownship: model.stratuxGPS?.coordinate)
+        // Ownship: a valid Stratux fix still wins (it is the aircraft's own certified-ish receiver);
+        // otherwise the device fix, but ONLY while the integrity monitor trusts it — an unreliable or
+        // suspect position is removed from the map rather than drawn, because the pilot will fly it.
+        let stratux = model.stratuxGPS?.hasFix == true ? model.stratuxGPS?.coordinate : nil
+        let deviceOwn = model.gpsIntegrity.shouldSuppressOwnship ? nil : model.gpsFix?.coord
+        c.syncDynamic(mv, aircraft: model.aircraft, ownship: stratux ?? deviceOwn,
+                      ownshipCourseDeg: stratux == nil && model.gpsIntegrity.courseUsable ? model.gpsFix?.courseDeg : nil,
+                      accuracyM: stratux == nil ? model.gpsIntegrity.horizontalAccuracyM : nil,
+                      integrity: stratux == nil ? model.gpsIntegrity.state : .unknown)
         c.syncHazards(mv, events: model.showHazards ? model.hazardEvents : [])
         c.syncTFRs(mv, tfrs: model.showTFRs ? model.tfrs : [])
     }
@@ -649,7 +660,7 @@ struct ChartMapView: UIViewRepresentable {
         }
     }
 
-    final class Coordinator: NSObject, MKMapViewDelegate, CLLocationManagerDelegate, UIGestureRecognizerDelegate {
+    final class Coordinator: NSObject, MKMapViewDelegate, UIGestureRecognizerDelegate {
         var overlays: [ObjectIdentifier: MBTilesTileOverlay] = [:]
         var appliedLayer: ChartLayer?               // last base config applied — reconfigure only on a real change
         var plateOverlayObj: PlateImageOverlay?     // the superimposed plate, if any
@@ -672,6 +683,7 @@ struct ChartMapView: UIViewRepresentable {
         private var regionDebounce: DispatchWorkItem?
         private var trafficByKey: [String: TrafficAnnotation] = [:]  // keyed by Aircraft.hex (stable id) — diff, don't rebuild (L10)
         private var ownshipAnn: OwnshipAnnotation?
+        private var accuracyRing: AccuracyRingOverlay?
         private var airspaceByKey: [String: MKPolygon] = [:]        // keyed so a settle diffs, never redraws all
         private var airspaceClass: [ObjectIdentifier: String] = [:]
         private var airspaceLabelByKey: [String: AirspaceLabelAnnotation] = [:]   // altitude blocks, diffed like polygons
@@ -691,13 +703,8 @@ struct ChartMapView: UIViewRepresentable {
         private var nearbyByKey: [String: NearbyAnnotation] = [:]   // keyed by NavPoint.id for the same reason
         private var contextGen = 0                                  // drops stale async refreshes (rapid panning)
         private var probeGen = 0                                    // drops a superseded tap probe (L12) — double-tap debounce
-        private let loc = CLLocationManager()
-
-        func requestLocation() {
-            loc.delegate = self
-            if loc.authorizationStatus == .notDetermined { loc.requestWhenInUseAuthorization() }
-        }
-        func locationManagerDidChangeAuthorization(_ m: CLLocationManager) {}
+        // No CLLocationManager here: `DeviceLocation` is the app's single GPS owner and requests
+        // authorization itself when the map takes its hold on the feed (see MapHostView).
 
         // Let the tap recognizer coexist with MapKit's built-in pan/zoom recognizers.
         func gestureRecognizer(_ g: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
@@ -961,6 +968,16 @@ struct ChartMapView: UIViewRepresentable {
 
         func mapView(_ mv: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
             if let plate = overlay as? PlateImageOverlay { return PlateOverlayRenderer(plate) }
+            // The accuracy ring: how far off the plotted position could be, at 1 sigma. Faint fill so it
+            // reads as uncertainty rather than as an airspace boundary.
+            if let ring = overlay as? AccuracyRingOverlay {
+                let color = Self.accuracyTint(ring.state)
+                let r = MKCircleRenderer(circle: ring)
+                r.strokeColor = color.withAlphaComponent(0.55)
+                r.lineWidth = 1
+                r.fillColor = color.withAlphaComponent(0.10)
+                return r
+            }
             // GIBS satellite smoke — a translucent tile overlay; matched before the opaque chart tiles.
             if let smoke = overlay as? GIBSTileOverlay {
                 let r = MKTileOverlayRenderer(tileOverlay: smoke)
@@ -1027,15 +1044,6 @@ struct ChartMapView: UIViewRepresentable {
         }
 
         func mapView(_ mv: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
-            if annotation is MKUserLocation {
-                let v = mv.dequeueReusableAnnotationView(withIdentifier: "me")
-                    ?? MKAnnotationView(annotation: annotation, reuseIdentifier: "me")
-                v.annotation = annotation
-                v.image = Self.ownPlane
-                let course = mv.userLocation.location?.course ?? -1
-                v.transform = course < 0 ? .identity : CGAffineTransform(rotationAngle: CGFloat((course - 90) * .pi / 180))
-                return v
-            }
             switch annotation {
             case let w as WaypointAnnotation:
                 let v = mv.dequeueReusableAnnotationView(withIdentifier: "wp") as? MKMarkerAnnotationView
@@ -1075,9 +1083,13 @@ struct ChartMapView: UIViewRepresentable {
                 v.glyphImage = UIImage(systemName: h.category.glyph)
                 v.displayPriority = .defaultHigh; v.titleVisibility = .adaptive; v.animatesWhenAdded = false
                 return v
-            case is OwnshipAnnotation:
+            case let o as OwnshipAnnotation:
                 let v = mv.dequeueReusableAnnotationView(withIdentifier: "own") ?? MKAnnotationView(annotation: annotation, reuseIdentifier: "own")
-                v.annotation = annotation; v.image = Self.ownPlane
+                v.annotation = annotation
+                // Tinted by integrity so a degraded fix reads as degraded at a glance, and rotated only
+                // when the monitor says the course is trustworthy (below taxi speed it is noise).
+                v.image = Self.ownPlane(for: o.state)
+                v.transform = o.courseDeg.map { CGAffineTransform(rotationAngle: CGFloat(($0 - 90) * .pi / 180)) } ?? .identity
                 return v
             default: return nil
             }
@@ -1088,7 +1100,9 @@ struct ChartMapView: UIViewRepresentable {
         /// refreshed title/heading, departed aircraft are removed, and new ones added. The old code
         /// removed + re-added EVERY annotation whenever any aircraft moved, so the whole field blinked
         /// each ADS-B tick. Incoming is bounded (rule 2) and de-duped by hex.
-        func syncDynamic(_ mv: MKMapView, aircraft: [Aircraft], ownship: Coord?) {
+        func syncDynamic(_ mv: MKMapView, aircraft: [Aircraft], ownship: Coord?,
+                         ownshipCourseDeg: Double? = nil, accuracyM: Double? = nil,
+                         integrity: GPSIntegrityState = .unknown) {
             var incoming: [String: Aircraft] = [:]
             var order: [String] = []
             for ac in aircraft.prefix(128) {                       // bound the field (rule 2)
@@ -1118,9 +1132,45 @@ struct ChartMapView: UIViewRepresentable {
                 trafficByKey[hex] = a; mv.addAnnotation(a)
             }
             if let ownship {                                       // ownship: move in place, or add once
-                if let a = ownshipAnn { a.coordinate = ownship.clCoordinate }
-                else { let a = OwnshipAnnotation(); a.coordinate = ownship.clCoordinate; ownshipAnn = a; mv.addAnnotation(a) }
+                if let a = ownshipAnn {
+                    a.coordinate = ownship.clCoordinate
+                    if a.state != integrity || a.courseDeg != ownshipCourseDeg {
+                        a.state = integrity; a.courseDeg = ownshipCourseDeg
+                        if let v = mv.view(for: a) {               // refresh tint/rotation in place
+                            v.image = Self.ownPlane(for: integrity)
+                            v.transform = ownshipCourseDeg.map { CGAffineTransform(rotationAngle: CGFloat(($0 - 90) * .pi / 180)) } ?? .identity
+                        }
+                    }
+                } else {
+                    let a = OwnshipAnnotation()
+                    a.coordinate = ownship.clCoordinate; a.state = integrity; a.courseDeg = ownshipCourseDeg
+                    ownshipAnn = a; mv.addAnnotation(a)
+                }
             } else if let a = ownshipAnn { mv.removeAnnotation(a); ownshipAnn = nil }
+            syncAccuracyRing(mv, center: ownship, accuracyM: accuracyM, state: integrity)
+        }
+
+        /// Keep the 1-sigma accuracy ring in step with ownship. `MKCircle` is immutable, so a change is a
+        /// remove + add — gated on a MATERIAL change (>10 m of drift or >15% of radius) so a 1 Hz fix
+        /// stream doesn't thrash the renderer with a new overlay every second.
+        private func syncAccuracyRing(_ mv: MKMapView, center: Coord?, accuracyM: Double?,
+                                      state: GPSIntegrityState) {
+            guard let center, let accuracyM, accuracyM > 0 else {
+                if let old = accuracyRing { mv.removeOverlay(old); accuracyRing = nil }
+                return
+            }
+            assert(accuracyM.isFinite, "accuracy radius must be finite")
+            if let old = accuracyRing {
+                let moved = Geo.nmBetween(Coord(lat: old.coordinate.latitude, lon: old.coordinate.longitude),
+                                          center) * 1852.0
+                let grew = abs(old.radius - accuracyM) / max(old.radius, 1)
+                if moved <= 10, grew <= 0.15, old.state == state { return }
+                mv.removeOverlay(old)
+            }
+            let ring = AccuracyRingOverlay(center: center.clCoordinate, radius: accuracyM)
+            ring.state = state
+            accuracyRing = ring
+            mv.addOverlay(ring, level: .aboveRoads)                // under the symbols, over the chart
         }
 
         private static func disc(_ symbol: String, fill: UIColor, pt: CGFloat, d: CGFloat) -> UIImage {
@@ -1138,6 +1188,28 @@ struct ChartMapView: UIViewRepresentable {
         }
         static let traffic: UIImage = disc("airplane", fill: .systemOrange, pt: 13, d: 26)
         static let ownPlane: UIImage = disc("airplane", fill: .systemBlue, pt: 16, d: 32)
+        private static let ownPlaneDegraded: UIImage = disc("airplane", fill: .systemOrange, pt: 16, d: 32)
+        private static let ownPlaneSuspect: UIImage = disc("airplane", fill: .systemRed, pt: 16, d: 32)
+
+        /// Ownship symbol tinted by integrity. `unreliable`/`suspect` normally aren't drawn at all —
+        /// `suspect` maps to red for the case where a caller plots it anyway (the plate viewer's
+        /// Stratux-first path), so the symbol can never silently look trustworthy.
+        static func ownPlane(for state: GPSIntegrityState) -> UIImage {
+            switch state {
+            case .degraded:              return ownPlaneDegraded
+            case .unreliable, .suspect:  return ownPlaneSuspect
+            case .unknown, .nominal:     return ownPlane
+            }
+        }
+
+        /// Fill for the 1-sigma accuracy ring — the same colour ladder as the symbol.
+        static func accuracyTint(_ state: GPSIntegrityState) -> UIColor {
+            switch state {
+            case .degraded:              return .systemOrange
+            case .unreliable, .suspect:  return .systemRed
+            case .unknown, .nominal:     return .systemBlue
+            }
+        }
     }
 }
 
@@ -1204,6 +1276,16 @@ enum TrafficReconcile {
 
 final class OwnshipAnnotation: NSObject, MKAnnotation {
     @objc dynamic var coordinate = CLLocationCoordinate2D()
+    /// True course, or nil when the integrity monitor says course isn't trustworthy (no rotation then).
+    var courseDeg: Double?
+    /// Drives the symbol tint — a degraded fix must not look like a good one.
+    var state: GPSIntegrityState = .unknown
+}
+
+/// The 1-sigma horizontal accuracy ring around ownship. A distinct subclass so `rendererFor` can
+/// identify it without an identity map (it is the only circle overlay on the map).
+final class AccuracyRingOverlay: MKCircle {
+    var state: GPSIntegrityState = .unknown
 }
 
 /// A bundled navaid / airport plotted for map context (not on the filed route).

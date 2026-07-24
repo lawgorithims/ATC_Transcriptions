@@ -135,6 +135,7 @@ struct PlateViewer: View {
 
     @EnvironmentObject var model: AppModel
     @State private var url: URL?
+    @State private var holdsGPS = false                    // this view's balanced hold on the shared feed
     @State private var loading = true
     @State private var showOverlay = true                  // show ownship/traffic by default on a georef'd plate
 
@@ -144,9 +145,11 @@ struct PlateViewer: View {
     }
     /// Ownship position: a VALID Stratux fix wins (avoids a stale last-known position, C4), else the
     /// device's own GPS — so a Stratux-less iPad still shows the pilot on a georeferenced plate.
+    /// `trustedCoord`, not `coord`: on an approach plate an untrustworthy position is the most dangerous
+    /// place to draw one, so an unreliable / suspect fix hides ownship instead of plotting it.
     private var ownshipCoord: Coord? {
         if let g = model.stratuxGPS, g.hasFix { return g.coordinate }
-        return deviceLocation.coord
+        return deviceLocation.trustedCoord
     }
 
     var body: some View {
@@ -202,8 +205,10 @@ struct PlateViewer: View {
         .task { await load() }
         // Run the device GPS only while a GEOREFERENCED plate is open (it's the only kind that can plot
         // ownship); stop on close so it isn't a background battery drain.
-        .onAppear { if georef != nil { deviceLocation.start() } }
-        .onDisappear { deviceLocation.stop() }
+        // Balanced: holds on the feed are refcounted app-wide now (the map holds one too), so a stop()
+        // without a matching start() here would release the MAP's hold and kill its ownship.
+        .onAppear { if georef != nil, !holdsGPS { holdsGPS = true; deviceLocation.start() } }
+        .onDisappear { if holdsGPS { holdsGPS = false; deviceLocation.stop() } }
     }
 
     /// A small caption under the chart when the overlay is on — states what the markers are and the

@@ -30,6 +30,10 @@ struct ConsoleView: View {
                 if let proc = model.previewedProcedure { procedureStrip(proc) }
                 if let sug = model.efbSuggestion { efbSuggestionBanner(sug) }
                 if let hz = model.hazardAlert, !hz.isEmpty { hazardBanner(hz) }
+                // GPS integrity advisory. It lives HERE, in the bar stack, not as an overlay on the map:
+                // the map ignores the safe area and sits behind this VStack, so a top-aligned overlay on
+                // it renders UNDER the top bar and is never seen.
+                GPSIntegrityBanner(assessment: model.gpsIntegrity, palette: p)
                 homeArea
             }
         }
@@ -177,9 +181,9 @@ struct ConsoleView: View {
             }
             .buttonStyle(.plain).accessibilityIdentifier("efb-accept")
             // One-tap hand-off: accept the amendment AND load the amended route into ForeFlight
-            // (offline URL scheme). Only offered when the integration is on and ForeFlight is
-            // installed; skipped when accepting turns out not to change the plan.
-            if model.offersForeFlight {
+            // (offline URL scheme). Only offered when the integration is on, ForeFlight is installed, AND
+            // the suggestion is route-affecting (numeric assignments have no ForeFlight meaning).
+            if model.offersForeFlight && sug.affectsRoute {
                 Button { model.acceptEFBSuggestionSendingToForeFlight() } label: {
                     Text("Accept ➔ ForeFlight").font(.caption.weight(.bold)).foregroundStyle(.white)
                         .padding(.horizontal, 12).padding(.vertical, 6)
@@ -787,7 +791,53 @@ struct FlightPlanBar: View {
                 }
             }
             chipsRow(p)
+            assignmentsRow(p)
         }
+    }
+
+    /// ATC-assigned values (accepted EFB clearances) as glanceable X-to-clear chips — the pilot's current
+    /// altitude / heading / speed / squawk / active-frequency assignment. Shown only when set; green to read
+    /// as live/active. Display-only situational awareness (the app tunes nothing).
+    @ViewBuilder private func assignmentsRow(_ p: Palette) -> some View {
+        if let fp = model.flightPlan, fp.hasAssignments {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 5) {
+                    if let a = fp.assignedAltitudeFt {
+                        assignmentChip(p, icon: "arrow.up.forward", label: "\(a) ft", id: "assign-alt") { model.setAssignedAltitude(nil) }
+                    }
+                    if let h = fp.assignedHeadingDeg {
+                        assignmentChip(p, icon: "location.north.line", label: String(format: "%03d°", h), id: "assign-hdg") { model.setAssignedHeading(nil) }
+                    }
+                    if let s = fp.assignedSpeedKt {
+                        assignmentChip(p, icon: "speedometer", label: "\(s) kt", id: "assign-spd") { model.setAssignedSpeed(nil) }
+                    }
+                    if let sq = fp.assignedSquawk {
+                        assignmentChip(p, icon: "dot.radiowaves.left.and.right", label: sq, id: "assign-sq") { model.setAssignedSquawk(nil) }
+                    }
+                    if let f = fp.activeFrequency {
+                        assignmentChip(p, icon: "antenna.radiowaves.left.and.right", label: f, id: "assign-com") { model.setActiveFrequency(nil) }
+                    }
+                }
+                .padding(.trailing, 16)
+            }
+            .frame(minHeight: 18)
+        }
+    }
+
+    private func assignmentChip(_ p: Palette, icon: String, label: String, id: String,
+                                clear: @escaping () -> Void) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: icon).font(.caption2)
+            Text(label).font(.caption2.weight(.semibold).monospaced()).lineLimit(1)
+            Button { Haptics.impact(.light); clear() } label: {
+                Image(systemName: "xmark.circle.fill").font(.caption2)
+            }
+            .buttonStyle(.plain).accessibilityIdentifier("clear-\(id)")
+        }
+        .foregroundStyle(p.good)
+        .padding(.horizontal, 6).padding(.vertical, 2)
+        .background(Capsule().fill(p.good.opacity(0.14)))
+        .accessibilityIdentifier(id)
     }
 
     /// The recognized entities of the committed plan as colour-coded pills (the ForeFlight look) +

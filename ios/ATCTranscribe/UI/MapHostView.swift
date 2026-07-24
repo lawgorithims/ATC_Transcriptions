@@ -18,6 +18,7 @@ struct MapHostView: View {
 
     @StateObject private var store = ChartStore(library: ChartLibrary.shared)
     @State private var route: [ResolvedLeg] = []
+    @State private var holdsGPS = false          // this view's balanced hold on the shared GPS feed
 
     /// Show the live map only when it's worth the power — paused only when truly backgrounded or the
     /// device is hot (a transient `.inactive`, e.g. a permission alert, must NOT blank the map).
@@ -58,6 +59,12 @@ struct MapHostView: View {
             }
         }
         .ignoresSafeArea()
+        // Hold the GPS feed while the map is live (refcounted with the plate viewer's hold), so ownship,
+        // the accuracy ring and the integrity banner have a source — and so the feed stops when the map
+        // is paused for heat or backgrounded, rather than draining on a screen nobody is looking at.
+        .onAppear { holdGPS(live) }
+        .onDisappear { holdGPS(false) }
+        .onChange(of: live) { _, now in holdGPS(now) }
         // The plate-adjust control bar floats at the bottom while a plate is superimposed (both layouts).
         .overlay(alignment: .bottom) {
             if let s = model.plateOverlay {
@@ -74,6 +81,15 @@ struct MapHostView: View {
         .onChange(of: model.chartLayer) { _, new in
             Task { await store.setLayer(new, routeRects: ChartGeo.routeRects(route)) }
         }
+    }
+
+    /// Take or release THIS view's single hold on the GPS feed, tracked so it can never double-release:
+    /// the holds are refcounted app-wide, so an unbalanced `stop()` here would cancel the plate viewer's
+    /// hold and silently kill its ownship.
+    private func holdGPS(_ want: Bool) {
+        guard want != holdsGPS else { return }
+        holdsGPS = want
+        if want { model.deviceLocation.start() } else { model.deviceLocation.stop() }
     }
 
     private func buildRoute() async {
