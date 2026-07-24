@@ -196,6 +196,7 @@ struct SettingsSheet: View {
                 Toggle(isOn: $model.correctionEnabled) {
                     Text("Vocabulary correction").font(.caption).foregroundStyle(p.text)
                 }
+                .accessibilityIdentifier("correction-toggle")
                 Text("Normalizes spoken numbers, collapses repetition loops, and snaps near-miss callsign / runway / waypoint names onto the airport vocabulary. On-device, instant, zero dependencies.")
                     .font(.caption2).foregroundStyle(p.textDim)
                 Rectangle().fill(p.border).frame(height: 1)
