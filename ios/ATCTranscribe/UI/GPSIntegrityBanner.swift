@@ -10,8 +10,15 @@ import SwiftUI
 struct GPSIntegrityBanner: View {
     let assessment: GPSIntegrityAssessment
     let palette: Palette
+    /// The interference verdict layered on the integrity state. When it names jamming or spoofing it
+    /// takes over the headline, because "GPS accuracy degraded" and "your position is being faked" call
+    /// for completely different actions in the cockpit.
+    var threat: GPSThreatAssessment = GPSThreatAssessment()
+
+    private var showsThreat: Bool { threat.threat.isInterference }
 
     private var tint: Color {
+        if showsThreat { return .red }
         switch assessment.state {
         case .degraded:             return .orange
         case .unreliable, .suspect: return .red
@@ -20,6 +27,7 @@ struct GPSIntegrityBanner: View {
     }
 
     private var icon: String {
+        if showsThreat { return threat.threat == .spoofing ? "exclamationmark.shield.fill" : "antenna.radiowaves.left.and.right.slash" }
         switch assessment.state {
         case .suspect:              return "exclamationmark.triangle.fill"
         case .unreliable:           return "location.slash.fill"
@@ -28,6 +36,10 @@ struct GPSIntegrityBanner: View {
     }
 
     private var headline: String {
+        if showsThreat {
+            let conf = threat.confidence == .high ? "" : " (possible)"
+            return (threat.threat == .spoofing ? "GPS spoofing suspected" : "GPS interference / jamming suspected") + conf
+        }
         switch assessment.state {
         case .suspect:    return "GPS position suspect"
         case .unreliable: return "GPS position unusable"
@@ -37,6 +49,7 @@ struct GPSIntegrityBanner: View {
     }
 
     private var detail: String {
+        if showsThreat { return threat.advisory }
         switch assessment.state {
         case .suspect:    return "Ownship hidden — do not navigate by GPS. Cross-check navaids."
         case .unreliable: return "Ownship hidden. Cross-check navaids."
@@ -46,20 +59,21 @@ struct GPSIntegrityBanner: View {
     }
 
     var body: some View {
-        if assessment.state >= .degraded {
+        if assessment.state >= .degraded || showsThreat {
             HStack(spacing: 8) {
                 Image(systemName: icon).font(.callout.weight(.semibold)).foregroundStyle(tint)
                 VStack(alignment: .leading, spacing: 1) {
                     HStack(spacing: 6) {
                         Text(headline).font(.caption.weight(.semibold)).foregroundStyle(palette.text)
-                        if let m = assessment.horizontalAccuracyM, assessment.state != .suspect {
+                        if let m = assessment.horizontalAccuracyM, assessment.state != .suspect, !showsThreat {
                             Text("±\(Int(m.rounded())) m").font(.caption2.monospacedDigit())
                                 .foregroundStyle(palette.textDim)
                         }
                     }
                     Text(detail).font(.caption2).foregroundStyle(palette.textDim)
-                    if !assessment.reasonText.isEmpty {
-                        Text(assessment.reasonText).font(.caption2).foregroundStyle(tint.opacity(0.9))
+                    let why = showsThreat ? threat.reasonText : assessment.reasonText
+                    if !why.isEmpty {
+                        Text(why).font(.caption2).foregroundStyle(tint.opacity(0.9))
                     }
                 }
                 Spacer(minLength: 0)

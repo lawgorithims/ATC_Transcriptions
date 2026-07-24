@@ -68,6 +68,8 @@ targets:
           - "Resources/nav"
           - "Resources/glyphs"
           - "Resources/basemap"
+          - "Resources/terrain"
+          - "Resources/gps"
       - path: ATCTranscribe/Resources/Models      # `small` Whisper model + `llm/<model>.gguf`,
         type: folder                              #   placed by Tools/testflight.sh + fetch_llm_model.sh
       - path: ATCTranscribe/Resources/DemoClips    # 5 known-good clips → offline Replay demo
@@ -79,6 +81,16 @@ targets:
       - path: ATCTranscribe/Resources/airports          # ICAO -> lat/lon for ADS-B query centering
         type: folder
       - path: ATCTranscribe/Resources/nav               # ident -> [[lat,lon]] navaids/fixes for the route map
+        type: folder
+      # Bundled terrain grid behind the AGL readout: a 1 arc-minute CONUS int16 elevation grid the app
+      # mmaps (Tools/build_terrain_grid.py). Advisory only — see that script's header for the datum,
+      # max-aggregation and surface-model caveats.
+      - path: ATCTranscribe/Resources/terrain
+        type: folder
+      # GPS almanac (CelesTrak YUMA) for the PREDICTED satellite geometry on the Satellites page. There
+      # is no measured satellite data on iOS; this is computed orbital geometry, refreshed by
+      # Tools/fetch_gps_almanac.sh.
+      - path: ATCTranscribe/Resources/gps
         type: folder
       # EXPERIMENTAL (MapLibre migration): SDF glyph PBFs (Arial Bold) served to MapLibre for label text.
       - path: ATCTranscribe/Resources/glyphs

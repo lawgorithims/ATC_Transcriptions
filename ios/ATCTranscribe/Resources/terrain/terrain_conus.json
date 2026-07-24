@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "latMax": 50.0,
+  "latMin": 24.0,
+  "lonMin": -125.0,
+  "lonMax": -66.0,
+  "rows": 1560,
+  "cols": 3540,
+  "cellsPerDegree": 60,
+  "noData": -32768,
+  "units": "metres",
+  "datum": "orthometric (EGM96/NAVD88 ~ EGM2008)",
+  "aggregation": "max",
+  "sourceZoom": 9,
+  "source": "AWS Open Data terrain-tiles (s3://elevation-tiles-prod), Terrarium PNG; public-domain SRTM/NASADEM/3DEP/GMTED2010",
+  "advisory": "Surface model (includes vegetation/buildings), max-aggregated. Situational awareness only \u2014 NOT a terrain-avoidance database.",
+  "seaLevelClamp": true,
+  "spikeThresholdM": 300,
+  "cleanup": {
+    "clampedBelowSeaLevel": 1619241,
+    "despiked": 435
+  }
+}

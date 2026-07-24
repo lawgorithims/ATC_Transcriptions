@@ -377,6 +377,20 @@ final class AppModel: ObservableObject {
     @Published private(set) var gpsIntegrity = GPSIntegrityAssessment()
     /// The widened last fix behind `gpsIntegrity` (altitudes, velocity uncertainties, geoid undulation).
     @Published private(set) var gpsFix: DeviceFix?
+    /// Height above the bundled terrain grid for the current fix — `.unavailable` with a stated reason
+    /// whenever it can't be computed honestly (no coverage, no GPS altitude, accuracy too poor).
+    @Published private(set) var aglResult: AGLResult = .unavailable(.noAltitude)
+    /// PREDICTED constellation geometry from the bundled almanac. Recomputed on a slow cadence — the
+    /// satellites move over minutes, not seconds, and this is trigonometry over 32 SVs, not a free ride.
+    @Published private(set) var predictedSky: [PredictedSatellite] = []
+    @Published private(set) var predictedDOP: PredictedDOP?
+    /// Jamming-vs-spoofing verdict layered on the integrity monitor. Interference is only claimed when
+    /// the predicted geometry can rule geometry OUT as the explanation.
+    @Published private(set) var gpsThreat = GPSThreatAssessment()
+    /// The bundled almanac (parsed once at launch; empty when the resource is missing).
+    private(set) var almanac: [GPSAlmanacEntry] = []
+    private var lastSkyComputeAt: Date?
+    private var lastSkyComputeCoord: Coord?
     /// Lifetime subscriptions for the integrity mirror — never torn down on a session swap.
     private var gpsCancellables: Set<AnyCancellable> = []
     /// Shared frame counter the MapLibre map bumps per rendered frame; the battery sampler deltas it into
@@ -2090,17 +2104,58 @@ final class AppModel: ObservableObject {
     /// than none. That costs one actor hop per fix, and only while logging is opted in — with no store
     /// there is no hop at all.
     private func observeGPSIntegrity() {
+        almanac = GPSAlmanac.loadBundled()
         deviceLocation.$integrity
             .sink { [weak self] verdict in
                 guard let self else { return }
                 self.gpsIntegrity = verdict
                 self.gpsFix = self.deviceLocation.fix
+                self.refreshGPSDerived(verdict: verdict)
                 guard let store = self.transcriptLogStore else { return }
                 let stamp = GPSLogStamp(assessment: verdict, fix: self.deviceLocation.fix)
                 Task { await store.setGPS(stamp) }
             }
             .store(in: &gpsCancellables)
     }
+
+    /// Recompute everything derived from a new fix: AGL, the predicted sky, and the threat verdict.
+    ///
+    /// The sky is refreshed on a SLOW cadence (`skyRecomputeS`, or after real movement) because the
+    /// constellation changes over minutes while fixes arrive every second or two, and propagating 32
+    /// orbits per fix would be pure waste on a device that is also transcribing audio.
+    private func refreshGPSDerived(verdict: GPSIntegrityAssessment) {
+        guard let fix = deviceLocation.fix else {
+            aglResult = .unavailable(.noAltitude)
+            gpsThreat = GPSThreatClassifier.classify(integrity: verdict, predictedDOP: nil,
+                                                     satellitesAboveMask: nil, now: Date())
+            return
+        }
+        aglResult = TerrainElevation.shared.agl(fix: fix, integrity: verdict)
+
+        let now = Date()
+        let movedNm = lastSkyComputeCoord.map { Geo.nmBetween($0, fix.coord) } ?? .greatestFiniteMagnitude
+        let aged = lastSkyComputeAt.map { now.timeIntervalSince($0) >= Self.skyRecomputeS } ?? true
+        if !almanac.isEmpty, aged || movedNm >= Self.skyRecomputeNm {
+            lastSkyComputeAt = now
+            lastSkyComputeCoord = fix.coord
+            let sats = GPSSkyPrediction.satellites(almanac: almanac, at: now, observer: fix.coord,
+                                                   observerAltitudeM: fix.altitudeMSLm ?? 0)
+            predictedSky = sats
+            predictedDOP = GPSSkyPrediction.dop(sats.filter { $0.elevationDeg >= Self.maskDeg },
+                                                maskDeg: Self.maskDeg)
+        }
+        let visible = predictedSky.isEmpty ? nil
+                    : predictedSky.filter { $0.elevationDeg >= Self.maskDeg && $0.healthy }.count
+        gpsThreat = GPSThreatClassifier.classify(integrity: verdict, predictedDOP: predictedDOP,
+                                                 satellitesAboveMask: visible, now: now)
+    }
+
+    /// Mask angle for "in view". 5° is the usual aviation receiver mask: below it a signal is skimming
+    /// too much atmosphere to contribute usefully, and counting those satellites would flatter the
+    /// geometry — which would make the jamming test (good geometry + bad accuracy) fire too readily.
+    static let maskDeg = 5.0
+    static let skyRecomputeS: TimeInterval = 60
+    static let skyRecomputeNm = 25.0
 
     /// The current merged fix for the recorder to sample — coord from presentPosition (same source order as
     /// the map ownship) paired with the merged alt/speed/track so they agree. nil when there's no GPS.

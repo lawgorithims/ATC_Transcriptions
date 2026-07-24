@@ -35,6 +35,11 @@ struct SettingsSheet: View {
                                  id: "settings-cat-downloads") {
                         DownloadsView(bag: model.plateBag).environmentObject(model)
                     }
+                    categoryLink("Satellites", "antenna.radiowaves.left.and.right",
+                                 "Predicted GPS geometry · interference check",
+                                 id: "settings-cat-satellites") {
+                        SatellitesView().environmentObject(model)
+                    }
                     categoryLink("General", "gearshape", "Display · version · what’s new",
                                  id: "settings-cat-general") {
                         categoryPage("General") { generalCategory }

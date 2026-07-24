@@ -13,6 +13,7 @@ struct GPSBottomBar: View {
         return HStack(spacing: 8) {
             signalBox(r)
             metricBox("ALT", r.altitudeFtMSL.map { "\(Int($0.rounded())) ft" } ?? "—")
+            aglBox()
             metricBox("GS", r.groundSpeedKt.map { "\(Int($0.rounded())) kt" } ?? "—")
             metricBox("TRK", r.trackDeg.map { String(format: "%03.0f°", $0) } ?? "—")
             // Live progress down the filed route at the current ground speed (only while a route + fix + GS
@@ -55,6 +56,35 @@ struct GPSBottomBar: View {
             }
         }
         .modifier(BoxCell(p: p))
+    }
+
+    /// Height above the terrain grid, beside the MSL altitude it is derived from.
+    ///
+    /// Deliberately conservative and deliberately quiet about it: the value is dimmed whenever the grid
+    /// or the fix can only support an approximate answer, and it shows "—" (never a stale or invented
+    /// number) when there is no coverage, no GPS altitude, or the vertical accuracy is too poor to
+    /// subtract anything meaningful from. A negative result — routine over forest and cities, because
+    /// the source is a max-aggregated SURFACE model — is floored to "SFC" rather than being drawn as a
+    /// negative altitude, which reads as an instrument fault. See TerrainElevation for the datum rule
+    /// and Tools/build_terrain_grid.py for what the grid is and is not.
+    @ViewBuilder private func aglBox() -> some View {
+        let p = model.palette
+        let result = model.aglResult
+        switch result {
+        case .reading(let r):
+            let text = r.isBelowSurfaceModel ? "SFC" : "\(Int(r.aglFt.rounded())) ft"
+            VStack(alignment: .leading, spacing: 1) {
+                Text("AGL").font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(p.textDim).tracking(0.5)
+                Text(text).font(.callout.monospaced().weight(.semibold))
+                    .foregroundStyle(r.trust == .usable ? p.text : p.textDim)
+            }
+            .modifier(BoxCell(p: p))
+            .accessibilityIdentifier("gps-agl")
+            .accessibilityLabel("Height above ground \(text), \(r.trust.rawValue) confidence")
+        case .unavailable:
+            metricBox("AGL", "—").accessibilityIdentifier("gps-agl")
+        }
     }
 
     private func metricBox(_ label: String, _ value: String) -> some View {
