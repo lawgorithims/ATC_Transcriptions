@@ -2144,11 +2144,26 @@ final class AppModel: ObservableObject {
             predictedDOP = GPSSkyPrediction.dop(sats.filter { $0.elevationDeg >= Self.maskDeg },
                                                 maskDeg: Self.maskDeg)
         }
-        let visible = predictedSky.isEmpty ? nil
-                    : predictedSky.filter { $0.elevationDeg >= Self.maskDeg && $0.healthy }.count
-        gpsThreat = GPSThreatClassifier.classify(integrity: verdict, predictedDOP: predictedDOP,
+        // Gate the geometry the THREAT classifier sees on almanac freshness. This is the safeguard the
+        // classifier documents ("with no valid geometry it must fall back to degraded, never guess
+        // jamming") — but geometry from a stale almanac is worse than none: it is confidently wrong, and
+        // a wrong "good geometry" is exactly what manufactures a false jamming verdict. Past the same
+        // 90-day line the Satellites page warns at, the classifier is handed nil so it cannot attribute a
+        // bad fix to interference. The Satellites page still SHOWS the aged prediction (clearly labelled
+        // old) — that is a display, not an accusation, so the two uses diverge deliberately here.
+        let staleDays = almanac.first.map { abs(GPSAlmanac.ageDays($0, at: now)) } ?? .greatestFiniteMagnitude
+        let geometryTrusted = !almanac.isEmpty && staleDays <= Self.almanacThreatMaxAgeDays
+        let visible = (geometryTrusted && !predictedSky.isEmpty)
+                    ? predictedSky.filter { $0.elevationDeg >= Self.maskDeg && $0.healthy }.count
+                    : nil
+        gpsThreat = GPSThreatClassifier.classify(integrity: verdict,
+                                                 predictedDOP: geometryTrusted ? predictedDOP : nil,
                                                  satellitesAboveMask: visible, now: now)
     }
+
+    /// Past this almanac age the predicted geometry is too drifted to base an interference accusation on,
+    /// so the threat classifier is handed nil geometry. Matches the Satellites page's staleness warning.
+    static let almanacThreatMaxAgeDays = 90.0
 
     /// Mask angle for "in view". 5° is the usual aviation receiver mask: below it a signal is skimming
     /// too much atmosphere to contribute usefully, and counting those satellites would flatter the

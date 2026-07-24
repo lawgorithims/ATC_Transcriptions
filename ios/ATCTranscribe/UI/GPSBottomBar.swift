@@ -12,9 +12,9 @@ struct GPSBottomBar: View {
         let r = GPSReadout.merge(stratux: model.stratuxGPS, device: deviceFix)
         return HStack(spacing: 8) {
             signalBox(r)
-            metricBox("ALT", r.altitudeFtMSL.map { "\(Int($0.rounded())) ft" } ?? "—")
+            metricBox("ALT", Self.intText(r.altitudeFtMSL, "ft"))
             aglBox()
-            metricBox("GS", r.groundSpeedKt.map { "\(Int($0.rounded())) kt" } ?? "—")
+            metricBox("GS", Self.intText(r.groundSpeedKt, "kt"))
             metricBox("TRK", r.trackDeg.map { String(format: "%03.0f°", $0) } ?? "—")
             // Live progress down the filed route at the current ground speed (only while a route + fix + GS
             // exist). TIME REMAINING (ETE, a duration) to the next waypoint and to the destination — the
@@ -72,7 +72,7 @@ struct GPSBottomBar: View {
         let result = model.aglResult
         switch result {
         case .reading(let r):
-            let text = r.isBelowSurfaceModel ? "SFC" : "\(Int(r.aglFt.rounded())) ft"
+            let text = r.isBelowSurfaceModel ? "SFC" : Self.intText(r.aglFt, "ft")
             VStack(alignment: .leading, spacing: 1) {
                 Text("AGL").font(.system(size: 9, weight: .semibold))
                     .foregroundStyle(p.textDim).tracking(0.5)
@@ -85,6 +85,16 @@ struct GPSBottomBar: View {
         case .unavailable:
             metricBox("AGL", "—").accessibilityIdentifier("gps-agl")
         }
+    }
+
+    /// Format a rounded integer with a unit, or "—". Non-trapping by construction: `Int(Double)` traps
+    /// on a non-finite or out-of-range value, and this bar renders numbers that ultimately originate at
+    /// an untrusted network feed, so the conversion goes through `Int(exactly:)` and falls back to a dash
+    /// rather than crashing the app-wide bar. (The Stratux boundary already bounds these; this is the
+    /// belt to that suspenders — a defence the "no crash on bad data" rule wants at the display too.)
+    static func intText(_ value: Double?, _ unit: String) -> String {
+        guard let v = value, v.isFinite, let i = Int(exactly: v.rounded()) else { return "—" }
+        return "\(i) \(unit)"
     }
 
     private func metricBox(_ label: String, _ value: String) -> some View {

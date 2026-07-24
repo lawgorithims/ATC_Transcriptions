@@ -55,7 +55,11 @@ struct GPSAlmanacEntry: Equatable, Sendable {
     /// silently produce a satellite in an impossible orbit that then poisons the DOP for the whole sky.
     var isPhysicallyPlausible: Bool {
         guard (1...210).contains(prn), health >= 0, week >= 0 else { return false }
-        guard e.isFinite, e >= 0, e < 1 else { return false }                       // must be elliptical
+        // GPS flies near-circular (e ~ 0.02 at most). Bounding to 0.1 — still over 3x any real value —
+        // rejects a pathological high-eccentricity record that would slow the Kepler solve and, worse,
+        // hand a physically absurd orbit to the DOP computation for the whole sky. Elliptical alone
+        // (e < 1) is not a tight enough gate for a navigation almanac.
+        guard e.isFinite, e >= 0, e < 0.1 else { return false }
         guard toa.isFinite, toa >= 0, toa < GPSAlmanac.secondsPerWeek else { return false }
         guard sqrtA.isFinite, sqrtA > 1_000, sqrtA < 10_000 else { return false }   // GPS is ~5153.5
         guard i0.isFinite, abs(i0) <= .pi, omegaDot.isFinite, abs(omegaDot) < 1e-6 else { return false }
@@ -402,7 +406,13 @@ enum GPSSkyPrediction {
     /// tens of degrees off in longitude, which looks plausible and is entirely wrong.
     static func ecefPosition(of entry: GPSAlmanacEntry, secondsFromReference tk: Double) -> ECEFPosition {
         assert(entry.sqrtA > 0, "semi-major axis must be positive")
-        assert(tk.isFinite && abs(tk) <= GPSAlmanac.secondsPerWeek, "tk must be folded to half a week")
+        // tk is a TRUE elapsed interval, not a folded half-week (see `secondsFromReference` — the fold
+        // was the removed week-aliasing bug). A static bundled almanac is legitimately propagated weeks
+        // or months from its epoch, so the only invariants here are finiteness and a generous multi-year
+        // sanity bound; a debug assert of "<= half a week" would SIGABRT the app the moment the almanac
+        // aged past a week, and it would trap the debug test suite too.
+        assert(tk.isFinite, "tk must be finite")
+        assert(abs(tk) < 53 * GPSAlmanac.secondsPerWeek, "tk beyond a year of a valid almanac is a bug")
         let a = entry.semiMajorAxisM
         let meanMotion = (GPSAlmanac.mu / (a * a * a)).squareRoot()
         let mk = entry.m0 + meanMotion * tk
