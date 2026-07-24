@@ -14,8 +14,10 @@ final class TerrainBundledGridTests: XCTestCase {
 
     /// Known ground elevations in metres. The grid is a max-aggregated SURFACE model on ~1 NM cells, so
     /// it reads at or slightly above field elevation at an airport (buildings, and the highest ground in
-    /// the cell) and somewhat BELOW a sharp summit (a 1 NM cell cannot hold a peak). Tolerances reflect
-    /// that honestly rather than being widened until the test passes.
+    /// the cell). Sharp summits used to read hundreds of feet LOW until the build's summit-refinement
+    /// pass; the western high peaks now recover to within ~35 ft, which these tolerances now PIN so a
+    /// regression that dropped the refinement (or re-smoothed a peak) fails here. Tolerances reflect the
+    /// measured accuracy, not a number widened until the test passes.
     private let sites: [(name: String, lat: Double, lon: Double, truthM: Double, tolM: Double)] = [
         ("KDEN Denver",      39.8617, -104.6731, 1656, 60),
         ("KDFW Dallas",      32.8998,  -97.0403,  185, 60),
@@ -23,7 +25,11 @@ final class TerrainBundledGridTests: XCTestCase {
         ("KMSY New Orleans", 29.9934,  -90.2580,    1, 40),
         ("KLAS Las Vegas",   36.0840, -115.1537,  665, 80),
         ("KSEA Seattle",     47.4502, -122.3088,  132, 60),
-        ("Mt Whitney",       36.5785, -118.2923, 4421, 250),   // summit: grid reads low, see above
+        // Refined summits — tolerances now tight (were 250 m); a lost refinement pass fails these.
+        ("Mt Whitney",       36.5785, -118.2923, 4421, 40),
+        ("Grand Teton",      43.7412, -110.8024, 4199, 40),   // was -528 ft before refinement
+        ("Mt Rainier",       46.8528, -121.7603, 4392, 40),
+        ("Granite Pk MT",    45.1633, -109.8074, 3901, 40),   // was -394 ft before refinement
     ]
 
     func testBundledGridIsLoaded() {
@@ -80,9 +86,27 @@ final class TerrainBundledGridTests: XCTestCase {
                 }
             }
         }
-        XCTAssertLessThan(worst.v, 4600,
-                          "highest sampled cell \(worst.v) m at \(worst.lat),\(worst.lon) — CONUS tops out at Whitney (4421 m)")
+        XCTAssertLessThan(worst.v, 4425,
+                          "highest sampled cell \(worst.v) m at \(worst.lat),\(worst.lon) — nothing in CONUS exceeds Whitney (4421 m); a value above it is a source artifact the refinement's plausibility clamp must reject")
         XCTAssertGreaterThan(worst.v, 3000, "the sample lattice should still find real mountains")
+    }
+
+    /// Ceiling tripwire — the refinement maxes zoom-13 pixels in, and one corrupt/no-data pixel decodes
+    /// to ~32767 m under the Terrarium formula. Maxing that in would poison a cell in the unsafe direction
+    /// (terrain too high -> AGL too low -> a false ground-proximity reading). The build script's
+    /// plausibility clamp is the real guarantee; this is a regression tripwire that samples a dense
+    /// lattice (every ~1.8 cells) so a systemic reintroduction of the artifact fails loudly.
+    func testNoCellExceedsConusCeiling() throws {
+        try XCTSkipUnless(terrain.status == .ready, "no bundled grid")
+        var maxSeen = -9999.0
+        for latMilli in stride(from: 24_000, through: 50_000, by: 30) {        // 0.03° steps (~1.8 cells)
+            for lonMilli in stride(from: -125_000, through: -66_000, by: 30) {
+                if let v = terrain.elevationM(at: Coord(lat: Double(latMilli) / 1000, lon: Double(lonMilli) / 1000)) {
+                    maxSeen = max(maxSeen, v)
+                }
+            }
+        }
+        XCTAssertLessThanOrEqual(maxSeen, 4425, "a cell above the CONUS ceiling is a refinement artifact")
     }
 
     func testOutsideCoverageIsRefusedNotGuessed() {

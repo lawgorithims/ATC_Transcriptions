@@ -219,6 +219,89 @@ def clean(grid):
                   "noDataCells": int((grid == NO_DATA).sum())}
 
 
+# ---------------------------------------------------------------- summit refinement
+
+REFINE_ZOOM = 13                 # near-native source resolution (~19 m posting) — peaks still sharp here
+REFINE_WINDOW = 7                # a cell that is the highest within +/-3 cells (~13 km) is a candidate summit
+REFINE_THRESHOLD_M = 2000        # only genuine high summits — where the coarse pyramid smooths hundreds of feet
+MAX_REFINE_TILES = 8_000         # bound the work (rule 2)
+# The highest ground in CONUS is Mt Whitney at 4421 m. A zoom-13 source pixel above this ceiling is a
+# corrupt / no-data value (a stray white pixel decodes to ~32767 m under the Terrarium formula), and
+# because refinement MAXES into the grid, one such pixel would poison a cell in the unsafe direction
+# (terrain too high -> AGL too low -> a false "you are at the ground"). The base build's despike runs
+# BEFORE refinement, so refinement must reject these itself.
+MAX_PLAUSIBLE_M = 4600
+
+
+def refine_summits(grid, workers):
+    """Recover true summit heights the coarse base pass smoothed away.
+
+    WHY THIS EXISTS. The base grid is max-aggregated from zoom-8/9 source tiles, but the AWS tile
+    PYRAMID is built by AVERAGING downsampling, so a sharp peak is already blurred DOWN before this
+    script ever sees it. Measured: Grand Teton's summit pixel reads 3905 m at zoom 9 (965 ft below its
+    true 4199 m) but 4194 m at zoom 13. Max-aggregating a smoothed value cannot recover what smoothing
+    removed — which is why "look at neighbouring cells" does NOT help (they were smoothed too). The only
+    fix is to re-read the peak from a zoom where it is still sharp.
+
+    Doing that for ALL high terrain would be ~74k tiles; but the severe under-read is only at genuine
+    SUMMITS, which are local maxima. This finds them (highest cell within a ~13 km window, above
+    REFINE_THRESHOLD_M), fetches the zoom-13 tile for each, and maxes its fine pixels back into the
+    grid. That is a few thousand tiles, and it errs the safe way: it can only RAISE terrain, so AGL can
+    only move DOWN ("you are closer to the ground"), never up.
+
+    Runs AFTER clean(): the recovered summits are real high-resolution data, so they must not be seen by
+    the despike pass (a genuine isolated peak looks exactly like the artifact despike removes).
+    """
+    from scipy.ndimage import maximum_filter                       # train-venv only; build-time dep
+    n = 2 ** REFINE_ZOOM
+    peak = (grid == maximum_filter(grid, size=REFINE_WINDOW, mode="nearest")) & (grid >= REFINE_THRESHOLD_M)
+    rs, cs = np.where(peak)
+    tiles = set()
+    for r, c in zip(rs, cs):                                        # bounded by the CONUS grid
+        lat = LAT_MAX - (r + 0.5) / CELLS_PER_DEG
+        lon = LON_MIN + (c + 0.5) / CELLS_PER_DEG
+        x = int((lon + 180.0) / 360.0 * n)
+        y = int((1.0 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2.0 * n)
+        tiles.add((x, y))
+    tiles = list(tiles)[:MAX_REFINE_TILES]
+    print(f"summit refinement: {len(rs)} summit cells -> {len(tiles)} zoom-{REFINE_ZOOM} tiles", flush=True)
+
+    rows, cols = grid.shape
+    flat = grid.reshape(-1)
+    done = raised = 0
+    with futures.ThreadPoolExecutor(max_workers=workers) as pool:
+        jobs = {pool.submit(fetch, TILE_URL.format(z=REFINE_ZOOM, x=x, y=y)): (x, y) for x, y in tiles}
+        for fut in futures.as_completed(jobs):
+            x, y = jobs[fut]; done += 1
+            try:
+                rgb = decode_png_rgb(fut.result())
+            except Exception as e:
+                print(f"  skip {x},{y}: {e}", flush=True); continue
+            size = rgb.shape[0]
+            elev = (rgb[:, :, 0].astype(np.float64) * 256.0 + rgb[:, :, 1].astype(np.float64)
+                    + rgb[:, :, 2].astype(np.float64) / 256.0) - 32768.0
+            lat, lon = tile_pixel_latlon(REFINE_ZOOM, x, y, size)
+            ri = np.floor((LAT_MAX - lat) * CELLS_PER_DEG).astype(np.int64)
+            ci = np.floor((lon - LON_MIN) * CELLS_PER_DEG).astype(np.int64)
+            rok = (ri >= 0) & (ri < rows); cok = (ci >= 0) & (ci < cols)
+            if not rok.any() or not cok.any():
+                continue
+            sub = elev[np.ix_(rok, cok)]
+            idx = (ri[rok][:, None] * cols + ci[cok][None, :]).ravel()
+            vals = np.rint(sub).ravel()
+            # Reject corrupt / no-data pixels BEFORE maxing in — one 32767 m pixel would poison a cell in
+            # the unsafe direction. (Keep them as float until after the mask so the compare is exact.)
+            keep = vals <= MAX_PLAUSIBLE_M
+            idx = idx[keep]; vals = vals[keep].astype(np.int16)
+            before = flat[idx].copy()
+            np.maximum.at(flat, idx, vals)                          # RAISE only — never lowers terrain
+            raised += int((flat[idx] > before).sum())
+            if done % 200 == 0:
+                print(f"  {done}/{len(tiles)}", flush=True)
+    return grid, {"summitCellsFound": int(len(rs)), "refineTiles": len(tiles),
+                  "cellsRaised": raised, "refineZoom": REFINE_ZOOM}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--zoom", type=int, default=8)
@@ -226,7 +309,22 @@ def main():
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--clean-only", action="store_true",
                     help="re-run the cleanup pass over an existing .bin (no downloads)")
+    ap.add_argument("--refine-only", action="store_true",
+                    help="fetch zoom-13 summit tiles and max them into an existing .bin (no base rebuild)")
     args = ap.parse_args()
+
+    if args.refine_only:
+        here = os.path.dirname(os.path.abspath(__file__))
+        outdir = args.out or os.path.join(here, "..", "ATCTranscribe", "Resources", "terrain")
+        hdr = json.load(open(os.path.join(outdir, "terrain_conus.json")))
+        binpath = os.path.join(outdir, "terrain_conus.bin")
+        grid = np.fromfile(binpath, dtype="<i2").reshape(hdr["rows"], hdr["cols"])
+        grid, stats = refine_summits(grid, args.workers)
+        grid.astype("<i2").tofile(binpath)
+        hdr["summitRefinement"] = stats
+        json.dump(hdr, open(os.path.join(outdir, "terrain_conus.json"), "w"), indent=2)
+        print(f"refined: {stats}; min {int(grid.min())} max {int(grid.max())}")
+        return
 
     if args.clean_only:
         here = os.path.dirname(os.path.abspath(__file__))

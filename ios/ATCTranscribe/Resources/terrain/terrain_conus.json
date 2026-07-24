@@ -20,5 +20,13 @@
     "clampedBelowSeaLevel": 0,
     "despiked": 0,
     "noDataCells": 0
+  },
+  "summitRefinement": {
+    "summitCellsFound": 4594,
+    "refineTiles": 4559,
+    "cellsRaised": 247811905,
+    "refineZoom": 13,
+    "artifactCeilingM": 4425,
+    "artifactsClamped": 2
   }
 }
