@@ -61,6 +61,18 @@ struct TranscriptRecord: Sendable, Identifiable, Equatable {
     /// The fused, one-per-line speaker label the transcript renders — the runtime port of the
     /// offline `speaker_label` (ATC / callsign / Pilot / unknown). Set by `SpeakerLabeler`.
     var speakerLabel: SpeakerLabel = .unknown
+    /// The deterministic snap grounding (callsign + slot verdicts) for this transmission — retained so the
+    /// EFB instruction parser can grade a parsed instruction's confidence, and the transcript log can
+    /// serialize the verdicts. nil offline / when no candidate list existed.
+    var snapGrounding: SnapGrounding? = nil
+    /// Whisper's own confidence for this transmission (avgLogprob / compressionRatio). `.unknown` for
+    /// non-Whisper callers (bench/tests).
+    var asr: ASRConfidence = .unknown
+    /// The numeric confidence-gate cleanliness estimate (0…1) — computed for EVERY record (ASR-only when
+    /// no LLM backend is active), so the UI 🟢🟡🔴 dot and the log always have a value.
+    var gateConfidence: Double = 1.0
+    /// Linear RMS of the (pre-preprocess) segment audio — the honest input level, for the log's QA/tuning.
+    var segmentRMS: Float? = nil
 
     /// What the UI shows: the LLM-refined text if present, else the inline-corrected text, else
     /// the raw transcript.
@@ -327,6 +339,14 @@ actor LivePipeline {
             timestamp: Self.timeFormatter.string(from: Date()))
         record.speaker = speaker
         record.speakerDistance = speakerDistance
+        // Retain the deterministic grounding + ASR/level signals on the record (Phase-0 plumbing): the EFB
+        // instruction parser grades confidence from them and the transcript log serializes them. The gate
+        // confidence gets an ASR-only baseline here; the refiner block below overrides it with the full
+        // gate value when an LLM backend is active.
+        record.snapGrounding = grounding
+        record.asr = asr
+        record.segmentRMS = Self.linearRMS(segment.audio)
+        record.gateConfidence = ConfidenceGate.confidence(asr: asr, hasSignal: false)
         // Extract the canonical callsign this transmission addresses (the key that groups the
         // aircraft's conversation). ATTRIBUTION is gated by the snap verdict when a live candidate
         // list existed: an unverified callsign still displays as heard, but is not attributed to
@@ -376,6 +396,7 @@ actor LivePipeline {
                                        inlineEdits: inlineEdits,
                                        snapReasons: grounding.gateReasons)
             record.gateReason = decision.reason
+            record.gateConfidence = decision.confidence   // full gate confidence when the LLM tier is active
             if !gateEnabled || decision.shouldRefine {
                 record.refinementState = .pending
                 await refiner.enqueue(RefinementRequest(id: record.id, text: baseText,
@@ -490,6 +511,13 @@ actor LivePipeline {
         return max(0, min(1, (db + 50) / 50))          // -50 dB → 0, 0 dB → 1
     }
 
+    /// Linear RMS (0…1) of a segment's audio — the honest input level stored on the record for the log's
+    /// QA/tuning (distinct from `level`'s perceptual dB-mapped meter value). One bounded O(n) pass.
+    static func linearRMS(_ x: [Float]) -> Float {
+        guard !x.isEmpty else { return 0 }
+        return (x.reduce(0) { $0 + $1 * $1 } / Float(x.count)).squareRoot()
+    }
+
     func stop() async {
         running = false
         await refiner?.cancel()   // drop queued background LLM work so it doesn't keep cooking on Stop/standby
@@ -529,6 +557,12 @@ actor LivePipeline {
     /// empty block clears it. Takes effect on the next transmission.
     func setFlightPlanContext(block: String, vocab: [String]) {
         context.setFlightPlan(block: block, vocab: vocab)
+    }
+
+    /// Inject the ownship callsign + next waypoint into the DECODE prompt (gap C). Empty callsign clears
+    /// it. Takes effect on the next transmission.
+    func setOwnshipContext(callsign: String, nextWaypoint: String) {
+        context.setOwnship(callsign: callsign, nextWaypoint: nextWaypoint)
     }
 
     /// Inject the filed route's PLATE priming (chart frequencies/fixes) into the decode + correction

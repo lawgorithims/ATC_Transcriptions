@@ -48,6 +48,24 @@ struct SettingsSheet: View {
                                 .font(.caption2).foregroundStyle(p.textDim)
                         }
                     }
+                    Card(title: "Transcript log") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Toggle(isOn: $model.transcriptLoggingEnabled) {
+                                Text("Save transcript log").font(.caption).foregroundStyle(p.text)
+                            }
+                            .accessibilityIdentifier("transcript-log-toggle")
+                            Text("Saves every transmission — raw text, corrections, the parsed instruction, and confidence — to a private file on this device for QA and to improve the model. Off by default. Stays on this device; never uploaded.")
+                                .font(.caption2).foregroundStyle(p.textDim)
+                            if let url = model.transcriptLogFileURL {
+                                ShareLink(item: url) {
+                                    Label("Export transcript log", systemImage: "square.and.arrow.up")
+                                        .font(.caption.weight(.semibold)).foregroundStyle(p.accent)
+                                }
+                                .accessibilityIdentifier("transcript-log-export")
+                            }
+                        }
+                        .task(id: model.transcriptLoggingEnabled) { await model.flushTranscriptLog() }
+                    }
                     Card(title: "Squelch") {
                         SquelchControls()
                     }
