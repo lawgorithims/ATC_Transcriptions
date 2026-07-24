@@ -3,12 +3,41 @@ import Foundation
 /// A full device-GPS snapshot (CoreLocation), with the framework's invalid sentinels already resolved to
 /// nil by `DeviceLocation` (speed/course < 0 and verticalAccuracy <= 0 all mean "not available"). A pure
 /// value type (no CoreLocation import) so the merge + unit conversions are unit-testable.
+///
+/// The fields below the accuracy line are the INTEGRITY-BEARING ones (`GPSIntegrityMonitor` reads them):
+/// iOS exposes no DOP, no satellite count and no raw GNSS measurements, so the only cross-checks available
+/// are the receiver's own uncertainty estimates and the disagreement between position and velocity. They
+/// default to nil/false so every existing construction of a `DeviceFix` still compiles unchanged.
 struct DeviceFix: Equatable {
     var coord: Coord
     var altitudeMSLm: Double?      // metres MSL; nil when verticalAccuracy <= 0 (altitude invalid)
     var groundSpeedMps: Double?    // m/s; nil when CLLocation.speed < 0 (stationary / no estimate yet)
     var courseDeg: Double?         // ° true; nil when CLLocation.course < 0 (not moving)
     var horizontalAccuracyM: Double
+
+    /// When the fix was taken (CLLocation.timestamp) — the monitor diffs pairs on this, never on now().
+    var timestamp: Date = .distantPast
+    var verticalAccuracyM: Double?      // metres, 1-sigma; nil when unavailable
+    /// Altitude above the WGS-84 ELLIPSOID (iOS 15+). Differs from MSL by the local geoid undulation —
+    /// tens of metres — which is one reason GPS and baro altitude disagree, and why AGL must subtract a
+    /// terrain elevation in the SAME datum as `altitudeMSLm`.
+    var altitudeEllipsoidalM: Double?
+    var speedAccuracyMps: Double?       // 1-sigma, iOS 13.4+; nil when unavailable
+    var courseAccuracyDeg: Double?      // 1-sigma, iOS 13.4+; nil when unavailable
+    /// The OS says this location was produced by software rather than the GNSS chip (iOS 15+) — a hard
+    /// spoof signal on the device side.
+    var isSimulated: Bool = false
+
+    // MARK: - Derived
+
+    var altitudeMSLft: Double? { altitudeMSLm.map { $0 * GPSReadout.mToFt } }
+    var groundSpeedKt: Double? { groundSpeedMps.map { $0 * GPSReadout.mpsToKt } }
+
+    /// Geoid undulation (ellipsoidal − MSL) in feet, when both altitudes are present.
+    var geoidUndulationFt: Double? {
+        guard let e = altitudeEllipsoidalM, let m = altitudeMSLm else { return nil }
+        return (e - m) * GPSReadout.mToFt
+    }
 }
 
 /// GPS signal quality normalized across the two sources — Stratux reports a fix TYPE (3D/WAAS) + satellite

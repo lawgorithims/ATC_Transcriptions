@@ -360,6 +360,14 @@ final class AppModel: ObservableObject {
     /// Continuous device-GPS ownship (for a Stratux-less iPad) — the plate viewer starts/stops it and
     /// observes it directly. Preferred fallback after a valid Stratux fix (see `ownshipCoord`).
     let deviceLocation = DeviceLocation()
+    /// Republished GPS integrity verdict. `deviceLocation` is a NESTED ObservableObject, so it does not
+    /// republish this parent (the Flight Bag C2 rule) — views that observe `AppModel` (the map engines,
+    /// the threat banner) need it mirrored here explicitly.
+    @Published private(set) var gpsIntegrity = GPSIntegrityAssessment()
+    /// The widened last fix behind `gpsIntegrity` (altitudes, velocity uncertainties, geoid undulation).
+    @Published private(set) var gpsFix: DeviceFix?
+    /// Lifetime subscriptions for the integrity mirror — never torn down on a session swap.
+    private var gpsCancellables: Set<AnyCancellable> = []
     /// Shared frame counter the MapLibre map bumps per rendered frame; the battery sampler deltas it into
     /// map fps (to tell an idle map compositing continuously from a paused one). NOT @Published — reading it
     /// per frame must never re-render a view.
@@ -1168,6 +1176,7 @@ final class AppModel: ObservableObject {
         // Keep the online-ADS-B poll centered on the aircraft as it flies (throttled to ~10 NM).
         deviceCoordCancellable = deviceLocation.$coord
             .sink { [weak self] _ in self?.recenterADSBIfMoved() }
+        observeGPSIntegrity()   // mirror the integrity verdict + stamp it onto the transcript log
         // Bring the traffic providers in line with the restored state: the Stratux link is decoupled
         // from Start (see `stratuxTrafficActive`), so an enabled link must connect at launch — nothing
         // else fires an edge on a plain foreground launch (`scenePhaseActive` starts true, making the
@@ -1983,6 +1992,27 @@ final class AppModel: ObservableObject {
 
     var isRecording: Bool { flightRecorder.isRecording }
     var recordingStartedAt: Date? { flightRecorder.startedAt }
+
+    /// Mirror `deviceLocation`'s integrity verdict onto this model (nested observables don't republish
+    /// their parent) and push it to the transcript log, so every logged transmission carries whether the
+    /// position was trustworthy at that moment.
+    ///
+    /// The log stamp is pushed on EVERY fix, not just on a state change: the stamp carries the position,
+    /// and a flight-data record whose coordinate froze at the last integrity transition would be worse
+    /// than none. That costs one actor hop per fix, and only while logging is opted in — with no store
+    /// there is no hop at all.
+    private func observeGPSIntegrity() {
+        deviceLocation.$integrity
+            .sink { [weak self] verdict in
+                guard let self else { return }
+                self.gpsIntegrity = verdict
+                self.gpsFix = self.deviceLocation.fix
+                guard let store = self.transcriptLogStore else { return }
+                let stamp = GPSLogStamp(assessment: verdict, fix: self.deviceLocation.fix)
+                Task { await store.setGPS(stamp) }
+            }
+            .store(in: &gpsCancellables)
+    }
 
     /// The current merged fix for the recorder to sample — coord from presentPosition (same source order as
     /// the map ownship) paired with the merged alt/speed/track so they agree. nil when there's no GPS.
