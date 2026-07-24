@@ -239,6 +239,9 @@ struct TranscriptRow: View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 8) {
+                    // At-a-glance confidence gauge (🟢🟡🔴): grounding + cleanliness of this line.
+                    // Orthogonal to the AI-fixer status text below (which reports the LLM stage).
+                    confidenceDot(p)
                     // ONE fused speaker label per line (the runtime `speaker_label`), mirroring the
                     // website: "ATC" (→ addressed aircraft) for a controller, the callsign for a
                     // pilot, a muted "Pilot" when the role is known but no callsign was recovered,
@@ -318,6 +321,21 @@ struct TranscriptRow: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             Rectangle().fill(p.border.opacity(0.6)).frame(height: 1)
         }
+    }
+
+    /// The per-line confidence gauge: green (grounded + clean), amber (heard-but-unverified / AI-touched),
+    /// red (no callsign recovered + the gate flagged the text). Always visible — it is the feature.
+    private func confidenceDot(_ p: Palette) -> some View {
+        let color: Color
+        let label: String
+        switch LineConfidence.of(record) {
+        case .high:   color = p.good; label = "High confidence"
+        case .medium: color = p.warn; label = "Medium confidence"
+        case .low:    color = p.bad;  label = "Low confidence"
+        }
+        return Circle().fill(color).frame(width: 8, height: 8)
+            .accessibilityIdentifier("confidence-dot")
+            .accessibilityLabel(label)
     }
 
     /// The AI-fixer status line under the transcript: a live "running…" spinner, then the

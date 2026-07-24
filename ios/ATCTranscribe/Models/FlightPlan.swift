@@ -26,17 +26,43 @@ struct FlightPlan: Codable, Equatable {
     /// old persisted plans (which lack the key) still decode. Also sent to ForeFlight as `NNNNft`.
     var cruiseAltitudeFt: Int?
 
+    // ATC-ASSIGNED (not filed) values, set by accepting an EFB clearance. Optional Codable so old plans
+    // decode (missing key → nil). These are EPHEMERAL per-flight state: `load()` drops them on an app
+    // restart (a week-old "squawk 4231" is wrong), they are EXCLUDED from `isEmpty` (an assignment alone
+    // is not a "filed plan"), and — deliberately — NOT added to `contextBlock`/`vocabTerms` (they must not
+    // bias correction) nor to the ForeFlight export. `activeFrequency` is display-only situational
+    // awareness; the app tunes no radio.
+    var assignedAltitudeFt: Int?     // "maintain / climb / descend and maintain N"
+    var assignedHeadingDeg: Int?     // "fly / turn left|right heading DDD"
+    var assignedSpeedKt: Int?        // "maintain / reduce / increase N knots"
+    var assignedSquawk: String?      // "squawk NNNN" (4 octal digits)
+    var activeFrequency: String?     // "contact <facility> NNN.NN" — display only
+
     /// The loaded procedures in flight order (departure, arrival, approach), skipping empty slots.
     var loadedProcedures: [LoadedProcedure] {
         [departureProcedure, arrivalProcedure, approachProcedure].compactMap { $0 }
     }
 
     /// True when nothing meaningful has been entered (drives the "no plan" prompt + warning badge).
+    /// ATC-assigned values are DELIBERATELY excluded — an assignment alone is not a filed plan (and in
+    /// practice never occurs alone: a suggestion only fires when a callsign is already filed).
     var isEmpty: Bool {
         aircraftType.isEmpty && callsign.isEmpty && departure.isEmpty
             && destination.isEmpty && alternate.isEmpty && route.isEmpty
             && departureProcedure == nil && arrivalProcedure == nil && approachProcedure == nil
             && cruiseAltitudeFt == nil
+    }
+
+    /// True when any ATC-assigned value is set (drives the assignments chip row).
+    var hasAssignments: Bool {
+        assignedAltitudeFt != nil || assignedHeadingDeg != nil || assignedSpeedKt != nil
+            || assignedSquawk != nil || activeFrequency != nil
+    }
+
+    /// Clear all ATC-assigned values (ephemeral per-flight state; dropped on app restart).
+    mutating func clearAssignments() {
+        assignedAltitudeFt = nil; assignedHeadingDeg = nil; assignedSpeedKt = nil
+        assignedSquawk = nil; activeFrequency = nil
     }
 
     /// A filed plan older than this should be refreshed before the next flight.
@@ -248,11 +274,13 @@ struct FlightPlan: Codable, Equatable {
 
     static let storageKey = "atc.flightPlan"
 
-    /// The saved plan, or nil when nothing meaningful is stored.
+    /// The saved plan, or nil when nothing meaningful is stored. ATC-assigned values are ephemeral
+    /// per-flight state and are dropped on load — they must not resurface a week later at next launch.
     static func load() -> FlightPlan? {
         guard let data = UserDefaults.standard.data(forKey: storageKey),
-              let plan = try? JSONDecoder().decode(FlightPlan.self, from: data),
+              var plan = try? JSONDecoder().decode(FlightPlan.self, from: data),
               !plan.isEmpty else { return nil }
+        plan.clearAssignments()
         return plan
     }
 

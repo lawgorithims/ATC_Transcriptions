@@ -45,10 +45,17 @@ enum ATCCommandParser {
     // second-aircraft boundary. One controller instruction is short; a second aircraft's callsign +
     // clearance is longer. Fail-closed on ambiguity — a wrong suggestion is worse than a miss.
     static let maxClauseTokens = 8
-    // The clearance verbs that OPEN an EFB-actionable clause (direct-to / approach / SID / STAR). A
-    // command binds to ownship only when one of these immediately opens ownship's OWN instruction — so
-    // "ownship, <non-clearance instruction> … OTHER aircraft cleared …" can't bind the other's clearance.
-    static let efbOpeners: Set<String> = ["cleared", "recleared", "proceed", "proceeding", "fly", "climb", "descend"]
+    // The verbs that OPEN an EFB-actionable clause. A command/instruction binds to ownship only when one
+    // of these immediately opens ownship's OWN instruction — so "ownship, <non-actionable> … OTHER
+    // aircraft cleared …" can't bind the other's clearance. The route-clearance verbs (cleared/proceed/…)
+    // serve the legacy `ATCCommandParser`; the numeric-instruction verbs (turn/maintain/squawk/contact/…)
+    // serve `ATCInstructionParser`. Adding the numeric verbs is behavior-preserving for the legacy parser:
+    // it only ever emits route kinds, so an ownship clause opened by "maintain"/"turn" yields no route
+    // command and still returns nil (verified by `ATCCommandParserTests` multi-aircraft cases).
+    static let efbOpeners: Set<String> = [
+        "cleared", "recleared", "proceed", "proceeding", "fly", "climb", "descend",
+        "descending", "turn", "maintain", "squawk", "contact", "monitor", "reduce", "increase",
+    ]
     static let efbFillers: Set<String> = ["roger", "and", "then"]   // benign words allowed before the opener
 
     /// The grounded data a clearance must match, so the parser only ever proposes a REAL target: filed /
