@@ -32,6 +32,14 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 88, version: "1.0", headline: "Sharper terrain height near mountains",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "mountain.2.fill",
+                    title: "Accurate AGL over peaks",
+                    detail: "The built-in terrain map now reads mountain summits far more accurately, so your height-above-ground (AGL) is much closer to the truth in the high country — the elevation near sharp peaks was reading low, which made AGL read a little high. Over the western ranges it’s now within about 35 feet. It’s still a situational aid, not a terrain-avoidance system, and always errs toward showing you closer to the ground."),
+            ]),
+        ReleaseNote(
             build: 87, version: "1.0", headline: "GPS integrity, height above ground, and a satellite view",
             highlights: [
                 WhatsNewHighlight(

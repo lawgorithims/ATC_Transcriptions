@@ -218,21 +218,20 @@ final class TerrainElevation {
     static let maxVerticalAccuracyM = 50.0
 
     /// How far the grid can UNDER-read real terrain, in metres, and therefore how far AGL can OVERSTATE
-    /// clearance. This is the correction to an earlier, wrong claim in this file that the grid's error
-    /// was one-sided in the safe direction because of max-aggregation. It is not.
+    /// clearance. The grid error is one-sided in the OPTIMISTIC (unsafe) direction near summits — it
+    /// does not offset GPS error, it ADDS to it — so `AGLReading.marginFt` carries this outward for the
+    /// UI to hedge, and it is one reason the readout is advisory and never a terrain-avoidance source.
     ///
-    /// Max-aggregation guarantees a cell is at least the highest SAMPLE it saw — not the highest ground
-    /// inside it. The source is an already-smoothed ~245 m-posting DEM, so a sharp summit is missing
-    /// from the samples before aggregation ever runs. Measured against the shipped grid, 17 of 18 CONUS
-    /// summits read BELOW their surveyed elevation (Grand Teton by 161 m / 528 ft), and the grid's global
-    /// maximum, 4368 m, is below Mount Whitney's 4421 m — the grid cannot represent the highest point in
-    /// the country. Over open terrain and at airports the agreement is within tens of metres (Denver
-    /// +2 m, Dallas -1 m); it is peaks specifically that are under-read.
-    ///
-    /// So the error ADDS to the GPS vertical error rather than offsetting it, and near mountains the
-    /// readout is optimistic. `AGLReading.marginFt` carries this outward so the UI can hedge it, and it
-    /// is the reason the readout is advisory and must never be used for terrain avoidance.
-    static let peakUnderReadM = 165.0
+    /// WHY A SUMMIT UNDER-READS. The source is an averaged tile pyramid, so a sharp peak is smoothed
+    /// DOWN before the build ever samples it. The build (`Tools/build_terrain_grid.py`) counters this
+    /// with a summit-refinement pass that re-reads genuine local maxima from near-native zoom-13 tiles;
+    /// after it, the western high peaks — the largest errors — recover to within ~35 ft (Grand Teton
+    /// went from -528 ft to -16 ft, mean over 20 surveyed summits from -169 ft to -25 ft). What remains
+    /// is a few isolated summits the coarse grid's smoothing shifted a cell sideways so they were not
+    /// flagged as maxima (Guadalupe Pk TX -249 ft, Mt Marcy NY -157 ft). This margin is sized to cover
+    /// that residual worst case, not the old un-refined one — hence 80 m (~262 ft) rather than 165 m.
+    /// Retighten it only alongside a measurement (see the summit table in TerrainBundledGridTests).
+    static let peakUnderReadM = 80.0
 
     /// Above this horizontal 1-sigma the fix cannot pick a cell (cells are ~1852 m N-S, ~1439 m E-W at
     /// 39 degrees N). Set to roughly half a cell so the chosen cell is more likely right than not.
