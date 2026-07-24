@@ -24,6 +24,10 @@ struct MapLibreChartView: UIViewRepresentable {
     var radarTemplate: String? = nil                      // live precipitation-radar tile URL (nil = off)
     var ownship: CLLocationCoordinate2D? = nil
     var ownshipCourse: Double? = nil
+    /// 1-sigma horizontal accuracy of the device fix in metres (nil for a Stratux fix / no fix) — drawn
+    /// as the accuracy ring, and integrity tints both the ring and the ownship symbol.
+    var ownshipAccuracyM: Double? = nil
+    var ownshipIntegrity: GPSIntegrityState = .unknown
     var traffic: [Aircraft] = []
     var tfrs: [TFR] = []
     var showTFRs: Bool = false
@@ -70,6 +74,7 @@ struct MapLibreChartView: UIViewRepresentable {
         c.inMapCommand = mapCommand
         c.cacheInputs(layer: layer, routeCoords: routeCoords, breadcrumbCoords: breadcrumbCoords,
                       radarTemplate: radarTemplate, ownship: ownship, ownshipCourse: ownshipCourse,
+                      ownshipAccuracyM: ownshipAccuracyM, ownshipIntegrity: ownshipIntegrity,
                       traffic: traffic, tfrs: showTFRs ? tfrs : [], showAirspace: showAirspace,
                       showNearby: showNearby, showAirways: showAirways, plateOverlay: plateOverlay,
                       routeIdents: routeIdents, focus: focus, restoreCamera: restoreCamera,
@@ -166,7 +171,9 @@ struct MapLibreChartView: UIViewRepresentable {
         func cacheInputs(layer: ChartLayer, routeCoords: [CLLocationCoordinate2D],
                          breadcrumbCoords: [CLLocationCoordinate2D], radarTemplate: String?,
                          ownship: CLLocationCoordinate2D?,
-                         ownshipCourse: Double?, traffic: [Aircraft], tfrs: [TFR], showAirspace: Bool,
+                         ownshipCourse: Double?, ownshipAccuracyM: Double?,
+                         ownshipIntegrity: GPSIntegrityState,
+                         traffic: [Aircraft], tfrs: [TFR], showAirspace: Bool,
                          showNearby: Bool, showAirways: Bool, plateOverlay: PlateOverlayState?,
                          routeIdents: Set<String>, focus: Coord?, restoreCamera: SavedMapCamera?,
                          onTap: @escaping ([IdentifiedObject]) -> Void,
@@ -174,6 +181,7 @@ struct MapLibreChartView: UIViewRepresentable {
                          searchHighlight: CLLocationCoordinate2D?) {
             inLayer = layer; inRoute = routeCoords; inBreadcrumb = breadcrumbCoords; inRadarTemplate = radarTemplate
             inOwnship = ownship; inOwnCourse = ownshipCourse
+            inOwnAccuracy = ownshipAccuracyM; inOwnIntegrity = ownshipIntegrity
             inTraffic = traffic; inTFRs = tfrs; inShowAirspace = showAirspace; inShowNearby = showNearby
             inShowAirways = showAirways; inPlate = plateOverlay; inFocus = focus; self.restoreCamera = restoreCamera
             self.routeIdents = routeIdents; self.onTapObjects = onTap; self.onPlateAnchors = onAnchors
@@ -216,7 +224,8 @@ struct MapLibreChartView: UIViewRepresentable {
             emitSearchPoint(map)               // keep the pulsing search marker glued to its spot
             applyMapCommand(map)               // one-shot side-bar zoom / center-on-ownship
             applyOverlayToggles(inShowAirspace, inShowNearby, inShowAirways, on: map)
-            updateOwnship(inOwnship, course: inOwnCourse, on: map)
+            updateOwnship(inOwnship, course: inOwnCourse, accuracyM: inOwnAccuracy,
+                          integrity: inOwnIntegrity, on: map)
             updateTraffic(inTraffic, on: map)
             updateTFRs(inTFRs, on: map)
             updatePlate(inPlate, on: map)
@@ -431,7 +440,8 @@ struct MapLibreChartView: UIViewRepresentable {
             refreshOverlays(mapView)
             frameIfNeeded(on: mapView)           // frame now if route/GPS/camera arrived before the style loaded
             // Re-apply anything updateUIView cached before the style finished loading (same idiom as route).
-            updateOwnship(lastOwnship, course: lastOwnCourse, on: mapView)
+            updateOwnship(lastOwnship, course: lastOwnCourse, accuracyM: lastOwnAccuracy,
+                          integrity: lastOwnIntegrity, on: mapView)
             updateTraffic(lastTraffic, on: mapView)
             updateTFRs(cachedTFRs, on: mapView)
             updatePlate(plateState, on: mapView)
@@ -493,14 +503,14 @@ struct MapLibreChartView: UIViewRepresentable {
         /// cache that restored our runtime layers (leaving dangling ids). "faa" is intentionally excluded — it
         /// lives in the base style JSON and is re-managed by ensureVisiblePacks. Bounded loops, >=2 asserts.
         private func clearManagedStyle(_ style: MLNStyle) {
-            let layers = ["plate-raster", "ownship-sym", "traffic-sym", "route-line", "track-line",
+            let layers = ["plate-raster", "ownship-sym", "accuracy-fill", "accuracy-line", "traffic-sym", "route-line", "track-line",
                           "wxradar-layer", "tfr-label", "tfr-outline", "tfr-fill", "nav-sym",
                           "airspace-label", "airways-label", "airspace-outline", "airspace-fill",
                           "airways-line", "coastline", "land-fill"]
             for id in layers where style.layer(withIdentifier: id) != nil {          // bounded (rule 2)
                 if let l = style.layer(withIdentifier: id) { style.removeLayer(l) }
             }
-            let sources = ["plate", "ownship", "traffic", "route", "track", "wxradar", "tfr-labels", "tfr",
+            let sources = ["plate", "ownship", "accuracy", "traffic", "route", "track", "wxradar", "tfr-labels", "tfr",
                            "nav", "airspace-labels", "airspace", "airways", "land"]
             for id in sources where style.source(withIdentifier: id) != nil {        // bounded (rule 2)
                 if let s = style.source(withIdentifier: id) { style.removeSource(s) }
@@ -663,7 +673,26 @@ struct MapLibreChartView: UIViewRepresentable {
             style.addLayer(route)
 
             style.setImage(ChartMapView.Coordinator.traffic, forName: "own-traffic")
-            style.setImage(ChartMapView.Coordinator.ownPlane, forName: "own-ship")
+            // Three ownship symbols, selected per-feature by integrity, so a degraded fix can never be
+            // drawn in the same confident blue as a good one. (An unreliable/suspect fix is normally not
+            // passed to the map at all — MapHostView suppresses it — but if one ever is, it reads red.)
+            style.setImage(ChartMapView.Coordinator.ownPlane(for: .nominal), forName: "own-ship")
+            style.setImage(ChartMapView.Coordinator.ownPlane(for: .degraded), forName: "own-ship-degraded")
+            style.setImage(ChartMapView.Coordinator.ownPlane(for: .suspect), forName: "own-ship-suspect")
+
+            // 1-sigma horizontal accuracy ring. MapLibre has no metre-radius circle primitive, so this is
+            // a real geodesic polygon rebuilt when the fix moves materially (see updateOwnship). It is
+            // added BEFORE the ownship symbol so the aircraft always draws on top of its own uncertainty.
+            let accSrc = MLNShapeSource(identifier: "accuracy", shape: nil, options: nil); style.addSource(accSrc)
+            let accFill = MLNFillStyleLayer(identifier: "accuracy-fill", source: accSrc)
+            accFill.fillColor = NSExpression(forKeyPath: "color")
+            accFill.fillOpacity = NSExpression(forConstantValue: 0.10)
+            style.addLayer(accFill)
+            let accLine = MLNLineStyleLayer(identifier: "accuracy-line", source: accSrc)
+            accLine.lineColor = NSExpression(forKeyPath: "color")
+            accLine.lineOpacity = NSExpression(forConstantValue: 0.55)
+            accLine.lineWidth = NSExpression(forConstantValue: 1.0)
+            style.addLayer(accLine)
             let trafficSrc = MLNShapeSource(identifier: "traffic", shape: nil, options: nil); style.addSource(trafficSrc)
             let traffic = MLNSymbolStyleLayer(identifier: "traffic-sym", source: trafficSrc)
             traffic.iconImageName = NSExpression(forConstantValue: "own-traffic")
@@ -680,7 +709,7 @@ struct MapLibreChartView: UIViewRepresentable {
             style.addLayer(traffic)
             let ownSrc = MLNShapeSource(identifier: "ownship", shape: nil, options: nil); style.addSource(ownSrc)
             let own = MLNSymbolStyleLayer(identifier: "ownship-sym", source: ownSrc)
-            own.iconImageName = NSExpression(forConstantValue: "own-ship")
+            own.iconImageName = NSExpression(forKeyPath: "img")      // per-integrity symbol
             own.iconRotation = NSExpression(forKeyPath: "rot")             // pre-baked (course - 90)
             own.iconRotationAlignment = NSExpression(forConstantValue: "map")
             // Screen-flat billboard (heading via rotation-alignment=map). Pitch-alignment defaults to "auto",
@@ -1060,6 +1089,10 @@ struct MapLibreChartView: UIViewRepresentable {
 
         private var lastOwnship: CLLocationCoordinate2D?
         private var lastOwnCourse: Double?
+        private var lastOwnAccuracy: Double?
+        private var lastOwnIntegrity: GPSIntegrityState = .unknown
+        var inOwnAccuracy: Double?
+        var inOwnIntegrity: GPSIntegrityState = .unknown
         private var lastTraffic: [Aircraft] = []
         // Last-APPLIED signatures — early-return guards so an unrelated AppModel publish (e.g. the audio VU
         // meter, ~10-30×/s) can't re-tessellate + re-upload unchanged route/ownship/traffic/TFR geometry.
@@ -1080,16 +1113,72 @@ struct MapLibreChartView: UIViewRepresentable {
 
         /// A single static ownship marker (no pulsing showsUserLocation dot — we render our own). The SF
         /// "airplane" glyph draws nose-EAST, so rot = course - 90 to make the nose point along the heading.
-        func updateOwnship(_ coord: CLLocationCoordinate2D?, course: Double?, on map: MLNMapView) {
+        func updateOwnship(_ coord: CLLocationCoordinate2D?, course: Double?,
+                           accuracyM: Double? = nil, integrity: GPSIntegrityState = .unknown,
+                           on map: MLNMapView) {
             lastOwnship = coord; lastOwnCourse = course
+            lastOwnAccuracy = accuracyM; lastOwnIntegrity = integrity
             guard let src = map.style?.source(withIdentifier: "ownship") as? MLNShapeSource else { return }
-            let sig = coord.map { "\(Self.qJit($0.latitude)),\(Self.qJit($0.longitude)),\(Self.qDeg(course ?? 0))" } ?? "nil"
+            // The signature carries integrity and a COARSE accuracy bucket as well as position: the ring
+            // must be rebuilt when the fix quality changes, but a metre of accuracy jitter at 1 Hz must
+            // not rebuild a 64-point polygon every tick.
+            let sig = coord.map {
+                "\(Self.qJit($0.latitude)),\(Self.qJit($0.longitude)),\(Self.qDeg(course ?? 0))"
+                + ",\(integrity.rawValue),\(Int((accuracyM ?? 0) / 5))"
+            } ?? "nil"
             guard sig != appliedOwnSig else { return }
             appliedOwnSig = sig
-            guard let coord else { src.shape = nil; return }             // no fix → hide (MK removes the annotation)
+            guard let coord else {                                       // no fix → hide symbol AND ring
+                src.shape = nil
+                (map.style?.source(withIdentifier: "accuracy") as? MLNShapeSource)?.shape = nil
+                return
+            }
             let f = MLNPointFeature(); f.coordinate = coord
-            f.attributes = ["rot": (course.map { $0 - 90 } ?? 0)]
+            f.attributes = ["rot": (course.map { $0 - 90 } ?? 0), "img": Self.ownshipImageName(integrity)]
             src.shape = f
+            updateAccuracyRing(coord, accuracyM: accuracyM, integrity: integrity, on: map)
+        }
+
+        /// Symbol name matching the images registered in `setupDynamicLayers`.
+        private static func ownshipImageName(_ state: GPSIntegrityState) -> String {
+            switch state {
+            case .degraded:             return "own-ship-degraded"
+            case .unreliable, .suspect: return "own-ship-suspect"
+            case .unknown, .nominal:    return "own-ship"
+            }
+        }
+
+        /// Rebuild the accuracy ring as a geodesic polygon. MapLibre's circle layer takes a radius in
+        /// SCREEN PIXELS, which would misrepresent a metre uncertainty at every zoom, so the ring is real
+        /// geometry: `ringPoints` samples a circle of `accuracyM` metres around the fix, with the
+        /// longitude scaled by cos(latitude) so it stays circular on the ground rather than on the chart.
+        private func updateAccuracyRing(_ coord: CLLocationCoordinate2D, accuracyM: Double?,
+                                        integrity: GPSIntegrityState, on map: MLNMapView) {
+            guard let src = map.style?.source(withIdentifier: "accuracy") as? MLNShapeSource else { return }
+            guard let r = accuracyM, r > 0, r.isFinite else { src.shape = nil; return }
+            assert(r < 100_000, "an accuracy radius this large is not a fix")
+            var pts = Self.ringPoints(around: coord, radiusM: r)
+            assert(pts.count == Self.ringSegments + 1, "ring must be closed")
+            let poly = MLNPolygonFeature(coordinates: &pts, count: UInt(pts.count))
+            poly.attributes = ["color": ChartMapView.Coordinator.integrityTint(integrity)]
+            src.shape = poly
+        }
+
+        static let ringSegments = 64
+
+        /// A closed circle of `radiusM` on the ground, as lat/lon. Flat-earth scaling is exact enough at
+        /// GPS-accuracy radii (tens to hundreds of metres); the cos(lat) term is what keeps it round.
+        static func ringPoints(around c: CLLocationCoordinate2D, radiusM: Double) -> [CLLocationCoordinate2D] {
+            let dLat = radiusM / 111_320.0
+            let dLon = radiusM / (111_320.0 * max(cos(c.latitude * .pi / 180), 0.01))
+            var out: [CLLocationCoordinate2D] = []
+            out.reserveCapacity(ringSegments + 1)
+            for i in 0...ringSegments {                                   // bounded (rule 2)
+                let t = Double(i) / Double(ringSegments) * 2 * .pi
+                out.append(CLLocationCoordinate2D(latitude: c.latitude + dLat * sin(t),
+                                                  longitude: c.longitude + dLon * cos(t)))
+            }
+            return out
         }
 
         /// Live ADS-B/Stratux traffic, deduped by ICAO hex, rotated by track. Bounded (rule 2).

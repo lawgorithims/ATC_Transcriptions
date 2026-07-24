@@ -45,6 +45,10 @@ struct MapHostView: View {
     /// Ownship for the engines: a valid Stratux fix still wins (the aircraft's own receiver), else the
     /// device fix if it is trustworthy.
     private var engineOwnship: Coord? { model.stratuxGPS?.coordinate ?? trustedDeviceCoord }
+    /// A Stratux fix is the aircraft's own receiver: it reports satellites and a fix type, not a metre
+    /// accuracy, and the device-GPS integrity verdict says nothing about it. When one is in use the ring
+    /// and the tint are suppressed rather than showing a number that describes a different receiver.
+    private var stratuxHasFix: Bool { model.stratuxGPS?.coordinate != nil }
     /// The flight recorder's breadcrumb, bridged from the nested recorder (like deviceCoord). Append-only
     /// during a recording, [] otherwise — the maps guard on its COUNT so it doesn't re-tessellate per tick.
     @State private var breadcrumb: [Coord] = []
@@ -182,6 +186,8 @@ struct MapHostView: View {
                      initialCenter: model.stratuxGPS?.coordinate ?? deviceCoord,
                      ownship: engineOwnship,
                      ownshipCourse: model.stratuxGPS?.coordinate == nil ? deviceCourse : nil,
+                     ownshipAccuracyM: stratuxHasFix ? nil : gpsIntegrity.horizontalAccuracyM,
+                     ownshipIntegrity: stratuxHasFix ? .unknown : gpsIntegrity.state,
                      onVisibleRegion: { rect in
                          // Remember where the user settled so a thermal rebuild restores it (M7);
                          // the settle hook is already debounced (0.4 s) in the coordinator.
@@ -226,6 +232,8 @@ struct MapHostView: View {
                 CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon)
             },
             ownshipCourse: model.stratuxGPS?.coordinate == nil ? deviceCourse : nil,
+            ownshipAccuracyM: stratuxHasFix ? nil : gpsIntegrity.horizontalAccuracyM,
+            ownshipIntegrity: stratuxHasFix ? .unknown : gpsIntegrity.state,
             traffic: model.aircraft,
             tfrs: model.tfrs,
             showTFRs: model.showTFRs,
