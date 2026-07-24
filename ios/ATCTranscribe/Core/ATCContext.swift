@@ -19,6 +19,13 @@ final class ATCContext {
     private var staticPrefix: String = ""
     private var vocabTerms: [String] = []
 
+    // Ownship decode-bias line (pipeline gap C): the pilot's OWN filed callsign in spoken telephony form
+    // + the next waypoint, biasing the Whisper DECODE toward what the pilot will be addressed as and
+    // routed to. Set on the pipeline actor via `LivePipeline.setOwnshipContext`; placed at the HEAD of the
+    // prompt so it survives the transcriber's ~220-token prefix cap. (The filed callsign previously
+    // reached only the LLM corrector, never the acoustic decode.)
+    private var ownshipPromptLine = ""
+
     // Electronic Flight Bag: the filed flight plan packed into the LLM correction context. Set
     // on the pipeline actor via `LivePipeline.setFlightPlanContext`, so only the actor mutates it.
     private var flightPlanBlock = ""
@@ -177,6 +184,9 @@ final class ATCContext {
         // GPS-vicinity decode bias supersedes the typed one (source-exclusive; same category).
         let procLine = vicinityPromptLine.isEmpty ? proceduresPromptLine : vicinityPromptLine
         if !procLine.isEmpty { sections.append(procLine) }
+        // Own aircraft callsign + next waypoint — head-placed (before plate/traffic/history) so it stays
+        // inside the transcriber's ~220-token prefix cap. One short sentence; ≈≤12 tokens.
+        if !ownshipPromptLine.isEmpty { sections.append(ownshipPromptLine) }
         // Route chart-fix names (from the filed plan's plates) bias the decode toward what's printed on
         // the approaches the pilot is likely to fly — capped in `PlateIndex.priming` to protect the budget.
         if !platePromptLine.isEmpty { sections.append(platePromptLine) }
@@ -315,6 +325,20 @@ final class ATCContext {
     func setFlightPlan(block: String, vocab: [String]) {
         flightPlanBlock = block
         flightPlanVocab = vocab
+    }
+
+    /// Set (or clear, with an empty callsign) the ownship decode-bias line: the pilot's own callsign in
+    /// spoken telephony form ("november eight nine two five tango" / "jetblue …") plus the next waypoint
+    /// ident. Reuses `spokenCallsign` — the SAME expansion the "Aircraft on frequency" line uses — so the
+    /// form matches natural readback, not the bare token-chars the addressing gate uses. Built once per
+    /// plan change (trivial string ops; `buildPrompt` only appends the cached line).
+    func setOwnship(callsign: String, nextWaypoint: String) {
+        let spoken = Self.spokenCallsign(callsign, knowledge: knowledge)
+        guard !spoken.isEmpty else { ownshipPromptLine = ""; return }
+        var line = "Own aircraft: " + spoken + "."
+        let wp = nextWaypoint.trimmingCharacters(in: .whitespaces).uppercased()
+        if !wp.isEmpty { line += " Next waypoint: " + wp + "." }
+        ownshipPromptLine = line
     }
 
     /// Inject (or clear) the route's PLATE priming — the frequencies/fix idents printed on the filed

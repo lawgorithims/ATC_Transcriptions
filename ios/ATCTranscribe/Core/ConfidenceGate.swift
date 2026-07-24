@@ -63,7 +63,7 @@ struct ConfidenceGate: Sendable {
 
         let shouldRefine = !reasons.isEmpty
         return GateDecision(shouldRefine: shouldRefine,
-                            confidence: confidence(asr: asr, hasSignal: shouldRefine),
+                            confidence: Self.confidence(asr: asr, hasSignal: shouldRefine),
                             reason: reasons.isEmpty ? "high confidence" : reasons.joined(separator: ", "))
     }
 
@@ -86,8 +86,10 @@ struct ConfidenceGate: Sendable {
         return nil
     }
 
-    /// A rough display-only cleanliness estimate from avgLogprob, reduced when any signal fired.
-    private func confidence(asr: ASRConfidence?, hasSignal: Bool) -> Double {
+    /// A rough display-only cleanliness estimate from avgLogprob, reduced when any signal fired. Static so
+    /// the pipeline can derive a numeric confidence for EVERY record even when no LLM backend (and thus no
+    /// `assess` call) is active — the ASR-only baseline.
+    static func confidence(asr: ASRConfidence?, hasSignal: Bool) -> Double {
         var c = 1.0
         if let asr {
             let lp = Double(max(-2.0, min(0.0, asr.avgLogprob)))   // -2 → 0.0, 0 → 1.0

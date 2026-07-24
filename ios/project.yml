@@ -105,6 +105,10 @@ targets:
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         UILaunchScreen: {}
         ITSAppUsesNonExemptEncryption: false
+        # Expose Documents/ in the Files app + Finder so the opt-in transcript log (atc-transcripts.jsonl)
+        # can be pulled off-device into the training pipeline. No effect unless logging is enabled.
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
         NSMicrophoneUsageDescription: "CommSight uses the microphone to capture and transcribe live ATC audio."
         # Connecting to a Stratux receiver on the local Wi-Fi (audio sidecar + traffic/GPS web API) needs
         # the local-network permission (iOS 14+) and a cleartext-local ATS exception (the link is http/ws

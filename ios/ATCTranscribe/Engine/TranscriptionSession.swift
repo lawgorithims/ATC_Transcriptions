@@ -33,6 +33,9 @@ final class TranscriptionSession: ObservableObject {
     /// Fuses each appended record's content role + acoustic cluster + callsign into its per-line
     /// `speakerLabel`, and retroactively relabels a speaker's unknown lines as its cluster matures.
     private let labeler = SpeakerLabeler()
+    /// Opt-in append-only transcript log (nil unless the pilot enabled logging). Writes happen on the
+    /// store actor, off this main actor.
+    private var logStore: TranscriptLogStore?
 
     init(pipeline: LivePipeline) { self.pipeline = pipeline }
 
@@ -78,6 +81,7 @@ final class TranscriptionSession: ObservableObject {
                     AudioSessionManager.deactivate()
                 }
                 self.inputLevel = 0
+                if let store = self.logStore { Task { await store.close() } }   // flush the log on a natural end
             }
         }
     }
@@ -104,6 +108,7 @@ final class TranscriptionSession: ObservableObject {
         inputLevel = 0
         transcribing = false; transcribeStartedAt = nil
         AudioSessionManager.deactivate()   // release the session on an explicit stop too
+        if let logStore { Task { await logStore.close() } }   // flush the log on an explicit stop
     }
 
     /// Reflect the pipeline's transcribe activity (signalled per transmission). Ignored once stopped so
@@ -178,6 +183,10 @@ final class TranscriptionSession: ObservableObject {
     /// session build once the active speaker backend is known, BEFORE `setAcousticFill`.
     func setFillDistance(_ d: Float) { labeler.maxFillDistance = d }
 
+    /// Inject (or clear, with nil) the opt-in transcript log store. Set at session build from the model,
+    /// and torn down when the pilot disables logging.
+    func setLogStore(_ store: TranscriptLogStore?) { logStore = store }
+
     /// Re-fuse every retained record in place (bounded by `maxRecords`), writing each back one-by-one so
     /// SwiftUI diffs per row. Used when the acoustic-fill toggle flips so the change is reflected on
     /// already-shown lines, not just future ones.
@@ -195,6 +204,13 @@ final class TranscriptionSession: ObservableObject {
     func setFlightPlanContext(block: String, vocab: [String]) {
         let pipeline = self.pipeline
         Task { await pipeline.setFlightPlanContext(block: block, vocab: vocab) }
+    }
+
+    /// Push the ownship callsign + next waypoint into the live DECODE prompt (gap C). Safe while a run is
+    /// active; takes effect on the next transmission.
+    func setOwnshipContext(callsign: String, nextWaypoint: String) {
+        let pipeline = self.pipeline
+        Task { await pipeline.setOwnshipContext(callsign: callsign, nextWaypoint: nextWaypoint) }
     }
 
     /// Push the filed route's PLATE priming (chart frequencies/fixes) into the live decode + correction
@@ -233,6 +249,10 @@ final class TranscriptionSession: ObservableObject {
     private func applyRefinement(id: UUID, outcome: RefinementOutcome) {
         guard let idx = records.firstIndex(where: { $0.id == id }) else { return }
         records[idx] = records[idx].applying(outcome)
+        if let logStore {   // a second "refine" line, joined to the record line by id
+            let entry = TranscriptLogEntry.refine(from: records[idx])
+            Task { await logStore.log(entry) }
+        }
     }
 
     /// Reset the rolling transcript + stats (the Clear button). Resets the session's own
@@ -281,6 +301,10 @@ final class TranscriptionSession: ObservableObject {
             }
         }
         shadowLog(rec)
+        if let logStore {   // the fully-fused record line (opt-in; off the main actor)
+            let entry = TranscriptLogEntry.record(from: rec)
+            Task { await logStore.log(entry) }
+        }
         stats.add(rec)
         status = .live
         detail = "Transcribing."

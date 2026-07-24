@@ -243,9 +243,10 @@ Aircraft — callsigns are read from the highlighted text automatically).
 <b>Unclear speech:</b> paint transcribed-but-doubtful words with the Unclear highlighter, or press
 <b>⟨insert [unclear]⟩</b> at the cursor for audible speech you can't transcribe at all — never guess.
 Eraser removes highlights. Verdict: <b>Good</b> (draft was right), <b>Corrected</b> (good after your
-edits), <b>Unusable</b>. <b>One-shot labeling without switching tools:</b> select words, then
-<kbd>Alt+1</kbd> controller / <kbd>Alt+2</kbd> aircraft / <kbd>Alt+3</kbd> unclear / <kbd>Alt+4</kbd>
-erase (Ctrl+Alt also works; plain Ctrl+digit is reserved by the browser for tab switching).
+edits), <b>Unusable</b>. <b>One-shot labeling (macOS-friendly):</b> select the words a speaker said, then just press
+<kbd>1</kbd>/<kbd>C</kbd> controller &middot; <kbd>2</kbd>/<kbd>A</kbd> aircraft &middot;
+<kbd>3</kbd>/<kbd>U</kbd> unclear &middot; <kbd>4</kbd>/<kbd>E</kbd> erase — no modifier needed
+(<kbd>&#8997;</kbd> or <kbd>&#8963;</kbd>+digit also work).
 Autosaves locally; Export when done.</p>
 <div class="bar">
   <div class="tools">
@@ -557,17 +558,33 @@ function cardIndex(ta){
   return cards.findIndex(cd => cd.contains(ta));
 }
 document.addEventListener("keydown", e => {
-  // one-shot labeling of the current selection: Alt+1..4 (Ctrl+Alt also fine).
-  // Plain Ctrl+digit is reserved by browsers for tab switching and cannot be used.
-  if (e.altKey) {
-    const oneShot = { "1": "ctl", "2": "acft", "3": "unclear", "4": "erase" };
-    const t = oneShot[e.key] ?? oneShot[e.code?.replace("Digit", "")];
-    if (t && applyToolOnce(t)) { e.preventDefault(); return; }
+  // Role hotkeys match the PHYSICAL key (e.code), so macOS Option+digit — which would type
+  // the special chars ¡™£¢ — still labels correctly, and we always preventDefault so nothing leaks.
+  const roleByDigit = { "1": "ctl", "2": "acft", "3": "unclear", "4": "erase" };
+  const roleByLetter = { "KeyC": "ctl", "KeyA": "acft", "KeyU": "unclear", "KeyE": "erase" };
+  const digit = (e.code || "").startsWith("Digit") ? e.code.slice(5) : null;
+
+  // Is there a live (non-empty) word selection inside a transcript?
+  const sel = window.getSelection();
+  const anchorEl = sel && sel.anchorNode
+    ? (sel.anchorNode.nodeType === 1 ? sel.anchorNode : sel.anchorNode.parentElement) : null;
+  const hasSel = sel && !sel.isCollapsed && sel.toString().trim() && anchorEl && anchorEl.closest(".ta");
+
+  // (A) Option/Control + digit — one-shot label (macOS-safe via e.code; never leaks a special char).
+  if ((e.altKey || e.ctrlKey) && !e.metaKey && roleByDigit[digit]) {
+    e.preventDefault(); applyToolOnce(roleByDigit[digit]); return;
   }
-  if (e.target.closest(".ta") && tool === "edit") {
+  // (B) NO modifier: with words selected, 1/2/3/4 or C/A/U/E labels them. The Mac-native path.
+  if (hasSel && !e.altKey && !e.ctrlKey && !e.metaKey) {
+    const role = roleByDigit[digit] || roleByLetter[e.code];
+    if (role) { e.preventDefault(); applyToolOnce(role); return; }
+  }
+  // (C) mid-correction typing — never hijack the keystroke
+  if (anchorEl && anchorEl.closest(".ta") && tool === "edit") {
     if (e.key === "Escape") setTool("edit");
-    return;   // typing mode — don't hijack digits
+    return;
   }
+  // (D) no selection, not typing: a bare digit arms the paint tool
   const map = { "0": "edit", "1": "ctl", "2": "acft", "3": "unclear", "4": "erase", "Escape": "edit" };
   if (map[e.key]) setTool(map[e.key]);
 });

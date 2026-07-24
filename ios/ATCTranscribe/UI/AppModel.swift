@@ -360,6 +360,17 @@ final class AppModel: ObservableObject {
     /// Continuous device-GPS ownship (for a Stratux-less iPad) — the plate viewer starts/stops it and
     /// observes it directly. Preferred fallback after a valid Stratux fix (see `ownshipCoord`).
     let deviceLocation = DeviceLocation()
+    /// Opt-in transcript logging — appends every transmission to a private on-device JSONL file
+    /// (`Documents/atc-transcripts.jsonl`) for QA / the next fine-tuning round. Off by default; stays on
+    /// device (never uploaded). Building/tearing down the store is deferred to `applyTranscriptLogging`.
+    @Published var transcriptLoggingEnabled = (UserDefaults.standard.object(forKey: "atc.transcriptLog") as? Bool) ?? false {
+        didSet {
+            UserDefaults.standard.set(transcriptLoggingEnabled, forKey: "atc.transcriptLog")
+            applyTranscriptLogging()
+        }
+    }
+    /// The opt-in transcript log store (nil when logging is off).
+    private var transcriptLogStore: TranscriptLogStore?
     /// Republished GPS integrity verdict. `deviceLocation` is a NESTED ObservableObject, so it does not
     /// republish this parent (the Flight Bag C2 rule) — views that observe `AppModel` (the map engines,
     /// the threat banner) need it mirrored here explicitly.
@@ -1694,19 +1705,47 @@ final class AppModel: ObservableObject {
     /// exhaustive (total). Validates there is a suggestion + a non-empty target (rule 7).
     func acceptEFBSuggestion() {
         guard let suggestion = efbSuggestion else { return }
-        guard !suggestion.command.target.isEmpty else { efbSuggestion = nil; return }
-        switch suggestion.command.kind {
-        case .directTo:        directTo(suggestion.command.target)
-        case .clearedApproach: loadApproachForRunway(suggestion.command.target)
-        case .loadSID:         loadProcedureByIdent(kind: "SID", ident: suggestion.command.target)
-        case .loadStar:        loadProcedureByIdent(kind: "STAR", ident: suggestion.command.target)
+        let ins = suggestion.instruction
+        guard !ins.target.isEmpty || ins.value != nil else { efbSuggestion = nil; return }
+        let before = flightPlan
+        switch ins.kind {
+        case .directTo:        directTo(ins.target)
+        case .clearedApproach: loadApproachForRunway(ins.target)
+        case .loadSID:         loadProcedureByIdent(kind: "SID", ident: ins.target)
+        case .loadStar:        loadProcedureByIdent(kind: "STAR", ident: ins.target)
+        case .altitude:        setAssignedAltitude(ins.value)
+        case .heading:         setAssignedHeading(ins.value)
+        case .speed:           setAssignedSpeed(ins.value)
+        case .squawk:          setAssignedSquawk(ins.target)
+        case .frequencyChange: setActiveFrequency(ins.target, facility: ins.modifier)
         }
+        // Reversible audit trail: log kind/value/confidence/callsign and the before→after assigned block.
+        NSLog("CommSight: EFB accept kind=%@ target=%@ conf=%@ callsign=%@ before=[%@] after=[%@]",
+              ins.kind.rawValue, ins.target, ins.confidence.rawValue, ins.callsign,
+              Self.assignmentDigest(before), Self.assignmentDigest(flightPlan))
         Haptics.impact(.medium)
         efbSuggestion = nil
     }
 
-    /// Discard the pending suggestion without acting.
-    func dismissEFBSuggestion() { efbSuggestion = nil }
+    /// A compact "ALT/HDG/SPD/SQ/COM" digest of a plan's ATC-assigned values, for the accept audit log.
+    private static func assignmentDigest(_ plan: FlightPlan?) -> String {
+        guard let p = plan else { return "" }
+        var bits: [String] = []
+        if let a = p.assignedAltitudeFt { bits.append("ALT \(a)") }
+        if let h = p.assignedHeadingDeg { bits.append("HDG \(h)") }
+        if let s = p.assignedSpeedKt { bits.append("SPD \(s)") }
+        if let sq = p.assignedSquawk { bits.append("SQ \(sq)") }
+        if let f = p.activeFrequency { bits.append("COM \(f)") }
+        return bits.joined(separator: ", ")
+    }
+
+    /// Discard the pending suggestion without acting (logged so rejected mis-parses are analyzable).
+    func dismissEFBSuggestion() {
+        if let ins = efbSuggestion?.instruction {
+            NSLog("CommSight: EFB dismiss kind=%@ target=%@ conf=%@", ins.kind.rawValue, ins.target, ins.confidence.rawValue)
+        }
+        efbSuggestion = nil
+    }
 
     // MARK: ForeFlight hand-off (offline URL scheme + .fpl share)
 
@@ -1831,8 +1870,8 @@ final class AppModel: ObservableObject {
             let shouldFire = i == s.targetIndex && s.category.expectsSuggestion && tx.toOwnship
             let ok = (fired != nil) == shouldFire
             out.append(TransmissionResult(id: tx.id, text: tx.text, toOwnship: tx.toOwnship,
-                firedSuggestion: fired != nil, commandKind: fired?.command.kind.rawValue,
-                commandTarget: fired?.command.target, asExpected: ok))
+                firedSuggestion: fired != nil, commandKind: fired?.command?.kind.rawValue,
+                commandTarget: fired?.command?.target, asExpected: ok))
             if i == s.targetIndex { staged = fired?.command }
         }
         efbSuggestion = nil
@@ -1993,6 +2032,55 @@ final class AppModel: ObservableObject {
     var isRecording: Bool { flightRecorder.isRecording }
     var recordingStartedAt: Date? { flightRecorder.startedAt }
 
+    // MARK: - Transcript logging (opt-in JSONL)
+
+    /// Build or tear down the transcript log store to match `transcriptLoggingEnabled` and (re)inject it
+    /// into the live session. Nothing is ever written while off.
+    private func applyTranscriptLogging() {
+        if transcriptLoggingEnabled {
+            if transcriptLogStore == nil {
+                transcriptLogStore = TranscriptLogStore(directory: Self.transcriptLogDir(),
+                                                        sessionId: UUID().uuidString,
+                                                        source: Self.sourceTag(source),
+                                                        modelId: activeModel)
+            }
+            session?.setLogStore(transcriptLogStore)
+        } else {
+            let store = transcriptLogStore
+            transcriptLogStore = nil
+            session?.setLogStore(nil)
+            if let store { Task { await store.close() } }
+        }
+    }
+
+    /// Documents directory for the exportable transcript log (offline; visible in the Files app).
+    static func transcriptLogDir() -> URL {
+        (try? FileManager.default.url(for: .documentDirectory, in: .userDomainMask,
+                                      appropriateFor: nil, create: true))
+            ?? FileManager.default.temporaryDirectory
+    }
+
+    /// Short source tag for the log.
+    static func sourceTag(_ s: SourceKind) -> String {
+        switch s {
+        case .liveFeed:   return "stream"
+        case .stratux:    return "stratux"
+        case .microphone: return "mic"
+        case .usbAudio:   return "usb"
+        case .replay:     return "replay"
+        }
+    }
+
+    /// The transcript log file for the ShareLink export — nil when logging is off or nothing is written yet.
+    var transcriptLogFileURL: URL? {
+        guard transcriptLoggingEnabled else { return nil }
+        let url = Self.transcriptLogDir().appendingPathComponent("atc-transcripts.jsonl")
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    /// Flush any buffered log lines to disk (call before exporting so the shared file is complete).
+    func flushTranscriptLog() async { _ = await transcriptLogStore?.exportFileURL() }
+
     /// Mirror `deviceLocation`'s integrity verdict onto this model (nested observables don't republish
     /// their parent) and push it to the transcript log, so every logged transmission carries whether the
     /// position was trustworthy at that moment.
@@ -2088,6 +2176,42 @@ final class AppModel: ObservableObject {
         let bounded = feet.map { min(max($0, 0), 60_000) }                // sanity bound (rule 7)
         editPlan { $0.cruiseAltitudeFt = (bounded ?? 0) > 0 ? bounded : nil }
     }
+
+    // MARK: ATC-assigned values (accepted EFB clearances; reversible, display-only, X-to-clear)
+
+    /// Set (or clear, with nil / a non-positive value) the ATC-assigned altitude in feet. Clamped (rule 7).
+    func setAssignedAltitude(_ feet: Int?) {
+        guard let feet, feet > 0 else { editPlan { $0.assignedAltitudeFt = nil }; return }
+        editPlan { $0.assignedAltitudeFt = min(max(feet, 0), 60_000) }
+    }
+
+    /// Set (or clear) the ATC-assigned heading in degrees (1…360).
+    func setAssignedHeading(_ deg: Int?) {
+        guard let deg, deg >= 1, deg <= 360 else { editPlan { $0.assignedHeadingDeg = nil }; return }
+        editPlan { $0.assignedHeadingDeg = deg }
+    }
+
+    /// Set (or clear) the ATC-assigned airspeed in knots. Clamped to a sane band.
+    func setAssignedSpeed(_ kt: Int?) {
+        guard let kt, kt > 0 else { editPlan { $0.assignedSpeedKt = nil }; return }
+        editPlan { $0.assignedSpeedKt = min(max(kt, 40), 450) }
+    }
+
+    /// Set (or clear) the ATC-assigned transponder squawk (4 octal digits).
+    func setAssignedSquawk(_ code: String?) {
+        let c = (code ?? "").filter(\.isNumber)
+        guard c.count == 4, c.allSatisfy({ "01234567".contains($0) }) else { editPlan { $0.assignedSquawk = nil }; return }
+        editPlan { $0.assignedSquawk = c }
+    }
+
+    /// Set (or clear) the active/assigned COM frequency label ("<Facility> NNN.NN"). Display-only — the
+    /// app tunes no radio. Validated to the VHF COM airband.
+    func setActiveFrequency(_ mhz: String?, facility: String = "") {
+        let f = (mhz ?? "").trimmingCharacters(in: .whitespaces)
+        guard let v = Double(f), v >= 118.0, v <= 136.975 else { editPlan { $0.activeFrequency = nil }; return }
+        editPlan { $0.activeFrequency = facility.isEmpty ? f : facility.capitalized + " " + f }
+    }
+
 
     /// Set the alternate airport from the strip's alternate box (empty clears it).
     func setAlternate(_ ident: String) {
