@@ -228,6 +228,7 @@ enum PlateGearGeometry {
 /// plate's gear is tapped: hide the plate, view it full-page in the Plates tab, an opacity slider, an
 /// invert-colours toggle, and a close. Also closable by a two-finger swipe (wired in ConsoleView).
 struct PlateMenuBar: View {
+    @State private var showActivate = false
     @EnvironmentObject var model: AppModel
     let state: PlateOverlayState
 
@@ -262,6 +263,14 @@ struct PlateMenuBar: View {
                            id: "plate-menu-invert", active: state.inverted) {
                     model.togglePlateInvert()
                 }
+                // ACTIVATE — match this plate to its coded approach(es) and offer the entry choice.
+                // Only shown when the plate actually resolves to a coded approach; a plate with no CIFP
+                // counterpart (some military / uncoded procedures) simply doesn't offer it.
+                if !activateCandidates.isEmpty {
+                    menuAction("Activate", "paperplane.circle", id: "plate-menu-activate") {
+                        showActivate = true
+                    }
+                }
             }
             // Opacity slider (in normal screen space → no MapKit gesture conflict)
             HStack(spacing: 8) {
@@ -273,8 +282,25 @@ struct PlateMenuBar: View {
         .padding(.horizontal, 14).padding(.top, 8).padding(.bottom, 12)
         .frame(maxWidth: .infinity)
         .background(p.surface)
+        .sheet(isPresented: $showActivate) {
+            ActivateApproachSheet(candidates: activateCandidates, contextLabel: "\(state.airport) · \(state.name)")
+                .environmentObject(model)
+        }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("plate-menu")
+    }
+
+    /// The coded approaches this plate maps to, best match first. A plate carries only its printed
+    /// name, so this narrows by the runway in that name and scores the approach type (which is what
+    /// separates the ILS from the LOC on a shared "ILS OR LOC RWY 04R" plate).
+    private var activateCandidates: [CIFPProcedure] {
+        let rw = PlatesTabView.runway(of: state.name)
+        let coded = CIFP.approaches(airport: state.airport)
+        let ranked = ApproachActivation.matchPlate(
+            plateName: state.name, runway: rw,
+            candidates: coded.map { (ident: $0.ident, name: $0.name, runway: $0.runway) })
+        // Map the ranked (ident,…) tuples back to their full records, preserving order.
+        return ranked.compactMap { r in coded.first { $0.ident == r.ident } }
     }
 
     private func menuAction(_ label: String, _ icon: String, id: String, active: Bool = false,

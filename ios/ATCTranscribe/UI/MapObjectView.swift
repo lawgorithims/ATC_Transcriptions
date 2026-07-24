@@ -6,6 +6,10 @@ import SwiftUI
 /// (`MapObjectSheet`). When a tap hits several things it opens on a chooser, then drills in. Read-only
 /// for airspace and traffic.
 struct MapObjectView: View {
+    /// The approach plate whose "Activate" was tapped, with its coded candidates.
+    struct ActivateTarget: Identifiable { let proc: AirportProcedure; let candidates: [CIFPProcedure]
+                                          var id: String { proc.id } }
+    @State private var activateTarget: ActivateTarget?
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var metars: MetarStore
     @EnvironmentObject var forecasts: ForecastStore
@@ -100,6 +104,10 @@ struct MapObjectView: View {
                             plate = nil; onClose()   // dismiss viewer + panel so the map (with the plate) is visible
                         },
                         onClose: { plate = nil })
+                .environmentObject(model)
+        }
+        .sheet(item: $activateTarget) { t in
+            ActivateApproachSheet(candidates: t.candidates, contextLabel: t.proc.name)
                 .environmentObject(model)
         }
         .sheet(item: $climateTarget) { target in
@@ -583,7 +591,35 @@ struct MapObjectView: View {
                 .buttonStyle(.plainHaptic).disabled(sending)
                 .accessibilityIdentifier("plate-send-to-map")
             }
+            // ACTIVATE — only on APPROACH plates that resolve to a coded procedure. Loads the approach
+            // into the flight plan (after asking how to join it) and arms the missed approach.
+            if proc.category == .approach {
+                let coded = activateCandidates(for: proc, ident: ident)
+                if !coded.isEmpty {
+                    Button { Haptics.impact(.light); activateTarget = ActivateTarget(proc: proc, candidates: coded) } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "paperplane.circle").font(.caption2)
+                            Text("Activate").font(.caption2.weight(.semibold))
+                        }
+                        .padding(.horizontal, 9).padding(.vertical, 5)
+                        .background(Capsule().fill(p.good.opacity(0.18)))
+                        .foregroundStyle(p.good)
+                    }
+                    .buttonStyle(.plainHaptic)
+                    .accessibilityIdentifier("plate-activate-approach")
+                }
+            }
         }
+    }
+
+    /// The coded approaches an approach PLATE maps to, best first (see ApproachActivation.matchPlate).
+    private func activateCandidates(for proc: AirportProcedure, ident: String) -> [CIFPProcedure] {
+        let coded = CIFP.approaches(airport: ident)
+        guard !coded.isEmpty else { return [] }
+        let ranked = ApproachActivation.matchPlate(
+            plateName: proc.name, runway: PlatesTabView.runway(of: proc.name),
+            candidates: coded.map { (ident: $0.ident, name: $0.name, runway: $0.runway) })
+        return ranked.compactMap { r in coded.first { $0.ident == r.ident } }
     }
 
     /// Download the plate if needed, overlay it on the map, then dismiss the panel so the map shows it.
