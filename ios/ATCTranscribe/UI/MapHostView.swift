@@ -35,6 +35,16 @@ struct MapHostView: View {
     // republish the parent) so a fix change re-renders the map. Stratux is preferred when connected.
     @State private var deviceCoord: Coord?
     @State private var deviceCourse: Double?
+    /// GPS integrity verdict, bridged like deviceCoord. Gates what the map is allowed to DRAW.
+    @State private var gpsIntegrity = GPSIntegrityAssessment()
+
+    /// The device position the map may plot: nil when the integrity monitor says the fix can't be
+    /// trusted. Suppressing it HERE covers BOTH engines (MapLibre and the MKMapView fallback both take
+    /// `ownship:` from this one place) — a position the pilot will fly is worse than no position.
+    private var trustedDeviceCoord: Coord? { gpsIntegrity.shouldSuppressOwnship ? nil : deviceCoord }
+    /// Ownship for the engines: a valid Stratux fix still wins (the aircraft's own receiver), else the
+    /// device fix if it is trustworthy.
+    private var engineOwnship: Coord? { model.stratuxGPS?.coordinate ?? trustedDeviceCoord }
     /// The flight recorder's breadcrumb, bridged from the nested recorder (like deviceCoord). Append-only
     /// during a recording, [] otherwise — the maps guard on its COUNT so it doesn't re-tessellate per tick.
     @State private var breadcrumb: [Coord] = []
@@ -90,6 +100,7 @@ struct MapHostView: View {
             if let c { model.rainViewer.prefetchCenter = (c.lat, c.lon) }   // aim the radar-loop prefetch nearby
         }
         .onReceive(model.deviceLocation.$courseDeg) { deviceCourse = $0 }
+        .onReceive(model.deviceLocation.$integrity) { gpsIntegrity = $0 }
         .onReceive(model.flightRecorder.$trail) { breadcrumb = $0.map { Coord(lat: $0.lat, lon: $0.lon) } }
         .onReceive(model.rainViewer.$tileTemplate) { radarTemplate = $0 }   // feed the map engines the current frame
         // The plate's ✕ / opacity controls ride the PLATE's own top corners (screen-points streamed
@@ -169,7 +180,7 @@ struct MapHostView: View {
                      showAirspace: model.showAirspace, showNearby: model.showNearby,
                      showAirways: model.showAirways,
                      initialCenter: model.stratuxGPS?.coordinate ?? deviceCoord,
-                     ownship: model.stratuxGPS?.coordinate ?? deviceCoord,
+                     ownship: engineOwnship,
                      ownshipCourse: model.stratuxGPS?.coordinate == nil ? deviceCourse : nil,
                      onVisibleRegion: { rect in
                          // Remember where the user settled so a thermal rebuild restores it (M7);
@@ -211,7 +222,7 @@ struct MapHostView: View {
             routeCoords: route.map { CLLocationCoordinate2D(latitude: $0.coord.lat, longitude: $0.coord.lon) },
             breadcrumbCoords: breadcrumb.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) },
             radarTemplate: radarTemplate,
-            ownship: (model.stratuxGPS?.coordinate ?? deviceCoord).map {
+            ownship: engineOwnship.map {
                 CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon)
             },
             ownshipCourse: model.stratuxGPS?.coordinate == nil ? deviceCourse : nil,

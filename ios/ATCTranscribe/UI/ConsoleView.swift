@@ -170,6 +170,10 @@ struct ConsoleView: View {
                 if let proc = model.previewedProcedure { procedureStrip(proc) }
                 if let sug = model.efbSuggestion { efbSuggestionBanner(sug) }
                 if let hz = model.hazardAlert, !hz.isEmpty { hazardBanner(hz) }
+                // GPS integrity / interference advisory. It belongs HERE in the bar stack, not as an
+                // overlay on the map: the map is full-bleed UNDER this chrome, so a top-aligned overlay
+                // on it renders beneath the top bar and is never seen.
+                GPSIntegrityBanner(assessment: model.gpsIntegrity, palette: model.palette)
             }
             // Two-finger drag UP over the top bars collapses the expandable strips (TopBar's toggles
             // reopen them). Single-finger interaction with the strips is unaffected.

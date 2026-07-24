@@ -144,9 +144,12 @@ struct PlateViewer: View {
     }
     /// Ownship position: a VALID Stratux fix wins (avoids a stale last-known position, C4), else the
     /// device's own GPS — so a Stratux-less iPad still shows the pilot on a georeferenced plate.
+    /// `trustedCoord`, not `coord`: an approach plate is the most dangerous place in the app to draw a
+    /// position that can't be trusted, so an unreliable / suspect fix hides ownship rather than plotting
+    /// it (the "waiting for GPS" caption below then explains the absence).
     private var ownshipCoord: Coord? {
         if let g = model.stratuxGPS, g.hasFix { return g.coordinate }
-        return deviceLocation.coord
+        return deviceLocation.trustedCoord
     }
 
     var body: some View {
