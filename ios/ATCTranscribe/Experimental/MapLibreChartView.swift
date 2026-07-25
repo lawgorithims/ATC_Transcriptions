@@ -454,10 +454,6 @@ struct MapLibreChartView: UIViewRepresentable {
             ensureVisiblePacks(mapView)
             refreshOverlays(mapView)
             frameIfNeeded(on: mapView)           // frame now if route/GPS/camera arrived before the style loaded
-            // Publish the region ONCE at load. A cold launch that restores its camera never fires a region
-            // SETTLE (nothing moved), so a host that only listens for settles — the weather fetch behind the
-            // chart's flight-category rings — would sit idle until the pilot happened to pan.
-            onVisibleRegion?(Coordinator.visibleMapRect(mapView))
             // Re-apply anything updateUIView cached before the style finished loading (same idiom as route).
             updateOwnship(lastOwnship, course: lastOwnCourse, accuracyM: lastOwnAccuracy,
                           integrity: lastOwnIntegrity, on: mapView)
