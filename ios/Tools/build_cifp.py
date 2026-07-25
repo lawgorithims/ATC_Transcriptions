@@ -73,11 +73,31 @@ def coord(line):
 
 
 def approach_name(ident):
-    """"H33LX" → ("RNAV (GPS) RWY 33L", "33L"); "RNV-A" → ("RNAV (GPS)-A", ""); others pass through."""
+    """"H33LX" → ("RNAV (RNP) X RWY 33L", "33L"); "RNV-A" → ("RNAV (GPS)-A", ""); else pass through.
+
+    The MULTIPLE INDICATOR (the X/Y/Z in "RNAV (GPS) Z RWY 22") must survive. Y and Z to the same runway
+    are DIFFERENT PROCEDURES — different minimums, different step-down fixes, different equipment
+    requirements, and different MISSED APPROACH paths. Dropping the letter made 221 (airport, name)
+    groups collide across 135 airports, so the activation chooser offered two identical rows and the
+    pilot had no way to tell which go-around they were arming.
+
+    ARINC 424 field 5.010 is positionally unambiguous, verified against the whole cycle:
+      ident[3] is the runway side or a '-' placeholder — only '-', L, C, R (and a digit for COPTER).
+      ident[4] is the multiple indicator — only Z(610) Y(595) X(46) W(10) V(5) U(2), never L/C/R.
+    So the suffix is simply ident[4] on a 5-character runway ident. No letter heuristic, which would be
+    unsafe: the trailing R of "R22R" is runway 22 RIGHT, not a suffix.
+    """
     t = APPROACH_TYPE.get(ident[0])
-    if t and len(ident) >= 3 and ident[1:3].isdigit():
-        rwy = ident[1:3] + (ident[3] if len(ident) > 3 and ident[3] in "LCR" else "")
-        return f"{t} RWY {rwy}", rwy
+    # `ident[1:3].isdigit()` alone also matched the three COPTER idents (KJFK R027, KLGA R250, 2P2 R029),
+    # whose third digit is part of a BEARING, not a runway — they were stored as "RWY 02"/"RWY 25" for
+    # runways those airports do not have.
+    if t and len(ident) >= 3 and ident[1:3].isdigit() and not (len(ident) > 3 and ident[3].isdigit()):
+        side = ident[3] if len(ident) > 3 and ident[3] in "LCR" else ""
+        rwy = ident[1:3] + side
+        suffix = ident[4] if len(ident) == 5 else ""
+        return f"{t}{' ' + suffix if suffix else ''} RWY {rwy}", rwy
+    if t and len(ident) == 4 and ident[1:4].isdigit():                # COPTER: type + 3-digit bearing
+        return f"COPTER {t} {ident[1:4]}", ""
     circling = CIRCLING_TYPE.get(ident[:3])
     if circling:
         letter = ident[3:].lstrip("-").strip()

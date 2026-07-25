@@ -83,9 +83,30 @@ final class CIFPDataIntegrityTests: XCTestCase {
     func testRnpAndGpsApproachesAreNotMislabelled() {
         let names = Dictionary(CIFP.approaches(airport: "KMDW").map { ($0.ident, $0.name) },
                                uniquingKeysWith: { a, _ in a })
-        XCTAssertEqual(names["H22LX"], "RNAV (RNP) RWY 22L", "H idents are the RNP AR approaches")
-        XCTAssertEqual(names["R22LZ"], "RNAV (GPS) RWY 22L", "R idents are the ordinary RNAV (GPS) ones")
-        XCTAssertEqual(names["R22R"],  "RNAV (GPS) RWY 22R")
+        XCTAssertEqual(names["H22LX"], "RNAV (RNP) X RWY 22L", "H idents are the RNP AR approaches")
+        XCTAssertEqual(names["R22LZ"], "RNAV (GPS) Z RWY 22L", "R idents are the ordinary RNAV (GPS) ones")
+        XCTAssertEqual(names["R22R"],  "RNAV (GPS) RWY 22R", "the trailing R is runway 22 RIGHT, not a suffix")
+    }
+
+    /// Y and Z to the same runway are DIFFERENT procedures — different minimums, different step-down
+    /// fixes, different equipment, different missed approaches. Dropping the letter made 221 name groups
+    /// collide across 135 airports, so the chooser offered two identical rows.
+    func testMultipleApproachesToOneRunwayAreDistinguishable() {
+        for airport in ["KMDW", "KBOS", "KSFO"] {
+            var byName: [String: [String]] = [:]
+            for a in CIFP.approaches(airport: airport) { byName[a.name, default: []].append(a.ident) }
+            for (name, idents) in byName where idents.count > 1 {
+                XCTFail("\(airport): \(idents.sorted()) all render as \"\(name)\" — indistinguishable")
+            }
+        }
+    }
+
+    /// COPTER approaches carry a 3-digit BEARING, not a runway. The runway rule matched the first two
+    /// digits and stored KJFK's R027 as "RWY 02" — a runway KJFK does not have.
+    func testCopterApproachesDoNotInventARunway() {
+        let jfk = CIFP.approaches(airport: "KJFK").first { $0.ident == "R027" }
+        XCTAssertEqual(jfk?.runway, "", "a COPTER bearing is not a runway designator")
+        XCTAssertEqual(jfk?.name, "COPTER RNAV (GPS) 027")
     }
 
     /// Real navaids whose ident happens to begin "RW". A prefix test deleted all three from the spoken

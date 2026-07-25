@@ -174,6 +174,24 @@ enum ApproachActivation {
         return ch
     }
 
+    /// The MULTIPLE INDICATOR of an approach title — the `Z` in "RNAV (GPS) Z RWY 22" — or nil.
+    ///
+    /// The FAA publishes several distinct procedures to the same runway with the same primary navaid,
+    /// lettered backwards from Z. They are NOT interchangeable: different minimums, different step-down
+    /// fixes, different equipment requirements, and different MISSED APPROACH paths. So this letter is
+    /// the whole difference between two otherwise identical-looking rows.
+    ///
+    /// Scanned as a standalone token rather than by position, because the letter is not always next to
+    /// "RWY" — real titles include "ILS Y OR LOC Y RWY 04", "ILS Z OR LOC RWY 17" and
+    /// "VOR Z OR TACAN RWY 20". Only U-Z occur in the published data.
+    static func multipleIndicator(_ title: String) -> Character? {
+        for token in title.uppercased().split(separator: " ").prefix(16) {   // bounded (rule 2)
+            guard token.count == 1, let ch = token.first, "UVWXYZ".contains(ch) else { continue }
+            return ch
+        }
+        return nil
+    }
+
     /// Match a PLATE (whose only identity is its printed name, e.g. "ILS OR LOC RWY 04R") to the coded
     /// approaches for that airport. The plate and the CIFP records share no key, so this narrows by
     /// runway and then scores the approach TYPE against the plate title.
@@ -190,7 +208,7 @@ enum ApproachActivation {
         let plate = plateName.uppercased()
         let wantRw = runway?.uppercased()
 
-        var scored: [(item: (ident: String, name: String, runway: String), score: Int)] = []
+        var scored: [(item: (ident: String, name: String, runway: String), score: Int, wrongLetter: Bool)] = []
         for c in candidates.prefix(1024) {                       // bounded (rule 2)
             // Runway must agree when the plate names one; a plate without a runway (e.g. a VOR-A
             // circling approach) can't be narrowed that way.
@@ -199,22 +217,42 @@ enum ApproachActivation {
             }
             var score = 0
             let name = c.name.uppercased()
-            // Approach-type agreement is what separates I04R from L04R on the same plate.
-            for token in ["ILS", "LOC", "RNAV", "GPS", "VOR", "NDB", "LDA", "SDF", "TACAN"]
+            // Approach-type agreement is what separates I04R from L04R on the same plate. RNP earns its
+            // place here: it is what distinguishes an RNAV (RNP) AR approach — which requires specific
+            // operator and aircrew authorization — from the ordinary RNAV (GPS) to the same runway.
+            for token in ["ILS", "LOC", "RNAV", "GPS", "RNP", "VOR", "NDB", "LDA", "SDF", "TACAN"]
             where plate.contains(token) && name.contains(token) {
                 score += 2
             }
-            if plate.contains("RNAV") && name.contains("GPS") { score += 1 }   // charted RNAV (GPS)
+            // Y vs Z to the same runway are different procedures with different missed approaches, and
+            // they tie on every type token — so without this the ident tiebreak silently picked Y.
+            //
+            // A letter DISAGREEMENT disqualifies rather than merely penalises. Two different letters is
+            // two different procedures, and a penalty still left the loser scoring above zero, so it
+            // stayed a "confident" match: KLGA's "RNAV (GPS) Y RWY 13" plate came back as the single
+            // confident candidate for the Z procedure and the sheet armed it with no chooser shown.
+            // Nationwide this is always the same situation — the plate's own letter is not coded at all
+            // — and the right answer there is to offer nothing rather than a different approach.
+            // One side being unlettered is NOT a disagreement: "ILS Z OR LOC RWY 17" genuinely covers
+            // the unlettered localizer.
+            var wrongLetter = false
+            let plateMult = Self.multipleIndicator(plate), nameMult = Self.multipleIndicator(name)
+            switch (plateMult, nameMult) {
+            case let (p?, n?):  if p == n { score += 3 } else { wrongLetter = true }
+            case (nil, nil):    break
+            default:            score -= 1          // one is lettered and the other is not
+            }
             // Circling approaches are identified by their letter, not a runway ("RNAV (GPS)-A"). Without
             // this a circling plate ties with the straight-in of the same type and lost the ident
             // tiebreak, so the pilot's own approach ranked second in its own chooser.
             if let letter = Self.circlingLetter(plate) {
                 score += Self.circlingLetter(name) == letter ? 2 : -1
             }
-            scored.append((c, score))
+            scored.append((c, score, wrongLetter))
         }
         scored.sort { a, b in
-            a.score != b.score ? a.score > b.score : a.item.ident < b.item.ident
+            if a.wrongLetter != b.wrongLetter { return !a.wrongLetter }
+            return a.score != b.score ? a.score > b.score : a.item.ident < b.item.ident
         }
         // A candidate that shares NO approach-type token with the plate title is not a match, it is
         // merely the only thing left at that airport. Returning it looked identical to a confident
@@ -223,7 +261,7 @@ enum ApproachActivation {
         // a runway the plate does not name. Keep unscored candidates only when nothing scored at all,
         // where they are the caller's last resort AND the chooser stays visible because there is more
         // than one; a lone unscored candidate is dropped outright.
-        let confident = scored.filter { $0.score > 0 }
+        let confident = scored.filter { $0.score > 0 && !$0.wrongLetter }
         if !confident.isEmpty { return confident.map(\.item) }
         return scored.count > 1 ? scored.map(\.item) : []
     }
