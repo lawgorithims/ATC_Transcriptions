@@ -169,9 +169,57 @@ struct WidgetLayout: Codable, Equatable {
     /// Clearing the tap also closes a side pane the object card was docked into (it has no content left).
     @Published var mapProbe: MapProbeResult? {
         didSet {
-            guard mapProbe == nil else { return }
+            guard mapProbe == nil else { applyProbePresentation(); return }
             if leftPane == .objectInfo { leftPane = nil }
             if rightPane == .objectInfo { rightPane = nil }
+        }
+    }
+
+    /// Where a map selection should appear: as the floating card, or docked into a side pane.
+    /// Persisted; the pane sides mirror the edge-dock the pilot could already reach by dragging.
+    enum ProbePresentation: String, CaseIterable, Identifiable {
+        case widget, leftPane, rightPane
+        var id: String { rawValue }
+        var label: String {
+            switch self {
+            case .widget:    return "Floating card"
+            case .leftPane:  return "Left pane"
+            case .rightPane: return "Right pane"
+            }
+        }
+        var side: PaneSide? {
+            switch self {
+            case .widget:    return nil
+            case .leftPane:  return .left
+            case .rightPane: return .right
+            }
+        }
+    }
+
+    @Published var probePresentation: ProbePresentation =
+        (UserDefaults.standard.string(forKey: "atc.pane.probeDefault")
+            .flatMap(ProbePresentation.init(rawValue:)) ?? .widget) {
+        didSet { UserDefaults.standard.set(probePresentation.rawValue, forKey: "atc.pane.probeDefault") }
+    }
+
+    /// Put a NEW map selection where the pilot asked for it. Runs only on a fresh tap, so a card they
+    /// have since dragged somewhere else keeps its position until the next selection.
+    ///
+    /// Docking evicts whatever already occupies that side, so a pilot who chose "side pane" and left the
+    /// transcript docked there would lose it on every map tap. Sending the object card to the OTHER side
+    /// in that case keeps both, and only falls back to evicting when both sides are already spoken for.
+    private func applyProbePresentation() {
+        guard let wanted = probePresentation.side else {
+            if leftPane == .objectInfo { leftPane = nil }
+            if rightPane == .objectInfo { rightPane = nil }
+            update(.objectInfo) { $0.visible = true }
+            return
+        }
+        let other: PaneSide = wanted == .left ? .right : .left
+        if let occupant = pane(wanted), occupant != .objectInfo, pane(other) == nil {
+            dockToSide(.objectInfo, other)
+        } else {
+            dockToSide(.objectInfo, wanted)
         }
     }
 

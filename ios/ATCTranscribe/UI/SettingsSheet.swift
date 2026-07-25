@@ -366,6 +366,17 @@ struct SettingsSheet: View {
             }
         }
         #endif
+        Card(title: "Map selection") {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    ForEach(WidgetStore.ProbePresentation.allCases) { mode in
+                        probePresentationButton(mode)
+                    }
+                }
+                Text("Where a tapped map object opens. The floating card can still be dragged to a screen edge to dock it, and a docked panel can be popped back out — this only sets where the next selection starts. On a narrow window the selection always opens as a bottom sheet.")
+                    .font(.caption2).foregroundStyle(p.textDim)
+            }
+        }
         Card(title: "Battery") {
             NavigationLink {
                 BatteryDiagnosticsView().environmentObject(model)
@@ -477,6 +488,21 @@ struct SettingsSheet: View {
                 .overlay(RoundedRectangle(cornerRadius: 8).stroke(p.border, lineWidth: 1))
         }
         .buttonStyle(.plainHaptic)
+    }
+
+    private func probePresentationButton(_ mode: WidgetStore.ProbePresentation) -> some View {
+        let p = model.palette
+        let on = model.widgetStore.probePresentation == mode
+        return Button { model.widgetStore.probePresentation = mode } label: {
+            Text(mode.label).font(.caption2.weight(.semibold))
+                .frame(maxWidth: .infinity).padding(.vertical, 8)
+                .background(on ? p.accent : p.surfaceAlt)
+                .foregroundStyle(on ? p.bg : p.text)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(p.border, lineWidth: 1))
+        }
+        .buttonStyle(.plainHaptic)
+        .accessibilityIdentifier("probe-presentation-\(mode.rawValue)")
     }
 
     private func sensitivityButton(_ s: GateSensitivity, _ label: String) -> some View {
