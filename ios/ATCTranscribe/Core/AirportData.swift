@@ -25,11 +25,19 @@ enum AirportData {
         return handle
     }()
 
-    /// NASR keys airports by FAA identifier ("DFW"), not ICAO ("KDFW"). Look up both, since the rest of
-    /// the app speaks ICAO — and a US ICAO ident is almost always the FAA one with a K in front.
+    /// NASR keys airports by FAA identifier ("DFW"), not ICAO ("KDFW"). Look up both.
+    ///
+    /// The US ICAO prefix is not only K: Alaska is PA, Hawaii PH, Guam PG, Puerto Rico and the Virgin
+    /// Islands TJ/TI. Stripping only a leading K left every airport in those regions — PANC, PHNL, PGUM,
+    /// TJSJ — resolving to nothing at all.
+    private static let icaoPrefixes = ["K", "PA", "PH", "PG", "PM", "PO", "PW", "TJ", "TI"]
     private static func keys(_ ident: String) -> (String, String) {
         let s = ident.uppercased()
-        return (s, s.count == 4 && s.hasPrefix("K") ? String(s.dropFirst()) : s)
+        guard s.count == 4 else { return (s, s) }
+        for p in icaoPrefixes where s.hasPrefix(p) && s.count - p.count >= 2 {
+            return (s, String(s.dropFirst(p.count)))
+        }
+        return (s, s)
     }
 
     struct RunwayEnd: Equatable {

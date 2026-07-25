@@ -19,15 +19,28 @@ enum LegConstraintCheck {
     /// How far outside a published altitude the aircraft must be before this says anything.
     ///
     /// Sized to clear the GPS-vs-barometric spread rather than to catch small busts, because a warning
-    /// that fires on a datum difference teaches the pilot to ignore it. It catches the gross error — a
-    /// crossing restriction missed by a thousand feet — and stays quiet otherwise.
-    static let toleranceFt = 400
+    /// that fires on a datum difference teaches the pilot to ignore it. That spread is bigger than it
+    /// first looks: geometric-vs-pressure altitude diverges with both altimeter setting and temperature,
+    /// and a cold day at altitude can reach several hundred feet on its own. 700 ft still catches the
+    /// gross error — a crossing restriction missed by a thousand feet or more — and stays quiet through
+    /// any plausible datum difference.
+    static let toleranceFt = 700
 
     /// Vertical accuracy beyond which the fix cannot support any altitude claim.
     static let maxVerticalAccuracyM = 40.0
 
     /// How far off the leg the aircraft may be and still be considered to be flying it.
     static let maxCrossTrackNm = 5.0
+
+    /// How close to the fix the aircraft must be before its crossing restriction is judged.
+    ///
+    /// A published altitude applies AT the fix, not along the whole leg leading to it — the leg is where
+    /// you descend to meet it. Without this gate the advisory fired for the entire leg, so a normal
+    /// climb-out or descent looked like a bust, and an aircraft parked on the ground with an approach
+    /// loaded was permanently "1,900 ft low" at its first fix. 4 NM is roughly a minute of slow flight
+    /// and about half a minute at approach speed: close enough that the restriction is genuinely
+    /// imminent, far enough to be useful rather than an after-the-fact report.
+    static let arrivalWindowNm = 4.0
 
     struct Warning: Equatable {
         enum Sense: Equatable { case above, below }
@@ -54,6 +67,7 @@ enum LegConstraintCheck {
                          fix: String,
                          altitudeFtMSL: Int?,
                          crossTrackNm: Double?,
+                         distanceToFixNm: Double?,
                          verticalAccuracyM: Double?,
                          integrityOK: Bool) -> Warning? {
         assert(toleranceFt > 0, "a zero tolerance would warn on the GPS/baro datum difference alone")
@@ -66,6 +80,9 @@ enum LegConstraintCheck {
         if verticalAccuracyM == nil { return nil }               // unknown accuracy is not good accuracy
         if let xtk = crossTrackNm, abs(xtk) > maxCrossTrackNm { return nil }
         guard crossTrackNm != nil else { return nil }            // not established on the leg → no claim
+        // The restriction applies AT the fix. Judged along the whole leg it flags every normal climb or
+        // descent, and never stops flagging an aircraft sitting on the ground.
+        guard let distanceToFixNm, distanceToFixNm <= arrivalWindowNm else { return nil }
 
         guard let deviation = constraint.altitudeDeviation(altitudeFtMSL),
               abs(deviation) > toleranceFt else { return nil }

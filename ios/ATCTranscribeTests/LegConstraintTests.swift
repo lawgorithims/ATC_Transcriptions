@@ -80,16 +80,26 @@ final class LegConstraintCheckTests: XCTestCase {
     private let atOrAbove2000 = LegConstraint(altDesc: "+", alt: "02000", alt2: "",
                                               speedLimitKt: 210, verticalAngleDeg: nil, rnpNm: nil)
 
-    private func check(alt: Int? = 1000, xtk: Double? = 0.5, vacc: Double? = 10,
+    private func check(alt: Int? = 1000, xtk: Double? = 0.5, dist: Double? = 2.0, vacc: Double? = 10,
                        integrity: Bool = true,
                        constraint: LegConstraint? = nil) -> LegConstraintCheck.Warning? {
         LegConstraintCheck.evaluate(constraint: constraint ?? atOrAbove2000, fix: "SHUSH",
-                                    altitudeFtMSL: alt, crossTrackNm: xtk,
+                                    altitudeFtMSL: alt, crossTrackNm: xtk, distanceToFixNm: dist,
                                     verticalAccuracyM: vacc, integrityOK: integrity)
     }
 
+    /// A published altitude applies AT the fix; the leg leading to it is where you descend to meet it.
+    /// Judged along the whole leg, the advisory flagged every normal climb and descent — and never
+    /// stopped flagging an aircraft parked on the ground with an approach loaded.
+    func testStaysQuietUntilTheFixIsActuallyClose() {
+        XCTAssertNil(check(alt: 200, dist: 40), "40 NM out is not a crossing restriction bust")
+        XCTAssertNil(check(alt: 200, dist: LegConstraintCheck.arrivalWindowNm + 0.5))
+        XCTAssertNotNil(check(alt: 200, dist: LegConstraintCheck.arrivalWindowNm - 0.5))
+        XCTAssertNil(check(alt: 200, dist: nil), "no distance means no claim")
+    }
+
     func testWarnsWhenClearlyBelowAPublishedMinimum() {
-        let w = check(alt: 1000)
+        let w = check(alt: 1000, dist: 1.0)
         XCTAssertEqual(w?.sense, .below)
         XCTAssertEqual(w?.deviationFt, -1000)
         XCTAssertEqual(w?.limitText, "at or above 2000 ft")
@@ -102,6 +112,8 @@ final class LegConstraintCheckTests: XCTestCase {
     func testStaysQuietInsideTheGpsBarometricSpread() {
         XCTAssertNil(check(alt: 2000 - LegConstraintCheck.toleranceFt + 50))
         XCTAssertNotNil(check(alt: 2000 - LegConstraintCheck.toleranceFt - 50))
+        XCTAssertGreaterThanOrEqual(LegConstraintCheck.toleranceFt, 600,
+                                    "a cold day at altitude alone can move geometric-vs-pressure several hundred feet")
     }
 
     func testStaysQuietWhenTheFixIsNotTrustworthy() {

@@ -336,6 +336,37 @@ final class ApproachActivationTests: XCTestCase {
         XCTAssertEqual(m.map(\.ident), ["I17-Z", "L17"])
     }
 
+    /// The letter bonus must only RANK candidates that already agree on type — never qualify one. It was
+    /// worth +3, which on its own cleared the confidence bar, so KROA's "LDA Z RWY 06" plate came back as
+    /// a single candidate (the RNP AR H06-Z, letter Z) and the sheet armed it with no chooser shown.
+    func testAMatchingLetterCannotQualifyAWrongTypeApproach() {
+        let candidates = [(ident: "H06-Z", name: "RNAV (RNP) Z RWY 06", runway: "06"),
+                          (ident: "R06-Y", name: "RNAV (GPS) Y RWY 06", runway: "06"),
+                          (ident: "X06-Y", name: "LDA Y RWY 06",        runway: "06")]
+        let m = ApproachActivation.matchPlate(plateName: "LDA Z RWY 06", runway: "06", candidates: candidates)
+        XCTAssertNotEqual(m.count, 1, "a lone wrong-type candidate would be armed with no chooser")
+        XCTAssertNotEqual(m.first?.ident, "H06-Z", "an RNP AR approach must not top an LDA plate")
+    }
+
+    /// ATC says "cleared for the RNAV approach" — never "GPS", never "RNP" — so an unqualified RNAV
+    /// clearance must load the ordinary approach, not the AR one that needs special authorization. The
+    /// ident tiebreak sorts H before R, so without this the AR procedure won at 374 airport/runways.
+    func testASpokenRnavClearanceLoadsTheGpsApproachNotTheRnpAr() {
+        let candidates = [(ident: "H10-Z", name: "RNAV (RNP) Z RWY 10", runway: "10"),
+                          (ident: "R10-Y", name: "RNAV (GPS) Y RWY 10", runway: "10")]
+        // Exactly what loadApproachForRunway passes: the parser's qualifier, with an empty rawTranscript.
+        let m = ApproachActivation.matchPlate(plateName: "RNAV ", runway: nil, candidates: candidates)
+        XCTAssertEqual(m.first?.ident, "R10-Y")
+    }
+
+    /// But a plate that really does say RNP still gets it.
+    func testAnExplicitRnpPlateStillRanksTheRnpApproach() {
+        let candidates = [(ident: "H10-Z", name: "RNAV (RNP) Z RWY 10", runway: "10"),
+                          (ident: "R10-Z", name: "RNAV (GPS) Z RWY 10", runway: "10")]
+        XCTAssertEqual(ApproachActivation.matchPlate(plateName: "RNAV (RNP) Z RWY 10", runway: "10",
+                                                     candidates: candidates).first?.ident, "H10-Z")
+    }
+
     func testMultipleIndicatorReadsOnlyStandaloneLetters() {
         XCTAssertEqual(ApproachActivation.multipleIndicator("RNAV (GPS) Z RWY 22"), "Z")
         XCTAssertEqual(ApproachActivation.multipleIndicator("ILS Y OR LOC Y RWY 04"), "Y")
