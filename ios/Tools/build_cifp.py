@@ -11,7 +11,7 @@ compact SQLite queried per-airport by the app (`Core/CIFP.swift`).
 Run (regenerate each 28-day cycle):
     python3 build_cifp.py [--zip local.zip | --cifp local/FAACIFP18] [--date YYMMDD] [--out path.sqlite]
 """
-import argparse, io, os, re, sqlite3, urllib.request, zipfile
+import argparse, datetime as dt, io, os, re, sqlite3, urllib.request, zipfile
 
 BASE = "https://aeronav.faa.gov/Upload_313-d/cifp/"
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
@@ -25,6 +25,22 @@ APPROACH_TYPE = {"I": "ILS", "X": "LOC", "L": "LOC", "B": "LOC BC", "R": "RNAV (
 
 def fetch(url):
     return urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": UA}), timeout=600).read()
+
+
+# AIRAC cycles are 28 days. Anchor on cycle 2607, whose effective date (2026-07-09) is published in the
+# FAA d-TPP metadata this repo already ingests — so the two datasets agree by construction.
+CYCLE_ANCHOR = ("2607", dt.date(2026, 7, 9))
+
+
+def cycle_dates(cycle):
+    """(effective, expires) ISO dates for a YYNN AIRAC cycle. Expiry is the next cycle's effective date."""
+    a_id, a_date = CYCLE_ANCHOR
+    try:
+        dy, dn = int(cycle[:2]) - int(a_id[:2]), int(cycle[2:]) - int(a_id[2:])
+    except ValueError:
+        return ("", "")
+    eff = a_date + dt.timedelta(days=28 * (dn + dy * 13))     # 13 cycles per year
+    return (eff.isoformat(), (eff + dt.timedelta(days=28)).isoformat())
 
 
 def coord(line):
@@ -68,6 +84,18 @@ def main():
 
     print("reading FAACIFP18…", flush=True)
     lines = load_lines(args)
+
+    # The cycle comes from the file's OWN header record (`HDR01FAACIFP18 ... 2607 ...`), not from the
+    # requested filename — so a mislabelled download can never stamp the wrong validity period onto the
+    # data. Verified against the real file: the 4-digit AIRAC id sits at 0-based 35.
+    cycle = ""
+    if lines and lines[0].startswith("HDR01"):
+        cand = lines[0][35:39]
+        if cand.isdigit():
+            cycle = cand
+    if not cycle:
+        raise SystemExit("CIFP header carries no readable cycle id — refusing to build undated data")
+    print(f"CIFP header cycle: {cycle}")
     print("records:", len(lines), flush=True)
 
     # ---- pass 1: fix-coordinate table (ident → coord) from every geo-bearing fix/navaid record ----
@@ -93,10 +121,24 @@ def main():
     # ---- pass 2: procedures + legs (subsection D=SID, E=STAR, F=approach), runways (G), ILS (I) ----
     con = sqlite3.connect(args.out if False else ":memory:")
     con.executescript("""
+      -- `route_type` is ARINC col 20 (0-based 19): it distinguishes an approach TRANSITION from the
+      -- approach proper, and a SID runway-transition from its common/enroute portion. It was dropped by
+      -- the previous builder, which is why segmentation had to be inferred downstream.
+      -- `incomplete` is set when ANY record belonging to this procedure failed to parse (constraint:
+      -- never emit a partial procedure that looks complete).
       CREATE TABLE procedure(id INTEGER PRIMARY KEY, airport TEXT, kind TEXT, ident TEXT, name TEXT,
-                             runway TEXT, transition TEXT);
+                             runway TEXT, transition TEXT, route_type TEXT, incomplete INTEGER DEFAULT 0);
+      -- Column names of the original six are unchanged so the shipped reader keeps working; everything
+      -- after `alt` is new. `alt_desc` is the ARINC altitude-description qualifier (col 83, 0-based 82)
+      -- WITHOUT which at / at-or-above / at-or-below / between are indistinguishable, and `alt2` is the
+      -- second altitude that `between` requires. `wp_desc` char 4 carries the segment role (A=IAF,
+      -- F=FAF, M=missed-approach point, I=intermediate) — read, not inferred.
       CREATE TABLE leg(procedure_id INTEGER, seq INTEGER, fix TEXT, lat REAL, lon REAL,
-                       leg_type TEXT, course_mag REAL, alt TEXT);
+                       leg_type TEXT, course_mag REAL, alt TEXT,
+                       alt_desc TEXT, alt2 TEXT, speed_limit INTEGER, vertical_angle REAL,
+                       turn TEXT, rnp REAL, wp_desc TEXT, recd_navaid TEXT);
+      -- Provenance travels with the data (constraint: source/cycle/effective/expiration/ingested_at).
+      CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
       CREATE TABLE ils(airport TEXT, runway TEXT, ident TEXT, freq_mhz REAL, course_mag REAL, lat REAL, lon REAL);
       CREATE TABLE runway(airport TEXT, designator TEXT, lat REAL, lon REAL, bearing_mag REAL, length_ft INTEGER);
       CREATE TABLE airway(area TEXT, ident TEXT, seq INTEGER, fix TEXT, lat REAL, lon REAL, mea INTEGER, maa INTEGER);
@@ -108,11 +150,26 @@ def main():
       CREATE INDEX ix_awy_lat ON airway(lat);
     """)
     proc_id = {}   # (airport, sub, ident, transition) → rowid
-    nproc = nleg = 0
+    nproc = nleg = nbad = 0
+    bad_keys = set()   # procedures touched by a rejected record → marked incomplete
 
     def num(s, scale=1.0):
+        """Signed fixed-point ARINC number -> float, or None. Absent stays absent (never defaulted)."""
         s = s.strip()
-        return (int(s) / scale) if s.isdigit() else None
+        neg = s.startswith("-")
+        if neg:
+            s = s[1:]
+        if not s.isdigit():
+            return None
+        v = int(s) / scale
+        return -v if neg else v
+
+    def rnp_val(s):
+        """ARINC RNP: 3 chars, 2 significant digits + a decimal-shift exponent (e.g. '10 '/'102')."""
+        s = s.strip()
+        if len(s) < 3 or not s[:2].isdigit() or not s[2].isdigit():
+            return None
+        return round(int(s[:2]) / (10 ** int(s[2])), 3)
 
     # ---- pass 2b: enroute airways (section E, subsection R) — V/J/T/Q routes as ordered fix chains.
     # Empirical layout: route ident 14-18, sequence 26-29, fix 30-34, MEA 84-88, MEA-2 89-93, MAA 94-98.
@@ -147,26 +204,44 @@ def main():
         sub = l[12]
         apt = l[6:10].strip()
         if sub in "DEF":                                        # SID / STAR / Approach leg
+            if l[38] != "0":                                # continuation record — primary only
+                continue
             ident = l[13:19].strip()
+            route_type = l[19].strip()
             trans = l[20:25].strip()
             seq = num(l[26:29])
             fix = l[29:34].strip()
+            wp_desc = l[39:43]                                  # char 4: A=IAF F=FAF M=MAP I=intermediate
+            turn = l[43].strip()
+            rnp = rnp_val(l[44:47])
             leg_type = l[47:49].strip()
+            recd = l[50:54].strip()                             # recommended navaid
             course = num(l[70:74], 10.0)                        # tenths of a degree
+            alt_desc = l[82].strip()
             alt = l[84:89].strip()
+            alt2 = l[89:94].strip()
+            speed = num(l[99:102])
+            vangle = num(l[102:106], 100.0)                     # hundredths of a degree, signed
             key = (apt, sub, ident, trans)
             if key not in proc_id:
                 kind = {"D": "SID", "E": "STAR", "F": "IAP"}[sub]
                 name, rwy = (approach_name(ident) if sub == "F" else (ident, ""))
-                cur = con.execute("INSERT INTO procedure(airport,kind,ident,name,runway,transition) VALUES(?,?,?,?,?,?)",
-                                  (apt, kind, ident, name, rwy, trans))
+                cur = con.execute("INSERT INTO procedure(airport,kind,ident,name,runway,transition,route_type) "
+                                  "VALUES(?,?,?,?,?,?,?)", (apt, kind, ident, name, rwy, trans, route_type))
                 proc_id[key] = cur.lastrowid
                 nproc += 1
-            if fix:
-                c = fixes.get(fix)
-                con.execute("INSERT INTO leg(procedure_id,seq,fix,lat,lon,leg_type,course_mag,alt) VALUES(?,?,?,?,?,?,?,?)",
-                            (proc_id[key], seq, fix, c[0] if c else None, c[1] if c else None, leg_type, course, alt))
-                nleg += 1
+            # EVERY leg is emitted, including fix-less ones. The previous builder's `if fix:` guard
+            # silently discarded every altitude/heading/intercept-terminated leg (CA VA VI VR CI CD VD),
+            # which left 706 SIDs in the database with NO legs at all — a named, selectable procedure
+            # with no path. A leg with no fix still has a path terminator and a constraint.
+            c = fixes.get(fix) if fix else None
+            con.execute("INSERT INTO leg(procedure_id,seq,fix,lat,lon,leg_type,course_mag,alt,"
+                        "alt_desc,alt2,speed_limit,vertical_angle,turn,rnp,wp_desc,recd_navaid) "
+                        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (proc_id[key], seq, fix, c[0] if c else None, c[1] if c else None,
+                         leg_type, course, alt, alt_desc, alt2, speed, vangle,
+                         turn or None, rnp, wp_desc, recd or None))
+            nleg += 1
         elif sub == "G":                                        # runway: RWxx, length (21-26), bearing (27-30), threshold coord
             c = coord(l)
             con.execute("INSERT INTO runway(airport,designator,lat,lon,bearing_mag,length_ft) VALUES(?,?,?,?,?,?)",
@@ -186,6 +261,27 @@ def main():
                    WHERE fix<>'' AND fix NOT LIKE 'RW%' AND lat IS NOT NULL AND lat<>0""")
     con.execute("CREATE INDEX ix_tfix_lat ON terminal_fix(lat)")
     ntfix = con.execute("SELECT COUNT(*) FROM terminal_fix").fetchone()[0]
+
+    # ---- provenance + loud parse accounting ------------------------------------------------------
+    # Every record travels with where it came from and which 28-day cycle it is valid for. Without this
+    # nothing downstream can tell whether two datasets may legally be combined, or whether the data in
+    # the pilot's hands has expired.
+    eff, exp = cycle_dates(cycle)
+    for k, v in [("source", "FAA CIFP (ARINC 424-18), public domain"),
+                 ("source_url", BASE + f"CIFP_{args.date}.zip"),
+                 ("cycle", cycle), ("effective", eff), ("expires", exp),
+                 ("ingested_at", dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")),
+                 ("builder", os.path.basename(__file__)),
+                 ("records_rejected", str(nbad))]:
+        con.execute("INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)", (k, v))
+
+    # A procedure with ANY rejected record is marked incomplete rather than silently shipped short.
+    if bad_keys:
+        con.executemany("UPDATE procedure SET incomplete=1 WHERE airport=? AND kind=? AND ident=? AND transition=?",
+                        [(a, {"D": "SID", "E": "STAR", "F": "IAP"}[sb], i, t) for (a, sb, i, t) in bad_keys])
+    nincomplete = con.execute("SELECT COUNT(*) FROM procedure WHERE incomplete=1").fetchone()[0]
+    nolegs = con.execute("SELECT COUNT(*) FROM procedure p WHERE NOT EXISTS"
+                         "(SELECT 1 FROM leg WHERE procedure_id=p.id)").fetchone()[0]
     con.commit()
 
     out = os.path.abspath(args.out)
@@ -197,6 +293,10 @@ def main():
     disk.execute("VACUUM")
     disk.close()
     print(f"fixes={len(fixes)} procedures={nproc} legs={nleg} airway_points={nawy} terminal_fixes={ntfix} bytes={os.path.getsize(out)} -> {out}")
+    print(f"cycle={cycle} effective={eff} expires={exp}")
+    print(f"rejected_records={nbad} incomplete_procedures={nincomplete} procedures_with_no_legs={nolegs}")
+    if nolegs:
+        print(f"  WARNING: {nolegs} procedures have no legs — investigate before shipping")
     # airway spot-check: V1 and J121 should both exist with ordered geo points
     for awy in ("V1", "J121"):
         pts = con.execute("SELECT COUNT(*) FROM airway WHERE ident=?", (awy,)).fetchone()[0]
