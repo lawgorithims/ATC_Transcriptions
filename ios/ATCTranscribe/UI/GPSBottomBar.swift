@@ -6,13 +6,14 @@ import SwiftUI
 struct GPSBottomBar: View {
     @EnvironmentObject var model: AppModel
     @State private var deviceFix: DeviceFix?
+    @State private var showConstraint = false
 
     var body: some View {
         let p = model.palette
         let r = GPSReadout.merge(stratux: model.stratuxGPS, device: deviceFix)
         return HStack(spacing: 8) {
             signalBox(r)
-            metricBox("ALT", Self.intText(r.altitudeFtMSL, "ft"))
+            altBox(r)
             aglBox()
             metricBox("GS", Self.intText(r.groundSpeedKt, "kt"))
             metricBox("TRK", r.trackDeg.map { String(format: "%03.0f°", $0) } ?? "—")
@@ -95,6 +96,61 @@ struct GPSBottomBar: View {
     static func intText(_ value: Double?, _ unit: String) -> String {
         guard let v = value, v.isFinite, let i = Int(exactly: v.rounded()) else { return "—" }
         return "\(i) \(unit)"
+    }
+
+    /// The ALT chip, which turns amber and becomes tappable when the aircraft is outside the published
+    /// crossing restriction on the leg it is flying. Tapping explains which restriction, by how much,
+    /// and — the part that keeps this honest — that it is GPS-derived and advisory.
+    @ViewBuilder private func altBox(_ r: GPSReadout) -> some View {
+        let p = model.palette
+        if let w = model.constraintWarning {
+            Button { showConstraint = true } label: {
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(spacing: 3) {
+                        Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 8))
+                        Text("ALT").font(.system(size: 9, weight: .semibold)).tracking(0.5)
+                    }
+                    .foregroundStyle(p.warn)
+                    Text(Self.intText(r.altitudeFtMSL, "ft"))
+                        .font(.callout.monospaced().weight(.semibold)).foregroundStyle(p.warn)
+                }
+                .modifier(BoxCell(p: p))
+                .overlay(RoundedRectangle(cornerRadius: 8).stroke(p.warn, lineWidth: 1))
+            }
+            .buttonStyle(.plainHaptic)
+            .accessibilityIdentifier("gps-alt-warning")
+            .popover(isPresented: $showConstraint) { constraintDetail(w) }
+        } else {
+            metricBox("ALT", Self.intText(r.altitudeFtMSL, "ft"))
+        }
+    }
+
+    private func constraintDetail(_ w: LegConstraintCheck.Warning) -> some View {
+        let p = model.palette
+        return VStack(alignment: .leading, spacing: 10) {
+            Text(w.headline).font(.headline).foregroundStyle(p.text)
+            Text("\(w.fix) is published \(w.limitText).")
+                .font(.callout).foregroundStyle(p.text)
+            Text("Advisory only. This compares your GPS altitude against the charted restriction — and "
+                 + "charted altitudes are barometric, so the two differ with pressure and temperature. "
+                 + "Your altimeter is the authority. Speed limits are shown but never checked, because "
+                 + "ground speed is not indicated airspeed.")
+                .font(.caption2).foregroundStyle(p.textDim)
+            DataCurrencyBadge(sources: [CIFP.provenance])
+            Button {
+                model.dismissConstraintWarning()
+                showConstraint = false
+            } label: {
+                Text("Dismiss for this leg").font(.caption.weight(.semibold))
+                    .frame(maxWidth: .infinity).padding(.vertical, 8)
+                    .background(p.surfaceAlt).foregroundStyle(p.text)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+            }
+            .buttonStyle(.plainHaptic)
+            .accessibilityIdentifier("dismiss-alt-warning")
+        }
+        .padding(16).frame(maxWidth: 320)
+        .presentationCompactAdaptation(.popover)
     }
 
     private func metricBox(_ label: String, _ value: String) -> some View {

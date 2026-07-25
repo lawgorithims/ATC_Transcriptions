@@ -35,19 +35,28 @@ struct RouteETAs: Equatable {
     /// Index of the next waypoint: the end of the segment the aircraft is currently on (min cross-track among
     /// segments whose along-track fraction is in [0,1]); else the nearest waypoint ahead. Clamped to [1, n-1].
     static func activeNextIndex(_ pts: [Coord], present p: Coord) -> Int {
-        assert(pts.count >= 2, "activeNextIndex: need >=2 points")
+        activeLeg(pts, present: p).index
+    }
+
+    /// The active leg AND how far off it the aircraft is. The cross-track distance is computed anyway,
+    /// and callers that act on the leg's published constraints need it: without it there is no way to
+    /// tell "established on this leg" from "nearest thing to an aircraft 200 NM away", and the fallback
+    /// below returns the nearest waypoint at ANY distance. `crossTrackNm` is nil for that fallback,
+    /// which is exactly the signal a constraint check needs to stay quiet.
+    static func activeLeg(_ pts: [Coord], present p: Coord) -> (index: Int, crossTrackNm: Double?) {
+        assert(pts.count >= 2, "activeLeg: need >=2 points")
         var bestSeg = -1, bestCross = Double.greatestFiniteMagnitude
         for i in 0..<min(pts.count, maxLegs) - 1 {         // bounded (rule 2)
             let (frac, cross) = project(p, pts[i], pts[i + 1])
             if frac >= 0, frac <= 1, cross < bestCross { bestCross = cross; bestSeg = i }
         }
-        if bestSeg >= 0 { return bestSeg + 1 }
+        if bestSeg >= 0 { return (bestSeg + 1, bestCross) }
         // Off any segment (before start / past end / doglegged): fall back to the nearest waypoint, clamped.
         var nearest = 1, nd = Double.greatestFiniteMagnitude
         for i in 1..<min(pts.count, maxLegs) {             // bounded (rule 2)
             let d = Geo.nmBetween(p, pts[i]); if d < nd { nd = d; nearest = i }
         }
-        return min(max(nearest, 1), pts.count - 1)
+        return (min(max(nearest, 1), pts.count - 1), nil)
     }
 
     /// Along-track fraction (0=at a, 1=at b) + cross-track distance (NM) of `p` onto segment a→b, via a local

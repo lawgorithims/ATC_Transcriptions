@@ -58,7 +58,8 @@ enum ProcedureRoute {
         for leg in legs.prefix(maxProcedureLegs) where out.count < maxLegs {
             guard let coord = leg.coord, !leg.fix.isEmpty, !CIFP.isRunwayPseudoFix(leg.fix) else { continue }
             assert(coord.lat.isFinite && coord.lon.isFinite, "procedure leg coordinate is not finite")
-            appendDeduped(ResolvedLeg(ident: leg.fix, kind: .waypoint, coord: coord), to: &out)
+            appendDeduped(ResolvedLeg(ident: leg.fix, kind: .waypoint, coord: coord,
+                                      constraint: leg.constraint), to: &out)
         }
     }
 

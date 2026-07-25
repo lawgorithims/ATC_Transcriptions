@@ -2549,15 +2549,54 @@ final class AppModel: ObservableObject {
         let kts = selectedAircraft?.cruiseKts
         let gph = selectedAircraft?.burnGPH
         Task {
-            let out = await Task.detached(priority: .utility) { () -> (TripStats?, [ResolvedLeg]) in
+            let out = await Task.detached(priority: .utility) { () -> (TripStats?, [ResolvedLeg], [ResolvedLeg]) in
                 _ = NavDatabase.count                                     // warm the nav DB off-main
                 let legs = ProcedureRoute.resolve(sendable)
-                return (TripStats.compute(points: legs.map(\.coord), cruiseKts: kts, burnGPH: gph), legs)
+                // The full plan too, for its published constraints — the sendable plan has no approach.
+                let full = ProcedureRoute.resolve(plan)
+                return (TripStats.compute(points: legs.map(\.coord), cruiseKts: kts, burnGPH: gph), legs, full)
             }.value
             guard epoch == tripStatsEpoch else { return }                 // superseded → discard
             tripStats = out.0
             resolvedRoute = out.1                                         // cached for the live GPS-bar ETAs
+            constraintRoute = out.2
         }
+    }
+
+    /// The route resolved from the FULL plan, purely to carry published leg constraints.
+    ///
+    /// It cannot share `resolvedRoute`, which is resolved from the SENDABLE plan — and that drops the
+    /// approach, which is exactly where the crossing restrictions that matter live. Keeping them
+    /// separate also leaves DIST/ETE and the ForeFlight export semantics untouched.
+    @Published private(set) var constraintRoute: [ResolvedLeg] = []
+
+    /// The leg index whose constraint warning the pilot dismissed, so it stays quiet for that leg only
+    /// and re-arms on the next one.
+    private var dismissedConstraintLeg: Int?
+
+    /// Published altitude restriction on the leg being flown, when the aircraft is outside it by more
+    /// than the GPS/barometric datum spread can explain. nil means say nothing — see LegConstraintCheck
+    /// for every reason that is the honest answer.
+    var constraintWarning: LegConstraintCheck.Warning? {
+        guard constraintRoute.count >= 2, let here = presentPosition else { return nil }
+        let leg = RouteETAs.activeLeg(constraintRoute.map(\.coord), present: here)
+        guard leg.index < constraintRoute.count, dismissedConstraintLeg != leg.index else { return nil }
+        let target = constraintRoute[leg.index]
+        guard let constraint = target.constraint else { return nil }
+        let fix = GPSReadout.merge(stratux: stratuxGPS, device: deviceLocation.fix)
+        return LegConstraintCheck.evaluate(constraint: constraint,
+                                           fix: target.ident,
+                                           altitudeFtMSL: fix.altitudeFtMSL.map { Int($0.rounded()) },
+                                           crossTrackNm: leg.crossTrackNm,
+                                           verticalAccuracyM: deviceLocation.fix?.verticalAccuracyM,
+                                           integrityOK: gpsIntegrity.state <= .nominal)
+    }
+
+    /// Silence the current leg's constraint warning. It returns on the next leg, per the pilot's setting
+    /// — an acknowledged deviation on this leg says nothing about the next one.
+    func dismissConstraintWarning() {
+        guard constraintRoute.count >= 2, let here = presentPosition else { return }
+        dismissedConstraintLeg = RouteETAs.activeLeg(constraintRoute.map(\.coord), present: here).index
     }
 
     /// Live ETAs down the filed route from PRESENT POSITION at the CURRENT ground speed — feeds the GPS bar.
