@@ -169,6 +169,7 @@ struct MapLibreChartView: UIViewRepresentable {
         private var inOwnCourse: Double?
         private var inTraffic: [Aircraft] = []
         private var inWxTrend: [WxTrendPin] = []
+        private var appliedCategoryVersion = 0
         private var inTFRs: [TFR] = []
         private var inShowAirspace = true, inShowNearby = true, inShowAirways = true
         private var inPlate: PlateOverlayState?
@@ -236,6 +237,11 @@ struct MapLibreChartView: UIViewRepresentable {
                           integrity: inOwnIntegrity, on: map)
             updateTraffic(inTraffic, on: map)
             updateWxTrend(inWxTrend, on: map)
+            // New weather → the airport glyphs' category rings changed → rebuild the nav features.
+            if appliedCategoryVersion != Coordinator.categoryVersion {
+                appliedCategoryVersion = Coordinator.categoryVersion
+                refreshOverlays(map)
+            }
             updateTFRs(inTFRs, on: map)
             updatePlate(inPlate, on: map)
             applyFocus(inFocus, on: map)
@@ -438,7 +444,6 @@ struct MapLibreChartView: UIViewRepresentable {
         }
 
         func mapView(_ mapView: MLNMapView, didFinishLoading style: MLNStyle) {
-            print("NAVPROBE didFinishLoading url=\(mapView.styleURL?.lastPathComponent ?? "-")")
             servedReadersSig = nil               // the faa source is freshly (re)created empty here → force a remount
             appliedTrackCount = -1               // the "track" source is recreated empty → force a re-apply below
             appliedRadarTemplate = nil           // wxradar source gone after reload → force updateRadar to re-add
@@ -449,6 +454,10 @@ struct MapLibreChartView: UIViewRepresentable {
             ensureVisiblePacks(mapView)
             refreshOverlays(mapView)
             frameIfNeeded(on: mapView)           // frame now if route/GPS/camera arrived before the style loaded
+            // Publish the region ONCE at load. A cold launch that restores its camera never fires a region
+            // SETTLE (nothing moved), so a host that only listens for settles — the weather fetch behind the
+            // chart's flight-category rings — would sit idle until the pilot happened to pan.
+            onVisibleRegion?(Coordinator.visibleMapRect(mapView))
             // Re-apply anything updateUIView cached before the style finished loading (same idiom as route).
             updateOwnship(lastOwnship, course: lastOwnCourse, accuracyM: lastOwnAccuracy,
                           integrity: lastOwnIntegrity, on: mapView)
@@ -529,7 +538,6 @@ struct MapLibreChartView: UIViewRepresentable {
             setupLabelLayers(style)            // airway idents + airspace altitude blocks (SDF text)
             setupNavLayers(style)              // FAA nav glyphs + idents
             setupDynamicLayers(style)          // TFR/route/traffic/ownship (empty; driven by updateUIView)
-            print("NAVPROBE setupOverlayLayers done nav-sym=\(style.layer(withIdentifier: "nav-sym") != nil) count=\(style.layers.count)")
         }
 
         /// Remove every layer + source THIS coordinator manages, layers-before-sources (MapLibre throws if a
@@ -824,6 +832,15 @@ struct MapLibreChartView: UIViewRepresentable {
         /// Reported flight category per ident, refreshed from MetarStore by the host. Read by the static
         /// feature builders, which run off the main actor and cannot touch the store directly.
         nonisolated(unsafe) static var categoryByIdent: [String: AirportSymbol.Category] = [:]
+        /// Bumped whenever the host publishes new categories. An airport's glyph NAME carries its flight
+        /// category, and the names are only recomputed when the overlays rebuild — so without this the
+        /// rings appeared on the chart one pan LATE, i.e. exactly when the pilot wasn't looking for them.
+        nonisolated(unsafe) static var categoryVersion = 0
+        static func publish(categories: [String: AirportSymbol.Category]) {
+            guard categories != categoryByIdent else { return }
+            categoryByIdent = categories
+            categoryVersion &+= 1
+        }
         static func cachedCategory(_ ident: String) -> AirportSymbol.Category? {
             categoryByIdent[ident.uppercased()]
         }
@@ -893,9 +910,6 @@ struct MapLibreChartView: UIViewRepresentable {
                 // share a signature, so this is a handful of images even for a full screen of fields.
                 Coordinator.registerAirportGlyphs(in: f.nav, style: style)
                 (style.source(withIdentifier: "nav") as? MLNShapeSource)?.shape = MLNShapeCollectionFeature(shapes: f.nav)
-                let apt = f.nav.compactMap { $0.attributes["glyph"] as? String }.filter { $0.hasPrefix("apt-") }
-                let ids = style.layers.map { $0.identifier }
-                print("NAVPROBE nav=\(f.nav.count) apt=\(apt.count) firstApt=\(apt.first ?? "-") imgOK=\(apt.first.map { style.image(forName: $0) != nil } ?? false) layerExists=\(style.layer(withIdentifier: "nav-sym") != nil) order=\(ids.suffix(12))")
             }
         }
 
