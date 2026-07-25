@@ -29,8 +29,22 @@ struct CIFPLeg: Identifiable {
     /// approach COURSE fix, `B` = intermediate fix. This is the authoritative marker — it is read,
     /// never inferred. See `LegRole`, and do not transpose `I` and `B`.
     var wpDesc: String = ""
+    /// ARINC altitude-description qualifier — how `altitude` (and `altitude2`) should be read. Empty
+    /// means the source published none.
+    var altDesc: String = ""
+    /// The second altitude, used only by the "between" qualifier.
+    var altitude2: String = ""
+    var speedLimitKt: Int?
+    var verticalAngleDeg: Double?
+    var rnpNm: Double?
+
     /// The published role of this leg, if the source marks one.
     var role: LegRole { LegRole(wpDesc: wpDesc) }
+    /// The published constraints on this leg, as far as they are modelled. See `LegConstraint`.
+    var constraint: LegConstraint {
+        LegConstraint(altDesc: altDesc, alt: altitude, alt2: altitude2,
+                      speedLimitKt: speedLimitKt, verticalAngleDeg: verticalAngleDeg, rnpNm: rnpNm)
+    }
 }
 
 /// The segment role the FAA publishes for a leg, from the waypoint-description code's 4th character.
@@ -126,7 +140,11 @@ enum CIFP {
     static func legs(procedureID: Int) -> [CIFPLeg] {
         guard let db else { return [] }
         var st: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "SELECT seq,fix,lat,lon,leg_type,course_mag,alt,COALESCE(wp_desc,'') FROM leg WHERE procedure_id=?1 ORDER BY seq", -1, &st, nil) == SQLITE_OK else { return [] }
+        guard sqlite3_prepare_v2(db, """
+              SELECT seq,fix,lat,lon,leg_type,course_mag,alt,COALESCE(wp_desc,''),
+                     COALESCE(alt_desc,''),COALESCE(alt2,''),speed_limit,vertical_angle,rnp
+              FROM leg WHERE procedure_id=?1 ORDER BY seq
+              """, -1, &st, nil) == SQLITE_OK else { return [] }
         defer { sqlite3_finalize(st) }
         sqlite3_bind_int64(st, 1, Int64(procedureID))
         var out: [CIFPLeg] = []
@@ -136,9 +154,21 @@ enum CIFP {
                                coord: hasCoord ? Coord(lat: sqlite3_column_double(st, 2), lon: sqlite3_column_double(st, 3)) : nil,
                                legType: text(st, 4),
                                course: sqlite3_column_type(st, 5) != SQLITE_NULL ? sqlite3_column_double(st, 5) : nil,
-                               altitude: text(st, 6), wpDesc: text(st, 7)))
+                               altitude: text(st, 6), wpDesc: text(st, 7),
+                               altDesc: text(st, 8), altitude2: text(st, 9),
+                               speedLimitKt: intOrNil(st, 10),
+                               verticalAngleDeg: doubleOrNil(st, 11),
+                               rnpNm: doubleOrNil(st, 12)))
         }
         return out
+    }
+
+    /// Absent stays absent — a NULL constraint column is nil, never a sentinel that reads as a limit.
+    private static func intOrNil(_ st: OpaquePointer?, _ col: Int32) -> Int? {
+        sqlite3_column_type(st, col) == SQLITE_NULL ? nil : Int(sqlite3_column_int(st, col))
+    }
+    private static func doubleOrNil(_ st: OpaquePointer?, _ col: Int32) -> Double? {
+        sqlite3_column_type(st, col) == SQLITE_NULL ? nil : sqlite3_column_double(st, col)
     }
 
     /// Distinct navigation-fix idents referenced by an airport's coded procedures — the on-approach /

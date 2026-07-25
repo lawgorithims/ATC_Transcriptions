@@ -5,6 +5,9 @@ struct ResolvedLeg: Identifiable, Equatable {
     let ident: String
     let kind: RouteKind
     let coord: Coord
+    /// The published crossing restriction on this leg, when it came from a coded procedure. nil for
+    /// enroute waypoints, which carry none. Identity deliberately ignores it — a leg is the same leg.
+    var constraint: LegConstraint?
     var id: String { ident + "\(kind)" }
 }
 
