@@ -49,10 +49,18 @@ enum Geo {
 enum MapObjectKind: String {
     case airport, vor, fix, airspace, traffic, userPoint, hazard, tfr, airway
 
-    /// Lower sorts first: point features before line features (airways) before the containing areas.
+    /// Lower sorts first: point features, then line features (airways), then a live TFR, then the
+    /// containing areas. A TFR outranks airspace because it is a LIVE restriction with a reason and an
+    /// expiry, whereas the areas around it are permanent chart furniture — and a TFR sits over exactly
+    /// the cities and airports that make the disambiguation list long, so ranked equal it ended up at
+    /// the bottom of it.
     var priority: Int {
-        if self == .airway { return 1 }
-        return (self == .airspace || self == .tfr) ? 2 : 0
+        switch self {
+        case .airway:   return 1
+        case .tfr:      return 2
+        case .airspace: return 3
+        default:        return 0
+        }
     }
 
     var label: String {

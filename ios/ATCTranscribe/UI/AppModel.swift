@@ -670,8 +670,14 @@ final class AppModel: ObservableObject {
             refreshHazardAlert()               // off → clears the banner; on → recomputes
         }
     }
-    /// Live TFR layer toggle (network — opt-in, default off). Gated like the hazard layer.
-    @Published var showTFRs = UserDefaults.standard.bool(forKey: "atc.map.tfrs") {
+    /// Live TFR layer toggle. Default ON.
+    ///
+    /// It used to default off, which produced a genuinely misleading map: `airspace.json` ships eight
+    /// bundled features classed "TFR" (Beale AFB, Grand Forks, San Angelo …) and they draw in the SAME
+    /// red at the SAME opacity and stroke width as a live one. With the airspace layer on by default
+    /// and this one off, the pilot saw red TFR blocks, tapped one, and got an airspace card with no
+    /// reason, no effective times and no NOTAM link — while the actual live TFRs were not drawn at all.
+    @Published var showTFRs = (UserDefaults.standard.object(forKey: "atc.map.tfrs") as? Bool) ?? true {
         didSet { UserDefaults.standard.set(showTFRs, forKey: "atc.map.tfrs"); syncTFRs() }
     }
     /// Master switch for the live map background — off shows a plain background instead, saving battery on
