@@ -2589,6 +2589,7 @@ final class AppModel: ObservableObject {
             sources.append(("Plates", DataProvenance(source: "FAA d-TPP", cycle: Procedures.cycle,
                                                      effective: eff, expires: exp, ingestedAt: nil)))
         }
+        sources.append(("Airports", AirportData.provenance))
         sources.append(("Charts", ChartLibrary.shared.chartProvenance))
         staleDataSummary = StaleDataSummary.make(sources: sources, asOf: now)
     }

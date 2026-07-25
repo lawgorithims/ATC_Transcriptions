@@ -173,15 +173,48 @@ actor NetworkAirportContextSource: AirportContextSource {
     }
 }
 
+/// NASR runways + published frequencies (`apt.sqlite`), the FAA's own authoritative source.
+///
+/// It sits ahead of the community table because of a specific, measurable consequence: SlotSnap
+/// verifies a frequency it heard against this list and ABSTAINS when the frequency is absent, so a thin
+/// list loses verifications silently rather than producing wrong ones. The community data gives KDFW
+/// seven frequencies; NASR carries 211 for DFW alone, sectorized and tagged by use.
+///
+/// Frequencies are grouped by NASR's own use tag, which is what the existing "TWR"/"GND" keying wants.
+struct NASRAirportContextSource: AirportContextSource {
+    func airport(_ ident: String) async -> AirportContextData? { Self.lookup(ident) }
+
+    static func lookup(_ ident: String) -> AirportContextData? {
+        let key = ident.trimmingCharacters(in: .whitespaces).uppercased()
+        guard !key.isEmpty else { return nil }
+        var byUse: [String: [Double]] = [:]
+        for f in AirportData.frequencies(airport: key).prefix(512) {        // bounded (rule 2)
+            guard let mhz = Double(f.value), (108.0...137.0).contains(mhz) else { continue }
+            let tag = f.use.isEmpty ? "COMM" : String(f.use.prefix(12)).uppercased()
+            if !(byUse[tag]?.contains(mhz) ?? false) { byUse[tag, default: []].append(mhz) }
+        }
+        // Both ends of every runway, as open designators — the shape the correction stages expect.
+        var runways: [String] = []
+        for e in AirportData.runwayEnds(airport: key).prefix(128) where !e.end.isEmpty {
+            if !runways.contains(e.end) { runways.append(e.end) }
+        }
+        guard !byUse.isEmpty || !runways.isEmpty else { return nil }
+        return AirportContextData(ident: key, runways: runways, frequencies: byUse)
+    }
+}
+
 /// The provider chain: curated config → bundled nationwide table → internet fallback. First
 /// answer wins per field; later sources fill missing fields (mirrors `CompositeSource` in
 /// `airport_data.py`). LiveATC/demo mode uses exactly this chain keyed by the feed's airport.
 struct AirportContextStore: Sendable {
     // CIFP first (sole supplier of fixes/nav-freqs), then the runway+comms priority chain. Later sources
     // fill only the fields still empty, so CIFP's fixes survive and curated data still wins on runways.
+    // NASR outranks the community table: it is the FAA's own list, and a frequency missing from it is a
+    // verification SlotSnap silently declines to make.
     var sources: [any AirportContextSource] = [
         CIFPAirportContextSource(),
         CuratedAirportContextSource(),
+        NASRAirportContextSource(),
         BundledAirportContextSource(),
         NetworkAirportContextSource.shared,
     ]
