@@ -620,6 +620,30 @@ final class AppModel: ObservableObject {
     private static let mapLibreRetryBudget = 5
     private var mapLibreRetriesLeft = mapLibreRetryBudget
 
+    /// Bumped to force a fresh MapLibre coordinator without leaving MapLibre. Part of the map's `.id`.
+    @Published private(set) var mapLibreRemountToken = 0
+
+    /// A render stall REMOUNTS MapLibre first, and only falls back to the classic map once the retry
+    /// budget is spent.
+    ///
+    /// The stall signal fires for transient reasons — a loopback-port bind that lost a race, a style
+    /// load that failed once — and the old handler treated every one of them as terminal. That silently
+    /// swapped the globe for a live MKMapView mid-flight, with its own CLLocationManager, on a map the
+    /// pilot had not touched and had not chosen. A remount fixes the transient case in one frame; the
+    /// eventual fallback is still there for a genuinely broken MapLibre, because the one outcome we
+    /// must never produce is a pilot holding a blank chart.
+    func handleMapRenderStall() {
+        guard useMapLibreMap, !mapLibreRenderFailed else { return }
+        guard mapLibreRetriesLeft > 0 else {
+            mapLibreRenderFailed = true
+            NSLog("CommSight: MapLibre render stalled with no retries left — falling back to the classic map")
+            return
+        }
+        mapLibreRetriesLeft -= 1
+        mapLibreRemountToken &+= 1
+        NSLog("CommSight: MapLibre render stalled — remounting (%d retries left)", mapLibreRetriesLeft)
+    }
+
     /// Returning to the Map tab rebuilds a fresh MapLibre coordinator, so a cold-launch stall that stranded us
     /// on the classic map should get a fresh attempt here — the re-mount runs AFTER launch contention, so it
     /// almost always renders. Bounded so a genuinely-broken MapLibre can't thrash the engine every switch.
