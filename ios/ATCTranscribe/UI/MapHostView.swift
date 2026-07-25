@@ -88,14 +88,29 @@ struct MapHostView: View {
         MapLibreChartView.Coordinator.publish(categories: out)
     }
 
+    /// The region the map is showing at launch, for the FIRST weather fetch — before anything settles.
+    ///
+    /// This must NOT come from the map's own region callback: that callback is also what persists the
+    /// pilot's camera, and publishing at style-load time wrote the pre-framing (continental) view into
+    /// `lastMapCamera`. `frameIfNeeded` prefers a FRESH saved camera over the route or the ownship, so the
+    /// bogus one won — the map stayed at continental scale and never framed on the plate or the field.
+    /// Caught by PlateOverlayUITests: no sectional tiles, and the plate's corner gear never reachable.
+    private var launchRegion: MKCoordinateRegion? {
+        if let cam = model.lastMapCamera { return cam.region }
+        guard let c = model.stratuxGPS?.coordinate ?? deviceCoord else { return nil }
+        return MKCoordinateRegion(center: CLLocationCoordinate2D(latitude: c.lat, longitude: c.lon),
+                                  span: MKCoordinateSpan(latitudeDelta: 1.0, longitudeDelta: 1.0))
+    }
+
     /// Fetch weather for the fields the pilot is actually LOOKING AT.
     ///
     /// Without this the chart's flight-category rings and the deteriorating-weather markers had no data:
     /// the store only held airports someone had opened a card for, or that sat on the route. Bounded to 40
     /// fields, TTL-deduped inside MetarStore, and skipped when zoomed out past the scale where the airport
     /// symbology draws at all — so panning the chart doesn't turn into a network fire hose.
-    private func ensureVisibleWeather(_ rect: MKMapRect) {
-        let region = MKCoordinateRegion(rect)
+    private func ensureVisibleWeather(_ rect: MKMapRect) { ensureVisibleWeather(MKCoordinateRegion(rect)) }
+
+    private func ensureVisibleWeather(_ region: MKCoordinateRegion) {
         let latD = region.span.latitudeDelta, lonD = region.span.longitudeDelta
         guard latD > 0, lonD > 0, latD < 5.5 else { return }        // matches the nav layer's own zoom gate
         let c = region.center
@@ -150,9 +165,17 @@ struct MapHostView: View {
         // Own GPS session for the map's ownship marker (replaces MKMapView's built-in showsUserLocation
         // GPS). Bridged into @State so a fix change re-renders → updateUIView moves the marker. GPS is
         // paused in the background by AppModel.handleScenePhase (battery).
-        .onAppear { model.deviceLocation.start() }
+        .onAppear {
+            model.deviceLocation.start()
+            // A restored camera moves nothing, so no region settle fires — seed the first fetch here.
+            if let region = launchRegion { ensureVisibleWeather(region) }
+        }
         .onReceive(model.deviceLocation.$coord) { c in
+            let hadFix = deviceCoord != nil
             deviceCoord = c
+            if !hadFix, c != nil, model.lastMapCamera == nil, let region = launchRegion {
+                ensureVisibleWeather(region)        // first fix on a fresh install: fetch around it
+            }
             if let c { model.rainViewer.prefetchCenter = (c.lat, c.lon) }   // aim the radar-loop prefetch nearby
         }
         .onReceive(model.deviceLocation.$courseDeg) { deviceCourse = $0 }
