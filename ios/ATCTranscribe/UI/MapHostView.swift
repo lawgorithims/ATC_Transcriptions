@@ -127,7 +127,9 @@ struct MapHostView: View {
                     // wrong in some state); the bottom stays a constant because the measured tab-bar top
                     // is 73.5pt, so 96/150 already over-clears and errs safe.
                     let bottomChrome = model.showGPSBar ? 150.0 : 96.0        // GPS bar (when shown) + tab bar
-                    let c = PlateGearGeometry.center(anchor: a.tr, viewport: geo.size,
+                    // BOTH top corners: the gear tucks along the plate's own axes (approach plates are
+                    // rotated to the runway heading) and scales its inset with the plate's screen size.
+                    let c = PlateGearGeometry.center(topLeft: a.tl, topRight: a.tr, viewport: geo.size,
                                                      topInset: mapTopInset, bottomInset: bottomChrome)
                     PlateCornerSettingsButton(opacity: s.opacity)
                         .environmentObject(model)

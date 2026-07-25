@@ -220,6 +220,44 @@ struct FlightPlan: Codable, Equatable {
         assert(destination == id && route.isEmpty, "direct-to must clear the route onto the target")
     }
 
+    /// Amend the plan to JOIN AN APPROACH: fly direct to `iaf` from present position, ending at
+    /// `airport`. `iaf == nil` means ATC is vectoring to final, so the filed route stands and only the
+    /// destination is ensured.
+    ///
+    /// `route` is ASSIGNED, never appended. Appending made a second activation stack the previous IAF in
+    /// front of the new one — activate via DUCAS, then via TCS, and the plan read "DUCAS then LAYEN"
+    /// instead of a direct TCS — and on an empty plan it left a lone waypoint with no endpoints rather
+    /// than a usable direct-to.
+    mutating func joinApproach(at iaf: String?, airport: String, from origin: Coord? = nil) {
+        let field = Self.norm(airport)
+        assert(!field.isEmpty, "joinApproach needs the approach's airport")
+        guard let iaf, !Self.norm(iaf).isEmpty else {
+            if destination.isEmpty { destination = field }      // vectors: leave the route as filed
+            return
+        }
+        if let origin { departure = UserPoint.token(origin) }   // direct-to anchors at present position
+        route = [Self.norm(iaf)]
+        destination = field
+        assert(route.count == 1, "joining an approach must not accumulate waypoints")
+    }
+
+    /// Replace the plan with the PUBLISHED MISSED APPROACH: direct to its first fix from present
+    /// position, through the rest of the sequence, ending at the missed-approach hold.
+    ///
+    /// Clearing the loaded approach is essential. Its legs keep drawing otherwise, so a go-around routed
+    /// correctly to the first missed fix and then straight back through the approach's transition fix —
+    /// showing the aircraft flying into the approach it just abandoned.
+    mutating func flyMissedApproach(fixes: [String], from origin: Coord? = nil) {
+        var f = fixes.map(Self.norm).filter { !$0.isEmpty }
+        guard !f.isEmpty else { return }                        // rule 7 — never invent a go-around
+        if let origin { departure = UserPoint.token(origin) }
+        let hold = f.removeLast()
+        route = f
+        destination = hold
+        clearProcedure(kind: "IAP")
+        assert(destination == hold, "the missed must end at its published hold")
+    }
+
     mutating func setDeparture(_ ident: String) { departure = Self.norm(ident) }
     mutating func setDestination(_ ident: String) { destination = Self.norm(ident) }
 

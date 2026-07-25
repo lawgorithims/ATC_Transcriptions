@@ -133,6 +133,59 @@ final class PlatePlacementTests: XCTestCase {
         XCTAssertGreaterThan(c.y, 0, "collapsed point should still be on screen-ish, not negative-infinite")
     }
 
+    /// The gear must ride the plate's OWN corner, which means following its rotation. An approach plate
+    /// is rotated to the runway heading; a fixed screen-space offset pushed the button off along the
+    /// wrong diagonal, which is what "floats strangely near the corner" was.
+    func testTuckFollowsThePlateRotationNotScreenAxes() {
+        let viewport = CGSize(width: 834, height: 1210)
+        // Plate rotated 90°: the top edge runs from tr DOWN to tl, which puts the plate body on the +x
+        // side (rotate an upright plate — tl left, tr right, body below — counter-clockwise and the body
+        // swings to the right). So the gear must tuck +y along the edge and +x into the body.
+        let tr = CGPoint(x: 500, y: 300), tl = CGPoint(x: 500, y: 700)
+        let c = PlateGearGeometry.center(topLeft: tl, topRight: tr, viewport: viewport,
+                                         topInset: 100, bottomInset: 96)
+        XCTAssertGreaterThan(c.y, tr.y, "must tuck along the plate's rotated top edge")
+        XCTAssertGreaterThan(c.x, tr.x, "must tuck into the rotated plate's body")
+        // And it must NOT be where the old fixed screen-axis tuck put it (down-LEFT by 18,18) — that
+        // wrong-diagonal placement is the bug being fixed.
+        XCTAssertNotEqual(c.x, tr.x - PlateGearGeometry.cornerInset, accuracy: 0.01)
+    }
+
+    /// The inset scales with the plate's on-screen size, so a small (zoomed-out) plate keeps the button
+    /// visually ON its corner instead of flung a fixed 18pt away.
+    func testTuckScalesWithThePlateScreenSize() {
+        let viewport = CGSize(width: 834, height: 1210)
+        func offset(width: CGFloat) -> CGFloat {
+            let tr = CGPoint(x: 500, y: 500), tl = CGPoint(x: 500 - width, y: 500)
+            let c = PlateGearGeometry.center(topLeft: tl, topRight: tr, viewport: viewport,
+                                             topInset: 100, bottomInset: 96)
+            return tr.x - c.x                       // how far inward it tucked
+        }
+        let small = offset(width: 40), large = offset(width: 2000)
+        XCTAssertLessThan(small, large, "a small plate must tuck less than a large one")
+        XCTAssertLessThanOrEqual(large, PlateGearGeometry.cornerInset + 0.01,
+                                 "a huge plate keeps the familiar capped inset")
+        XCTAssertGreaterThan(small, 0, "even a tiny plate tucks inward a little")
+    }
+
+    /// A collapsed / edge-on plate must not divide by zero or fling the button somewhere undefined.
+    func testDegeneratePlateEdgeFallsBackSafely() {
+        let viewport = CGSize(width: 834, height: 1210)
+        let p = CGPoint(x: 400, y: 400)
+        let c = PlateGearGeometry.center(topLeft: p, topRight: p, viewport: viewport,
+                                         topInset: 100, bottomInset: 96)
+        XCTAssertTrue(c.x.isFinite && c.y.isFinite)
+    }
+
+    func testNonFiniteCornersFallBackSafely() {
+        let viewport = CGSize(width: 834, height: 1210)
+        let nan = CGFloat.nan
+        let c = PlateGearGeometry.center(topLeft: CGPoint(x: nan, y: nan),
+                                         topRight: CGPoint(x: 400, y: 400),
+                                         viewport: viewport, topInset: 100, bottomInset: 96)
+        XCTAssertTrue(c.x.isFinite && c.y.isFinite)
+    }
+
     /// Bounded sweep (Power of 10): across every plausible chrome height and anchor position, the hit box
     /// stays inside the band. This is the invariant the shipped bug violated.
     func testContainmentInvariantAcrossChromeAndAnchorSweep() {
