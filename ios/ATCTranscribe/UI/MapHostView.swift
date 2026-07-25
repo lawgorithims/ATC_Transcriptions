@@ -67,6 +67,11 @@ struct MapHostView: View {
 
     struct PlateAnchors: Equatable { var tl: CGPoint; var tr: CGPoint }
 
+    /// Chart markers for stations whose weather is going downhill fast. Recomputed when the observation
+    /// history changes (not per frame) — placing them needs the nav database, so it's kept off the
+    /// render path.
+    @State private var wxPins: [WxTrendPin] = []
+
     /// Publish reported flight categories to the (off-main-actor) symbol builder. Extracted from the
     /// modifier chain: inline, it pushed `body` past the type-checker's budget.
     private func publishCategories(_ m: [String: Metar]) {
@@ -81,6 +86,13 @@ struct MapHostView: View {
             }
         }
         MapLibreChartView.Coordinator.categoryByIdent = out
+    }
+
+    /// Recompute the deteriorating-weather chart markers. Extracted from the modifier chain for the same
+    /// type-checker reason as `publishCategories`.
+    private func refreshWxPins() {
+        let pins = WxTrendPin.pins(from: metars.deterioratingStations)
+        if pins != wxPins { wxPins = pins }
     }
 
     /// Show the live map unless it's genuinely pointless: only paused when truly backgrounded (a transient
@@ -129,6 +141,8 @@ struct MapHostView: View {
         // Publish reported flight categories to the symbol builder, so an airport's glyph carries the
         // conditions there. The builders run off the main actor and can't read the store directly.
         .onReceive(metars.$metars) { publishCategories($0) }
+        // Where the weather is GOING: stations deteriorating past the significant rates get a chart marker.
+        .onReceive(metars.$history) { _ in refreshWxPins() }
         // The plate's ✕ / opacity controls ride the PLATE's own top corners (screen-points streamed
         // from the map's region callbacks). SwiftUI-layered — not annotation subviews — so their
         // gestures never fight MapKit's pan recognizer (which cancels UIControl tracking inside
@@ -259,6 +273,7 @@ struct MapHostView: View {
             ownshipAccuracyM: stratuxHasFix ? nil : gpsIntegrity.horizontalAccuracyM,
             ownshipIntegrity: stratuxHasFix ? .unknown : gpsIntegrity.state,
             traffic: model.aircraft,
+            wxTrend: wxPins,
             tfrs: model.tfrs,
             showTFRs: model.showTFRs,
             showAirspace: model.showAirspace,

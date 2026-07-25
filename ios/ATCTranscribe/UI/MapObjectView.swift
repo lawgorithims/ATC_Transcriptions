@@ -326,7 +326,7 @@ struct MapObjectView: View {
             .accessibilityIdentifier("weather-subtabs")
         }
         switch wxTab {
-        case .current:    currentWxSection(o)
+        case .current:    currentWxSection(o); trendSection(o)
         case .taf:        tafSection(o)
         case .forecast:   forecastSection(o)
         case .historical: historicalWxSection(o)
@@ -335,6 +335,68 @@ struct MapObjectView: View {
 
     /// Current observations: the LIVE METAR (same MetarStore the Airports tab uses) — category chip,
     /// decoded summary, and the raw observation — plus nearby EONET satellite-observed hazards.
+    /// Where the weather is GOING — the trend fitted across this station's recent observations, and
+    /// what category that projects to. A pilot 45 minutes out needs the direction, not just the value.
+    @ViewBuilder private func trendSection(_ o: IdentifiedObject) -> some View {
+        let p = model.palette
+        if let t = metars.trend(o.ident), t.sampleCount >= 2 {
+            Section("Trend") {
+                HStack(spacing: 10) {
+                    Image(systemName: trendIcon(t.direction))
+                        .foregroundStyle(trendColor(t.direction, p)).frame(width: 22)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(t.summary).font(.callout).foregroundStyle(p.text)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text("fitted across \(t.sampleCount) observations")
+                            .font(.caption2).foregroundStyle(p.textDim)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .accessibilityIdentifier("weather-trend")
+                if let p1 = t.projected1h, let p2 = t.projected2h {
+                    HStack(spacing: 14) {
+                        projChip("now", t.current, p)
+                        Image(systemName: "arrow.right").font(.caption2).foregroundStyle(p.textDim)
+                        projChip("+1 hr", p1, p)
+                        projChip("+2 hr", p2, p)
+                        Spacer(minLength: 0)
+                    }
+                    .accessibilityIdentifier("weather-trend-projection")
+                }
+                if t.isSignificant {
+                    Label("Conditions deteriorating quickly — recheck before departure.",
+                          systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption2).foregroundStyle(p.warn)
+                }
+                Text("A projection from the recent trend, not a forecast. Always check the TAF and an official briefing.")
+                    .font(.caption2).foregroundStyle(p.textDim)
+            }
+        }
+    }
+
+    private func trendIcon(_ d: MetarTrend.Direction) -> String {
+        switch d {
+        case .improving:     return "arrow.up.right.circle.fill"
+        case .deteriorating: return "arrow.down.right.circle.fill"
+        case .steady:        return "equal.circle.fill"
+        }
+    }
+    private func trendColor(_ d: MetarTrend.Direction, _ p: Palette) -> Color {
+        switch d {
+        case .improving:     return p.good
+        case .deteriorating: return p.bad
+        case .steady:        return p.textDim
+        }
+    }
+    /// A small now / +1 hr / +2 hr category chip.
+    private func projChip(_ label: String, _ cat: Metar.Category, _ p: Palette) -> some View {
+        VStack(spacing: 1) {
+            Text(label).font(.system(size: 9)).foregroundStyle(p.textDim)
+            Text(cat.rawValue).font(.caption2.weight(.bold))
+                .foregroundStyle(Color(AirportSymbolRenderer.categoryColor(cat)))
+        }
+    }
+
     @ViewBuilder private func currentWxSection(_ o: IdentifiedObject) -> some View {
         let p = model.palette
         Section("Current observations") {
