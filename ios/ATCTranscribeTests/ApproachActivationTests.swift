@@ -290,11 +290,59 @@ final class ApproachActivationTests: XCTestCase {
     /// The RNP-AR-vs-GPS distinction the approach-type table now gets right: an "RNAV (GPS)" plate must
     /// not rank an RNP AR approach — those require specific operator and aircrew authorization.
     func testRnavGpsPlateDoesNotRankTheRnpApproachFirst() {
-        let candidates = [(ident: "H22LY", name: "RNAV (RNP) RWY 22L", runway: "22L"),
-                          (ident: "R22LZ", name: "RNAV (GPS) RWY 22L", runway: "22L")]
+        let candidates = [(ident: "H22LY", name: "RNAV (RNP) Y RWY 22L", runway: "22L"),
+                          (ident: "R22LZ", name: "RNAV (GPS) Z RWY 22L", runway: "22L")]
         let m = ApproachActivation.matchPlate(plateName: "RNAV (GPS) Z RWY 22L", runway: "22L",
                                               candidates: candidates)
         XCTAssertEqual(m.first?.ident, "R22LZ", "the GPS plate must rank the GPS approach, not the RNP AR one")
+    }
+
+    /// The mirror case, which the deleted "+1 charted RNAV (GPS)" bonus used to get backwards: an RNP AR
+    /// plate ranked the ordinary GPS approach first on 408 plates nationwide.
+    func testRnpPlateRanksTheRnpApproachFirst() {
+        let candidates = [(ident: "H22LX", name: "RNAV (RNP) X RWY 22L", runway: "22L"),
+                          (ident: "R22LZ", name: "RNAV (GPS) Z RWY 22L", runway: "22L")]
+        let m = ApproachActivation.matchPlate(plateName: "RNAV (RNP) X RWY 22L", runway: "22L",
+                                              candidates: candidates)
+        XCTAssertEqual(m.first?.ident, "H22LX")
+    }
+
+    /// Y and Z to the same runway are different procedures with different missed approaches.
+    func testTheMultipleIndicatorPicksTheRightProcedure() {
+        let candidates = [(ident: "R19RY", name: "RNAV (GPS) Y RWY 19R", runway: "19R"),
+                          (ident: "R19RZ", name: "RNAV (GPS) Z RWY 19R", runway: "19R")]
+        XCTAssertEqual(ApproachActivation.matchPlate(plateName: "RNAV (GPS) Z RWY 19R", runway: "19R",
+                                                     candidates: candidates).first?.ident, "R19RZ")
+        XCTAssertEqual(ApproachActivation.matchPlate(plateName: "RNAV (GPS) Y RWY 19R", runway: "19R",
+                                                     candidates: candidates).first?.ident, "R19RY")
+    }
+
+    /// When the plate's own letter is not coded at all, offering a DIFFERENT lettered procedure as the
+    /// lone confident match let the sheet arm it with no chooser — KLGA's "RNAV (GPS) Y RWY 13" plate
+    /// silently armed the Z procedure. A letter disagreement disqualifies.
+    func testAWrongLetteredApproachIsNeverTheLoneMatch() {
+        let candidates = [(ident: "R13-Z", name: "RNAV (GPS) Z RWY 13", runway: "13")]
+        XCTAssertTrue(ApproachActivation.matchPlate(plateName: "RNAV (GPS) Y RWY 13", runway: "13",
+                                                    candidates: candidates).isEmpty)
+    }
+
+    /// But an unlettered candidate is NOT a disagreement — "ILS Z OR LOC RWY 17" really does cover the
+    /// unlettered localizer, and the plate letter is not always adjacent to RWY.
+    func testAnUnletteredCandidateStillMatchesALetteredPlate() {
+        let candidates = [(ident: "I17-Z", name: "ILS Z RWY 17", runway: "17"),
+                          (ident: "L17",   name: "LOC RWY 17",   runway: "17")]
+        let m = ApproachActivation.matchPlate(plateName: "ILS Z OR LOC RWY 17", runway: "17",
+                                              candidates: candidates)
+        XCTAssertEqual(m.map(\.ident), ["I17-Z", "L17"])
+    }
+
+    func testMultipleIndicatorReadsOnlyStandaloneLetters() {
+        XCTAssertEqual(ApproachActivation.multipleIndicator("RNAV (GPS) Z RWY 22"), "Z")
+        XCTAssertEqual(ApproachActivation.multipleIndicator("ILS Y OR LOC Y RWY 04"), "Y")
+        XCTAssertEqual(ApproachActivation.multipleIndicator("VOR Z OR TACAN RWY 20"), "Z")
+        XCTAssertNil(ApproachActivation.multipleIndicator("RNAV (GPS) RWY 22R"),
+                     "the trailing R is a runway side, not a multiple indicator")
+        XCTAssertNil(ApproachActivation.multipleIndicator("ILS RWY 20R (SA CAT I)"))
     }
 }
 
