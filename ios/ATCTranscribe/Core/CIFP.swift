@@ -117,8 +117,9 @@ enum CIFP {
     static var available: Bool { db != nil }
 
     private static func open() -> OpaquePointer? {
-        guard let path = (Bundle.main.url(forResource: "cifp", withExtension: "sqlite", subdirectory: "nav")
-                          ?? Bundle.main.url(forResource: "cifp", withExtension: "sqlite"))?.path else { return nil }
+        // A verified downloaded cycle when one is installed, else the bundled copy. Resolved once per
+        // launch, so a swap takes effect on the next launch rather than under a query in flight.
+        guard let path = NavDataUpdate.activeURL(.cifp)?.path else { return nil }
         var h: OpaquePointer?
         guard sqlite3_open_v2(path, &h, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
             if h != nil { sqlite3_close(h) }

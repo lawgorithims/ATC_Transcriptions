@@ -18,11 +18,8 @@ import SQLite3
 /// own that will not always agree with CIFP's.
 enum AirportData {
     private static let db: OpaquePointer? = {
-        // Resources/nav ships as a folder reference, so the file keeps its `nav/` subdirectory in the
-        // bundle — the same two-step lookup CIFP uses, with the flat fallback for a plain copy.
-        guard let path = (Bundle.main.url(forResource: "apt", withExtension: "sqlite", subdirectory: "nav")
-                          ?? Bundle.main.url(forResource: "apt", withExtension: "sqlite"))?.path
-        else { return nil }
+        // A verified downloaded cycle when one is installed, else the bundled copy (see NavDataUpdate).
+        guard let path = NavDataUpdate.activeURL(.apt)?.path else { return nil }
         var handle: OpaquePointer?
         guard sqlite3_open_v2(path, &handle, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else { return nil }
         return handle
