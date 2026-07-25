@@ -228,6 +228,19 @@ final class ContextFixerTests: XCTestCase {
         private var byId: [UUID: [RefinementOutcome]] = [:]
         func record(_ id: UUID, _ o: RefinementOutcome) { lock.lock(); byId[id, default: []].append(o); lock.unlock() }
         func outcomes(_ id: UUID) -> [RefinementOutcome] { lock.lock(); defer { lock.unlock() }; return byId[id] ?? [] }
+
+        /// Wait until `id` has an outcome, up to `timeout`. Polling beats a fixed sleep: a sleep sized
+        /// for an idle machine reports a *slow* generation as a *timed-out* one, which made this suite
+        /// fail intermittently whenever the host was busy — a green suite has to mean something.
+        func awaitOutcome(_ id: UUID, timeout: TimeInterval = 5) async -> [RefinementOutcome] {
+            let deadline = Date().addingTimeInterval(timeout)
+            while Date() < deadline {                             // bounded by wall-clock deadline
+                let o = outcomes(id)
+                if !o.isEmpty { return o }
+                try? await Task.sleep(nanoseconds: 10_000_000)
+            }
+            return outcomes(id)
+        }
     }
 
     /// A generation that takes much longer than the watchdog deadline.
@@ -261,8 +274,7 @@ final class ContextFixerTests: XCTestCase {
         await refiner.setOutcomeHandler { id, outcome in sink.record(id, outcome) }
         let id = UUID()
         await refiner.enqueue(RefinementRequest(id: id, text: "fast one", history: [], retrieved: ctx()))
-        try? await Task.sleep(nanoseconds: 300_000_000)
-        let outs = sink.outcomes(id)
+        let outs = await sink.awaitOutcome(id)
         XCTAssertEqual(outs.count, 1)
         if case .skipped = outs.first { XCTFail("a fast request must not be timed out") }
     }

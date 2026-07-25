@@ -51,11 +51,18 @@ struct DataProvenance: Equatable {
         return cal.date(from: c)
     }
 
+    /// FAA cycles hand over at 0901Z on the boundary date, not at midnight — the same instant
+    /// `Procedures.cycleBoundary` already anchors the chart banner to. Measuring from UTC midnight
+    /// turned the badge red nine hours before the data actually stopped being current, and put the two
+    /// surfaces in disagreement about the very same cycle.
+    static let cycleBoundary: TimeInterval = 9 * 3600 + 60      // 0901Z
+
     /// The dataset's validity as of `now`.
     func currency(asOf now: Date = Date()) -> DataCurrency {
         guard let expires else { return .unknown }
-        if now >= expires { return .expired(since: expires) }
-        let days = Self.wholeDays(from: now, to: expires)
+        let cutover = expires.addingTimeInterval(Self.cycleBoundary)
+        if now >= cutover { return .expired(since: cutover) }
+        let days = Self.wholeDays(from: now, to: cutover)
         return days <= 7 ? .expiringSoon(days: days) : .current
     }
 

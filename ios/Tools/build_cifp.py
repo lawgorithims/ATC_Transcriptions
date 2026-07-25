@@ -18,7 +18,15 @@ UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML,
 LATLON = re.compile(r"([NS])(\d{8})([EW])(\d{9})")   # DDMMSSss / DDDMMSSss, as it appears in every geo record
 
 # Approach-ident first letter → readable approach type (common FAA/ARINC codings).
-APPROACH_TYPE = {"I": "ILS", "X": "LOC", "L": "LOC", "B": "LOC BC", "R": "RNAV (RNP)", "H": "RNAV (GPS)",
+#
+# R vs H is easy to get backwards and the consequence is not cosmetic: RNP AR approaches require
+# specific operator and aircrew authorization, so labelling one "RNAV (GPS)" invites a pilot to fly an
+# approach they are not approved for. The assignment below is settled against this repo's own d-TPP
+# plate index at the same cycle — KMDW codes H22LX/H04RY against the published "RNAV (RNP) X RWY 22L"
+# and "RNAV (RNP) Y RWY 04R", and R04RZ/R22R against "RNAV (GPS) Z RWY 04R" / "RNAV (GPS) RWY 22R";
+# KEGE agrees. The coded data carries the same signature: H idents hold 1,397 RF legs across 121
+# airports with RNP down to 0.1, R idents hold 3 RF legs and never go below RNP 0.3.
+APPROACH_TYPE = {"I": "ILS", "X": "LOC", "L": "LOC", "B": "LOC BC", "R": "RNAV (GPS)", "H": "RNAV (RNP)",
                  "P": "GPS", "V": "VOR", "D": "VOR/DME", "N": "NDB", "Q": "NDB/DME", "S": "VOR",
                  "G": "IGS", "U": "SDF", "T": "TACAN"}
 
@@ -204,7 +212,15 @@ def main():
         sub = l[12]
         apt = l[6:10].strip()
         if sub in "DEF":                                        # SID / STAR / Approach leg
-            if l[38] != "0":                                # continuation record — primary only
+            # ARINC's continuation-record number is NOT a boolean. '0' means "primary leg, nothing
+            # follows"; '1' means "primary leg that HAS continuations"; '2'+ are the continuations
+            # themselves. Both 0 and 1 are real legs. Rejecting everything but '0' threw away 6,741
+            # primaries — and every single one of them was the FINAL APPROACH FIX, because the FAF is
+            # exactly the leg that carries the LNAV/LPV minima-line continuation. That silently deleted
+            # the FAF from 6,741 of 10,243 published approaches (96-99% of every RNAV approach in the
+            # US) along with its published crossing altitude. Keep the primaries; drop only true
+            # continuations, whose payload (minima lines, FAS data block) this app does not use.
+            if l[38] not in "01":
                 continue
             ident = l[13:19].strip()
             route_type = l[19].strip()
@@ -230,6 +246,14 @@ def main():
                                   "VALUES(?,?,?,?,?,?,?)", (apt, kind, ident, name, rwy, trans, route_type))
                 proc_id[key] = cur.lastrowid
                 nproc += 1
+            # A leg with no sequence number or no path terminator cannot be flown, drawn, or ordered.
+            # Reject it LOUDLY and mark its procedure incomplete, rather than shipping a procedure that
+            # is quietly one leg short — which is exactly the failure this build could not see before,
+            # because nothing ever incremented these counters.
+            if seq is None or not leg_type:
+                nbad += 1
+                bad_keys.add(key)
+                continue
             # EVERY leg is emitted, including fix-less ones. The previous builder's `if fix:` guard
             # silently discarded every altitude/heading/intercept-terminated leg (CA VA VI VR CI CD VD),
             # which left 706 SIDs in the database with NO legs at all — a named, selectable procedure
@@ -257,8 +281,11 @@ def main():
     # (with coords) drawn from every procedure leg, lat-indexed so a small in-view box query is fast (the
     # `leg` table itself is 190k+ rows with no spatial index). Named fixes only (RW.. thresholds excluded).
     con.execute("CREATE TABLE terminal_fix(fix TEXT, lat REAL, lon REAL)")
+    # The exclusion must test the runway-threshold SHAPE (RW + two digits + optional L/C/R), not the
+    # bare "RW" prefix: RWF is the Redwood Falls VOR, RWO is Kodiak, and RWLND is a published waypoint.
+    # A prefix match deleted all three from the map's fix layer and from the corrector's vocabulary.
     con.execute("""INSERT INTO terminal_fix SELECT DISTINCT fix, lat, lon FROM leg
-                   WHERE fix<>'' AND fix NOT LIKE 'RW%' AND lat IS NOT NULL AND lat<>0""")
+                   WHERE fix<>'' AND NOT (fix GLOB 'RW[0-9][0-9]*') AND lat IS NOT NULL AND lat<>0""")
     con.execute("CREATE INDEX ix_tfix_lat ON terminal_fix(lat)")
     ntfix = con.execute("SELECT COUNT(*) FROM terminal_fix").fetchone()[0]
 
@@ -279,6 +306,25 @@ def main():
     if bad_keys:
         con.executemany("UPDATE procedure SET incomplete=1 WHERE airport=? AND kind=? AND ident=? AND transition=?",
                         [(a, {"D": "SID", "E": "STAR", "F": "IAP"}[sb], i, t) for (a, sb, i, t) in bad_keys])
+    # ---- structural self-check against the source ------------------------------------------------
+    # Row counts alone do not tell you whether a database is *flyable*. This build once shipped with the
+    # final approach fix deleted from 6,741 of 10,243 approaches and reported a clean run, because the
+    # only thing being counted was rows that survived. So count the FAA's own segment markers — the
+    # ones that make a procedure flyable — and refuse to write a database that lost any of them.
+    src_roles = {"A": 0, "F": 0, "M": 0}                        # IAF / final approach fix / missed pt
+    for l in lines:
+        if len(l) < 60 or l[4] != "P" or l[12] not in "DEF" or l[38] not in "01":
+            continue
+        role = l[42] if len(l) > 42 else " "
+        if role in src_roles:
+            src_roles[role] += 1
+    for role in sorted(src_roles):
+        want = src_roles[role]
+        got = con.execute("SELECT COUNT(*) FROM leg WHERE substr(wp_desc,4,1)=?", (role,)).fetchone()[0]
+        print(f"  waypoint role {role!r}: source={want} database={got}" + ("" if got == want else
+              f"   *** {want - got} LOST ***"))
+        assert got == want, f"{want - got} '{role}' legs lost between the FAA source and the database"
+
     nincomplete = con.execute("SELECT COUNT(*) FROM procedure WHERE incomplete=1").fetchone()[0]
     nolegs = con.execute("SELECT COUNT(*) FROM procedure p WHERE NOT EXISTS"
                          "(SELECT 1 FROM leg WHERE procedure_id=p.id)").fetchone()[0]
