@@ -127,9 +127,67 @@ final class ApproachActivationTests: XCTestCase {
         XCTAssertEqual(LegRole(wpDesc: "E  A"), .initialApproachFix)
         XCTAssertEqual(LegRole(wpDesc: "E  F"), .finalApproachFix)
         XCTAssertEqual(LegRole(wpDesc: "EY M"), .missedApproachPoint)
-        XCTAssertEqual(LegRole(wpDesc: "E  I"), .intermediateFix)
         XCTAssertEqual(LegRole(wpDesc: "EE  "), .none)
         XCTAssertEqual(LegRole(wpDesc: ""), .none, "a short/absent code is not a defect")
+    }
+
+    /// `I` and `B` are the pair it is easiest to transpose, and the coded data settles it: at KBOS
+    /// H33LX the fix CRLTN is `B` on the last leg of every transition and `I` on the first leg of the
+    /// approach proper — the intermediate fix seen from either side of the join.
+    func testFinalApproachCourseFixAndIntermediateFixAreNotTransposed() {
+        XCTAssertEqual(LegRole(wpDesc: "E  I"), .finalApproachCourseFix)
+        XCTAssertEqual(LegRole(wpDesc: "EE B"), .intermediateFix)
+        XCTAssertNotEqual(LegRole(wpDesc: "E  I"), .intermediateFix)
+    }
+
+    // MARK: runway pseudo-fixes vs real navaids
+
+    /// `RW` + two digits is a runway threshold; `RW` as a bare prefix is three real navaids. Testing the
+    /// prefix deleted RWF (Redwood Falls VOR), RWO (Kodiak) and the waypoint RWLND from routes, from the
+    /// map's fix layer and from the spoken-fix vocabulary — and blanked KOVL VOR-A's whole coded missed
+    /// approach, which is flown to RWF.
+    func testRunwayPseudoFixTestMatchesShapeNotPrefix() {
+        for threshold in ["RW04", "RW33L", "RW09C", "RW27R", "rw04"] {
+            XCTAssertTrue(CIFP.isRunwayPseudoFix(threshold), "\(threshold) is a runway threshold")
+        }
+        for navaid in ["RWF", "RWO", "RWLND", "RW", "RWABC", "R04"] {
+            XCTAssertFalse(CIFP.isRunwayPseudoFix(navaid), "\(navaid) is not a runway threshold")
+        }
+    }
+
+    // MARK: the missed sequence as flown
+
+    /// The hold's inbound `DF` and its `HM` leg name the same fix — one hold, not two waypoints.
+    func testConsecutiveRepeatsCollapseSoTheHoldIsNamedOnce() {
+        XCTAssertEqual(ApproachActivation.missedSequence(["", "WAXEN", "WAXEN"]), ["WAXEN"])
+    }
+
+    /// PADK I23-Y: the published missed is ADK, COMAT, ADK, hold at ADK. Removing every repeat left
+    /// COMAT last, so the go-around ended somewhere the plate never sends it.
+    func testAMissedThatReturnsToAnEarlierFixStillEndsAtItsPublishedHold() {
+        let seq = ApproachActivation.missedSequence(["ADK", "COMAT", "ADK", "ADK"])
+        XCTAssertEqual(seq, ["ADK", "COMAT", "ADK"])
+        XCTAssertEqual(seq.last, "ADK", "the published hold must be the last fix flown")
+    }
+
+    /// KBAM S04 — the same shape, two fixes deep.
+    func testMissedRevisitingAFixTwiceKeepsThePublishedHoldLast() {
+        XCTAssertEqual(ApproachActivation.missedSequence(["RITYO", "BAM", "FESUD", "BAM", "BAM"]),
+                       ["RITYO", "BAM", "FESUD", "BAM"])
+    }
+
+    /// KOVL VOR-A's missed is a fix-less climb then RWF, the Redwood Falls VOR. The old `RW` prefix test
+    /// ate it and reported the approach as having no coded missed at all.
+    func testARealNavaidStartingWithRWSurvivesTheMissedSequence() {
+        XCTAssertEqual(ApproachActivation.missedSequence(["", "RWF", "RWF"]), ["RWF"])
+    }
+
+    func testRunwayThresholdsAreStillDroppedFromTheMissedSequence() {
+        XCTAssertEqual(ApproachActivation.missedSequence(["RW33L", "WAXEN"]), ["WAXEN"])
+    }
+
+    func testAnEntirelyFixlessMissedYieldsNothingRatherThanAnInventedPath() {
+        XCTAssertTrue(ApproachActivation.missedSequence(["", "", ""]).isEmpty)
     }
 
     // MARK: plate → coded approach matching
@@ -173,6 +231,44 @@ final class ApproachActivationTests: XCTestCase {
         XCTAssertTrue(ApproachActivation.matchPlate(plateName: "ILS RWY 04R", runway: "04R",
                                                     candidates: []).isEmpty)
     }
+
+    /// A candidate sharing no approach-type token with the plate is not a match, it is the only thing
+    /// left at that airport. Returning it looked exactly like a confident single match, and the sheet
+    /// hides its approach chooser at a count of one — so 12N's "VOR-A" plate silently armed R03, an
+    /// RNAV approach to a runway the plate never names.
+    func testALoneUnrelatedCandidateIsNotOfferedAsAMatch() {
+        let m = ApproachActivation.matchPlate(plateName: "VOR-A", runway: nil,
+                                              candidates: [(ident: "R03", name: "RNAV (GPS) RWY 03", runway: "03")])
+        XCTAssertTrue(m.isEmpty, "a zero-score lone candidate must not present as a confident match")
+    }
+
+    /// When several unrelated candidates tie at zero they are still offered — the chooser stays visible,
+    /// so the pilot picks rather than the app guessing.
+    func testSeveralUnscoredCandidatesAreStillOfferedForTheChooser() {
+        let m = ApproachActivation.matchPlate(plateName: "VOR-A", runway: nil,
+                                              candidates: [(ident: "R03", name: "RNAV (GPS) RWY 03", runway: "03"),
+                                                           (ident: "R21", name: "RNAV (GPS) RWY 21", runway: "21")])
+        XCTAssertEqual(m.count, 2, "an ambiguous set is a choice to present, not a match to make")
+    }
+
+    /// A scoring candidate must suppress the noise entirely, so the chooser is not padded with
+    /// approaches the plate has nothing to do with.
+    func testScoringCandidatesSuppressTheUnscoredOnes() {
+        let m = ApproachActivation.matchPlate(plateName: "ILS RWY 04R", runway: nil,
+                                              candidates: [(ident: "I04R", name: "ILS RWY 04R", runway: "04R"),
+                                                           (ident: "R21", name: "RNAV (GPS) RWY 21", runway: "21")])
+        XCTAssertEqual(m.map(\.ident), ["I04R"])
+    }
+
+    /// The RNP-AR-vs-GPS distinction the approach-type table now gets right: an "RNAV (GPS)" plate must
+    /// not rank an RNP AR approach — those require specific operator and aircrew authorization.
+    func testRnavGpsPlateDoesNotRankTheRnpApproachFirst() {
+        let candidates = [(ident: "H22LY", name: "RNAV (RNP) RWY 22L", runway: "22L"),
+                          (ident: "R22LZ", name: "RNAV (GPS) RWY 22L", runway: "22L")]
+        let m = ApproachActivation.matchPlate(plateName: "RNAV (GPS) Z RWY 22L", runway: "22L",
+                                              candidates: candidates)
+        XCTAssertEqual(m.first?.ident, "R22LZ", "the GPS plate must rank the GPS approach, not the RNP AR one")
+    }
 }
 
 /// The route amendments behind activating an approach. These pin a sequence a pilot actually hit at
@@ -213,6 +309,17 @@ final class ApproachRouteAmendmentTests: XCTestCase {
         var plan = FlightPlan()
         plan.joinApproach(at: nil, airport: "KTCS", from: here)
         XCTAssertEqual(plan.destination, "KTCS")
+    }
+
+    /// Diverting: activating an approach with vectors must repoint the plan at the field that approach
+    /// belongs to. Only filling an EMPTY destination left the plan aimed at the original one, which the
+    /// next route edit read as a mismatch and used to silently drop the approach.
+    func testVectorsAtADiversionAirportRepointsTheDestination() {
+        var plan = FlightPlan()
+        plan.departure = "KAUS"; plan.destination = "KDFW"
+        plan.joinApproach(at: nil, airport: "KACT", from: here)
+        XCTAssertEqual(plan.destination, "KACT", "the plan must end at the airport being approached")
+        XCTAssertEqual(plan.departure, "KAUS", "vectors must not disturb the rest of the plan")
     }
 
     /// THE other reported bug: after going missed the plan still routed through DUCAS — the abandoned

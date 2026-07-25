@@ -232,7 +232,12 @@ struct FlightPlan: Codable, Equatable {
         let field = Self.norm(airport)
         assert(!field.isEmpty, "joinApproach needs the approach's airport")
         guard let iaf, !Self.norm(iaf).isEmpty else {
-            if destination.isEmpty { destination = field }      // vectors: leave the route as filed
+            // Vectors: ATC flies the aircraft to final, so the enroute route is left as filed — but the
+            // plan must still end at the field the approach belongs to. Only filling an EMPTY
+            // destination meant a diversion kept pointing at the original one: activate a KACT approach
+            // with vectors while filed to KDFW and the plan still read KDFW, which the next route edit
+            // then treated as a mismatch and used to silently drop the approach.
+            destination = field
             return
         }
         if let origin { departure = UserPoint.token(origin) }   // direct-to anchors at present position

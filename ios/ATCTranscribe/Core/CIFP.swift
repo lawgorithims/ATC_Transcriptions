@@ -34,18 +34,45 @@ struct CIFPLeg: Identifiable {
 
 /// The segment role the FAA publishes for a leg, from the waypoint-description code's 4th character.
 /// `.none` means the source marks no role for this leg — which is the common case and is NOT a defect.
+///
+/// Two of these letters are easy to transpose and the coded data makes the distinction plain: `I` is
+/// the FINAL APPROACH COURSE FIX (it opens 9,809 of the 10,243 approach-proper rows), while `B` is the
+/// INTERMEDIATE FIX (14,199 legs, always the terminal leg of a transition — the fix where a transition
+/// hands off to the approach). At KBOS H33LX, CRLTN is coded `B` on each transition's last leg and `I`
+/// on the approach proper's first leg: the same fix, seen from either side of the join.
 enum LegRole: String {
-    case initialApproachFix, finalApproachFix, missedApproachPoint, intermediateFix, none
+    case initialApproachFix, finalApproachFix, finalApproachCourseFix, missedApproachPoint
+    case intermediateFix, none
 
     init(wpDesc: String) {
         let c = wpDesc.count >= 4 ? Array(wpDesc)[3] : " "
         switch c {
         case "A": self = .initialApproachFix
         case "F": self = .finalApproachFix
+        case "I": self = .finalApproachCourseFix
+        case "B": self = .intermediateFix
         case "M": self = .missedApproachPoint
-        case "I": self = .intermediateFix
         default:  self = .none
         }
+    }
+}
+
+extension CIFP {
+    /// Is `fix` a runway-threshold PSEUDO-fix (`RW04`, `RW33L`) rather than a real navigation fix?
+    ///
+    /// These are leg endpoints, not points a controller ever clears you to, so they are filtered out of
+    /// drawn routes, missed-approach sequences and the spoken-fix vocabulary. The test must match the
+    /// SHAPE — `RW` + two digits + an optional L/C/R — and not the bare `RW` prefix, because RWF is the
+    /// Redwood Falls VOR, RWO is Kodiak, and RWLND is a published waypoint. A prefix match silently
+    /// deleted all three, and blanked the entire coded missed approach for KOVL's VOR-A, whose missed
+    /// is flown to RWF.
+    static func isRunwayPseudoFix(_ fix: String) -> Bool {
+        let s = fix.uppercased()
+        guard s.count >= 4, s.count <= 5, s.hasPrefix("RW") else { return false }
+        let rest = Array(s.dropFirst(2))
+        assert(rest.count == 2 || rest.count == 3, "runway designator length out of range")
+        guard rest[0].isNumber, rest[1].isNumber else { return false }
+        return rest.count == 2 || "LCR".contains(rest[2])
     }
 }
 
@@ -120,7 +147,7 @@ enum CIFP {
     static func fixes(airport: String) -> [String] {
         query("""
               SELECT DISTINCT leg.fix FROM leg JOIN procedure ON leg.procedure_id = procedure.id
-              WHERE procedure.airport = ?1 AND leg.fix <> '' AND leg.fix NOT LIKE 'RW%'
+              WHERE procedure.airport = ?1 AND leg.fix <> '' AND NOT (leg.fix GLOB 'RW[0-9][0-9]*')
               ORDER BY leg.fix
               """, airport) { text($0, 0) }
     }

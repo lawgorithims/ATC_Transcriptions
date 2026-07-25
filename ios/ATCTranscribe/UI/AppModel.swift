@@ -1747,7 +1747,7 @@ final class AppModel: ObservableObject {
         }
         switch ins.kind {
         case .directTo:        directTo(ins.target)
-        case .clearedApproach: loadApproachForRunway(ins.target)
+        case .clearedApproach: loadApproachForRunway(ins.target, spoken: ins.rawTranscript)
         case .loadSID:         loadProcedureByIdent(kind: "SID", ident: ins.target)
         case .loadStar:        loadProcedureByIdent(kind: "STAR", ident: ins.target)
         case .altitude:        setAssignedAltitude(ins.value)
@@ -2010,17 +2010,31 @@ final class AppModel: ObservableObject {
     }
 
     /// Load the coded approach for `runway` at the active airport into the flight plan (EFB "cleared for
-    /// the approach"). Picks the first IAP whose runway matches; no-op if none. Bounded lookup (rule 2).
-    private func loadApproachForRunway(_ runway: String) {
+    /// the approach"). Bounded lookup (rule 2).
+    ///
+    /// `spoken` is the controller's own words, and they are what separates the several approaches that
+    /// share a runway. Matching on the runway designator alone took the first candidate in ident order,
+    /// so at KMDW runway 04R (idents H04RY < I04R < L04R < R04RZ) "cleared for the ILS runway 4 right"
+    /// loaded H04RY — an RNP AR approach requiring special authorization — in place of the ILS. The
+    /// approach-type score is the same one the plate matcher uses, so both routes into the same
+    /// decision agree.
+    private func loadApproachForRunway(_ runway: String, spoken: String = "") {
         guard !runway.isEmpty else { return }
         let ident = liveContext?.airportIdent ?? (airport.isEmpty ? "" : airport)
         guard !ident.isEmpty else { return }
         let want = SlotSnap.parseDesignator(runway)
         guard !want.num.isEmpty else { return }
+        var onRunway: [CIFPProcedure] = []
         for proc in CIFP.procedures(airport: ident).prefix(2048) where proc.kind == "IAP" {
             let have = SlotSnap.parseDesignator(proc.runway)
-            if have.num == want.num, have.suffix == want.suffix { loadProcedure(proc); return }
+            if have.num == want.num, have.suffix == want.suffix { onRunway.append(proc) }
         }
+        guard !onRunway.isEmpty else { return }
+        let ranked = ApproachActivation.matchPlate(
+            plateName: spoken, runway: nil,
+            candidates: onRunway.map { (ident: $0.ident, name: $0.name, runway: $0.runway) })
+        let pick = ranked.first.flatMap { r in onRunway.first { $0.ident == r.ident } } ?? onRunway[0]
+        loadProcedure(pick)
     }
 
     // MARK: Loaded procedures (Phase 5 — SID / STAR / approach into the active flight plan)
@@ -2033,7 +2047,7 @@ final class AppModel: ObservableObject {
         var seen = Set<String>()
         for leg in CIFP.legs(procedureID: proc.id).prefix(256) {   // statically bounded
             let f = leg.fix.uppercased()
-            if !f.isEmpty, !f.hasPrefix("RW"), seen.insert(f).inserted { fixes.append(f) }
+            if !f.isEmpty, !CIFP.isRunwayPseudoFix(f), seen.insert(f).inserted { fixes.append(f) }
         }
         let loaded = LoadedProcedure(airport: proc.airport, kind: proc.kind, ident: proc.ident,
                                      name: proc.name, runway: proc.runway, transition: proc.transition, fixes: fixes)
@@ -2069,7 +2083,7 @@ final class AppModel: ObservableObject {
         if case .transition(let t) = entry {
             for leg in CIFP.legs(airport: proc.airport, ident: proc.ident, transition: t).prefix(256) {
                 let f = leg.fix.uppercased()
-                if !f.isEmpty, !f.hasPrefix("RW"), seen.insert(f).inserted { fixes.append(f) }
+                if !f.isEmpty, !CIFP.isRunwayPseudoFix(f), seen.insert(f).inserted { fixes.append(f) }
             }
         }
         if let proper = CIFP.approachProper(airport: proc.airport, ident: proc.ident) {
@@ -2077,15 +2091,14 @@ final class AppModel: ObservableObject {
             let split = ApproachActivation.splitMissed(
                 legs.map { (seq: $0.seq, fix: $0.fix, legType: $0.legType) }, roles: legs.map(\.role))
             let missedSeqs = Set(split.missed)
+            var missedRaw: [String] = []
             for leg in legs {
+                if missedSeqs.contains(leg.seq) { missedRaw.append(leg.fix); continue }
                 let f = leg.fix.uppercased()
-                guard !f.isEmpty, !f.hasPrefix("RW") else { continue }
-                if missedSeqs.contains(leg.seq) {
-                    if !missedFixes.contains(f) { missedFixes.append(f) }
-                } else if seen.insert(f).inserted {
-                    fixes.append(f)
-                }
+                guard !f.isEmpty, !CIFP.isRunwayPseudoFix(f) else { continue }
+                if seen.insert(f).inserted { fixes.append(f) }
             }
+            missedFixes = ApproachActivation.missedSequence(missedRaw)
         }
 
         let loaded = LoadedProcedure(airport: proc.airport, kind: proc.kind, ident: proc.ident,
@@ -2104,7 +2117,17 @@ final class AppModel: ObservableObject {
     }
 
     /// Cancel the active approach (does not unwind the route — the pilot may still be flying it).
-    func clearActiveApproach() { activeApproach = nil }
+    ///
+    /// Disarming the missed is part of cancelling. Clearing only `activeApproach` left the staged
+    /// go-around banner on screen and `pendingMissed` holding the cancelled approach, so accepting it
+    /// afterwards replaced the entire flight plan with the missed approach of an approach that was no
+    /// longer being flown.
+    func clearActiveApproach() {
+        let armed = pendingMissed
+        activeApproach = nil
+        pendingMissed = nil
+        if let armed, efbSuggestion?.id == "missed-\(armed.airport)-\(armed.ident)" { efbSuggestion = nil }
+    }
 
     /// The approach whose missed sequence is staged in `efbSuggestion`, awaiting the pilot's Accept.
     /// Held so the accept can lay in the WHOLE published missed rather than the generic single direct-to.

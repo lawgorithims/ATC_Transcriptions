@@ -52,13 +52,39 @@ enum ProcedureRoute {
     /// coordinate (a few vector / hold legs) and runway-threshold pseudo-fixes (RW*). Bounded.
     static func appendProcedure(_ proc: LoadedProcedure?, to out: inout [ResolvedLeg]) {
         guard let proc, !proc.ident.isEmpty, !proc.airport.isEmpty, out.count < maxLegs else { return }
-        let legs = CIFP.legs(airport: proc.airport, ident: proc.ident, transition: proc.transition)
+        let legs = proc.kind == "IAP" ? approachLegs(proc)
+                 : CIFP.legs(airport: proc.airport, ident: proc.ident, transition: proc.transition)
         assert(legs.count <= maxProcedureLegs, "procedure has more legs than the cap — tail is truncated")
         for leg in legs.prefix(maxProcedureLegs) where out.count < maxLegs {
-            guard let coord = leg.coord, !leg.fix.isEmpty, !leg.fix.hasPrefix("RW") else { continue }
+            guard let coord = leg.coord, !leg.fix.isEmpty, !CIFP.isRunwayPseudoFix(leg.fix) else { continue }
             assert(coord.lat.isFinite && coord.lon.isFinite, "procedure leg coordinate is not finite")
             appendDeduped(ResolvedLeg(ident: leg.fix, kind: .waypoint, coord: coord), to: &out)
         }
+    }
+
+    /// The legs of an approach AS FLOWN: the chosen transition (how the aircraft gets in) followed by
+    /// the approach proper, stopping at the missed-approach point.
+    ///
+    /// An approach is coded as two separate rows and the transition row is not the whole approach.
+    /// Querying by `proc.transition` alone drew a path that ran to the join fix and then jumped
+    /// straight to the airport reference point — the final approach segment, the part actually being
+    /// flown, was simply absent from the magenta line and from the DIST/ETE it feeds. The opposite
+    /// error sat on the other branch: joining with VECTORS queried the approach-proper row and drew its
+    /// whole tail, so the missed-approach hold appeared as a normal enroute leg of an approach nobody
+    /// had gone missed on.
+    static func approachLegs(_ proc: LoadedProcedure) -> [CIFPLeg] {
+        assert(proc.kind == "IAP", "approachLegs given a non-approach")
+        guard let proper = CIFP.approachProper(airport: proc.airport, ident: proc.ident) else {
+            return CIFP.legs(airport: proc.airport, ident: proc.ident, transition: proc.transition)
+        }
+        let properLegs = CIFP.legs(procedureID: proper.id).prefix(maxProcedureLegs)
+        let split = ApproachActivation.splitMissed(
+            properLegs.map { (seq: $0.seq, fix: $0.fix, legType: $0.legType) }, roles: properLegs.map(\.role))
+        let missed = Set(split.missed)
+        let flown = properLegs.filter { !missed.contains($0.seq) }
+        guard !proc.transition.isEmpty else { return Array(flown) }
+        let entry = CIFP.legs(airport: proc.airport, ident: proc.ident, transition: proc.transition)
+        return Array(entry.prefix(maxProcedureLegs)) + flown
     }
 
     /// Append `leg` unless it repeats the previous leg's ident (collapse the join-fix duplication) or the

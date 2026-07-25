@@ -3,10 +3,12 @@ import Foundation
 /// Activating an approach: which way the aircraft joins it, which legs that produces, and where the
 /// missed approach begins.
 ///
-/// All of this is DERIVED from the coded CIFP records, because the shipped `cifp.sqlite` carries no
-/// explicit IAF / FAF / MAP / missed-approach flags — `Tools/build_cifp.py` keeps only
-/// (seq, fix, lat, lon, leg_type, course, alt) and drops ARINC's route-type and waypoint-description
-/// columns where those flags live. The structure we DO have is reliable and is what this file uses:
+/// The missed-approach boundary is READ from the FAA's own published marker, not inferred: since the
+/// cycle-2607 rebuild `Tools/build_cifp.py` carries ARINC's waypoint-description and route-type
+/// columns through, and all 10,243 coded approaches mark exactly one missed-approach point. The
+/// structural heuristic below is kept only as a fallback for a record that carries no marker.
+///
+/// The rest is still derived from the coded structure, which is reliable:
 ///
 ///   * One `procedure` row per (airport, approach ident, TRANSITION). Every non-empty transition is a
 ///     published way to enter the approach, and its ident is the entry fix (the IAF) in 22,050 of
@@ -84,7 +86,7 @@ enum ApproachActivation {
 
         // 1. runway-threshold boundary
         var thresholdIdx: Int? = nil
-        for (i, l) in legs.enumerated().prefix(512) where l.fix.uppercased().hasPrefix("RW") {
+        for (i, l) in legs.enumerated().prefix(512) where CIFP.isRunwayPseudoFix(l.fix) {
             thresholdIdx = i                                     // last RW* wins (some carry two)
         }
         if let t = thresholdIdx, t + 1 < legs.count {
@@ -138,6 +140,28 @@ enum ApproachActivation {
         return (legs.prefix(m + 1).map(\.seq), legs.suffix(from: m + 1).map(\.seq))
     }
 
+    /// The missed-approach fix sequence AS FLOWN, from the missed legs' fix idents in published order.
+    ///
+    /// Drops fix-less legs (climbs and vectors carry no ident) and runway-threshold pseudo-fixes, then
+    /// collapses only CONSECUTIVE repeats — the hold's inbound `DF` and its `HM` leg name the same fix,
+    /// so without that the sequence ends with the hold written twice.
+    ///
+    /// Collapsing *all* repeats instead is wrong, and dangerously so: a missed approach may legitimately
+    /// return to a fix it has already crossed. PADK's I23-Y missed is ADK, COMAT, ADK, hold at ADK; with
+    /// every repeat removed the sequence ended at COMAT, so the go-around's destination became a
+    /// waypoint that is not the published hold — at an airport where that matters a great deal.
+    static func missedSequence(_ fixes: [String]) -> [String] {
+        assert(fixes.count <= 512, "missed leg count out of range")
+        var out: [String] = []
+        for raw in fixes.prefix(512) {                           // bounded (rule 2)
+            let f = raw.uppercased()
+            guard !f.isEmpty, !CIFP.isRunwayPseudoFix(f) else { continue }
+            if out.last != f { out.append(f) }
+        }
+        assert(out.count <= fixes.count, "collapsing must not lengthen the sequence")
+        return out
+    }
+
     /// Match a PLATE (whose only identity is its printed name, e.g. "ILS OR LOC RWY 04R") to the coded
     /// approaches for that airport. The plate and the CIFP records share no key, so this narrows by
     /// runway and then scores the approach TYPE against the plate title.
@@ -174,6 +198,15 @@ enum ApproachActivation {
         scored.sort { a, b in
             a.score != b.score ? a.score > b.score : a.item.ident < b.item.ident
         }
-        return scored.map(\.item)
+        // A candidate that shares NO approach-type token with the plate title is not a match, it is
+        // merely the only thing left at that airport. Returning it looked identical to a confident
+        // single match, and the sheet hides its approach chooser when exactly one candidate comes back
+        // — so opening 12N's "VOR-A" plate and tapping Activate silently armed R03, an RNAV approach to
+        // a runway the plate does not name. Keep unscored candidates only when nothing scored at all,
+        // where they are the caller's last resort AND the chooser stays visible because there is more
+        // than one; a lone unscored candidate is dropped outright.
+        let confident = scored.filter { $0.score > 0 }
+        if !confident.isEmpty { return confident.map(\.item) }
+        return scored.count > 1 ? scored.map(\.item) : []
     }
 }
