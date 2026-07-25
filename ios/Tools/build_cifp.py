@@ -30,8 +30,10 @@ LATLON = re.compile(r"([NS])(\d{8})([EW])(\d{9})")   # DDMMSSss / DDDMMSSss, as 
 # exact runway (KSLC X35, PHNL X26L, KDCA X19, KBIH X17 …), and an LDA is by definition NOT aligned
 # with the runway centerline. Calling it "LOC" was worst at KSNA, where the real localizer L20R and the
 # offset LDA X20R both rendered as "LOC RWY 20R" — two indistinguishable rows in the activation chooser.
+# `S` is the VOR approach that REQUIRES DME, and it is not the same procedure as `V`: at KPNS, S08
+# crosses NUN at 2000 ft and V08 at 2500 ft. Naming both "VOR" made them look interchangeable.
 APPROACH_TYPE = {"I": "ILS", "X": "LDA", "L": "LOC", "B": "LOC BC", "R": "RNAV (GPS)", "H": "RNAV (RNP)",
-                 "P": "GPS", "V": "VOR", "D": "VOR/DME", "N": "NDB", "Q": "NDB/DME", "S": "VOR",
+                 "P": "GPS", "V": "VOR", "D": "VOR/DME", "N": "NDB", "Q": "NDB/DME", "S": "VOR/DME",
                  "G": "IGS", "U": "SDF", "T": "TACAN"}
 
 # CIRCLING approaches carry no runway, so their ident is a type mnemonic plus the circling letter

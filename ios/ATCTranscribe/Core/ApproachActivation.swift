@@ -208,7 +208,8 @@ enum ApproachActivation {
         let plate = plateName.uppercased()
         let wantRw = runway?.uppercased()
 
-        var scored: [(item: (ident: String, name: String, runway: String), score: Int, wrongLetter: Bool)] = []
+        var scored: [(item: (ident: String, name: String, runway: String),
+                      score: Int, typeScore: Int, wrongLetter: Bool)] = []
         for c in candidates.prefix(1024) {                       // bounded (rule 2)
             // Runway must agree when the plate names one; a plate without a runway (e.g. a VOR-A
             // circling approach) can't be narrowed that way.
@@ -216,6 +217,7 @@ enum ApproachActivation {
                 guard c.runway.uppercased() == rw else { continue }
             }
             var score = 0
+            var typeScore = 0
             let name = c.name.uppercased()
             // Approach-type agreement is what separates I04R from L04R on the same plate. RNP earns its
             // place here: it is what distinguishes an RNAV (RNP) AR approach — which requires specific
@@ -223,7 +225,14 @@ enum ApproachActivation {
             for token in ["ILS", "LOC", "RNAV", "GPS", "RNP", "VOR", "NDB", "LDA", "SDF", "TACAN"]
             where plate.contains(token) && name.contains(token) {
                 score += 2
+                typeScore += 2
             }
+            // ATC says "cleared for the RNAV approach" — never "GPS" and never "RNP" — so a spoken
+            // clearance scores RNAV against BOTH the RNAV (GPS) and the RNAV (RNP) AR approach to a
+            // runway, and the ident tiebreak put H before R: 374 airport/runway pairs loaded the AR
+            // procedure. RNP AR requires specific operator and aircrew authorization, so an unqualified
+            // "RNAV" must mean the ordinary one. A plate that really is RNP says so, and keeps its +2.
+            if plate.contains("RNAV"), !plate.contains("RNP"), name.contains("RNP") { score -= 2 }
             // Y vs Z to the same runway are different procedures with different missed approaches, and
             // they tie on every type token — so without this the ident tiebreak silently picked Y.
             //
@@ -248,9 +257,14 @@ enum ApproachActivation {
             if let letter = Self.circlingLetter(plate) {
                 score += Self.circlingLetter(name) == letter ? 2 : -1
             }
-            scored.append((c, score, wrongLetter))
+            scored.append((c, score, typeScore, wrongLetter))
         }
+        // TYPE agreement outranks everything, including the letter. In the last-resort branch below the
+        // whole list is returned, and without this a candidate sharing no type token with the plate came
+        // out on top of one that merely has the wrong letter — an RNP AR approach heading the chooser
+        // for an LDA plate.
         scored.sort { a, b in
+            if (a.typeScore > 0) != (b.typeScore > 0) { return a.typeScore > 0 }
             if a.wrongLetter != b.wrongLetter { return !a.wrongLetter }
             return a.score != b.score ? a.score > b.score : a.item.ident < b.item.ident
         }
@@ -261,7 +275,12 @@ enum ApproachActivation {
         // a runway the plate does not name. Keep unscored candidates only when nothing scored at all,
         // where they are the caller's last resort AND the chooser stays visible because there is more
         // than one; a lone unscored candidate is dropped outright.
-        let confident = scored.filter { $0.score > 0 && !$0.wrongLetter }
+        // Confidence requires agreement on the approach TYPE. The multiple-indicator bonus is worth +3,
+        // which on its own cleared a `score > 0` bar and made a candidate sharing NO type token with the
+        // plate the sole confident match — so KROA's "LDA Z RWY 06" plate came back as one candidate,
+        // the sheet hid its chooser, and tapping Join armed H06-Z, an RNP AR procedure. The letter can
+        // only ever rank candidates that already agree on type; it can never qualify one.
+        let confident = scored.filter { $0.typeScore > 0 && $0.score > 0 && !$0.wrongLetter }
         if !confident.isEmpty { return confident.map(\.item) }
         return scored.count > 1 ? scored.map(\.item) : []
     }

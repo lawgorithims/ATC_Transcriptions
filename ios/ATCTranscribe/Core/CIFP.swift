@@ -260,16 +260,14 @@ enum CIFP {
     /// approach's entry options. Bounded (rule 2).
     static func approaches(airport: String) -> [CIFPProcedure] {
         var seenIdent = Set<String>()
-        var seenName = Set<String>()
         var out: [CIFPProcedure] = []
         for p in procedures(airport: airport).prefix(4096) where p.kind == "IAP" {
+            // Dedupe by IDENT only. A name dedupe was tried and reverted: the one same-name pair left
+            // nationwide, KPNS S08 and V08, are NOT the same procedure — S is the VOR approach that
+            // requires DME and crosses NUN at 2000 ft, V is the plain VOR at 2500 ft. Hiding one of
+            // them hid a 500 ft difference in what the aircraft would fly. The names are now distinct
+            // (VOR/DME vs VOR), which is the honest fix.
             guard seenIdent.insert(p.ident).inserted else { continue }
-            // Also dedupe by NAME. Since the multiple indicator (the Y/Z) is carried through, two
-            // approaches sharing a name are indistinguishable to the pilot — and nationwide exactly one
-            // case remains: KPNS codes the same approach twice, as S08 and V08, with byte-identical
-            // legs and transitions, against a single published "VOR RWY 08" plate. Offering that as two
-            // identical rows in the activation chooser is strictly worse than offering it once.
-            guard seenName.insert(p.name.uppercased()).inserted else { continue }
             out.append(p)
         }
         assert(out.count <= 4096, "approaches: unexpectedly many")

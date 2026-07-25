@@ -2543,7 +2543,11 @@ final class AppModel: ObservableObject {
     /// approach INCLUDING its missed-approach segment to the total.
     func refreshTripStats() {
         tripStatsEpoch += 1
-        guard let plan = flightPlan, !plan.isEmpty else { tripStats = nil; resolvedRoute = []; return }
+        guard let plan = flightPlan, !plan.isEmpty else {
+            tripStats = nil; resolvedRoute = []
+            constraintRoute = []; dismissedConstraintFix = nil    // else the ALT advisory judges a route that is gone
+            return
+        }
         let epoch = tripStatsEpoch
         let sendable = ForeFlightExport.sendablePlan(plan)
         let kts = selectedAircraft?.cruiseKts
@@ -2572,7 +2576,9 @@ final class AppModel: ObservableObject {
 
     /// The leg index whose constraint warning the pilot dismissed, so it stays quiet for that leg only
     /// and re-arms on the next one.
-    private var dismissedConstraintLeg: Int?
+    /// Keyed by the leg's IDENT, not its index: a route edit renumbers the indices, and a dismissal
+    /// keyed by number would then silence a completely different fix.
+    private var dismissedConstraintFix: String?
 
     // MARK: Data currency (app-wide staleness sweep)
 
@@ -2600,15 +2606,25 @@ final class AppModel: ObservableObject {
     var constraintWarning: LegConstraintCheck.Warning? {
         guard constraintRoute.count >= 2, let here = presentPosition else { return nil }
         let leg = RouteETAs.activeLeg(constraintRoute.map(\.coord), present: here)
-        guard leg.index < constraintRoute.count, dismissedConstraintLeg != leg.index else { return nil }
+        guard leg.index < constraintRoute.count else { return nil }
+        guard dismissedConstraintFix != constraintRoute[leg.index].ident else { return nil }
         let target = constraintRoute[leg.index]
         guard let constraint = target.constraint else { return nil }
-        let fix = GPSReadout.merge(stratux: stratuxGPS, device: deviceLocation.fix)
+        // Altitude and the accuracy that qualifies it must come from the SAME fix. The merged readout is
+        // Stratux-preferred, but the Stratux publishes no vertical accuracy — so reading altitude from
+        // the merge while gating on the iPad's accuracy judged one device's number by another device's
+        // error bars. This check deliberately uses the DEVICE fix for both: it is the only source that
+        // states how well it knows its own altitude, and an unqualified altitude is exactly what this
+        // check refuses to speak from.
+        let device = deviceLocation.fix
+        let altitude = device?.altitudeMSLm.map { $0 * 3.280839895 }
+        let verticalAccuracy = device?.verticalAccuracyM
         return LegConstraintCheck.evaluate(constraint: constraint,
                                            fix: target.ident,
-                                           altitudeFtMSL: fix.altitudeFtMSL.map { Int($0.rounded()) },
+                                           altitudeFtMSL: altitude.map { Int($0.rounded()) },
                                            crossTrackNm: leg.crossTrackNm,
-                                           verticalAccuracyM: deviceLocation.fix?.verticalAccuracyM,
+                                           distanceToFixNm: Geo.nmBetween(here, target.coord),
+                                           verticalAccuracyM: verticalAccuracy,
                                            integrityOK: gpsIntegrity.state <= .nominal)
     }
 
@@ -2616,7 +2632,9 @@ final class AppModel: ObservableObject {
     /// — an acknowledged deviation on this leg says nothing about the next one.
     func dismissConstraintWarning() {
         guard constraintRoute.count >= 2, let here = presentPosition else { return }
-        dismissedConstraintLeg = RouteETAs.activeLeg(constraintRoute.map(\.coord), present: here).index
+        let i = RouteETAs.activeLeg(constraintRoute.map(\.coord), present: here).index
+        guard i < constraintRoute.count else { return }
+        dismissedConstraintFix = constraintRoute[i].ident
     }
 
     /// Live ETAs down the filed route from PRESENT POSITION at the CURRENT ground speed — feeds the GPS bar.
