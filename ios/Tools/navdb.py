@@ -217,14 +217,38 @@ def cmd_verify(args):
          "GROUP BY 1,2 HAVING COUNT(*)>1)", 0),
         ("runway pseudo-fixes leaking into terminal_fix",
          "SELECT COUNT(*) FROM terminal_fix WHERE fix GLOB 'RW[0-9][0-9]*'", 0),
-        ("IAP names colliding at one airport",
-         "SELECT COUNT(*) FROM (SELECT airport, name FROM (SELECT DISTINCT airport, ident, name FROM "
-         "procedure WHERE kind='IAP') GROUP BY airport, name HAVING COUNT(*)>1)", 0),
     ]:
         got = con.execute(sql).fetchone()[0]
         ok = got == want
         bad += 0 if ok else 1
         print(f"  {label:<48} {got:>7}  (want {want}) {'ok' if ok else '*** FAIL ***'}")
+
+    # Two approaches at one airport sharing a name are indistinguishable in the activation chooser. That
+    # is only a DEFECT when they would fly differently — the FAA does publish the same approach twice
+    # under two route-type letters (KPNS codes S08 and V08 with byte-identical legs against a single
+    # plate), and CIFP.approaches dedupes those by name. Compare the legs, not just the name.
+    by_name = collections.defaultdict(list)
+    for pid, apt, ident, name in con.execute(
+            "SELECT id, airport, ident, name FROM procedure WHERE kind='IAP'"):
+        by_name[(apt, name)].append((ident, pid))
+    divergent = []
+    for (apt, name), rows in by_name.items():
+        if len({i for i, _ in rows}) < 2:
+            continue
+        sigs = {}
+        for ident, pid in rows:
+            sig = tuple(con.execute(
+                "SELECT seq, fix, leg_type, COALESCE(wp_desc,'') FROM leg WHERE procedure_id=? ORDER BY seq",
+                (pid,)))
+            sigs.setdefault(ident, set()).add(sig)
+        if len({frozenset(v) for v in sigs.values()}) > 1:
+            divergent.append((apt, name, sorted(sigs)))
+    ok = not divergent
+    bad += 0 if ok else 1
+    print(f"  {'same-name approaches that fly DIFFERENTLY':<48} {len(divergent):>7}  (want 0) "
+          + ("ok" if ok else "*** FAIL ***"))
+    for apt, name, idents in divergent[:10]:
+        print(f"      {apt} {name!r}: {', '.join(idents)}")
 
     print("\nOK" if not bad else f"\n{bad} check(s) FAILED")
     return 1 if bad else 0
