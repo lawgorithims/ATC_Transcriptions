@@ -36,6 +36,20 @@ final class MapInteractionTests: XCTestCase {
         XCTAssertTrue(MapProbe.rank([(obj(.airport, "X"), 40)], within: 24).isEmpty)
     }
 
+    /// A live TFR carries a reason and an expiry; the areas around it are permanent chart furniture. A
+    /// TFR also sits over exactly the cities and airports that make the disambiguation list long, so
+    /// ranked level with airspace it came out at the bottom of that list — the opposite of its urgency.
+    func testALiveTFROutranksStandingAirspaceButNotThePointYouAimedAt() {
+        XCTAssertLessThan(MapObjectKind.tfr.priority, MapObjectKind.airspace.priority)
+        XCTAssertLessThan(MapObjectKind.airport.priority, MapObjectKind.tfr.priority)
+        let cands: [(object: IdentifiedObject, distance: Double)] = [
+            (obj(.airspace, "BEALE AFB"), 1),
+            (obj(.tfr, "6/5198"), 8),
+            (obj(.airport, "KBAB"), 3),
+        ]
+        XCTAssertEqual(MapProbe.rank(cands, within: 24).map(\.ident), ["KBAB", "6/5198", "BEALE AFB"])
+    }
+
     // MARK: Airspace containment (ray casting)
 
     func testAirspaceContainsCoord() {

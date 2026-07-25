@@ -447,6 +447,14 @@ struct MapLibreChartView: UIViewRepresentable {
             servedReadersSig = nil               // the faa source is freshly (re)created empty here → force a remount
             appliedTrackCount = -1               // the "track" source is recreated empty → force a re-apply below
             appliedRadarTemplate = nil           // wxradar source gone after reload → force updateRadar to re-add
+            // Same reason, and easy to miss: the map loads TWO styles in its life (MapLibre's default,
+            // then the loopback style), so anything applied to the first must be re-applied to the
+            // second. Without these the re-apply below hits its own "unchanged → skip" guard against a
+            // freshly-created EMPTY source, and the polygons are never uploaded to the style the pilot
+            // is actually looking at. Traffic self-heals because it changes every second; a TFR set can
+            // sit unchanged for hours, so it simply stays invisible.
+            appliedTFRSig = nil
+            appliedTrafficSig = nil
             setupOverlayLayers(style)            // airspace/airways/nav + TFR/route/traffic/ownship (empty)
             updateRoute(routeCoords, on: mapView)
             updateTrack(trackCoords, on: mapView)
@@ -1016,9 +1024,13 @@ struct MapLibreChartView: UIViewRepresentable {
                 "C", hex("C"), "TFR", hex("TFR"), "R", hex("R"), "P", hex("P"),
                 "W", hex("W"), "A", hex("A"), "MOA", hex("MOA"), hex("B")])
         }
+        // The bundled "TFR" features are STANDING national-defense areas, not live NOTAMs. At 0.18 they
+        // were pixel-identical to the live TFR layer — same red, same opacity, same stroke — so a pilot
+        // tapped one expecting a reason and effective times and got an airspace card instead. Drawn
+        // faintly they still show, but a live TFR at 0.18 now clearly reads as the louder thing.
         private static func aspOpacityExpr() -> NSExpression {
             NSExpression(mglJSONObject: ["match", ["get", "cls"],
-                "P", 0.18, "TFR", 0.18, "R", 0.10, "W", 0.10, "A", 0.10, "MOA", 0.10, 0.05])
+                "P", 0.18, "TFR", 0.06, "R", 0.10, "W", 0.10, "A", 0.10, "MOA", 0.10, 0.05])
         }
         private static func aspWidthExpr() -> NSExpression {
             NSExpression(mglJSONObject: ["match", ["get", "cls"],
@@ -1548,12 +1560,16 @@ struct MapLibreChartView: UIViewRepresentable {
                                                airwayArea: (f.attributes["area"] as? String) ?? "USA"), 0))
             }
             var results = MapProbe.rank(cands, within: Double(radius))
-            for asp in airspaces where !results.contains(where: { $0.kind == .airspace && $0.ident == asp.name }) {
-                results.append(IdentifiedObject(kind: .airspace, ident: asp.name, coord: here, onRoute: false, airspace: asp))
-            }
+            // Live TFRs go in BEFORE the bundled airspace areas. Both are appended after ranking, and a
+            // TFR sits over exactly the cities and airports that produce a long "several things are
+            // here" list — so appended last it was the bottom row, under every standing area, which is
+            // the opposite of its urgency. A live restriction outranks permanent charted airspace.
             for t in tfrByID.values where t.polygon.count >= 3 {           // geometric containment (any zoom)
                 guard Geo.pointInRing(here, t.polygon), !results.contains(where: { $0.tfr?.id == t.id }) else { continue }
                 results.append(IdentifiedObject(kind: .tfr, ident: t.id, coord: t.labelCoord ?? here, onRoute: false, tfr: t))
+            }
+            for asp in airspaces where !results.contains(where: { $0.kind == .airspace && $0.ident == asp.name }) {
+                results.append(IdentifiedObject(kind: .airspace, ident: asp.name, coord: here, onRoute: false, airspace: asp))
             }
             if userPoint { results.insert(IdentifiedObject(kind: .userPoint, ident: UserPoint.token(here), coord: here, onRoute: false), at: 0) }
             guard !results.isEmpty else { return }

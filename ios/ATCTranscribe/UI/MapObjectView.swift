@@ -955,7 +955,7 @@ struct MapObjectView: View {
         case "W":   return "Warning Area"
         case "A":   return "Alert Area"
         case "MOA": return "Military Operations Area"
-        case "TFR": return "National Defense TFR"
+        case "TFR": return "Standing National Defense TFR"
         default:    return "Airspace"
         }
     }
@@ -969,7 +969,7 @@ struct MapObjectView: View {
         case "W":   return "Over international waters — activity that may be hazardous to aircraft. Non-regulatory, but avoid when active."
         case "A":   return "High volume of pilot training or unusual aerial activity. Remain vigilant; not regulatory."
         case "MOA": return "Military training activity when active. VFR may transit with caution; confirm status with the controlling agency."
-        case "TFR": return "Temporary/standing flight restriction for national defense. Confirm the active NOTAM before flight."
+        case "TFR": return "A PERMANENT charted national-defense restriction — not a live NOTAM, so it has no reason or effective times to show. Live TFRs are drawn separately and tap through to their NOTAM. Confirm the active NOTAM before flight."
         default:    return nil
         }
     }
