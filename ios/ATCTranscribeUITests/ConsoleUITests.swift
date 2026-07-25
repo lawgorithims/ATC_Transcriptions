@@ -70,9 +70,8 @@ final class ConsoleUITests: XCTestCase {
         }
         XCTAssertTrue(app.buttons["gate-primary"].isHittable, "download button not hittable")
         XCTAssertTrue(app.buttons["gate-skip"].exists, "skip button missing")
-        // The optional higher-accuracy (Large) and stock (Large V2) models are offered on the gate.
-        XCTAssertTrue(app.staticTexts["Large"].exists, "Large model not offered on gate")
-        XCTAssertTrue(app.staticTexts["Large V2"].exists, "Large V2 (stock) model not offered on gate")
+        // Small is the only speech model now (the Large variants were removed); it's offered on the gate.
+        XCTAssertTrue(app.staticTexts["Small"].exists, "Small model not offered on gate")
         snap(app, "01-gate")
 
         app.buttons["gate-skip"].tap()
@@ -120,19 +119,10 @@ final class ConsoleUITests: XCTestCase {
                       || app.staticTexts["Ready"].firstMatch.exists,
                       "Models manager controls missing")
 
-        // Transcription model picker. Labels are "Small" / "Large" / "Large V2" (+ "— not downloaded"
-        // when the variant isn't on disk, in which case the button is disabled).
+        // Transcription model picker. Small is the only speech model (the Large variants were removed).
         let small = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Small")).firstMatch
         XCTAssertTrue(reveal(small, app), "model buttons missing")
         if small.isEnabled { small.tap() }
-        // "Large" must NOT also match "Large V2" — exclude that prefix so we hit the fine-tuned one.
-        let large = app.buttons.matching(
-            NSPredicate(format: "label BEGINSWITH %@ AND NOT label BEGINSWITH %@", "Large", "Large V2")).firstMatch
-        XCTAssertTrue(large.exists, "Large model button missing")
-        if large.isEnabled { large.tap() }
-        let largeV2 = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Large V2")).firstMatch
-        XCTAssertTrue(largeV2.exists, "Large V2 model button missing")
-        if largeV2.isEnabled { largeV2.tap() }
 
         // Enable correction → the AI backend + sensitivity controls become active. (The correction
         // toggle is the "Vocabulary correction" switch on this page; target it by its identifier, not

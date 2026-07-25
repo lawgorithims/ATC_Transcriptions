@@ -32,6 +32,18 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 90, version: "1.0", headline: "A more accurate speech model that runs everywhere",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "waveform.badge.magnifyingglass",
+                    title: "New, more accurate Small model",
+                    detail: "The Small speech model was retrained on a much larger, perfectly-labeled ATC dataset. It transcribes more accurately and — most importantly for readbacks — gets callsigns right more often and misreads them less. It updates automatically next time you’re online; the old model is cleaned up for you."),
+                WhatsNewHighlight(
+                    icon: "checkmark.circle",
+                    title: "Small is now the only speech model",
+                    detail: "The optional Large and Large V2 models were removed. They couldn’t run reliably on every supported device, and the new Small model now matches or beats them on real ATC audio while staying fast and light — so there’s one model, tuned to run well on your device."),
+            ]),
+        ReleaseNote(
             build: 88, version: "1.0", headline: "Sharper terrain height near mountains",
             highlights: [
                 WhatsNewHighlight(
