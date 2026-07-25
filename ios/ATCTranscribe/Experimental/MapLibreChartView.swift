@@ -29,6 +29,8 @@ struct MapLibreChartView: UIViewRepresentable {
     var ownshipAccuracyM: Double? = nil
     var ownshipIntegrity: GPSIntegrityState = .unknown
     var traffic: [Aircraft] = []
+    /// Stations whose weather is deteriorating fast (chart markers). See `WxTrendPin`.
+    var wxTrend: [WxTrendPin] = []
     var tfrs: [TFR] = []
     var showTFRs: Bool = false
     var showAirspace: Bool = true                     // MapLayersMenu overlay toggles (parity with ChartMapView)
@@ -78,7 +80,7 @@ struct MapLibreChartView: UIViewRepresentable {
         c.cacheInputs(layer: layer, routeCoords: routeCoords, breadcrumbCoords: breadcrumbCoords,
                       radarTemplate: radarTemplate, ownship: ownship, ownshipCourse: ownshipCourse,
                       ownshipAccuracyM: ownshipAccuracyM, ownshipIntegrity: ownshipIntegrity,
-                      traffic: traffic, tfrs: showTFRs ? tfrs : [], showAirspace: showAirspace,
+                      traffic: traffic, wxTrend: wxTrend, tfrs: showTFRs ? tfrs : [], showAirspace: showAirspace,
                       showNearby: showNearby, showAirways: showAirways, plateOverlay: plateOverlay,
                       routeIdents: routeIdents, focus: focus, restoreCamera: restoreCamera,
                       onTap: onTapObjects, onAnchors: onPlateAnchors, searchHighlight: searchHighlight)
@@ -166,6 +168,7 @@ struct MapLibreChartView: UIViewRepresentable {
         private var inOwnship: CLLocationCoordinate2D?
         private var inOwnCourse: Double?
         private var inTraffic: [Aircraft] = []
+        private var inWxTrend: [WxTrendPin] = []
         private var inTFRs: [TFR] = []
         private var inShowAirspace = true, inShowNearby = true, inShowAirways = true
         private var inPlate: PlateOverlayState?
@@ -177,7 +180,7 @@ struct MapLibreChartView: UIViewRepresentable {
                          ownship: CLLocationCoordinate2D?,
                          ownshipCourse: Double?, ownshipAccuracyM: Double?,
                          ownshipIntegrity: GPSIntegrityState,
-                         traffic: [Aircraft], tfrs: [TFR], showAirspace: Bool,
+                         traffic: [Aircraft], wxTrend: [WxTrendPin], tfrs: [TFR], showAirspace: Bool,
                          showNearby: Bool, showAirways: Bool, plateOverlay: PlateOverlayState?,
                          routeIdents: Set<String>, focus: Coord?, restoreCamera: SavedMapCamera?,
                          onTap: @escaping ([IdentifiedObject]) -> Void,
@@ -186,7 +189,7 @@ struct MapLibreChartView: UIViewRepresentable {
             inLayer = layer; inRoute = routeCoords; inBreadcrumb = breadcrumbCoords; inRadarTemplate = radarTemplate
             inOwnship = ownship; inOwnCourse = ownshipCourse
             inOwnAccuracy = ownshipAccuracyM; inOwnIntegrity = ownshipIntegrity
-            inTraffic = traffic; inTFRs = tfrs; inShowAirspace = showAirspace; inShowNearby = showNearby
+            inTraffic = traffic; inWxTrend = wxTrend; inTFRs = tfrs; inShowAirspace = showAirspace; inShowNearby = showNearby
             inShowAirways = showAirways; inPlate = plateOverlay; inFocus = focus; self.restoreCamera = restoreCamera
             self.routeIdents = routeIdents; self.onTapObjects = onTap; self.onPlateAnchors = onAnchors
             inSearchHighlight = searchHighlight
@@ -232,6 +235,7 @@ struct MapLibreChartView: UIViewRepresentable {
             updateOwnship(inOwnship, course: inOwnCourse, accuracyM: inOwnAccuracy,
                           integrity: inOwnIntegrity, on: map)
             updateTraffic(inTraffic, on: map)
+            updateWxTrend(inWxTrend, on: map)
             updateTFRs(inTFRs, on: map)
             updatePlate(inPlate, on: map)
             applyFocus(inFocus, on: map)
@@ -637,6 +641,51 @@ struct MapLibreChartView: UIViewRepresentable {
             nav.textOptional = NSExpression(forConstantValue: true)     // drop the ident before the glyph on collision
             nav.minimumZoomLevel = 5.5
             style.addLayer(nav)
+        }
+
+        /// Stations whose weather is deteriorating fast. Drawn as a distinct marker rather than folded
+        /// into the airport glyph, because "this field is going down" is a different question from "what
+        /// is this field" — and a pilot scanning ahead needs to spot it without reading every symbol.
+        private func setupWxTrendLayer(_ style: MLNStyle) {
+            guard style.source(withIdentifier: "wxtrend") == nil else { return }
+            let src = MLNShapeSource(identifier: "wxtrend", shape: nil, options: nil)
+            style.addSource(src)
+            style.setImage(WxTrendMarker.image(severity: .falling), forName: "wx-falling")
+            style.setImage(WxTrendMarker.image(severity: .dropping), forName: "wx-dropping")
+            let layer = MLNSymbolStyleLayer(identifier: "wxtrend-sym", source: src)
+            layer.iconImageName = NSExpression(forKeyPath: "img")
+            layer.iconAllowsOverlap = NSExpression(forConstantValue: true)
+            layer.text = NSExpression(forKeyPath: "cap")
+            layer.textFontNames = NSExpression(forConstantValue: ["Arial Bold"])
+            layer.textFontSize = NSExpression(forConstantValue: 9)
+            layer.textColor = NSExpression(forConstantValue: UIColor.white)
+            layer.textHaloColor = NSExpression(forConstantValue: UIColor.black.withAlphaComponent(0.9))
+            layer.textHaloWidth = NSExpression(forConstantValue: 1.2)
+            layer.textAnchor = NSExpression(forConstantValue: "top")
+            layer.textOffset = NSExpression(forConstantValue: NSValue(cgVector: CGVector(dx: 0, dy: 1.1)))
+            layer.textOptional = NSExpression(forConstantValue: true)
+            layer.minimumZoomLevel = 4.5
+            style.addLayer(layer)
+        }
+
+        /// Push the current set of deteriorating stations onto the map.
+        private var appliedWxTrend: [WxTrendPin] = []
+        func updateWxTrend(_ results: [WxTrendPin], on map: MLNMapView) {
+            guard let style = map.style else { return }
+            guard results != appliedWxTrend || style.source(withIdentifier: "wxtrend") == nil else { return }
+            appliedWxTrend = results
+            setupWxTrendLayer(style)
+            var feats: [MLNPointFeature] = []
+            for r in results.prefix(120) {                          // bounded (rule 2)
+                let f = MLNPointFeature()
+                f.coordinate = CLLocationCoordinate2D(latitude: r.coord.lat, longitude: r.coord.lon)
+                f.attributes = ["img": r.severity == .dropping ? "wx-dropping" : "wx-falling",
+                                "cap": r.caption]
+                feats.append(f)
+            }
+            assert(feats.count <= 120, "updateWxTrend: unexpectedly many markers")
+            (style.source(withIdentifier: "wxtrend") as? MLNShapeSource)?.shape =
+                MLNShapeCollectionFeature(shapes: feats)
         }
 
         /// TFR + route + traffic + ownship layers (empty; driven by updateUIView, not by region). Stacked on

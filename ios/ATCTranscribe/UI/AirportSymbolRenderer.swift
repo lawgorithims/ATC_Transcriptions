@@ -34,6 +34,18 @@ enum AirportSymbolRenderer {
         return img
     }
 
+    /// The colour for a reported flight category — shared with the airport card so the chart symbol and
+    /// the card's trend chips agree.
+    static func categoryColor(_ c: Metar.Category) -> UIColor {
+        switch c {
+        case .vfr:  return vfrGreen
+        case .mvfr: return mvfrBlue
+        case .ifr:  return ifrRed
+        case .lifr: return lifrMagenta
+        case .unknown: return .gray
+        }
+    }
+
     /// Base colour: flight category when the field reports, else the FAA tower/no-tower colour.
     static func tint(_ spec: AirportSymbol.Spec) -> UIColor {
         switch spec.category {
@@ -71,7 +83,8 @@ enum AirportSymbolRenderer {
                 // Ticks sit OUTSIDE the runway extent. A runwaysOnly field draws lines out to r+1, so
                 // starting the ticks at r+1.5 put them straight through the runway ends and the symbol
                 // read as a splatter instead of a layout.
-                let inner = r + 5.0, outer = r + 8.5
+                let inner = spec.shape == .runwaysOnly ? r + 8.0 : r + 5.0
+                let outer = inner + 3.5
                 c.setLineWidth(1.8)
                 for deg in stride(from: 45.0, to: 360.0, by: 90.0) {
                     let a = deg * .pi / 180
@@ -93,10 +106,11 @@ enum AirportSymbolRenderer {
                 c.addEllipse(in: CGRect(x: mid.x - r, y: mid.y - r, width: r * 2, height: r * 2))
                 c.strokePath()
             case .runwaysOnly:
-                // No circle: the runway layout itself IS the symbol (long/multi-runway fields).
-                // Thin enough that three or four runways still read as separate strips.
-                c.setLineWidth(spec.runwayAxesDeg.count >= 3 ? 1.7 : 2.4)
-                strokeRunways(spec.runwayAxesDeg.isEmpty ? [0, 90] : spec.runwayAxesDeg, mid, r + 1, c)
+                // No circle: the runway layout itself IS the symbol (long/multi-runway fields), so the
+                // lines must be long enough to READ as a layout. At r+1 they were shorter than the
+                // circle they replaced and the symbol looked like a stray tick rather than an airport.
+                c.setLineWidth(spec.runwayAxesDeg.count >= 3 ? 1.9 : 2.6)
+                strokeRunways(spec.runwayAxesDeg.isEmpty ? [0, 90] : spec.runwayAxesDeg, mid, r + 5, c)
             }
 
             // Military: the second ring.
