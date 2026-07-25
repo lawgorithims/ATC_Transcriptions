@@ -32,6 +32,30 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 91, version: "1.0", headline: "Real airport symbols, weather trends, and a map fix",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "mappin.and.ellipse",
+                    title: "Airports look like they do on a sectional",
+                    detail: "Every airport on the map now draws its real FAA symbol: blue when the field has a control tower and magenta when it doesn’t, its actual runway layout, tick marks for fuel and a star for a rotating beacon, and the distinct symbols for heliports, seaplane bases, military fields, private and unverified airports. Long-runway fields drop the circle and show the runways themselves, exactly as the chart does."),
+                WhatsNewHighlight(
+                    icon: "circle.circle",
+                    title: "Flight category at a glance",
+                    detail: "A colored ring around each reporting airport shows its current flight category — green VFR, blue MVFR, red IFR, magenta LIFR. The symbol underneath keeps its FAA color, so you can read the conditions and the field type at the same time. Airports that aren’t reporting get no ring rather than a misleading one."),
+                WhatsNewHighlight(
+                    icon: "chart.line.downtrend.xyaxis",
+                    title: "Where the weather is going, not just where it is",
+                    detail: "The airport card now fits a trend across the last several observations: how fast the ceiling and visibility are moving, and the category projected an hour and two hours out — the question that actually matters when you’re still 45 minutes from the field. Fields going downhill fast get a marker on the chart, drawn heavier when the drop is projected to cross into a worse category."),
+                WhatsNewHighlight(
+                    icon: "square.3.layers.3d",
+                    title: "Fixed: the map could come up with only the chart",
+                    detail: "On some launches the map drew the chart and nothing else — no aircraft symbol, no route, no traffic, no airspace or airways. It depended on a startup race, so it came and went. The map now rebuilds its layers on whichever chart style it ends up using, so the full picture is always there."),
+                WhatsNewHighlight(
+                    icon: "calendar.badge.exclamationmark",
+                    title: "Data currency you can see",
+                    detail: "Approach procedures and downloadable charts now carry their source and cycle dates, with a badge that stays quiet while everything is current and speaks up when something is expiring, expired, or undated — including on the approach activation sheet, right where it matters. The downloadable chart catalog is currently out of cycle, and the app now says so instead of drawing it silently."),
+            ]),
+        ReleaseNote(
             build: 90, version: "1.0", headline: "A more accurate speech model that runs everywhere",
             highlights: [
                 WhatsNewHighlight(
