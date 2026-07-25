@@ -162,6 +162,18 @@ enum ApproachActivation {
         return out
     }
 
+    /// The circling designator of an approach title — the `A` in "RNAV (GPS)-A" — or nil when the title
+    /// names a runway, which makes it a straight-in. Circling approaches have no runway, so this letter
+    /// is the only thing distinguishing one from another at the same field.
+    static func circlingLetter(_ title: String) -> Character? {
+        let t = title.uppercased()
+        guard !t.contains("RWY") else { return nil }
+        guard let dash = t.lastIndex(of: "-") else { return nil }
+        let tail = t[t.index(after: dash)...].trimmingCharacters(in: .whitespaces)
+        guard tail.count == 1, let ch = tail.first, ch.isLetter else { return nil }
+        return ch
+    }
+
     /// Match a PLATE (whose only identity is its printed name, e.g. "ILS OR LOC RWY 04R") to the coded
     /// approaches for that airport. The plate and the CIFP records share no key, so this narrows by
     /// runway and then scores the approach TYPE against the plate title.
@@ -193,6 +205,12 @@ enum ApproachActivation {
                 score += 2
             }
             if plate.contains("RNAV") && name.contains("GPS") { score += 1 }   // charted RNAV (GPS)
+            // Circling approaches are identified by their letter, not a runway ("RNAV (GPS)-A"). Without
+            // this a circling plate ties with the straight-in of the same type and lost the ident
+            // tiebreak, so the pilot's own approach ranked second in its own chooser.
+            if let letter = Self.circlingLetter(plate) {
+                score += Self.circlingLetter(name) == letter ? 2 : -1
+            }
             scored.append((c, score))
         }
         scored.sort { a, b in

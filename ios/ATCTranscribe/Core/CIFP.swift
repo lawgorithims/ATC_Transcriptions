@@ -25,8 +25,9 @@ struct CIFPLeg: Identifiable {
     let course: Double?    // magnetic, degrees
     let altitude: String
     /// ARINC waypoint-description code (4 chars). Char 4 carries the SEGMENT ROLE published by the FAA:
-    /// `A` = initial approach fix, `F` = final approach fix, `M` = missed-approach point, `I` =
-    /// intermediate fix. This is the authoritative marker — it is read, never inferred.
+    /// `A` = initial approach fix, `F` = final approach fix, `M` = missed-approach point, `I` = final
+    /// approach COURSE fix, `B` = intermediate fix. This is the authoritative marker — it is read,
+    /// never inferred. See `LegRole`, and do not transpose `I` and `B`.
     var wpDesc: String = ""
     /// The published role of this leg, if the source marks one.
     var role: LegRole { LegRole(wpDesc: wpDesc) }
@@ -36,10 +37,10 @@ struct CIFPLeg: Identifiable {
 /// `.none` means the source marks no role for this leg — which is the common case and is NOT a defect.
 ///
 /// Two of these letters are easy to transpose and the coded data makes the distinction plain: `I` is
-/// the FINAL APPROACH COURSE FIX (it opens 9,809 of the 10,243 approach-proper rows), while `B` is the
-/// INTERMEDIATE FIX (14,199 legs, always the terminal leg of a transition — the fix where a transition
-/// hands off to the approach). At KBOS H33LX, CRLTN is coded `B` on each transition's last leg and `I`
-/// on the approach proper's first leg: the same fix, seen from either side of the join.
+/// the FINAL APPROACH COURSE FIX — all 9,810 of them open their approach-proper row — while `B` is the
+/// INTERMEDIATE FIX, the fix where a transition hands off to the approach (14,199 legs, 13,023 of them
+/// the terminal leg of their row). At KBOS H33LX, CRLTN is coded `B` on each transition's last leg and
+/// `I` on the approach proper's first leg: the same fix, seen from either side of the join.
 enum LegRole: String {
     case initialApproachFix, finalApproachFix, finalApproachCourseFix, missedApproachPoint
     case intermediateFix, none

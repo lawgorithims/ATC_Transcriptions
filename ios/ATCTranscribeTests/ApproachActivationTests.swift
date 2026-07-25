@@ -260,6 +260,33 @@ final class ApproachActivationTests: XCTestCase {
         XCTAssertEqual(m.map(\.ident), ["I04R"])
     }
 
+    /// A circling plate and the straight-in of the same type score identically on type tokens alone, so
+    /// the circling approach lost the ident tiebreak and ranked second in its own chooser. KCGE codes
+    /// R34 and RNV-A; the "RNAV (GPS)-A" plate is the circling one.
+    func testACirclingPlateRanksItsOwnCirclingApproachFirst() {
+        let candidates = [(ident: "R34",   name: "RNAV (GPS) RWY 34", runway: "34"),
+                          (ident: "RNV-A", name: "RNAV (GPS)-A",      runway: "")]
+        let m = ApproachActivation.matchPlate(plateName: "RNAV (GPS)-A", runway: nil, candidates: candidates)
+        XCTAssertEqual(m.first?.ident, "RNV-A")
+        XCTAssertEqual(m.count, 2, "the straight-in stays available, just not first")
+    }
+
+    /// Two circling approaches at the same field are told apart only by their letter.
+    func testCirclingApproachesAreSeparatedByTheirLetter() {
+        let candidates = [(ident: "RNV-A", name: "RNAV (GPS)-A", runway: ""),
+                          (ident: "RNV-B", name: "RNAV (GPS)-B", runway: "")]
+        XCTAssertEqual(ApproachActivation.matchPlate(plateName: "RNAV (GPS)-B", runway: nil,
+                                                     candidates: candidates).first?.ident, "RNV-B")
+    }
+
+    func testCirclingLetterIsNotReadOffAStraightInTitle() {
+        XCTAssertNil(ApproachActivation.circlingLetter("RNAV (GPS) Y RWY 12"),
+                     "the Y distinguishes duplicate straight-ins; it is not a circling letter")
+        XCTAssertNil(ApproachActivation.circlingLetter("ILS OR LOC RWY 04R"))
+        XCTAssertEqual(ApproachActivation.circlingLetter("VOR/DME-B"), "B")
+        XCTAssertEqual(ApproachActivation.circlingLetter("RNAV (GPS)-A"), "A")
+    }
+
     /// The RNP-AR-vs-GPS distinction the approach-type table now gets right: an "RNAV (GPS)" plate must
     /// not rank an RNP AR approach — those require specific operator and aircrew authorization.
     func testRnavGpsPlateDoesNotRankTheRnpApproachFirst() {

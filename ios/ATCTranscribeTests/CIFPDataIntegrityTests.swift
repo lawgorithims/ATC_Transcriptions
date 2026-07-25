@@ -11,6 +11,10 @@ import XCTest
 /// The invariants are the FAA's own, so they hold across cycles: an approach has exactly one published
 /// missed-approach point, and an approach that publishes a final approach fix must still have it after
 /// ingest. Data tests are cheap insurance against a build that silently loses records.
+///
+/// Four of the six are load-bearing against *that* regression — the FAF and approach-name ones. The
+/// missed-approach-point and no-legs tests are green on the broken data (what was lost were F markers,
+/// not M markers, and no procedure was emptied); they guard neighbouring failures, not this one.
 final class CIFPDataIntegrityTests: XCTestCase {
 
     /// Airports spread across regions, approach types and coding styles.
