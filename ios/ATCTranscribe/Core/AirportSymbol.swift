@@ -79,6 +79,24 @@ enum AirportSymbol {
         var runwayAxesDeg: [Int]
         var category: Category?      // nil when the field doesn't report / no observation
 
+        /// Rebuild a spec from its `signature`. MapLibre identifies images by NAME, so the name has to
+        /// carry everything the renderer needs — this is the inverse, used when registering glyphs.
+        init?(signature: String) {
+            let p = signature.split(separator: "_", omittingEmptySubsequences: false).map(String.init)
+            guard p.count == 7,
+                  let k = Kind(rawValue: p[0]), let sh = Shape(rawValue: p[1]) else { return nil }
+            kind = k; shape = sh
+            towered = p[2] == "t"; fuel = p[3] == "f"; beacon = p[4] == "b"
+            runwayAxesDeg = p[5].isEmpty ? [] : p[5].split(separator: ".").compactMap { Int($0) }
+            category = Category(rawValue: p[6])
+        }
+
+        init(kind: Kind, shape: Shape, towered: Bool, fuel: Bool, beacon: Bool,
+             runwayAxesDeg: [Int], category: Category?) {
+            self.kind = kind; self.shape = shape; self.towered = towered; self.fuel = fuel
+            self.beacon = beacon; self.runwayAxesDeg = runwayAxesDeg; self.category = category
+        }
+
         /// A stable identity for image caching + the MapLibre image name. Airports that look
         /// identical share one rendered glyph.
         var signature: String {
