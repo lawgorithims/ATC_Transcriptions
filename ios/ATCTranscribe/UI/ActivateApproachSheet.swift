@@ -97,6 +97,9 @@ struct ActivateApproachSheet: View {
 
     /// The published transitions for this approach plus the synthesized VECTORS entry.
     private func entries(for a: CIFPProcedure) -> [ApproachActivation.Entry] {
-        ApproachActivation.entries(transitions: CIFP.transitions(airport: a.airport, ident: a.ident))
+        assert(!a.ident.isEmpty, "an approach must have an ident to enumerate entries for")
+        let t = CIFP.transitions(airport: a.airport, ident: a.ident)
+        assert(t.count <= 64, "unexpectedly many transitions for one approach")
+        return ApproachActivation.entries(transitions: t)
     }
 }

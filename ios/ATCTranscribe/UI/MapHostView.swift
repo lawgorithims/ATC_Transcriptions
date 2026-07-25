@@ -20,6 +20,9 @@ struct MapHostView: View {
     /// full-bleed UNDER that chrome, so every control this view floats over the map must start below it.
     /// Defaulted so the memberwise init keeps working for existing call sites.
     var topChrome: CGFloat = 0
+    /// Live METARs — read here only to publish each field's flight CATEGORY into the airport-symbol
+    /// builder, so a glyph carries the conditions there.
+    @EnvironmentObject var metars: MetarStore
     @Environment(\.scenePhase) private var scenePhase
 
     /// The chrome height to lay out against, floored so the very first frame (before the measurement
@@ -64,6 +67,22 @@ struct MapHostView: View {
 
     struct PlateAnchors: Equatable { var tl: CGPoint; var tr: CGPoint }
 
+    /// Publish reported flight categories to the (off-main-actor) symbol builder. Extracted from the
+    /// modifier chain: inline, it pushed `body` past the type-checker's budget.
+    private func publishCategories(_ m: [String: Metar]) {
+        var out: [String: AirportSymbol.Category] = [:]
+        for (id, ob) in m.prefix(512) {                                   // bounded (rule 2)
+            switch ob.category {
+            case .vfr:  out[id] = .vfr
+            case .mvfr: out[id] = .mvfr
+            case .ifr:  out[id] = .ifr
+            case .lifr: out[id] = .lifr
+            case .unknown: break
+            }
+        }
+        MapLibreChartView.Coordinator.categoryByIdent = out
+    }
+
     /// Show the live map unless it's genuinely pointless: only paused when truly backgrounded (a transient
     /// `.inactive`, e.g. a permission alert, must NOT blank it) or when the full-screen route map is
     /// covering it (no point running two MKMapViews at once). NOT gated on thermal — the map must never
@@ -107,6 +126,9 @@ struct MapHostView: View {
         .onReceive(model.deviceLocation.$integrity) { gpsIntegrity = $0 }
         .onReceive(model.flightRecorder.$trail) { breadcrumb = $0.map { Coord(lat: $0.lat, lon: $0.lon) } }
         .onReceive(model.rainViewer.$tileTemplate) { radarTemplate = $0 }   // feed the map engines the current frame
+        // Publish reported flight categories to the symbol builder, so an airport's glyph carries the
+        // conditions there. The builders run off the main actor and can't read the store directly.
+        .onReceive(metars.$metars) { publishCategories($0) }
         // The plate's ✕ / opacity controls ride the PLATE's own top corners (screen-points streamed
         // from the map's region callbacks). SwiftUI-layered — not annotation subviews — so their
         // gestures never fight MapKit's pan recognizer (which cancels UIControl tracking inside

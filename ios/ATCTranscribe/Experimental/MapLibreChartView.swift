@@ -747,10 +747,17 @@ struct MapLibreChartView: UIViewRepresentable {
             for (name, img) in images { style.setImage(img, forName: name) }   // bounded (rule 2)
         }
 
+        /// Reported flight category per ident, refreshed from MetarStore by the host. Read by the static
+        /// feature builders, which run off the main actor and cannot touch the store directly.
+        nonisolated(unsafe) static var categoryByIdent: [String: AirportSymbol.Category] = [:]
+        static func cachedCategory(_ ident: String) -> AirportSymbol.Category? {
+            categoryByIdent[ident.uppercased()]
+        }
+
         /// The registered image name for a nav point, mirroring NearbyMarkerView.navaidGlyph's classification.
         static func glyphName(_ np: NavPoint) -> String {
             switch np.kind {
-            case .airport: return "nav-airport"
+            case .airport: return "apt-" + AirportSymbolData.spec(np.ident, category: cachedCategory(np.ident)).signature
             case .vor:     return navGlyph(forType: NavMeta.navaid(np.ident)?.type ?? "VOR")
             default:       return "nav-fix"
             }
@@ -808,7 +815,26 @@ struct MapLibreChartView: UIViewRepresentable {
                 (style.source(withIdentifier: "airspace") as? MLNShapeSource)?.shape = MLNShapeCollectionFeature(shapes: f.asp)
                 (style.source(withIdentifier: "airspace-labels") as? MLNShapeSource)?.shape = MLNShapeCollectionFeature(shapes: f.lbl)
                 (style.source(withIdentifier: "airways") as? MLNShapeSource)?.shape = MLNShapeCollectionFeature(shapes: f.awy)
+                // Register the FAA airport glyphs this feature set references. Airports that look alike
+                // share a signature, so this is a handful of images even for a full screen of fields.
+                Coordinator.registerAirportGlyphs(in: f.nav, style: style)
                 (style.source(withIdentifier: "nav") as? MLNShapeSource)?.shape = MLNShapeCollectionFeature(shapes: f.nav)
+            }
+        }
+
+        /// Register an image for every `apt-…` glyph name the features reference, rendering each signature
+        /// once. MapLibre keeps images by name, so a re-register of an existing name is a cheap no-op.
+        @MainActor static func registerAirportGlyphs(in features: [MLNPointFeature], style: MLNStyle) {
+            var wanted = Set<String>()
+            for f in features.prefix(512) {                         // bounded (rule 2)
+                if let g = f.attributes["glyph"] as? String, g.hasPrefix("apt-") { wanted.insert(g) }
+            }
+            assert(wanted.count <= 512, "registerAirportGlyphs: unexpectedly many signatures")
+            for name in wanted {
+                guard style.image(forName: name) == nil else { continue }
+                let sig = String(name.dropFirst(4))
+                guard let spec = AirportSymbol.Spec(signature: sig) else { continue }
+                style.setImage(AirportSymbolRenderer.image(for: spec), forName: name)
             }
         }
 

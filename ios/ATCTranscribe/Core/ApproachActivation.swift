@@ -88,15 +88,19 @@ enum ApproachActivation {
             return (legs.prefix(t + 1).map(\.seq), legs.suffix(from: t + 1).map(\.seq))
         }
 
-        // 2. trailing hold: walk back over the hold, then over the climb that feeds it
+        // 2. trailing hold: walk back over the hold, then over the climb that feeds it.
+        // Both walks use an explicit descending RANGE rather than a `while` so the iteration count is
+        // statically bounded by the leg count (Power of 10, rule 2) — a corrupt record cannot spin here.
         var start = legs.count
         var i = legs.count - 1
-        while i >= 0, ["HM", "HF", "HA"].contains(legs[i].legType.uppercased()) {   // bounded by count
-            start = i; i -= 1
+        for idx in stride(from: legs.count - 1, through: 0, by: -1) {
+            guard ["HM", "HF", "HA"].contains(legs[idx].legType.uppercased()) else { break }
+            start = idx; i = idx - 1
         }
         if start < legs.count {
-            while i >= 0, ["CA", "CF", "FA", "VA", "VM", "DF"].contains(legs[i].legType.uppercased()) {
-                start = i; i -= 1
+            for idx in stride(from: i, through: 0, by: -1) {
+                guard ["CA", "CF", "FA", "VA", "VM", "DF"].contains(legs[idx].legType.uppercased()) else { break }
+                start = idx
             }
             if start > 0 {
                 return (legs.prefix(start).map(\.seq), legs.suffix(from: start).map(\.seq))
