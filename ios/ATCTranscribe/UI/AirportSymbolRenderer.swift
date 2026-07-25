@@ -55,9 +55,13 @@ enum AirportSymbolRenderer {
         spec.towered ? towerBlue : nonTowerMag
     }
 
-    /// The colour of the flight-category ring drawn around the symbol, or nil when the field isn't
-    /// reporting (no ring — absence of information is never drawn as a condition).
-    static func ringColor(_ spec: AirportSymbol.Spec) -> UIColor? {
+    /// The colour of the flight-category dot in the symbol's corner, or nil when the field isn't
+    /// reporting (no dot — absence of information is never drawn as a condition).
+    ///
+    /// This used to be a 34pt ring around the whole symbol — more than twice the diameter of the entire
+    /// VOR glyph beside it, so at chart scale the weather shouted over the airport itself. The corner
+    /// dot carries exactly the same fact in a fraction of the ink.
+    static func categoryDotColor(_ spec: AirportSymbol.Spec) -> UIColor? {
         guard let cat = spec.category else { return nil }
         switch cat {
         case .vfr:  return vfrGreen
@@ -67,11 +71,18 @@ enum AirportSymbolRenderer {
         }
     }
 
-    /// Geometry, in one place so the ring, the fuel ticks and the beacon can't grow into each other.
+    /// Geometry, in one place so the dot, the fuel ticks and the beacon can't grow into each other.
     private static let coreRadius: CGFloat = 9        // the FAA symbol itself
-    private static let ringRadius: CGFloat = 17       // the flight-category ring, clear of the runways
-    private static let fuelInner: CGFloat = 20        // fuel ticks, clear of the ring
+    private static let fuelInner: CGFloat = 12.0      // fuel ticks, just clear of the runway ends
     private static let beaconCenterY: CGFloat = 19.5  // beacon star straight up, clear of the diagonal ticks
+    private static let categoryDotRadius: CGFloat = 4.0
+    /// Top-right, on the diagonal, outside the runway ends. The fuel ticks used to sit at radius 20
+    /// specifically to clear the old ring; with the ring gone they pull in to 14.5 and leave the corner
+    /// free, so the dot and the ticks no longer contend for the same 45° spoke.
+    private static let categoryDotCenter = CGPoint(x: 40.5, y: 7.5)
+    /// Runway marks, 30% shorter than they were. They had been sized against the old ring and read as a
+    /// second symbol rather than a layout hint inside one.
+    private static let runwayScale: CGFloat = 0.7
 
     private static func draw(_ spec: AirportSymbol.Spec) -> UIImage {
         let fmt = UIGraphicsImageRendererFormat.default(); fmt.opaque = false
@@ -95,13 +106,18 @@ enum AirportSymbolRenderer {
         let lw: CGFloat = (spec.towered ? 2.4 : 1.8) + widen
         c.setStrokeColor(color.cgColor); c.setFillColor(color.cgColor); c.setLineWidth(lw)
 
-        // The flight-category ring, drawn first so the FAA symbol always sits on top of it.
-        if let ring = ringColor(spec) {
-            c.setStrokeColor((casing ? UIColor.white : ring).cgColor); c.setLineWidth(2.4 + widen)
-            c.addEllipse(in: CGRect(x: mid.x - ringRadius, y: mid.y - ringRadius,
-                                    width: ringRadius * 2, height: ringRadius * 2))
-            c.strokePath()
-            c.setStrokeColor(color.cgColor); c.setLineWidth(lw)
+        // Flight category: a dot in the corner. Drawn BEFORE the kind switch because six of the kinds
+        // (heliport, seaplane, ultralight, private, unverified, abandoned) return from it early, and a
+        // heliport reports weather like anything else. It occupies a corner no symbol reaches, so
+        // drawing it first costs nothing. The casing pass lays a white disc under it, the same
+        // two-pass trick the symbol uses, so the colour reads on a dark chart and a light one alike.
+        if let dot = categoryDotColor(spec) {
+            let rr = categoryDotRadius + (casing ? 1.4 : 0)
+            c.setFillColor((casing ? UIColor.white : dot).cgColor)
+            c.addEllipse(in: CGRect(x: categoryDotCenter.x - rr, y: categoryDotCenter.y - rr,
+                                    width: rr * 2, height: rr * 2))
+            c.fillPath()
+            c.setFillColor(color.cgColor)
         }
 
         switch spec.kind {
@@ -116,8 +132,9 @@ enum AirportSymbolRenderer {
 
         // Fuel: short ticks at the four diagonals, the FAA's "notches".
         if spec.fuel {
-            // Ticks sit OUTSIDE both the runway extent and the category ring. Drawn any closer they
-            // ran straight through the runway ends and the symbol read as a splatter, not a layout.
+            // Ticks sit outside the runway extent. They used to sit at 20 to clear the old category
+            // ring; with the ring gone and the runways 30% shorter they pull in to 12, which also
+            // leaves the top-right corner free for the category dot — they share the 45° spoke.
             let inner = fuelInner, outer = fuelInner + 3.5
             c.setLineWidth(1.8 + widen)
             for deg in stride(from: 45.0, to: 360.0, by: 90.0) {         // bounded (rule 2)
@@ -138,7 +155,7 @@ enum AirportSymbolRenderer {
             // disc to knock out of — it IS the white disc — so it draws none).
             if !casing {
                 c.setStrokeColor(UIColor.white.cgColor); c.setLineWidth(1.6)
-                strokeRunways(spec.runwayAxesDeg, mid, r - 1.5, c)
+                strokeRunways(spec.runwayAxesDeg, mid, (r - 1.5) * runwayScale, c)
             }
         case .openCircle:
             c.addEllipse(in: CGRect(x: mid.x - r, y: mid.y - r, width: r * 2, height: r * 2))
@@ -148,7 +165,7 @@ enum AirportSymbolRenderer {
             // lines must be long enough to READ as a layout. At r+1 they were shorter than the
             // circle they replaced and the symbol looked like a stray tick rather than an airport.
             c.setLineWidth((spec.runwayAxesDeg.count >= 3 ? 1.9 : 2.6) + widen)
-            strokeRunways(spec.runwayAxesDeg.isEmpty ? [0, 90] : spec.runwayAxesDeg, mid, r + 5, c)
+            strokeRunways(spec.runwayAxesDeg.isEmpty ? [0, 90] : spec.runwayAxesDeg, mid, (r + 5) * runwayScale, c)
         }
 
         // Military: the second ring.
@@ -162,6 +179,7 @@ enum AirportSymbolRenderer {
         // Beacon: a star straight above the symbol (the FAA's dusk-to-dawn rotating beacon). Directly
         // up, because the diagonals belong to the fuel ticks.
         if spec.beacon { drawStar(CGPoint(x: mid.x, y: mid.y - beaconCenterY), 4.0 + widen * 0.5, color, c) }
+
     }
 
     /// Runway lines through the centre, drawn on their 0–180° axis (screen y is down, so negate).

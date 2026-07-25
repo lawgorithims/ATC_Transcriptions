@@ -40,13 +40,13 @@ final class AirportGlyphSheetTests: XCTestCase {
             Sample(label: "Unverified (U)", spec: spec(.unverified, .openCircle)),
             Sample(label: "Abandoned (X)", spec: spec(.abandoned, .openCircle)),
             // Flight-category rings — drawn AROUND the FAA symbol, which keeps its tower colour.
-            Sample(label: "VFR ring", spec: spec(.airport, .filledCircleWithRunways, towered: true, axes: [40, 130], cat: .vfr)),
-            Sample(label: "MVFR ring", spec: spec(.airport, .filledCircleWithRunways, towered: true, axes: [40, 130], cat: .mvfr)),
-            Sample(label: "IFR ring", spec: spec(.airport, .filledCircleWithRunways, towered: true, axes: [40, 130], cat: .ifr)),
-            Sample(label: "LIFR ring", spec: spec(.airport, .filledCircleWithRunways, towered: true, axes: [40, 130], cat: .lifr)),
+            Sample(label: "VFR dot", spec: spec(.airport, .filledCircleWithRunways, towered: true, axes: [40, 130], cat: .vfr)),
+            Sample(label: "MVFR dot", spec: spec(.airport, .filledCircleWithRunways, towered: true, axes: [40, 130], cat: .mvfr)),
+            Sample(label: "IFR dot", spec: spec(.airport, .filledCircleWithRunways, towered: true, axes: [40, 130], cat: .ifr)),
+            Sample(label: "LIFR dot", spec: spec(.airport, .filledCircleWithRunways, towered: true, axes: [40, 130], cat: .lifr)),
             // The case the first cut lost: same weather, different tower status.
-            Sample(label: "Non-towered\nVFR ring", spec: spec(.airport, .filledCircleWithRunways, axes: [40, 130], cat: .vfr)),
-            Sample(label: "Runways only\nIFR ring", spec: spec(.airport, .runwaysOnly, towered: true, axes: [35, 90], cat: .ifr)),
+            Sample(label: "Non-towered\nVFR dot", spec: spec(.airport, .filledCircleWithRunways, axes: [40, 130], cat: .vfr)),
+            Sample(label: "Runways only\nIFR dot", spec: spec(.airport, .runwaysOnly, towered: true, axes: [35, 90], cat: .ifr)),
             // Runway orientation must actually rotate.
             Sample(label: "Rwy 09/27", spec: spec(.airport, .runwaysOnly, towered: true, axes: [90])),
             Sample(label: "Rwy 18/36", spec: spec(.airport, .runwaysOnly, towered: true, axes: [0])),
@@ -113,21 +113,21 @@ final class AirportGlyphSheetTests: XCTestCase {
                           AirportSymbolRenderer.image(for: non).pngData())
     }
 
-    /// The category rides in its own channel: same airport, different weather → same symbol, different ring.
-    func testTheFlightCategoryIsCarriedByTheRingNotTheSymbolColour() {
+    /// The category rides in its own channel: same airport, different weather → same symbol, different dot.
+    func testTheFlightCategoryIsCarriedByTheCornerDotNotTheSymbolColour() {
         let vfr = spec(.airport, .filledCircleWithRunways, towered: true, axes: [40], cat: .vfr)
         let ifr = spec(.airport, .filledCircleWithRunways, towered: true, axes: [40], cat: .ifr)
         XCTAssertEqual(AirportSymbolRenderer.tint(vfr), AirportSymbolRenderer.tint(ifr),
                        "the FAA symbol colour must not move with the weather")
-        XCTAssertEqual(AirportSymbolRenderer.ringColor(vfr), AirportSymbolRenderer.vfrGreen)
-        XCTAssertEqual(AirportSymbolRenderer.ringColor(ifr), AirportSymbolRenderer.ifrRed)
+        XCTAssertEqual(AirportSymbolRenderer.categoryDotColor(vfr), AirportSymbolRenderer.vfrGreen)
+        XCTAssertEqual(AirportSymbolRenderer.categoryDotColor(ifr), AirportSymbolRenderer.ifrRed)
         XCTAssertNotEqual(AirportSymbolRenderer.image(for: vfr).pngData(),
                           AirportSymbolRenderer.image(for: ifr).pngData())
     }
 
-    /// A field that isn't reporting gets NO ring — absence of information is never drawn as a condition.
-    func testANonReportingFieldDrawsNoRing() {
-        XCTAssertNil(AirportSymbolRenderer.ringColor(spec(.airport, .openCircle)))
+    /// A field that isn't reporting gets NO dot — absence of information is never drawn as a condition.
+    func testANonReportingFieldDrawsNoCategoryDot() {
+        XCTAssertNil(AirportSymbolRenderer.categoryDotColor(spec(.airport, .openCircle)))
     }
 
     /// The renderer must actually rotate with the runway — an airport's symbol shows its layout.
