@@ -32,6 +32,38 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 92, version: "1.0", headline: "Approach data you can trust, and a globe without seams",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "arrow.triangle.branch",
+                    title: "Y and Z approaches are finally told apart",
+                    detail: "Two RNAV approaches to the same runway are not the same procedure — they have different minimums, different step-down fixes, and different missed approaches. The app used to show both as one name, so the Activate list gave you two identical rows. It now carries the published letter, and if the exact approach on your plate isn’t coded, it offers nothing rather than something close. RNP approaches, which need specific authorization, no longer come up when you asked for the ordinary RNAV."),
+                WhatsNewHighlight(
+                    icon: "exclamationmark.triangle",
+                    title: "Tap a TFR and find out why it’s there",
+                    detail: "Live TFRs are now on by default and tap through to the reason, the effective times, the altitudes and the NOTAM. The permanent national-defense areas that used to look identical to them are drawn faintly and say what they are, so a red block on the chart is no longer ambiguous."),
+                WhatsNewHighlight(
+                    icon: "globe.americas",
+                    title: "The globe no longer tears at the date line",
+                    detail: "Looking toward the antimeridian showed a thin sheet of map stretched through the middle of the earth. Chart tiles and approach plates were being drawn as flat panels laid across a round planet; they now curve onto its surface properly."),
+                WhatsNewHighlight(
+                    icon: "arrow.down.to.line",
+                    title: "An altitude advisory in the GPS bar",
+                    detail: "When you’re approaching a fix with a published crossing altitude and your GPS altitude is well outside it, the ALT reading turns amber. Tap it to see the restriction and which fix it belongs to. It is deliberately quiet: it stays silent unless the fix is close, the GPS is healthy, and the difference is far larger than the normal gap between GPS and barometric altitude — your altimeter is still the authority. Speed limits are shown but never judged, because ground speed isn’t airspeed."),
+                WhatsNewHighlight(
+                    icon: "building.2",
+                    title: "Every airport in the country, with its real frequencies",
+                    detail: "Runway geometry now comes from the FAA’s own airport database, covering nearly 10,000 fields that previously had none. Frequency lists went from a handful per airport to the full published set — 211 at Dallas-Fort Worth alone — which also means the transcript corrector can verify far more of what it hears."),
+                WhatsNewHighlight(
+                    icon: "calendar.badge.exclamationmark",
+                    title: "You’ll know when your data expires",
+                    detail: "A notice appears app-wide when the procedures, plates or charts fall out of cycle, instead of waiting to be found in Settings. And a new AIRAC cycle can now be installed without waiting for an app update — verified before it replaces anything, with the built-in copy always kept as a fallback."),
+                WhatsNewHighlight(
+                    icon: "circle.hexagongrid",
+                    title: "Smaller, quieter airport symbols",
+                    detail: "The large flight-category ring is now a small colored dot in the corner of each airport symbol, and the runway marks are 30% smaller — so the airport reads as an airport first and the weather second."),
+            ]),
+        ReleaseNote(
             build: 91, version: "1.0", headline: "Real airport symbols, weather trends, and a map fix",
             highlights: [
                 WhatsNewHighlight(
