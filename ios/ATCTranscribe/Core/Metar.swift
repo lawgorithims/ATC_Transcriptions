@@ -102,6 +102,9 @@ extension Int {
 /// touches the transcription pipeline.
 @MainActor final class MetarStore: ObservableObject {
     @Published private(set) var metars: [String: Metar] = [:]
+    /// The last several observations per station, newest first — the input to the TREND. A pilot
+    /// 45 minutes out needs to know where conditions are going, which one observation cannot say.
+    @Published private(set) var history: [String: [Metar]] = [:]
     /// Idents for which a fetch COMPLETED (whether or not that field reports) — lets a caption show a
     /// terminal "no current METAR" instead of spinning forever for a non-reporting airport.
     @Published private(set) var checked: Set<String> = []
@@ -113,6 +116,18 @@ extension Int {
     private let ttl: TimeInterval = 600
 
     func metar(_ ident: String) -> Metar? { metars[Self.key(ident)] }
+
+    /// The fitted trend for a station, or nil when nothing has been fetched for it yet.
+    func trend(_ ident: String) -> MetarTrend.Result? {
+        let id = Self.key(ident)
+        guard let obs = history[id], !obs.isEmpty else { return nil }
+        return MetarTrend.analyze(ident: id, observations: obs)
+    }
+
+    /// Every station currently trending toward worse conditions — what the chart marker draws.
+    var deterioratingStations: [MetarTrend.Result] {
+        history.keys.compactMap { trend($0) }.filter(\.isSignificant)
+    }
 
     /// Terminal fetch state for one ident (nil = still loading / never requested).
     enum Fetch { case ok, noReport, failed }
@@ -136,7 +151,11 @@ extension Int {
     }
 
     private func load(_ icaos: [String]) async {
-        let result = await Self.download(icaos)
+        // ONE request serves both needs: the series' newest report is the current observation, and the
+        // whole series is what the trend is fitted to.
+        let series = await Self.downloadSeries(icaos)
+        let result = series.map { d in d.compactMapValues { $0.first } }
+        if let series { for (k, v) in series { history[k] = v } }
         let now = Date()
         for id in icaos { inFlight.remove(id) }
         guard let result else {
@@ -162,10 +181,16 @@ extension Int {
 
     /// Returns nil on a TRANSPORT/decode failure (so the caller can retry soon) vs an empty-but-non-nil
     /// dictionary on a successful response that simply had no reporting stations (full TTL).
-    nonisolated private static func download(_ icaos: [String]) async -> [String: Metar]? {
+    /// (Superseded by `downloadSeries`, which serves the current observation AND the trend history from
+    /// one request; kept for the single-observation path used by tests.)
+    nonisolated static func download(_ icaos: [String]) async -> [String: Metar]? {
         guard var comps = URLComponents(string: "https://aviationweather.gov/api/data/metar") else { return nil }
+        // `hours` makes the API return the RECENT SERIES per station, not just the latest observation
+        // — that series is what the trend is fitted to. The newest report is still first, so the
+        // current-observation behaviour below is unchanged.
         comps.queryItems = [URLQueryItem(name: "ids", value: icaos.joined(separator: ",")),
-                            URLQueryItem(name: "format", value: "json")]
+                            URLQueryItem(name: "format", value: "json"),
+                            URLQueryItem(name: "hours", value: String(trendWindowHours))]
         guard let url = comps.url else { return nil }
         var req = URLRequest(url: url); req.timeoutInterval = 12
         guard let (data, resp) = try? await URLSession.shared.data(for: req),
@@ -173,5 +198,30 @@ extension Int {
               let list = try? JSONDecoder().decode([Metar].self, from: data) else { return nil }
         return Dictionary(list.filter { !$0.icaoId.isEmpty }.map { ($0.icaoId.uppercased(), $0) },
                           uniquingKeysWith: { a, _ in a })
+    }
+
+    /// How far back the trend fit looks. Six hours covers 4-6 hourly observations at most stations.
+    nonisolated static let trendWindowHours = 6
+
+    /// The full recent series per station (newest first), from the same response the current
+    /// observation comes from — one request serves both.
+    nonisolated private static func downloadSeries(_ icaos: [String]) async -> [String: [Metar]]? {
+        guard var comps = URLComponents(string: "https://aviationweather.gov/api/data/metar") else { return nil }
+        comps.queryItems = [URLQueryItem(name: "ids", value: icaos.joined(separator: ",")),
+                            URLQueryItem(name: "format", value: "json"),
+                            URLQueryItem(name: "hours", value: String(trendWindowHours))]
+        guard let url = comps.url else { return nil }
+        var req = URLRequest(url: url); req.timeoutInterval = 15
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              (resp as? HTTPURLResponse)?.statusCode == 200,
+              let list = try? JSONDecoder().decode([Metar].self, from: data) else { return nil }
+        var out: [String: [Metar]] = [:]
+        for m in list where !m.icaoId.isEmpty {
+            out[m.icaoId.uppercased(), default: []].append(m)
+        }
+        for k in out.keys {                                        // bounded by the request's ident list
+            out[k] = Array(out[k]!.sorted { ($0.obsEpoch ?? 0) > ($1.obsEpoch ?? 0) }.prefix(8))
+        }
+        return out
     }
 }
