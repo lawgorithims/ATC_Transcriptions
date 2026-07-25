@@ -39,17 +39,10 @@ struct OnboardingDownloadView: View {
 
                 VStack(spacing: 10) {
                     ModelDownloadRow(entry: entry)
-                    // Optional higher-accuracy model — offered up front so testers can grab it
-                    // without digging into Settings. Not required to continue.
-                    ModelDownloadRow(entry: ModelCatalog.turbo)
-                    // Optional stock (non-fine-tuned) model for real-world A/B comparison. Offered
-                    // here for testers but kept OUT of "Download recommended" (large, niche), so the
-                    // first-launch bulk action stays lean — grabbed via its own row button.
-                    ModelDownloadRow(entry: ModelCatalog.cleanturbo)
-                    // The AI context fixer ships alongside whichever speech model is downloaded, so
-                    // correction works out of the box. Shown here for transparency; not required.
+                    // The AI context fixer ships alongside the speech model, so correction works out
+                    // of the box. Shown here for transparency; not required.
                     ModelDownloadRow(entry: ModelCatalog.llm)
-                    Text("Optional speech models: Large is higher accuracy; Large V2 is the stock OpenAI model, offered for accuracy comparison. The AI context fixer installs automatically with the speech model. Download recommended grabs the required model, Large, and the fixer — add Large V2 from its own button. You can manage all of these later in Settings.")
+                    Text("The speech model is required to transcribe. The AI context fixer installs automatically alongside it. You can manage both later in Settings.")
                         .font(.caption2).foregroundStyle(p.textDim)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -84,12 +77,10 @@ struct OnboardingDownloadView: View {
         .preferredColorScheme(model.theme == .day ? .light : .dark)
     }
 
-    /// The "recommended" artifacts the big button grabs in bulk — the required model, the
-    /// higher-accuracy fine-tuned model, and the AI fixer (so correction works on the first run).
-    /// The optional stock "Large V2" is deliberately excluded (large, niche; grabbed from its own
-    /// row). Each row can still grab one on its own. The Continue gate keys off the required speech
-    /// model only (`isReady`), so any other download in flight never blocks entry.
-    private var allEntries: [ModelEntry] { [ModelCatalog.small, ModelCatalog.turbo, ModelCatalog.llm] }
+    /// The artifacts the big button grabs in bulk — the required speech model and the AI fixer (so
+    /// correction works on the first run). The Continue gate keys off the required speech model only
+    /// (`isReady`), so the fixer download in flight never blocks entry.
+    private var allEntries: [ModelEntry] { [ModelCatalog.small, ModelCatalog.llm] }
 
     private var anyDownloading: Bool {
         allEntries.contains { if case .downloading = downloads.state($0.id) { return true } else { return false } }

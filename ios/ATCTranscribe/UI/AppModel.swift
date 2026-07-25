@@ -3295,20 +3295,20 @@ final class AppModel: ObservableObject {
     }
 
     /// Pick which model to activate from what's on disk: the user's saved choice when still present,
-    /// else the highest-accuracy fine-tuned model (turbo → small), else any available variant (covers
-    /// a box where only the stock "Large V2" was downloaded). Nil when nothing is available.
-    /// Shared by first-launch (`init`) and post-download (`modelDidDownload`) so they never diverge.
+    /// else `small` (the only speech model), else any available variant (covers a device that still
+    /// has a removed legacy variant on disk). Nil when nothing is available. Shared by first-launch
+    /// (`init`) and post-download (`modelDidDownload`) so they never diverge.
     static func preferredActiveModel(from models: [String: String]) -> String? {
         if let saved = UserDefaults.standard.string(forKey: "atc.activeModel"), models[saved] != nil {
             return saved
         }
-        for id in ["turbo", "small"] where models[id] != nil { return id }
+        if models["small"] != nil { return "small" }
         return models.keys.sorted().first
     }
 
-    /// Accuracy-preference rank (lower = better), mirroring `preferredActiveModel`'s turbo→small order.
+    /// Accuracy-preference rank (lower = better). `small` is the only current model; legacy ids rank last.
     /// Used to decide which of two candidate models should win when several are resolving at once.
-    static func preferredRank(_ id: String) -> Int { ["turbo", "small"].firstIndex(of: id) ?? Int.max }
+    static func preferredRank(_ id: String) -> Int { ["small"].firstIndex(of: id) ?? Int.max }
 
     /// Is a given whisper variant present on disk? Drives the Settings picker's enablement.
     func modelDownloaded(_ id: String) -> Bool { modelDirs[id] != nil }
@@ -3554,10 +3554,9 @@ final class AppModel: ObservableObject {
         modelSource = "downloaded"
         let models = Self.availableModelDirs()
         self.modelDirs = models
-        // Already live WITH A WORKING session: don't disturb it — only auto-upgrade to the higher-
-        // accuracy model if that's what just arrived. (A swap never tears down an active run.)
+        // Already live WITH A WORKING session: don't disturb it. `small` is the only speech model now,
+        // so there's nothing to auto-upgrade to. (A swap never tears down an active run.)
         if liveMode, session != nil {
-            if entry.id == "turbo", activeModel != "turbo", !isRunning { switchModel("turbo") }
             return
         }
         // No working model yet — first download, OR a prior load that never finished (e.g. a Large V2

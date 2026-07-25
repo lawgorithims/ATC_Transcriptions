@@ -41,39 +41,17 @@ final class ModelCatalogTests: XCTestCase {
     func testCatalogHasRequiredAndOptionalEntries() {
         XCTAssertTrue(ModelCatalog.required.required)
         XCTAssertEqual(ModelCatalog.required.id, "small")
-        XCTAssertTrue(ModelCatalog.all.contains { $0.id == "turbo" })
         XCTAssertTrue(ModelCatalog.all.contains { $0.id == "llm" && $0.kind == .ggufFile })
         XCTAssertNotNil(ModelCatalog.llm.directURL)
     }
 
-    func testStockCleanModelEntry() {
-        // Optional, non-fine-tuned WhisperKit model exposed as "Large V2".
-        let clean = ModelCatalog.cleanturbo
-        XCTAssertEqual(clean.id, "cleanturbo")
-        XCTAssertEqual(clean.shortLabel, "Large V2")
-        XCTAssertEqual(clean.kind, .whisperKit)
-        XCTAssertFalse(clean.required)
-        XCTAssertNotNil(clean.repo)
-        XCTAssertFalse(clean.variant?.isEmpty ?? true)
-        XCTAssertTrue(ModelCatalog.all.contains { $0.id == "cleanturbo" })
-        // Picker order (smallest → largest) and id→label mapping used by the badge/sidebar.
-        XCTAssertEqual(ModelCatalog.whisperEntries.map(\.id), ["small", "turbo", "cleanturbo"])
-        XCTAssertEqual(ModelCatalog.shortLabel(forID: "turbo"), "Large")
-        XCTAssertEqual(ModelCatalog.shortLabel(forID: "cleanturbo"), "Large V2")
+    func testSmallIsTheOnlySpeechModel() {
+        // The large-v3-turbo variants ("Large" / "Large V2") were removed — they can't run on an M1
+        // iPad Air. `small` must be the sole selectable speech model, and the removed ids must be gone.
+        XCTAssertEqual(ModelCatalog.whisperEntries.map(\.id), ["small"])
+        XCTAssertFalse(ModelCatalog.all.contains { $0.id == "turbo" || $0.id == "cleanturbo" })
+        XCTAssertEqual(ModelCatalog.shortLabel(forID: "small"), "Small")
         XCTAssertEqual(ModelCatalog.shortLabel(forID: "mystery"), "mystery")   // unknown → raw id
-    }
-
-    func testStockModelResolvesByItsVariantFolder() throws {
-        let clean = ModelCatalog.cleanturbo
-        // The stock model's on-disk folder is its long WhisperKit variant id, NOT its short "cleanturbo" id.
-        XCTAssertNotEqual(clean.variant, clean.id)
-        try makeWhisperModel(at: ModelStore.localURL(for: clean))
-        XCTAssertTrue(ModelStore.isReady(clean))
-        // Alone, it's the resolved downloaded model…
-        XCTAssertEqual(ModelStore.downloadedWhisperDir(), ModelStore.localURL(for: clean).path)
-        // …but the fine-tuned turbo is still preferred when both are present.
-        try makeWhisperModel(at: ModelStore.whisperDir("turbo"))
-        XCTAssertEqual(ModelStore.downloadedWhisperDir(), ModelStore.whisperDir("turbo").path)
     }
 
     func testDestinationPaths() {
@@ -94,18 +72,6 @@ final class ModelCatalogTests: XCTestCase {
 
         XCTAssertTrue(ModelStore.isReady(ModelCatalog.small))
         XCTAssertEqual(ModelStore.downloadedWhisperDir(), dir.path)
-    }
-
-    func testWhisperPrefersTurboWhenBothPresent() throws {
-        // Create each model at its ACTUAL variant folder (small's is "small-v2" after the bump, not
-        // "small") so isReady(small) is genuinely true — otherwise the "small" leg is a no-op and the
-        // turbo-over-small ordering isn't really exercised.
-        for v in [ModelCatalog.small.variant ?? ModelCatalog.small.id,
-                  ModelCatalog.turbo.variant ?? ModelCatalog.turbo.id] {
-            try makeWhisperModel(at: ModelStore.whisperDir(v))
-        }
-        XCTAssertEqual(ModelStore.downloadedWhisperDir(),
-                       ModelStore.whisperDir(ModelCatalog.turbo.variant ?? ModelCatalog.turbo.id).path)
     }
 
     func testGGUFReadyAndPath() throws {

@@ -50,51 +50,19 @@ enum ModelCatalog {
         ProcessInfo.processInfo.environment["ATC_WHISPER_REPO"] ?? "SingularityUS/atc-whisperkit"
     }
 
-    /// HuggingFace repo + variant subfolder for the optional **stock** (non-fine-tuned) speech model
-    /// ("Large V2" in the UI). Defaults to WhisperKit's own public catalog, where OpenAI's
-    /// large-v3-turbo is already converted to CoreML — so this model needs **no** conversion/upload
-    /// (unlike the fine-tuned ones). Override either with an env var for a self-hosted copy.
-    static var cleanRepo: String {
-        // Same repo as the fine-tuned models — the stock build is hosted alongside them.
-        ProcessInfo.processInfo.environment["ATC_CLEAN_REPO"] ?? whisperRepo
-    }
-    static var cleanVariant: String {
-        // Stock OpenAI large-v3-turbo converted through OUR OWN pipeline (Tools/convert_to_coreml.sh),
-        // on-device-optimized exactly like the fine-tuned models — so it loads + transcribes at
-        // fine-tuned speed instead of the slow generic Argmax build (which took minutes to load and ran
-        // the ANE hot on an M2 iPad Air). Hosted as the `stockturbo` variant; see publish_models.md §1b.
-        ProcessInfo.processInfo.environment["ATC_CLEAN_VARIANT"] ?? "stockturbo"
-    }
-
     static let small = ModelEntry(
         id: "small",
         displayName: "Small",
         shortLabel: "Small",
         detail: "Fast, fine-tuned ATC speech model — required to transcribe.",
         kind: .whisperKit, approxBytes: 465_000_000, required: true,
-        // variant `small-v2`: US-fine-tuned whisper-small (re-trained 2026-06). Bumping the
-        // variant folder forces existing installs (which cache-lock by folder presence, no version
-        // field) to re-download the new model on update. Old `small/` is kept on HF for rollback.
-        repo: whisperRepo, variant: "small-v2", directURL: nil, fileName: nil)
-
-    static let turbo = ModelEntry(
-        id: "turbo",
-        displayName: "Large",
-        shortLabel: "Large",
-        detail: "Fine-tuned, higher accuracy, ~2× slower. Optional — used on capable devices.",
-        kind: .whisperKit, approxBytes: 1_500_000_000, required: false,
-        repo: whisperRepo, variant: "turbo", directURL: nil, fileName: nil)
-
-    /// Stock OpenAI large-v3-turbo (no ATC fine-tuning) for real-world A/B comparison against the
-    /// fine-tuned `turbo`. Same architecture/size as `turbo`; its on-disk folder is the long
-    /// WhisperKit variant id, so it's resolved through `variant` (≠ its short `id`) everywhere.
-    static let cleanturbo = ModelEntry(
-        id: "cleanturbo",
-        displayName: "Large V2",
-        shortLabel: "Large V2",
-        detail: "Stock OpenAI large-v3-turbo (no ATC fine-tuning), converted for on-device speed like the fine-tuned models. Optional; for real-world accuracy comparison.",
-        kind: .whisperKit, approxBytes: 1_500_000_000, required: false,   // on-device fp16 ≈ 1.5 GB
-        repo: cleanRepo, variant: cleanVariant, directURL: nil, fileName: nil)
+        // variant `small-v3`: US-fine-tuned whisper-small trained on real + 100K perfectly-labeled
+        // synthetic ATC (E10, 2026-07). Beats the prior shipped model on WER and callsign accuracy.
+        // Bumping the variant folder forces existing installs (which cache-lock by folder presence, no
+        // version field) to re-download the new model on update; old folders are pruned on launch.
+        // This is now the ONLY speech model: the large-v3-turbo variants were removed because they
+        // cannot run on an M1 iPad Air (the only device the app is verified on).
+        repo: whisperRepo, variant: "small-v3", directURL: nil, fileName: nil)
 
     static let llm = ModelEntry(
         id: "llm",
@@ -107,14 +75,14 @@ enum ModelCatalog {
             ?? "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf"),
         fileName: "qwen2.5-0.5b-instruct-q4_k_m.gguf")
 
-    static var all: [ModelEntry] { [small, turbo, cleanturbo, llm] }
-    /// The selectable transcription (Whisper) models, in UI/picker order (smallest → largest).
-    static var whisperEntries: [ModelEntry] { [small, turbo, cleanturbo] }
+    static var all: [ModelEntry] { [small, llm] }
+    /// The selectable transcription (Whisper) models. Just `small` now — it's the only speech model.
+    static var whisperEntries: [ModelEntry] { [small] }
     /// The model whose absence blocks transcription (drives the first-launch gate).
     static var required: ModelEntry { small }
 
-    /// Friendly short label for a model id (e.g. "small" → "Small", "cleanturbo" → "Large V2"), for
-    /// status badges / sidebar where only the persisted id is on hand. Falls back to the raw id.
+    /// Friendly short label for a model id (e.g. "small" → "Small"), for status badges / sidebar
+    /// where only the persisted id is on hand. Falls back to the raw id.
     static func shortLabel(forID id: String) -> String {
         all.first { $0.id == id }?.shortLabel ?? id
     }
@@ -171,13 +139,11 @@ enum ModelStore {
 
     // MARK: resolution helpers used by AppModel / LocalLLMCorrector
 
-    /// Path of a downloaded Whisper model, or nil if none has been downloaded. Used to prefer a
-    /// downloaded model over a bundled one. Preference order: the fine-tuned models (the app's
-    /// reason for being) first — larger `turbo`, then `small` — then the optional stock "Large V2".
-    /// Iterates catalog entries (not bare variant strings) so each entry's own `variant` folder is
-    /// checked; the stock model's on-disk folder name differs from its short id.
+    /// Path of the downloaded Whisper model, or nil if none has been downloaded. Used to prefer a
+    /// downloaded model over a bundled one. Iterates catalog entries (not bare variant strings) so
+    /// each entry's own `variant` folder is checked.
     static func downloadedWhisperDir() -> String? {
-        for e in [ModelCatalog.turbo, ModelCatalog.small, ModelCatalog.cleanturbo] where isReady(e) {
+        for e in ModelCatalog.whisperEntries where isReady(e) {
             return localURL(for: e).path
         }
         return nil

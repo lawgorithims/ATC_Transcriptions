@@ -95,7 +95,7 @@ actor TranscriberEngine {
     private var selected = false
 
     init(models: [String: String],
-         defaultModel: String = "turbo",
+         defaultModel: String = "small",
          fallbackModel: String = "small",
          minRealtimeSpeed: Double = 1.2,
          adaptive: Bool = true,
