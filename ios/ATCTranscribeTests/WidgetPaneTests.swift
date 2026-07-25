@@ -10,6 +10,7 @@ final class WidgetPaneTests: XCTestCase {
     private func freshStore() -> WidgetStore {
         let s = WidgetStore()
         s.leftPane = nil; s.rightPane = nil
+        s.probePresentation = .widget       // also persisted — reset it or these tests leak into each other
         return s
     }
 
@@ -141,5 +142,54 @@ final class WidgetPaneTests: XCTestCase {
         s.dockToSide(.objectInfo, .right)
         s.mapProbe = nil                             // tap dismissed elsewhere (e.g. card's own ✕)
         XCTAssertNil(s.rightPane, "an object pane with no tapped object left must close")
+    }
+
+    // MARK: where a NEW map selection opens (Settings → General → Map selection)
+
+    func testTheDefaultPresentationIsTheFloatingCard() {
+        let s = freshStore()
+        s.mapProbe = MapProbeResult(id: "t", objects: [])
+        XCTAssertNil(s.leftPane); XCTAssertNil(s.rightPane)
+    }
+
+    func testChoosingASidePaneDocksTheSelectionThere() {
+        for (mode, expected) in [(WidgetStore.ProbePresentation.leftPane, WidgetStore.PaneSide.left),
+                                 (.rightPane, .right)] {
+            let s = freshStore()
+            s.probePresentation = mode
+            s.mapProbe = MapProbeResult(id: "t", objects: [])
+            XCTAssertEqual(s.pane(expected), .objectInfo)
+        }
+    }
+
+    /// Docking evicts whatever already holds that side, so auto-docking on every tap would have closed a
+    /// pane the pilot deliberately parked there. Use the free side instead when there is one.
+    func testASelectionDoesNotEvictAWidgetTheUserParkedThere() {
+        let s = freshStore()
+        s.probePresentation = .leftPane
+        s.dockToSide(.transcript, .left)
+        s.mapProbe = MapProbeResult(id: "t", objects: [])
+        XCTAssertEqual(s.leftPane, .transcript, "the parked widget stays")
+        XCTAssertEqual(s.rightPane, .objectInfo, "the selection takes the free side")
+    }
+
+    func testWithBothSidesTakenTheSelectionUsesTheChosenSide() {
+        let s = freshStore()
+        s.probePresentation = .leftPane
+        s.dockToSide(.transcript, .left)
+        s.dockToSide(.stratux, .right)
+        s.mapProbe = MapProbeResult(id: "t", objects: [])
+        XCTAssertEqual(s.leftPane, .objectInfo)
+        XCTAssertEqual(s.rightPane, .stratux)
+    }
+
+    func testSwitchingBackToTheCardUndocksTheNextSelection() {
+        let s = freshStore()
+        s.probePresentation = .rightPane
+        s.mapProbe = MapProbeResult(id: "a", objects: [])
+        XCTAssertEqual(s.rightPane, .objectInfo)
+        s.probePresentation = .widget
+        s.mapProbe = MapProbeResult(id: "b", objects: [])
+        XCTAssertNil(s.rightPane, "the next selection opens as a card again")
     }
 }
