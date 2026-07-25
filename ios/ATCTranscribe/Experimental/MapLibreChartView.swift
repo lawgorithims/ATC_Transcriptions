@@ -152,7 +152,7 @@ struct MapLibreChartView: UIViewRepresentable {
         private var restoreCamera: SavedMapCamera?     // pilot's last pan/zoom, restored once on first frame
         private var didFrame = false                   // one-shot: frame to camera/route/GPS once real data exists
         private var probeGen = 0                       // tap-identify generation guard (a newer tap supersedes)
-        private var styleConfigured = false            // setup-overlays ONCE per coordinator (didFinishLoading can re-fire)
+        private var styleGate = StyleSetupGate()       // setup-overlays once per STYLE (didFinishLoading can re-fire)
         // Lazy-map plumbing: the container + framing captured at mount, and the latest updateUIView inputs (so
         // they can be applied once the map is actually built on scene-active).
         private weak var container: UIView?
@@ -438,6 +438,7 @@ struct MapLibreChartView: UIViewRepresentable {
         }
 
         func mapView(_ mapView: MLNMapView, didFinishLoading style: MLNStyle) {
+            print("NAVPROBE didFinishLoading url=\(mapView.styleURL?.lastPathComponent ?? "-")")
             servedReadersSig = nil               // the faa source is freshly (re)created empty here → force a remount
             appliedTrackCount = -1               // the "track" source is recreated empty → force a re-apply below
             appliedRadarTemplate = nil           // wxradar source gone after reload → force updateRadar to re-add
@@ -486,15 +487,38 @@ struct MapLibreChartView: UIViewRepresentable {
         /// projects 2 points, guarded to no-op when no plate is loaded), so the gear rides the plate live.
         func mapViewRegionIsChanging(_ mapView: MLNMapView) { emitPlateAnchors(mapView); emitSearchPoint(mapView) }
 
+        /// Tracks WHICH style object the overlay layers were built into.
+        ///
+        /// MapLibre calls `didFinishLoading` once per style load, and a single map loads more than one style
+        /// in its life (its default, then ours; then again on any style swap). Runtime-added layers belong to
+        /// the style they were added to and do NOT survive the swap, so "configure once" has to mean once per
+        /// style, not once ever.
+        struct StyleSetupGate {
+            private var configured: ObjectIdentifier?
+            /// True the first time a given style object is seen (and every time it CHANGES).
+            mutating func shouldConfigure(_ style: AnyObject) -> Bool {
+                let token = ObjectIdentifier(style)
+                guard configured != token else { return false }
+                configured = token
+                return true
+            }
+        }
+
         // MARK: airspace + airways overlays (milestone 2)
 
         /// Create the persistent overlay sources + layers ONCE (empty). Per-region refresh only mutates
         /// `source.shape` — so we never remove a source a layer still uses (MapLibre would throw). Stacking:
         /// land base below the FAA raster below airways below airspace below route.
         private func setupOverlayLayers(_ style: MLNStyle) {
-            // ONCE per coordinator: MapLibre can call didFinishLoading more than once for the SAME map.
-            guard !styleConfigured else { return }
-            styleConfigured = true
+            // ONCE PER STYLE — emphatically NOT once per coordinator. The map comes up on MapLibre's own
+            // default style and only switches to ours once the loopback tile server binds a port (that bind
+            // is async, see createMap). Latching on the first didFinishLoading therefore built every overlay
+            // into a style that was about to be thrown away: when the real style loaded, the guard skipped
+            // setup and the pilot got the chart raster and NOTHING else — no ownship, route, traffic,
+            // airspace, airways or airport symbology — for the rest of the session. Whether it happened at
+            // all came down to whether the bind beat the default style's load, which is why it looked
+            // intermittent. Keyed on the style OBJECT: a re-fire for the same style still no-ops.
+            guard styleGate.shouldConfigure(style) else { return }
             // CLEAN SLATE: MapLibre restores runtime-added layers from its ambient cache across launches, so
             // the "fresh" style can already carry OUR layers (with dangling sources) → adding them again throws
             // MLNRedundantLayerIdentifierException. Remove any of our managed layers/sources first (layers
@@ -505,6 +529,7 @@ struct MapLibreChartView: UIViewRepresentable {
             setupLabelLayers(style)            // airway idents + airspace altitude blocks (SDF text)
             setupNavLayers(style)              // FAA nav glyphs + idents
             setupDynamicLayers(style)          // TFR/route/traffic/ownship (empty; driven by updateUIView)
+            print("NAVPROBE setupOverlayLayers done nav-sym=\(style.layer(withIdentifier: "nav-sym") != nil) count=\(style.layers.count)")
         }
 
         /// Remove every layer + source THIS coordinator manages, layers-before-sources (MapLibre throws if a
@@ -868,6 +893,9 @@ struct MapLibreChartView: UIViewRepresentable {
                 // share a signature, so this is a handful of images even for a full screen of fields.
                 Coordinator.registerAirportGlyphs(in: f.nav, style: style)
                 (style.source(withIdentifier: "nav") as? MLNShapeSource)?.shape = MLNShapeCollectionFeature(shapes: f.nav)
+                let apt = f.nav.compactMap { $0.attributes["glyph"] as? String }.filter { $0.hasPrefix("apt-") }
+                let ids = style.layers.map { $0.identifier }
+                print("NAVPROBE nav=\(f.nav.count) apt=\(apt.count) firstApt=\(apt.first ?? "-") imgOK=\(apt.first.map { style.image(forName: $0) != nil } ?? false) layerExists=\(style.layer(withIdentifier: "nav-sym") != nil) order=\(ids.suffix(12))")
             }
         }
 

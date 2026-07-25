@@ -76,8 +76,17 @@ struct ActivateApproachSheet: View {
                     } header: {
                         Text("Join at")
                     } footer: {
-                        Text("Activating loads \(a.name.isEmpty ? a.ident : a.name) into the flight plan and arms the missed approach.")
-                            .font(.caption2)
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Activating loads \(a.name.isEmpty ? a.ident : a.name) into the flight plan and arms the missed approach.")
+                                .font(.caption2)
+                            // Provenance where it matters most: this sheet is about to change what the
+                            // aircraft flies, so the cycle behind those legs is shown at the decision.
+                            HStack(spacing: 5) {
+                                DataCurrencyBadge(sources: [CIFP.provenance], compact: false)
+                                    .environmentObject(model)
+                                Text(CIFP.provenance.summary).font(.caption2).foregroundStyle(p.textDim)
+                            }
+                        }
                     }
                 }
             }

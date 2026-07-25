@@ -177,6 +177,25 @@ enum CIFP {
         return []
     }
 
+    /// Where the coded-procedure data came from and when it expires — read from the `meta` table the
+    /// builder stamps. Loaded once. A database without the table (an older bundle) yields `.unknown`,
+    /// which the UI renders as "Undated" rather than as a reassuring "Current".
+    static let provenance: DataProvenance = {
+        guard let db else { return .unknown }
+        var st: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT key,value FROM meta", -1, &st, nil) == SQLITE_OK else {
+            return .unknown
+        }
+        defer { sqlite3_finalize(st) }
+        var m: [String: String] = [:]
+        while sqlite3_step(st) == SQLITE_ROW {                       // bounded by the table (< 32 rows)
+            m[text(st, 0)] = text(st, 1)
+            if m.count > 64 { break }
+        }
+        assert(m.count <= 64, "cifp meta unexpectedly large")
+        return DataProvenance(meta: m)
+    }()
+
     /// The published approaches at an airport, one entry per approach IDENT (its transitions collapsed).
     /// This is the list an "activate approach" picker shows; use `transitions(airport:ident:)` for that
     /// approach's entry options. Bounded (rule 2).

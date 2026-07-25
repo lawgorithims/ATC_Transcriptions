@@ -10,6 +10,7 @@ import SwiftUI
 ///  • PLATES — approach charts, grouped into the FAA's US regions (`Procedures.regionNames`), fetched on
 ///    demand from the FAA via `PlateBag` (28-day d-TPP cycle) with a Current / expiring / EXPIRED badge.
 struct DownloadsView: View {
+    @State private var checkingForCycle = false
     @EnvironmentObject var model: AppModel
     @ObservedObject var library = ChartLibrary.shared
     @ObservedObject var bag: PlateBag
@@ -103,13 +104,54 @@ struct DownloadsView: View {
 
     // MARK: Charts — header + per-layer sections
 
+    /// When the expired catalog's cycle ended, for the banner copy.
+    private var expiryText: String {
+        guard let e = library.chartProvenance.expires else { return "recently" }
+        return DataProvenance.iso(e)
+    }
+
     private var chartsSection: some View {
         let p = model.palette
         return Section {
             HStack {
                 Text("Cycle \(library.cycle.isEmpty ? "—" : library.cycle)").font(.callout).foregroundStyle(p.text)
+                DataCurrencyBadge(sources: [library.chartProvenance], compact: false).environmentObject(model)
                 Spacer()
                 Text("56-day").font(.caption2).foregroundStyle(p.textDim)
+            }
+            // An EXPIRED chart catalog is the one case a pilot must not have to go looking for: the map
+            // keeps drawing, and out-of-cycle charts look exactly as authoritative as current ones.
+            if library.chartProvenance.currency().isExpired {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(p.bad)
+                        Text("These charts have expired").font(.callout.weight(.semibold)).foregroundStyle(p.text)
+                    }
+                    Text("Cycle \(library.cycle) ended \(expiryText). The FAA has published a newer cycle — charts drawn from this one may not match current procedures.")
+                        .font(.caption2).foregroundStyle(p.textDim)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button {
+                        Haptics.impact(.medium)
+                        checkingForCycle = true
+                        Task {
+                            await library.refreshCatalog()
+                            checkingForCycle = false
+                        }
+                    } label: {
+                        HStack(spacing: 5) {
+                            if checkingForCycle { ProgressView().controlSize(.mini) }
+                            else { Image(systemName: "arrow.clockwise").font(.caption2) }
+                            Text(checkingForCycle ? "Checking…" : "Check for a new cycle")
+                                .font(.caption.weight(.semibold))
+                        }
+                        .padding(.horizontal, 10).padding(.vertical, 6)
+                        .background(Capsule().fill(p.accent.opacity(0.18)))
+                        .foregroundStyle(p.accent)
+                    }
+                    .buttonStyle(.plainHaptic).disabled(checkingForCycle)
+                    .accessibilityIdentifier("charts-check-cycle")
+                }
+                .padding(.vertical, 4)
             }
             if case .running(let done, let total) = library.bulk {
                 VStack(alignment: .leading, spacing: 6) {

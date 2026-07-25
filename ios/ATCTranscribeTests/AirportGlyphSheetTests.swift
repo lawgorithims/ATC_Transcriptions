@@ -39,11 +39,14 @@ final class AirportGlyphSheetTests: XCTestCase {
             Sample(label: "Private (R)", spec: spec(.privateUse, .openCircle)),
             Sample(label: "Unverified (U)", spec: spec(.unverified, .openCircle)),
             Sample(label: "Abandoned (X)", spec: spec(.abandoned, .openCircle)),
-            // Flight-category tints.
-            Sample(label: "VFR", spec: spec(.airport, .filledCircleWithRunways, towered: true, axes: [40, 130], cat: .vfr)),
-            Sample(label: "MVFR", spec: spec(.airport, .filledCircleWithRunways, towered: true, axes: [40, 130], cat: .mvfr)),
-            Sample(label: "IFR", spec: spec(.airport, .filledCircleWithRunways, towered: true, axes: [40, 130], cat: .ifr)),
-            Sample(label: "LIFR", spec: spec(.airport, .filledCircleWithRunways, towered: true, axes: [40, 130], cat: .lifr)),
+            // Flight-category rings — drawn AROUND the FAA symbol, which keeps its tower colour.
+            Sample(label: "VFR ring", spec: spec(.airport, .filledCircleWithRunways, towered: true, axes: [40, 130], cat: .vfr)),
+            Sample(label: "MVFR ring", spec: spec(.airport, .filledCircleWithRunways, towered: true, axes: [40, 130], cat: .mvfr)),
+            Sample(label: "IFR ring", spec: spec(.airport, .filledCircleWithRunways, towered: true, axes: [40, 130], cat: .ifr)),
+            Sample(label: "LIFR ring", spec: spec(.airport, .filledCircleWithRunways, towered: true, axes: [40, 130], cat: .lifr)),
+            // The case the first cut lost: same weather, different tower status.
+            Sample(label: "Non-towered\nVFR ring", spec: spec(.airport, .filledCircleWithRunways, axes: [40, 130], cat: .vfr)),
+            Sample(label: "Runways only\nIFR ring", spec: spec(.airport, .runwaysOnly, towered: true, axes: [35, 90], cat: .ifr)),
             // Runway orientation must actually rotate.
             Sample(label: "Rwy 09/27", spec: spec(.airport, .runwaysOnly, towered: true, axes: [90])),
             Sample(label: "Rwy 18/36", spec: spec(.airport, .runwaysOnly, towered: true, axes: [0])),
@@ -55,7 +58,7 @@ final class AirportGlyphSheetTests: XCTestCase {
     func testRenderLabelledGlyphSheet() throws {
         let all = samples
         let cols = 6
-        let cell = CGSize(width: 118, height: 116)
+        let cell = CGSize(width: 122, height: 122)
         let rows = (all.count + cols - 1) / cols
         let size = CGSize(width: cell.width * CGFloat(cols), height: cell.height * CGFloat(rows))
 
@@ -65,14 +68,14 @@ final class AirportGlyphSheetTests: XCTestCase {
             for (i, s) in all.enumerated() {
                 let ox = CGFloat(i % cols) * cell.width, oy = CGFloat(i / cols) * cell.height
                 let glyph = AirportSymbolRenderer.image(for: s.spec)
-                glyph.draw(at: CGPoint(x: ox + (cell.width - glyph.size.width) / 2, y: oy + 12))
+                glyph.draw(at: CGPoint(x: ox + (cell.width - glyph.size.width) / 2, y: oy + 8))
                 let para = NSMutableParagraphStyle(); para.alignment = .center
                 let attrs: [NSAttributedString.Key: Any] = [
                     .font: UIFont.systemFont(ofSize: 9, weight: .medium),
                     .foregroundColor: UIColor(white: 0.85, alpha: 1),
                     .paragraphStyle: para]
                 NSAttributedString(string: s.label, attributes: attrs)
-                    .draw(in: CGRect(x: ox + 3, y: oy + 62, width: cell.width - 6, height: 46))
+                    .draw(in: CGRect(x: ox + 3, y: oy + 60, width: cell.width - 6, height: 50))
             }
         }
         let out = URL(fileURLWithPath: "/tmp/glyph_sheet.png")
@@ -96,6 +99,35 @@ final class AirportGlyphSheetTests: XCTestCase {
             seen[hash] = s.label
         }
         XCTAssertEqual(seen.count, samples.count, "every variant must be visually distinct")
+    }
+
+    /// The FAA tower colour must survive a weather report. The first cut tinted the whole symbol by
+    /// flight category, which made a towered and a non-towered field identical wherever a METAR existed —
+    /// confirmed on the chart over the LA basin, where every field drew as the same green dot.
+    func testTowerStatusIsStillReadableWhenTheFieldReportsWeather() {
+        let towered = spec(.airport, .filledCircleWithRunways, towered: true, axes: [40], cat: .vfr)
+        let non = spec(.airport, .filledCircleWithRunways, axes: [40], cat: .vfr)
+        XCTAssertEqual(AirportSymbolRenderer.tint(towered), AirportSymbolRenderer.towerBlue)
+        XCTAssertEqual(AirportSymbolRenderer.tint(non), AirportSymbolRenderer.nonTowerMag)
+        XCTAssertNotEqual(AirportSymbolRenderer.image(for: towered).pngData(),
+                          AirportSymbolRenderer.image(for: non).pngData())
+    }
+
+    /// The category rides in its own channel: same airport, different weather → same symbol, different ring.
+    func testTheFlightCategoryIsCarriedByTheRingNotTheSymbolColour() {
+        let vfr = spec(.airport, .filledCircleWithRunways, towered: true, axes: [40], cat: .vfr)
+        let ifr = spec(.airport, .filledCircleWithRunways, towered: true, axes: [40], cat: .ifr)
+        XCTAssertEqual(AirportSymbolRenderer.tint(vfr), AirportSymbolRenderer.tint(ifr),
+                       "the FAA symbol colour must not move with the weather")
+        XCTAssertEqual(AirportSymbolRenderer.ringColor(vfr), AirportSymbolRenderer.vfrGreen)
+        XCTAssertEqual(AirportSymbolRenderer.ringColor(ifr), AirportSymbolRenderer.ifrRed)
+        XCTAssertNotEqual(AirportSymbolRenderer.image(for: vfr).pngData(),
+                          AirportSymbolRenderer.image(for: ifr).pngData())
+    }
+
+    /// A field that isn't reporting gets NO ring — absence of information is never drawn as a condition.
+    func testANonReportingFieldDrawsNoRing() {
+        XCTAssertNil(AirportSymbolRenderer.ringColor(spec(.airport, .openCircle)))
     }
 
     /// The renderer must actually rotate with the runway — an airport's symbol shows its layout.

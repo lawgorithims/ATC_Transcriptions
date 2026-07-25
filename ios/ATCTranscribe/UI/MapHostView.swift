@@ -88,6 +88,27 @@ struct MapHostView: View {
         MapLibreChartView.Coordinator.categoryByIdent = out
     }
 
+    /// Fetch weather for the fields the pilot is actually LOOKING AT.
+    ///
+    /// Without this the chart's flight-category rings and the deteriorating-weather markers had no data:
+    /// the store only held airports someone had opened a card for, or that sat on the route. Bounded to 40
+    /// fields, TTL-deduped inside MetarStore, and skipped when zoomed out past the scale where the airport
+    /// symbology draws at all — so panning the chart doesn't turn into a network fire hose.
+    private func ensureVisibleWeather(_ rect: MKMapRect) {
+        let region = MKCoordinateRegion(rect)
+        let latD = region.span.latitudeDelta, lonD = region.span.longitudeDelta
+        guard latD > 0, lonD > 0, latD < 5.5 else { return }        // matches the nav layer's own zoom gate
+        let c = region.center
+        let bb = BBox(minLat: c.latitude - latD / 2, minLon: c.longitude - lonD / 2,
+                      maxLat: c.latitude + latD / 2, maxLon: c.longitude + lonD / 2)
+        let store = metars
+        Task.detached(priority: .utility) {
+            let idents = NavDatabase.nearby(bb, types: [0], limit: 40).map(\.ident)
+            guard !idents.isEmpty else { return }
+            await MainActor.run { store.ensure(idents) }
+        }
+    }
+
     /// Recompute the deteriorating-weather chart markers. Extracted from the modifier chain for the same
     /// type-checker reason as `publishCategories`.
     private func refreshWxPins() {
@@ -230,6 +251,7 @@ struct MapHostView: View {
                          // Remember where the user settled so a thermal rebuild restores it (M7);
                          // the settle hook is already debounced (0.4 s) in the coordinator.
                          model.lastMapCamera = SavedMapCamera(rect: rect, now: Date())
+                ensureVisibleWeather(rect)   // conditions for the fields on screen → category rings + trend markers
                          Task { await store.ensureVisible(rect, layer: model.chartLayer) }
                      },
                      onTapObjects: { objs in

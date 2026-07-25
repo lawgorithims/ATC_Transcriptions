@@ -217,6 +217,29 @@ struct ChartCatalog: Decodable {
         case ifrHighRaw = "ifrHigh"
     }
 
+    /// Where these packs came from and when they stop being valid.
+    ///
+    /// The catalog publishes only a cycle string ("05-14-2026" = the effective date). FAA raster
+    /// aeronautical charts run a 56-day cycle, so the expiry is that date plus 56 days — derived, not
+    /// guessed, and it reproduces the published expiry exactly (05-14 + 56 = 07-09).
+    var provenance: DataProvenance {
+        let eff = Self.cycleDate(cycle)
+        return DataProvenance(source: "FAA raster charts (aeronav.faa.gov)", cycle: cycle,
+                              effective: eff,
+                              expires: eff.map { $0.addingTimeInterval(56 * 24 * 3600) },
+                              ingestedAt: nil)
+    }
+
+    /// "MM-DD-YYYY" → Date (UTC). Returns nil rather than substituting a plausible date.
+    static func cycleDate(_ s: String) -> Date? {
+        let parts = s.split(separator: "-")
+        guard parts.count == 3, let m = Int(parts[0]), let d = Int(parts[1]), let y = Int(parts[2]) else { return nil }
+        var c = DateComponents(); c.year = y; c.month = m; c.day = d
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "UTC") ?? .current
+        return cal.date(from: c)
+    }
+
     struct Entry: Decodable, Identifiable, Hashable {
         let id: String
         let bounds: [Double]        // [west, south, east, north]

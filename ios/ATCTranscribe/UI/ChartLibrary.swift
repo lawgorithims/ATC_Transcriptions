@@ -85,6 +85,20 @@ final class ChartLibrary: ObservableObject {
 
     /// Fetch the pack catalog once per launch (coalesced across concurrent callers) so opening the
     /// map costs no round-trip. Returns whether a catalog is available.
+    /// Currency of the downloadable pack catalog. `.unknown` until the catalog has been fetched.
+    var chartProvenance: DataProvenance { catalog?.provenance ?? .unknown }
+
+    /// Re-fetch the catalog from the server, discarding the cached copy. This is what the pilot's
+    /// "Check for a new cycle" action calls: `warm()` deliberately fetches only once per launch, so
+    /// without this an expired catalog would stay expired for the whole session even after the FAA
+    /// published a new one.
+    @discardableResult
+    func refreshCatalog() async -> Bool {
+        catalog = nil
+        warming = nil
+        return await warm()
+    }
+
     @discardableResult
     func warm() async -> Bool {
         if catalog != nil { return true }
