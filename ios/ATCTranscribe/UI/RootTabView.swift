@@ -58,12 +58,18 @@ struct RootTabView: View {
             // The live GPS bar (when toggled) rides in the SAME bottom inset as the tab bar, just above it —
             // guaranteeing it reserves space and never overlaps the map's bottom widgets or the tab bar.
             VStack(spacing: 0) {
+                // Expired navigation data that looks authoritative is the failure this whole app is
+                // designed against, so the notice rides in the same always-visible inset as the tab bar
+                // rather than waiting to be found in Settings. It renders nothing when all is current.
+                DataCurrencyBanner { model.showSettings = true }
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
                 if model.showGPSBar {
                     GPSBottomBar().transition(.move(edge: .bottom).combined(with: .opacity))
                 }
                 BottomTabBar(selection: $model.selectedTab, palette: model.palette)
             }
         }
+        .task { model.refreshDataCurrency() }
         .ignoresSafeArea(.keyboard, edges: .bottom)   // the bar stays pinned; the search keyboard covers it
         .tint(model.palette.accent)
         .preferredColorScheme(model.theme == .day ? .light : .dark)

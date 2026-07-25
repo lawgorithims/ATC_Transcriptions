@@ -2574,6 +2574,25 @@ final class AppModel: ObservableObject {
     /// and re-arms on the next one.
     private var dismissedConstraintLeg: Int?
 
+    // MARK: Data currency (app-wide staleness sweep)
+
+    /// The worst currency across the app's dated aeronautical datasets, or nil when all are current.
+    /// Recomputed at launch and on every foreground — a cycle can roll over while the app is backgrounded,
+    /// and 0901Z lands mid-flight often enough to matter.
+    @Published private(set) var staleDataSummary: StaleDataSummary?
+    /// Session-only: a dismissal should not survive a relaunch, because the data is still stale.
+    @Published var dataCurrencyBannerDismissed = false
+
+    func refreshDataCurrency(now: Date = Date()) {
+        var sources: [(name: String, provenance: DataProvenance)] = [("Procedures", CIFP.provenance)]
+        if let eff = Procedures.effectiveDate, let exp = Procedures.expiryDate {
+            sources.append(("Plates", DataProvenance(source: "FAA d-TPP", cycle: Procedures.cycle,
+                                                     effective: eff, expires: exp, ingestedAt: nil)))
+        }
+        sources.append(("Charts", ChartLibrary.shared.chartProvenance))
+        staleDataSummary = StaleDataSummary.make(sources: sources, asOf: now)
+    }
+
     /// Published altitude restriction on the leg being flown, when the aircraft is outside it by more
     /// than the GPS/barometric datum spread can explain. nil means say nothing — see LegConstraintCheck
     /// for every reason that is the honest answer.
@@ -2946,6 +2965,9 @@ final class AppModel: ObservableObject {
         case .active:
             guard !scenePhaseActive else { return }
             scenePhaseActive = true
+            // A cycle can roll over while the app is backgrounded, and 0901Z lands mid-flight often
+            // enough to matter — so the staleness sweep re-runs on every foreground, not just at launch.
+            refreshDataCurrency()
             syncTraffic()
             syncEONET()
             syncTFRs()
