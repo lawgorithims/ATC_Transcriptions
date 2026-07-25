@@ -74,6 +74,64 @@ final class ApproachActivationTests: XCTestCase {
         XCTAssertEqual(s.missed, [20])
     }
 
+    // MARK: published missed-approach marker (authoritative)
+
+    /// The FAA publishes the missed-approach point in the waypoint-description code; every one of the
+    /// 10,243 coded approaches in cycle 2607 carries exactly one. Reading it replaced a structural
+    /// heuristic that DISAGREED on 7 of 94 sampled approaches — this is the real KBOS LOC RWY 27.
+    func testPublishedMapMarkerBeatsTheStructuralHeuristic() {
+        // LONER(IF) -> RIPIT(FAF) -> OQDEK(MAP, 461ft) -> climb 3000 direct BOSOX -> hold BOSOX.
+        let legs = [(seq: 10, fix: "LONER", legType: "IF"),
+                    (seq: 20, fix: "RIPIT", legType: "CF"),
+                    (seq: 30, fix: "OQDEK", legType: "CF"),
+                    (seq: 40, fix: "BOSOX", legType: "CF"),
+                    (seq: 50, fix: "BOSOX", legType: "HM")]
+        let roles: [LegRole] = [.intermediateFix, .finalApproachFix, .missedApproachPoint, .none, .none]
+        let marked = ApproachActivation.splitMissed(legs, roles: roles)
+        XCTAssertEqual(marked.approach, [10, 20, 30], "the approach runs through the missed-approach point")
+        XCTAssertEqual(marked.missed, [40, 50], "the missed is the climb to BOSOX and its hold")
+
+        // The heuristic gets this one wrong — it has no RW* fix to anchor on and walks the CF legs back
+        // through the whole approach. Pinned so the regression is visible if anyone re-fronts it.
+        let guessed = ApproachActivation.splitMissed(legs)
+        XCTAssertNotEqual(guessed.missed, marked.missed,
+                          "this fixture exists precisely because the structural fallback mis-splits it")
+    }
+
+    /// A missed approach whose legs have NO fix (a climb-to-altitude) — previously undeliverable,
+    /// because the old builder dropped every fix-less leg. Real shape: KBOS RNAV RWY 32.
+    func testMissedApproachContainingAFixlessClimbLeg() {
+        let legs = [(seq: 10, fix: "YAARD", legType: "IF"),
+                    (seq: 30, fix: "PAARK", legType: "TF"),
+                    (seq: 40, fix: "",      legType: "CA"),      // climb to altitude — no fix
+                    (seq: 50, fix: "WINDZ", legType: "DF"),
+                    (seq: 60, fix: "TELLE", legType: "TF"),
+                    (seq: 70, fix: "TELLE", legType: "HM")]
+        let roles: [LegRole] = [.intermediateFix, .missedApproachPoint, .none, .none, .none, .none]
+        let s = ApproachActivation.splitMissed(legs, roles: roles)
+        XCTAssertEqual(s.approach, [10, 30])
+        XCTAssertEqual(s.missed, [40, 50, 60, 70], "the fix-less climb leg belongs to the missed approach")
+    }
+
+    /// A record with no published marker must still yield a missed approach, via the fallback.
+    func testUnmarkedRecordFallsBackToTheStructuralSplit() {
+        let legs = [(seq: 10, fix: "ABCDE", legType: "IF"),
+                    (seq: 20, fix: "RW04R", legType: "CF"),
+                    (seq: 30, fix: "HOLDX", legType: "HM")]
+        let s = ApproachActivation.splitMissed(legs, roles: [.none, .none, .none])
+        XCTAssertEqual(s.approach, [10, 20], "falls back to the runway-threshold boundary")
+        XCTAssertEqual(s.missed, [30])
+    }
+
+    func testLegRoleDecodesTheWaypointDescriptionCode() {
+        XCTAssertEqual(LegRole(wpDesc: "E  A"), .initialApproachFix)
+        XCTAssertEqual(LegRole(wpDesc: "E  F"), .finalApproachFix)
+        XCTAssertEqual(LegRole(wpDesc: "EY M"), .missedApproachPoint)
+        XCTAssertEqual(LegRole(wpDesc: "E  I"), .intermediateFix)
+        XCTAssertEqual(LegRole(wpDesc: "EE  "), .none)
+        XCTAssertEqual(LegRole(wpDesc: ""), .none, "a short/absent code is not a defect")
+    }
+
     // MARK: plate → coded approach matching
 
     /// One plate legitimately maps to two coded approaches; the type token is what separates them.

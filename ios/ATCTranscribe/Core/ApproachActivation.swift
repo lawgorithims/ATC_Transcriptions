@@ -74,6 +74,9 @@ enum ApproachActivation {
     /// fall back to the plate's printed text rather than invent a path.
     ///
     /// `legs` is (seq, fix, legType) in sequence order — the minimum this needs from a CIFPLeg.
+    ///
+    /// Prefer `splitMissed(_:roles:)`, which uses the FAA's PUBLISHED missed-approach-point marker
+    /// instead of inferring the boundary. This form remains for the ~0 records that carry no marker.
     static func splitMissed(_ legs: [(seq: Int, fix: String, legType: String)])
         -> (approach: [Int], missed: [Int]) {
         assert(legs.count <= 512, "approach leg count out of range")
@@ -107,6 +110,32 @@ enum ApproachActivation {
             }
         }
         return (legs.map(\.seq), [])
+    }
+
+    /// Split the approach using the FAA's PUBLISHED segment markers when they are present.
+    ///
+    /// The missed approach begins immediately AFTER the missed-approach point — the leg the source
+    /// marks `M` in the 4th character of its waypoint-description code. 10,243 of the 10,243 coded
+    /// approaches in cycle 2607 carry exactly one such marker, so this is a read, not an inference.
+    ///
+    /// Falls back to the structural heuristic only when a record carries no marker at all, so a future
+    /// cycle that omits one degrades to the previous behaviour rather than losing the missed approach.
+    ///
+    /// `roles` is parallel to `legs`.
+    static func splitMissed(_ legs: [(seq: Int, fix: String, legType: String)],
+                            roles: [LegRole]) -> (approach: [Int], missed: [Int]) {
+        assert(legs.count == roles.count, "roles must be parallel to legs")
+        assert(legs.count <= 512, "approach leg count out of range")
+        guard !legs.isEmpty else { return ([], []) }
+
+        var mapIdx: Int? = nil
+        for (i, r) in roles.enumerated().prefix(512) where r == .missedApproachPoint {
+            if mapIdx == nil { mapIdx = i }                  // first marker wins
+        }
+        guard let m = mapIdx, m + 1 < legs.count else {
+            return splitMissed(legs)                          // unmarked record → structural fallback
+        }
+        return (legs.prefix(m + 1).map(\.seq), legs.suffix(from: m + 1).map(\.seq))
     }
 
     /// Match a PLATE (whose only identity is its printed name, e.g. "ILS OR LOC RWY 04R") to the coded

@@ -24,6 +24,29 @@ struct CIFPLeg: Identifiable {
     let legType: String    // ARINC path terminator: IF/TF/CF/DF/FA/CA/RF/HM/VA…
     let course: Double?    // magnetic, degrees
     let altitude: String
+    /// ARINC waypoint-description code (4 chars). Char 4 carries the SEGMENT ROLE published by the FAA:
+    /// `A` = initial approach fix, `F` = final approach fix, `M` = missed-approach point, `I` =
+    /// intermediate fix. This is the authoritative marker — it is read, never inferred.
+    var wpDesc: String = ""
+    /// The published role of this leg, if the source marks one.
+    var role: LegRole { LegRole(wpDesc: wpDesc) }
+}
+
+/// The segment role the FAA publishes for a leg, from the waypoint-description code's 4th character.
+/// `.none` means the source marks no role for this leg — which is the common case and is NOT a defect.
+enum LegRole: String {
+    case initialApproachFix, finalApproachFix, missedApproachPoint, intermediateFix, none
+
+    init(wpDesc: String) {
+        let c = wpDesc.count >= 4 ? Array(wpDesc)[3] : " "
+        switch c {
+        case "A": self = .initialApproachFix
+        case "F": self = .finalApproachFix
+        case "M": self = .missedApproachPoint
+        case "I": self = .intermediateFix
+        default:  self = .none
+        }
+    }
 }
 
 /// A localizer/ILS record — frequency + course + antenna position.
@@ -75,7 +98,7 @@ enum CIFP {
     static func legs(procedureID: Int) -> [CIFPLeg] {
         guard let db else { return [] }
         var st: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "SELECT seq,fix,lat,lon,leg_type,course_mag,alt FROM leg WHERE procedure_id=?1 ORDER BY seq", -1, &st, nil) == SQLITE_OK else { return [] }
+        guard sqlite3_prepare_v2(db, "SELECT seq,fix,lat,lon,leg_type,course_mag,alt,COALESCE(wp_desc,'') FROM leg WHERE procedure_id=?1 ORDER BY seq", -1, &st, nil) == SQLITE_OK else { return [] }
         defer { sqlite3_finalize(st) }
         sqlite3_bind_int64(st, 1, Int64(procedureID))
         var out: [CIFPLeg] = []
@@ -85,7 +108,7 @@ enum CIFP {
                                coord: hasCoord ? Coord(lat: sqlite3_column_double(st, 2), lon: sqlite3_column_double(st, 3)) : nil,
                                legType: text(st, 4),
                                course: sqlite3_column_type(st, 5) != SQLITE_NULL ? sqlite3_column_double(st, 5) : nil,
-                               altitude: text(st, 6)))
+                               altitude: text(st, 6), wpDesc: text(st, 7)))
         }
         return out
     }
