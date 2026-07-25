@@ -250,9 +250,17 @@ struct MapHostView: View {
     /// same chrome — every top-bar/menu/widget interaction reaches the map only via `model` + `widgets.mapProbe`.
     @ViewBuilder private var mapContent: some View {
         #if canImport(MapLibre)
-        // `.id(useGlobeProjection)`: flipping the hidden Developer Globe toggle remounts the map so writeStyle
-        // re-runs with/without the projection:globe key (writeStyle is read once at style install in createMap).
-        if model.useMapLibreMap && !model.mapLibreRenderFailed { mapLibreMap.id(model.useGlobeProjection) } else { chartMapView }
+        // This MUST stay an if/else and must never become a ZStack or an opacity/hidden trick. ViewBuilder
+        // lowers it to _ConditionalContent, so the untaken branch is never evaluated — which is the whole
+        // reason the classic engine costs exactly zero while the globe is up: no MKMapView, no Coordinator,
+        // no CLLocationManager, no renderer. Layering the two would quietly resurrect all of it.
+        //
+        // `.id`: flipping the hidden Developer Globe toggle remounts the map so writeStyle re-runs with or
+        // without the projection:globe key (it is read once at style install in createMap). The remount
+        // token joins it so a render stall can rebuild the coordinator without leaving MapLibre.
+        if model.useMapLibreMap && !model.mapLibreRenderFailed {
+            mapLibreMap.id("\(model.useGlobeProjection)-\(model.mapLibreRemountToken)")
+        } else { chartMapView }
         #else
         chartMapView
         #endif
@@ -347,9 +355,10 @@ struct MapHostView: View {
             onSearchPoint: { p in Task { @MainActor in if searchPoint != p { searchPoint = p } } },
             mapCommand: model.mapCommand,
             onRenderStalled: {
-                // The MapLibre map produced no frames (MLNMapView blank-until-scene-refresh) — fall back to the
-                // classic map for this session so the pilot always has a working chart.
-                Task { @MainActor in model.mapLibreRenderFailed = true }
+                // The MapLibre map produced no frames (MLNMapView blank-until-scene-refresh). Remount it
+                // first — the stall is usually transient — and only fall back to the classic map once the
+                // retry budget is spent, so the pilot always ends up with a working chart.
+                Task { @MainActor in model.handleMapRenderStall() }
             },
             onVisibleRegion: { rect in
                 // Persist the pilot's pan/zoom so a background→foreground remount restores it, and so the
