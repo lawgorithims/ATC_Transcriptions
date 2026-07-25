@@ -24,11 +24,22 @@ LATLON = re.compile(r"([NS])(\d{8})([EW])(\d{9})")   # DDMMSSss / DDDMMSSss, as 
 # approach they are not approved for. The assignment below is settled against this repo's own d-TPP
 # plate index at the same cycle — KMDW codes H22LX/H04RY against the published "RNAV (RNP) X RWY 22L"
 # and "RNAV (RNP) Y RWY 04R", and R04RZ/R22R against "RNAV (GPS) Z RWY 04R" / "RNAV (GPS) RWY 22R";
-# KEGE agrees. The coded data carries the same signature: H idents hold 1,397 RF legs across 121
+# KEGE agrees. The coded data carries the same signature: H idents hold 1,423 RF legs across 121
 # airports with RNP down to 0.1, R idents hold 3 RF legs and never go below RNP 0.3.
-APPROACH_TYPE = {"I": "ILS", "X": "LOC", "L": "LOC", "B": "LOC BC", "R": "RNAV (GPS)", "H": "RNAV (RNP)",
+# `X` is the LDA, not a localizer. All 15 X-coded approaches in cycle 2607 are charted LDA on that
+# exact runway (KSLC X35, PHNL X26L, KDCA X19, KBIH X17 …), and an LDA is by definition NOT aligned
+# with the runway centerline. Calling it "LOC" was worst at KSNA, where the real localizer L20R and the
+# offset LDA X20R both rendered as "LOC RWY 20R" — two indistinguishable rows in the activation chooser.
+APPROACH_TYPE = {"I": "ILS", "X": "LDA", "L": "LOC", "B": "LOC BC", "R": "RNAV (GPS)", "H": "RNAV (RNP)",
                  "P": "GPS", "V": "VOR", "D": "VOR/DME", "N": "NDB", "Q": "NDB/DME", "S": "VOR",
                  "G": "IGS", "U": "SDF", "T": "TACAN"}
+
+# CIRCLING approaches carry no runway, so their ident is a type mnemonic plus the circling letter
+# ("RNV-A", "VDMA", "LBC-B") and the runway rule below cannot expand it. Left as the raw ident, the
+# stored name shared no approach-type token with the printed plate title — "RNV-A" against
+# "RNAV (GPS)-A" — so the plate matcher scored an approach ZERO against its own plate.
+CIRCLING_TYPE = {"RNV": "RNAV (GPS)", "VDM": "VOR/DME", "LBC": "LOC BC", "VOR": "VOR", "LDA": "LDA",
+                 "NDB": "NDB", "LOC": "LOC", "GPS": "GPS", "SDF": "SDF", "TCN": "TACAN", "ILS": "ILS"}
 
 
 def fetch(url):
@@ -62,12 +73,16 @@ def coord(line):
 
 
 def approach_name(ident):
-    """"H33LX" → ("RNAV (GPS) RWY 33L", "33L"); SID/STAR idents pass through."""
+    """"H33LX" → ("RNAV (GPS) RWY 33L", "33L"); "RNV-A" → ("RNAV (GPS)-A", ""); others pass through."""
     t = APPROACH_TYPE.get(ident[0])
-    if not t or len(ident) < 3 or not ident[1:3].isdigit():
-        return ident, ""
-    rwy = ident[1:3] + (ident[3] if len(ident) > 3 and ident[3] in "LCR" else "")
-    return f"{t} RWY {rwy}", rwy
+    if t and len(ident) >= 3 and ident[1:3].isdigit():
+        rwy = ident[1:3] + (ident[3] if len(ident) > 3 and ident[3] in "LCR" else "")
+        return f"{t} RWY {rwy}", rwy
+    circling = CIRCLING_TYPE.get(ident[:3])
+    if circling:
+        letter = ident[3:].lstrip("-").strip()
+        return (f"{circling}-{letter}" if letter else circling), ""
+    return ident, ""
 
 
 def load_lines(args):
@@ -140,7 +155,8 @@ def main():
       -- after `alt` is new. `alt_desc` is the ARINC altitude-description qualifier (col 83, 0-based 82)
       -- WITHOUT which at / at-or-above / at-or-below / between are indistinguishable, and `alt2` is the
       -- second altitude that `between` requires. `wp_desc` char 4 carries the segment role (A=IAF,
-      -- F=FAF, M=missed-approach point, I=intermediate) — read, not inferred.
+      -- F=FAF, M=missed-approach point, I=final approach course fix, B=intermediate fix)
+      -- — read, not inferred.
       CREATE TABLE leg(procedure_id INTEGER, seq INTEGER, fix TEXT, lat REAL, lon REAL,
                        leg_type TEXT, course_mag REAL, alt TEXT,
                        alt_desc TEXT, alt2 TEXT, speed_limit INTEGER, vertical_angle REAL,
@@ -227,7 +243,7 @@ def main():
             trans = l[20:25].strip()
             seq = num(l[26:29])
             fix = l[29:34].strip()
-            wp_desc = l[39:43]                                  # char 4: A=IAF F=FAF M=MAP I=intermediate
+            wp_desc = l[39:43]                        # char 4: A=IAF F=FAF M=MAP I=FACF B=intermediate
             turn = l[43].strip()
             rnp = rnp_val(l[44:47])
             leg_type = l[47:49].strip()
@@ -311,23 +327,45 @@ def main():
     # final approach fix deleted from 6,741 of 10,243 approaches and reported a clean run, because the
     # only thing being counted was rows that survived. So count the FAA's own segment markers — the
     # ones that make a procedure flyable — and refuse to write a database that lost any of them.
+    # Counting only the approach ROLE markers would have left 79% of legs — and every SID and STAR —
+    # outside the check, so a build could still gut the whole departure/arrival half of the database and
+    # report a clean run. Count the total, count each kind, and count the roles.
     src_roles = {"A": 0, "F": 0, "M": 0}                        # IAF / final approach fix / missed pt
+    src_kind = {"SID": 0, "STAR": 0, "IAP": 0}
+    kind_of = {"D": "SID", "E": "STAR", "F": "IAP"}
     for l in lines:
         if len(l) < 60 or l[4] != "P" or l[12] not in "DEF" or l[38] not in "01":
             continue
+        src_kind[kind_of[l[12]]] += 1
         role = l[42] if len(l) > 42 else " "
         if role in src_roles:
             src_roles[role] += 1
+
+    checks = []                                                 # (label, source count, db count)
+    checks.append(("legs (all)", sum(src_kind.values()),
+                   con.execute("SELECT COUNT(*) FROM leg").fetchone()[0]))
+    for kind in sorted(src_kind):
+        checks.append((f"legs {kind}", src_kind[kind],
+                       con.execute("SELECT COUNT(*) FROM leg JOIN procedure ON leg.procedure_id="
+                                   "procedure.id WHERE procedure.kind=?", (kind,)).fetchone()[0]))
     for role in sorted(src_roles):
-        want = src_roles[role]
-        got = con.execute("SELECT COUNT(*) FROM leg WHERE substr(wp_desc,4,1)=?", (role,)).fetchone()[0]
-        print(f"  waypoint role {role!r}: source={want} database={got}" + ("" if got == want else
-              f"   *** {want - got} LOST ***"))
-        assert got == want, f"{want - got} '{role}' legs lost between the FAA source and the database"
+        checks.append((f"role {role!r}", src_roles[role],
+                       con.execute("SELECT COUNT(*) FROM leg WHERE substr(wp_desc,4,1)=?",
+                                   (role,)).fetchone()[0]))
+    lost = []
+    for label, want, got in checks:
+        print(f"  {label:<12} source={want:<7} database={got:<7}" +
+              ("" if got == want else f"   *** {want - got} LOST ***"))
+        if got != want:
+            lost.append(f"{label}: {want - got} lost")
+    if lost:                                                    # an explicit raise — `assert` is
+        raise SystemExit("REFUSING TO WRITE: " + "; ".join(lost))   # stripped under `python -O`
 
     nincomplete = con.execute("SELECT COUNT(*) FROM procedure WHERE incomplete=1").fetchone()[0]
     nolegs = con.execute("SELECT COUNT(*) FROM procedure p WHERE NOT EXISTS"
                          "(SELECT 1 FROM leg WHERE procedure_id=p.id)").fetchone()[0]
+    if nolegs:                          # a named, selectable procedure with no path is not shippable
+        raise SystemExit(f"REFUSING TO WRITE: {nolegs} procedures have no legs")
     con.commit()
 
     out = os.path.abspath(args.out)
@@ -341,8 +379,6 @@ def main():
     print(f"fixes={len(fixes)} procedures={nproc} legs={nleg} airway_points={nawy} terminal_fixes={ntfix} bytes={os.path.getsize(out)} -> {out}")
     print(f"cycle={cycle} effective={eff} expires={exp}")
     print(f"rejected_records={nbad} incomplete_procedures={nincomplete} procedures_with_no_legs={nolegs}")
-    if nolegs:
-        print(f"  WARNING: {nolegs} procedures have no legs — investigate before shipping")
     # airway spot-check: V1 and J121 should both exist with ordered geo points
     for awy in ("V1", "J121"):
         pts = con.execute("SELECT COUNT(*) FROM airway WHERE ident=?", (awy,)).fetchone()[0]

@@ -1747,7 +1747,13 @@ final class AppModel: ObservableObject {
         }
         switch ins.kind {
         case .directTo:        directTo(ins.target)
-        case .clearedApproach: loadApproachForRunway(ins.target, spoken: ins.rawTranscript)
+        // `qualifier` is where the approach TYPE actually survives: ATCCommandParser.parseApproach sets
+        // it to "ILS"/"RNAV"/"LDA"/…, whereas rawTranscript is empty for every clearance the app really
+        // produces (EFBSuggestion.make → ATCInstruction(command:) defaults it, and the one initializer
+        // that fills it has no production caller). Passing rawTranscript alone made the type-aware pick
+        // silently inert — it fell straight back to first-by-ident, which is the bug it was fixing.
+        case .clearedApproach: loadApproachForRunway(ins.target,
+                                                     spoken: ins.qualifier + " " + ins.rawTranscript)
         case .loadSID:         loadProcedureByIdent(kind: "SID", ident: ins.target)
         case .loadStar:        loadProcedureByIdent(kind: "STAR", ident: ins.target)
         case .altitude:        setAssignedAltitude(ins.value)
@@ -2075,6 +2081,11 @@ final class AppModel: ObservableObject {
     func activateApproach(_ proc: CIFPProcedure, entry: ApproachActivation.Entry) {
         guard !proc.ident.isEmpty, !proc.airport.isEmpty else { return }   // rule 7
         assert(proc.kind == "IAP", "activateApproach given a non-approach")
+        // Activating is the OTHER way an active approach is replaced, and it must disarm the outgoing
+        // approach's missed exactly as cancelling does. Otherwise the chip for approach A stayed on
+        // screen and stayed acceptable after activating B, and accepting it laid in A's missed — which
+        // ends by clearing the loaded approach, so it silently dropped the approach just activated.
+        disarmMissedApproach()
 
         // Legs: the chosen transition first (how we get in), then the approach proper (final + missed).
         var fixes: [String] = []
@@ -2123,10 +2134,17 @@ final class AppModel: ObservableObject {
     /// afterwards replaced the entire flight plan with the missed approach of an approach that was no
     /// longer being flown.
     func clearActiveApproach() {
-        let armed = pendingMissed
         activeApproach = nil
+        disarmMissedApproach()
+    }
+
+    /// Withdraw a staged go-around: drop `pendingMissed` and, if the visible suggestion is that same
+    /// go-around, the banner with it. Matching on the id means a live, unrelated ATC suggestion is left
+    /// alone. Called wherever the active approach is replaced or cancelled.
+    private func disarmMissedApproach() {
+        guard let armed = pendingMissed else { return }
         pendingMissed = nil
-        if let armed, efbSuggestion?.id == "missed-\(armed.airport)-\(armed.ident)" { efbSuggestion = nil }
+        if efbSuggestion?.id == "missed-\(armed.airport)-\(armed.ident)" { efbSuggestion = nil }
     }
 
     /// The approach whose missed sequence is staged in `efbSuggestion`, awaiting the pilot's Accept.

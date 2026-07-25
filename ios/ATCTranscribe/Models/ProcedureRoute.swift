@@ -68,10 +68,11 @@ enum ProcedureRoute {
     /// An approach is coded as two separate rows and the transition row is not the whole approach.
     /// Querying by `proc.transition` alone drew a path that ran to the join fix and then jumped
     /// straight to the airport reference point — the final approach segment, the part actually being
-    /// flown, was simply absent from the magenta line and from the DIST/ETE it feeds. The opposite
-    /// error sat on the other branch: joining with VECTORS queried the approach-proper row and drew its
-    /// whole tail, so the missed-approach hold appeared as a normal enroute leg of an approach nobody
-    /// had gone missed on.
+    /// flown, was simply absent from the magenta line. (Not from DIST/ETE: `ForeFlightExport
+    /// .sendablePlan` drops the approach before the trip computation, so the readout never showed the
+    /// gap. Triage this one by looking at the drawn route.) The opposite error sat on the other branch:
+    /// joining with VECTORS queried the approach-proper row and drew its whole tail, so the
+    /// missed-approach hold appeared as a normal enroute leg of an approach nobody had gone missed on.
     static func approachLegs(_ proc: LoadedProcedure) -> [CIFPLeg] {
         assert(proc.kind == "IAP", "approachLegs given a non-approach")
         guard let proper = CIFP.approachProper(airport: proc.airport, ident: proc.ident) else {
@@ -83,6 +84,15 @@ enum ProcedureRoute {
         let missed = Set(split.missed)
         let flown = properLegs.filter { !missed.contains($0.seq) }
         guard !proc.transition.isEmpty else { return Array(flown) }
+        // A LoadedProcedure persists to UserDefaults keyed by airport+ident+transition so it survives an
+        // AIRAC rebuild — which means the transition can be WITHDRAWN under it. CIFP.legs falls back to
+        // the first row matching the ident, and that is the approach-proper row, so a stale key spliced
+        // the untrimmed approach (missed hold and all) in front of the trimmed one: the hold drawn as a
+        // normal leg, then the whole approach again. Verify the transition still exists; if it does not,
+        // this is a vectors join.
+        let published = CIFP.transitions(airport: proc.airport, ident: proc.ident)
+        guard published.contains(where: { $0.caseInsensitiveCompare(proc.transition) == .orderedSame })
+        else { return Array(flown) }
         let entry = CIFP.legs(airport: proc.airport, ident: proc.ident, transition: proc.transition)
         return Array(entry.prefix(maxProcedureLegs)) + flown
     }
