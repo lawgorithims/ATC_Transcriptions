@@ -2074,7 +2074,8 @@ final class AppModel: ObservableObject {
         }
         if let proper = CIFP.approachProper(airport: proc.airport, ident: proc.ident) {
             let legs = CIFP.legs(procedureID: proper.id).prefix(256)
-            let split = ApproachActivation.splitMissed(legs.map { (seq: $0.seq, fix: $0.fix, legType: $0.legType) })
+            let split = ApproachActivation.splitMissed(
+                legs.map { (seq: $0.seq, fix: $0.fix, legType: $0.legType) }, roles: legs.map(\.role))
             let missedSeqs = Set(split.missed)
             for leg in legs {
                 let f = leg.fix.uppercased()
