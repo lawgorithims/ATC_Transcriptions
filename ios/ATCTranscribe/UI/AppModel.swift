@@ -1735,6 +1735,16 @@ final class AppModel: ObservableObject {
         let ins = suggestion.instruction
         guard !ins.target.isEmpty || ins.value != nil else { efbSuggestion = nil; return }
         let before = flightPlan
+        // A staged MISSED APPROACH is not a plain direct-to: it lays in the whole published sequence and
+        // drops the abandoned approach. Matched on the suggestion's own id so nothing else can trip it.
+        if let m = pendingMissed, suggestion.id == "missed-\(m.airport)-\(m.ident)" {
+            applyMissedApproach(m)
+            NSLog("CommSight: EFB accept kind=missedApproach before=[%@] after=[%@]",
+                  Self.assignmentDigest(before), Self.assignmentDigest(flightPlan))
+            Haptics.impact(.medium)
+            efbSuggestion = nil
+            return
+        }
         switch ins.kind {
         case .directTo:        directTo(ins.target)
         case .clearedApproach: loadApproachForRunway(ins.target)
@@ -1772,6 +1782,7 @@ final class AppModel: ObservableObject {
             NSLog("CommSight: EFB dismiss kind=%@ target=%@ conf=%@", ins.kind.rawValue, ins.target, ins.confidence.rawValue)
         }
         efbSuggestion = nil
+        pendingMissed = nil     // a declined go-around must not stay armed for the NEXT accept
     }
 
     // MARK: ForeFlight hand-off (offline URL scheme + .fpl share)
@@ -2080,8 +2091,7 @@ final class AppModel: ObservableObject {
                                      name: proc.name, runway: proc.runway,
                                      transition: entry.iafFix ?? "", fixes: fixes)
         editPlan { plan in
-            // Join at the IAF: append it as the last enroute point so the plan still ends at the field.
-            if let iaf = entry.iafFix, !iaf.isEmpty { plan.addWaypoint(iaf) }
+            plan.joinApproach(at: entry.iafFix, airport: proc.airport, from: presentPosition)
             plan.loadProcedure(loaded)
         }
         activeApproach = ActiveApproach(airport: proc.airport, ident: proc.ident, name: proc.name,
@@ -2094,6 +2104,26 @@ final class AppModel: ObservableObject {
 
     /// Cancel the active approach (does not unwind the route — the pilot may still be flying it).
     func clearActiveApproach() { activeApproach = nil }
+
+    /// The approach whose missed sequence is staged in `efbSuggestion`, awaiting the pilot's Accept.
+    /// Held so the accept can lay in the WHOLE published missed rather than the generic single direct-to.
+    private var pendingMissed: ActiveApproach?
+
+    /// Apply the published missed approach: direct to its first fix from present position, then the rest
+    /// of the sequence, ending at the missed-approach hold.
+    ///
+    /// Clearing the loaded approach is the important part. The approach's own legs stay drawn otherwise,
+    /// so a go-around routed correctly to the first missed fix and then straight back through the
+    /// approach's transition fix — the aircraft would be shown flying back into the approach it just
+    /// abandoned. Going missed means the approach is no longer being flown.
+    private func applyMissedApproach(_ a: ActiveApproach) {
+        guard !a.missedFixes.isEmpty else { return }               // rule 7
+        editPlan { $0.flyMissedApproach(fixes: a.missedFixes, from: presentPosition) }
+        activeApproach = nil
+        pendingMissed = nil
+        NSLog("CommSight: missed approach APPLIED %@ %@ -> %@", a.airport, a.ident,
+              a.missedFixes.joined(separator: " "))
+    }
 
     /// Fly the missed approach. Rather than mutating the plan behind the pilot's back, this raises the
     /// SAME one-tap confirmation an ATC instruction does (`efbSuggestion`), so a go-around is reviewed
@@ -2114,6 +2144,7 @@ final class AppModel: ObservableObject {
                                  rawTranscript: raw, confidence: .high, addressedToOwnship: true)
         efbSuggestion = EFBSuggestion(id: "missed-\(a.airport)-\(a.ident)", instruction: ins,
                                       title: "Fly the missed approach — direct \(first)", source: raw)
+        pendingMissed = a          // consumed by acceptEFBSuggestion (see applyMissedApproach)
         Haptics.impact(.medium)
         NSLog("CommSight: missed approach ARMED %@ %@ direct=%@", a.airport, a.ident, first)
     }

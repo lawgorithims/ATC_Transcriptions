@@ -193,14 +193,52 @@ enum PlateGearGeometry {
     /// Breathing room between the hit box and the band's edge.
     static let edgeMargin: CGFloat = 8
 
+    /// The gear's centre for a plate whose top-LEFT and top-RIGHT corners are at the given screen points.
+    ///
+    /// The tuck-in runs along the PLATE'S OWN AXES and scales with how big the plate currently is on
+    /// screen. Both matter, and neither used to be true: the offset was a fixed 18pt in SCREEN x/y, so
+    /// (a) on an approach plate — which is rotated to the runway heading — it pushed the button off along
+    /// the wrong diagonal, and (b) at low zoom 18pt is a large fraction of a small plate, throwing the
+    /// button well clear of the corner, while at extreme zoom it is negligible and the button looked
+    /// correctly pinned. That is exactly the "floats near the corner, but sits ON the corner only when
+    /// zoomed all the way in" behaviour.
+    ///
+    /// The button itself stays a fixed 64pt touch target — only where it sits is derived.
+    static func center(topLeft: CGPoint, topRight: CGPoint, viewport: CGSize,
+                       topInset: CGFloat, bottomInset: CGFloat) -> CGPoint {
+        guard topLeft.x.isFinite, topLeft.y.isFinite, topRight.x.isFinite, topRight.y.isFinite else {
+            return center(anchor: topRight, viewport: viewport, topInset: topInset, bottomInset: bottomInset)
+        }
+        // Top edge, right → left: the plate's own "inward horizontal" direction, rotation included.
+        let ex = topLeft.x - topRight.x, ey = topLeft.y - topRight.y
+        let len = (ex * ex + ey * ey).squareRoot()
+        // Degenerate (plate edge-on / collapsed): fall back to the plain screen-space tuck.
+        guard len > 0.5 else {
+            return center(anchor: topRight, viewport: viewport, topInset: topInset, bottomInset: bottomInset)
+        }
+        let ux = ex / len, uy = ey / len
+        // Perpendicular pointing DOWN INTO the plate (screen y grows downward).
+        let px = uy, py = -ux
+        // Scale the tuck to the plate's on-screen width, capped at the old constant so a huge plate keeps
+        // the familiar inset and a small one keeps the button visually on its corner.
+        let inset = min(max(len * 0.06, 2), cornerInset)
+        let tucked = CGPoint(x: topRight.x + ux * inset + px * inset,
+                             y: topRight.y + uy * inset + py * inset)
+        return center(anchor: tucked, viewport: viewport,
+                      topInset: topInset, bottomInset: bottomInset, alreadyTucked: true)
+    }
+
     /// The gear's centre for a plate whose top-right corner is at `anchor`.
     ///
     /// INVARIANT: the whole `hitSize` box lies inside the band
     /// `[topInset, viewport.height - bottomInset] x [0, viewport.width]` whenever that band is at least
     /// `hitSize + 2*edgeMargin` in that axis; when it is not (every strip and banner up at once), the
     /// axis collapses to the band's midpoint rather than returning an inverted range.
+    /// `alreadyTucked` means the caller placed the point on the plate's corner using the plate's own
+    /// axes, so the plain screen-space tuck must NOT be applied a second time.
     static func center(anchor: CGPoint, viewport: CGSize,
-                       topInset: CGFloat, bottomInset: CGFloat) -> CGPoint {
+                       topInset: CGFloat, bottomInset: CGFloat,
+                       alreadyTucked: Bool = false) -> CGPoint {
         assert(viewport.width >= 0 && viewport.height >= 0, "negative viewport")
         assert(topInset >= 0 && bottomInset >= 0, "negative chrome inset")
         let half = hitSize / 2 + edgeMargin
@@ -210,8 +248,9 @@ enum PlateGearGeometry {
         guard anchor.x.isFinite, anchor.y.isFinite else {
             return CGPoint(x: half, y: topInset + half)
         }
-        return CGPoint(x: clamp(anchor.x - cornerInset, half, viewport.width - half),
-                       y: clamp(anchor.y + cornerInset, topInset + half,
+        let tuck = alreadyTucked ? 0 : cornerInset
+        return CGPoint(x: clamp(anchor.x - tuck, half, viewport.width - half),
+                       y: clamp(anchor.y + tuck, topInset + half,
                                 viewport.height - bottomInset - half))
     }
 

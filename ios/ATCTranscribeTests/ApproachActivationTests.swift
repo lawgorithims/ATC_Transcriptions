@@ -116,3 +116,79 @@ final class ApproachActivationTests: XCTestCase {
                                                     candidates: []).isEmpty)
     }
 }
+
+/// The route amendments behind activating an approach. These pin a sequence a pilot actually hit at
+/// KTCS: activate the RNAV via DUCAS, re-activate via TCS, then go missed.
+final class ApproachRouteAmendmentTests: XCTestCase {
+
+    private let here = Coord(lat: 33.23, lon: -107.27)   // near KTCS
+
+    /// Activating with NO flight plan must produce a usable DIRECT-TO, not a lone orphan waypoint.
+    func testActivatingWithNoFlightPlanGivesADirectTo() {
+        var plan = FlightPlan()
+        plan.joinApproach(at: "DUCAS", airport: "KTCS", from: here)
+        XCTAssertEqual(plan.route, ["DUCAS"], "must fly direct to the chosen IAF")
+        XCTAssertEqual(plan.destination, "KTCS", "and still end at the field, not at the IAF")
+        XCTAssertFalse(plan.departure.isEmpty, "direct-to must anchor at present position")
+    }
+
+    /// THE reported bug: re-activating stacked the old IAF in front of the new one, so the strip read
+    /// "DUCAS then LAYEN" instead of a direct TCS.
+    func testReactivatingReplacesTheIAFInsteadOfAccumulating() {
+        var plan = FlightPlan()
+        plan.joinApproach(at: "DUCAS", airport: "KTCS", from: here)
+        plan.joinApproach(at: "TCS", airport: "KTCS", from: here)
+        XCTAssertEqual(plan.route, ["TCS"], "the previous IAF must be replaced, not prepended")
+        XCTAssertFalse(plan.route.contains("DUCAS"))
+    }
+
+    /// VECTORS leaves the filed route alone — ATC is turning you onto final.
+    func testVectorsLeavesTheFiledRouteIntact() {
+        var plan = FlightPlan()
+        plan.departure = "KABQ"; plan.route = ["SANTI", "CHILI"]; plan.destination = "KTCS"
+        plan.joinApproach(at: nil, airport: "KTCS", from: here)
+        XCTAssertEqual(plan.route, ["SANTI", "CHILI"], "vectors must not rewrite the enroute route")
+        XCTAssertEqual(plan.destination, "KTCS")
+    }
+
+    func testVectorsFillsAMissingDestination() {
+        var plan = FlightPlan()
+        plan.joinApproach(at: nil, airport: "KTCS", from: here)
+        XCTAssertEqual(plan.destination, "KTCS")
+    }
+
+    /// THE other reported bug: after going missed the plan still routed through DUCAS — the abandoned
+    /// approach was still loaded, so its transition kept drawing.
+    func testMissedApproachDropsTheAbandonedApproachAndItsLeftovers() {
+        var plan = FlightPlan()
+        plan.joinApproach(at: "DUCAS", airport: "KTCS", from: here)
+        plan.loadProcedure(LoadedProcedure(airport: "KTCS", kind: "IAP", ident: "RNV-A",
+                                           name: "RNAV-A", runway: "", transition: "DUCAS",
+                                           fixes: ["DUCAS", "HEMAT", "LAYEN"]))
+        XCTAssertNotNil(plan.approachProcedure)
+
+        // KTCS RNV-A's coded missed is a climb direct LAYEN, then hold at LAYEN.
+        plan.flyMissedApproach(fixes: ["LAYEN"], from: here)
+        XCTAssertEqual(plan.destination, "LAYEN", "the missed ends at its published hold")
+        XCTAssertTrue(plan.route.isEmpty, "a single-fix missed is a plain direct-to")
+        XCTAssertFalse(plan.route.contains("DUCAS"), "the abandoned approach's fix must be gone")
+        XCTAssertNil(plan.approachProcedure, "going missed unloads the approach being abandoned")
+    }
+
+    /// A multi-fix missed flies the whole sequence and still ends at the hold.
+    func testMultiFixMissedFliesTheWholeSequence() {
+        var plan = FlightPlan()
+        plan.flyMissedApproach(fixes: ["WAXEN", "BOSOX", "HOLDX"], from: here)
+        XCTAssertEqual(plan.route, ["WAXEN", "BOSOX"])
+        XCTAssertEqual(plan.destination, "HOLDX")
+    }
+
+    /// With no coded missed the plan must be left untouched — never invent a go-around.
+    func testNoCodedMissedLeavesThePlanAlone() {
+        var plan = FlightPlan()
+        plan.departure = "KABQ"; plan.route = ["SANTI"]; plan.destination = "KTCS"
+        plan.flyMissedApproach(fixes: [], from: here)
+        XCTAssertEqual(plan.route, ["SANTI"])
+        XCTAssertEqual(plan.destination, "KTCS")
+    }
+}
