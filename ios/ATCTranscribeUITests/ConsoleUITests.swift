@@ -107,6 +107,20 @@ final class ConsoleUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5), "settings sheet missing")
         snap(app, "04-settings")
 
+        // Appearance picker (General category): all three theme buttons exist and switch live —
+        // exercise Day then restore Cockpit before leaving the page.
+        let generalCat = app.buttons["settings-cat-general"]
+        XCTAssertTrue(generalCat.waitForExistence(timeout: 5), "General category row missing")
+        generalCat.tap()
+        let dayTheme = app.buttons["settings-theme-day"]
+        XCTAssertTrue(dayTheme.waitForExistence(timeout: 5), "Appearance theme picker missing")
+        dayTheme.tap()
+        let cockpitTheme = app.buttons["settings-theme-cockpit"]
+        XCTAssertTrue(cockpitTheme.exists, "cockpit theme button missing from Appearance picker")
+        cockpitTheme.tap()   // restore the default
+        snap(app, "04b-appearance")
+        app.navigationBars.buttons.firstMatch.tap()   // back to the category list
+
         // Settings is now organized into category sub-pages — the model + correction controls live under
         // "Transcription & AI". Push into it before exercising them.
         let transCat = app.buttons["settings-cat-transcription"]
