@@ -343,6 +343,34 @@ struct SettingsSheet: View {
 
     @ViewBuilder private var generalCategory: some View {
         let p = model.palette
+        // Second home for the theme switcher (the heading-bar ThemeMenu stays — night must be
+        // reachable without opening Settings mid-flight).
+        Card(title: "Appearance") {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    ForEach(AppTheme.allCases) { t in
+                        Button { Haptics.impact(.light); model.theme = t } label: {
+                            VStack(spacing: 4) {
+                                Image(systemName: t.symbol).font(.system(size: 16))
+                                Text(t.label).dsCapsLabel()
+                            }
+                            .frame(maxWidth: .infinity).padding(.vertical, 10)
+                            .foregroundStyle(model.theme == t ? p.accent : p.textDim)
+                            .background(model.theme == t ? p.accentMuted : .clear)
+                            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.r2))
+                            .overlay(RoundedRectangle(cornerRadius: DS.Radius.r2)
+                                .stroke(model.theme == t ? p.accent : p.border, lineWidth: DS.Stroke.control))
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plainHaptic)
+                        .accessibilityIdentifier("settings-theme-\(t.rawValue)")
+                        .accessibilityAddTraits(model.theme == t ? [.isButton, .isSelected] : .isButton)
+                    }
+                }
+                Text("Cockpit for normal flying, Day for bright sun, Night preserves dark adaptation (red light only).")
+                    .font(.dsLabelS).foregroundStyle(p.textDim)
+            }
+        }
         Card(title: "Display") {
             VStack(alignment: .leading, spacing: 10) {
                 Toggle(isOn: $model.showDebug) {
