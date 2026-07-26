@@ -145,7 +145,7 @@ struct RouteMapSheet: View {
 
     private func pill<C: View>(@ViewBuilder _ content: () -> C) -> some View {
         HStack(spacing: 8) { content() }
-            .font(.caption)
+            .font(.dsLabel)
             .padding(.horizontal, 14).padding(.vertical, 8)
             .background(model.palette.overlay, in: Capsule())
             .overlay(Capsule().stroke(model.palette.border, lineWidth: DS.Stroke.hairline))
@@ -232,7 +232,7 @@ struct RouteMapSheet: View {
                         ForEach(legInfos()) { li in
                             HStack(spacing: 8) {
                                 Text(li.from).monospaced()
-                                Image(systemName: "arrow.right").font(.caption2).foregroundStyle(.secondary)
+                                Image(systemName: "arrow.right").font(.dsLabelS).foregroundStyle(.secondary)
                                 Text(li.to).monospaced()
                                 Spacer()
                                 Text("\(Int(li.nm.rounded())) nm").foregroundStyle(.secondary)

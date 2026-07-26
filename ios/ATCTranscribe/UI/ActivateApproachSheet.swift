@@ -63,7 +63,7 @@ struct ActivateApproachSheet: View {
                                         Text(entry == .vectors
                                              ? "ATC will vector you onto the final approach course — the route is left as filed."
                                              : "Join the approach at \(entry.label), then fly the published legs.")
-                                            .font(.caption2).foregroundStyle(p.textDim)
+                                            .font(.dsLabelS).foregroundStyle(p.textDim)
                                             .fixedSize(horizontal: false, vertical: true)
                                     }
                                     Spacer(minLength: 0)
@@ -78,13 +78,13 @@ struct ActivateApproachSheet: View {
                     } footer: {
                         VStack(alignment: .leading, spacing: 6) {
                             Text("Activating loads \(a.name.isEmpty ? a.ident : a.name) into the flight plan and arms the missed approach.")
-                                .font(.caption2)
+                                .font(.dsLabelS)
                             // Provenance where it matters most: this sheet is about to change what the
                             // aircraft flies, so the cycle behind those legs is shown at the decision.
                             HStack(spacing: 5) {
                                 DataCurrencyBadge(sources: [CIFP.provenance], compact: false)
                                     .environmentObject(model)
-                                Text(CIFP.provenance.summary).font(.caption2).foregroundStyle(p.textDim)
+                                Text(CIFP.provenance.summary).font(.dsLabelS).foregroundStyle(p.textDim)
                             }
                         }
                     }
@@ -94,7 +94,7 @@ struct ActivateApproachSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Text(contextLabel).font(.caption).foregroundStyle(p.textDim).lineLimit(1)
+                    Text(contextLabel).font(.dsLabel).foregroundStyle(p.textDim).lineLimit(1)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Cancel") { dismiss() }.accessibilityIdentifier("activate-cancel")
