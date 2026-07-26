@@ -228,7 +228,7 @@ struct MapObjectView: View {
                         HStack(spacing: 8) {
                             Text(title(o))
                                 .font(.system(.title3, design: .monospaced).weight(.semibold)).foregroundStyle(p.text)
-                            FlightCategoryChip(metar: metar)
+                            FlightCategoryChip(metar: metar, dimmed: model.theme == .night)
                         }
                         if let name = displayName(o) {
                             Text(name).font(.dsLabel).foregroundStyle(p.textDim).lineLimit(1)
@@ -340,7 +340,7 @@ struct MapObjectView: View {
         Section("Current observations") {
             if let m = metars.metar(o.ident) {
                 HStack(spacing: 10) {
-                    FlightCategoryChip(metar: m)
+                    FlightCategoryChip(metar: m, dimmed: model.theme == .night)
                     Text(m.summary).font(.callout).foregroundStyle(p.text)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
@@ -382,7 +382,7 @@ struct MapObjectView: View {
             Section("Hazards nearby (NASA EONET)") {
                 ForEach(Array(near), id: \.0.id) { ev, nm in
                     HStack(spacing: 10) {
-                        Image(systemName: ev.category.glyph).foregroundStyle(Color.hex(0xF97316))
+                        Image(systemName: ev.category.glyph).foregroundStyle(EntityTint.color(.hazard, model.theme))
                         VStack(alignment: .leading, spacing: 1) {
                             Text(ev.title).font(.dsLabel).foregroundStyle(p.text).lineLimit(1)
                             Text(ev.category.label).font(.dsLabelS).foregroundStyle(p.textDim)
@@ -982,17 +982,7 @@ struct MapObjectView: View {
     }
 
     private func kindColor(_ kind: MapObjectKind) -> Color {
-        switch kind {
-        case .airport:   return .hex(0xE879F9)
-        case .vor:       return .hex(0x34D399)
-        case .fix:       return .hex(0x60A5FA)
-        case .airspace:  return .hex(0x2F6FED)
-        case .traffic:   return .orange
-        case .userPoint: return .hex(0xFBBF24)
-        case .hazard:    return .hex(0xF97316)
-        case .tfr:       return .hex(0xF71433)
-        case .airway:    return .hex(0x6B94DB)
-        }
+        EntityTint.color(kind, model.theme)
     }
 
     private func kindIcon(_ kind: MapObjectKind) -> String {

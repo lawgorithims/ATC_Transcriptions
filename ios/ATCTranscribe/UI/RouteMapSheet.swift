@@ -164,9 +164,9 @@ struct RouteMapSheet: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 10) {
                     legendItem(Self.routeMagenta, "Route", line: true)
-                    legendItem(.hex(0xE879F9), "Airport")
-                    legendItem(.hex(0x34D399), "VOR")
-                    legendItem(.hex(0x60A5FA), "Fix")
+                    legendItem(EntityTint.color(.airport, model.theme), "Airport")
+                    legendItem(EntityTint.color(.vor, model.theme), "VOR")
+                    legendItem(EntityTint.color(.fix, model.theme), "Fix")
                     HStack(spacing: 3) {
                         Image(systemName: "airplane").font(.system(size: 10)).foregroundStyle(.orange)
                         Text("Traffic")
