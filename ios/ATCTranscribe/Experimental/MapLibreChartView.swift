@@ -50,6 +50,7 @@ struct MapLibreChartView: UIViewRepresentable {
     var onVisibleRegion: (MKMapRect) -> Void = { _ in }            // settle → host persists model.lastMapCamera
     var renderMeter: MapRenderMeter? = nil                         // battery diagnostics: per-frame counter → map fps
     var globeProjection: Bool = false                             // DEV: emit projection:globe (inert on stock 6.27.0)
+    var theme: AppTheme = .cockpit                                // map palette; re-applied LIVE (no remount)
 
     func makeCoordinator() -> Coordinator { Coordinator(store: store, routeCoords: routeCoords) }
 
@@ -65,6 +66,7 @@ struct MapLibreChartView: UIViewRepresentable {
         context.coordinator.onVisibleRegion = onVisibleRegion
         context.coordinator.renderMeter = renderMeter
         context.coordinator.globeProjection = globeProjection   // read once at style install (createMap)
+        context.coordinator.inTheme = theme                     // style JSON is written with this palette
         context.coordinator.mount(in: container, initialCenter: initialCenter, routeFirst: routeCoords.first)
         return container
     }
@@ -75,6 +77,7 @@ struct MapLibreChartView: UIViewRepresentable {
         c.onSearchPoint = onSearchPoint
         c.inMapCommand = mapCommand
         c.northLocked = northLocked
+        c.inTheme = theme
         c.cacheInputs(layer: layer, routeCoords: routeCoords, breadcrumbCoords: breadcrumbCoords,
                       radarTemplate: radarTemplate, ownship: ownship, ownshipCourse: ownshipCourse,
                       ownshipAccuracyM: ownshipAccuracyM, ownshipIntegrity: ownshipIntegrity,
@@ -109,6 +112,8 @@ struct MapLibreChartView: UIViewRepresentable {
         private var plateImageKey: String?         // "pdf|inverted" — refresh the raster on a plate SWAP, not just invert
         private var plateCornersCoord: (tl: CLLocationCoordinate2D, tr: CLLocationCoordinate2D)?  // chrome anchors
         var northLocked: Bool = true          // mirrors AppModel.northLocked; applied in applyLatest
+        var inTheme: AppTheme = .cockpit      // mirrors model.theme; applied one-shot in applyMapThemeIfNeeded
+        private var appliedMapTheme: AppTheme?   // last palette actually applied (nil → force apply)
         private var serverPort: UInt16 = 0         // bound loopback port, delivered async by the tile server
         private var servedReadersSig: String?      // (layer + sorted mounted packIDs) last handed to the tile server
         // Bundled always-present RASTER bases for the globe (loaded once): a global Blue Marble satellite backstop
@@ -218,6 +223,7 @@ struct MapLibreChartView: UIViewRepresentable {
         func applyLatest() {
             guard let map else { return }
             frameIfNeeded(on: map)          // re-attempt initial framing until real route/GPS/saved-camera exists
+            applyMapThemeIfNeeded(on: map)  // one-shot palette re-apply on theme change (nil-compare when unchanged)
             applyLayer(inLayer, on: map)
             // Surface packs whose download completed AFTER ensureVisiblePacks returned (store.readers is
             // @MainActor → hop, matching ensureVisiblePacks). Signature-gated, so a no-op when the set is unchanged.
@@ -269,7 +275,7 @@ struct MapLibreChartView: UIViewRepresentable {
                 map.setVisibleCoordinateBounds(MLNCoordinateBounds(sw: .init(latitude: a, longitude: c),
                                                                    ne: .init(latitude: b, longitude: d)),
                                                edgePadding: UIEdgeInsets(top: 80, left: 60, bottom: 80, right: 60),
-                                               animated: false)
+                                               animated: false, completionHandler: nil)
                 didFrame = true; return
             }
             if let own = inOwnship {
@@ -359,7 +365,8 @@ struct MapLibreChartView: UIViewRepresentable {
                 guard port > 0 else { self.onRenderStalled?(); return }
                 guard self.serverPort == 0 else { return }                 // install the style ONCE
                 self.serverPort = port
-                guard let styleURL = Self.writeStyle(port: port, globe: self.globeProjection) else { self.onRenderStalled?(); return }
+                guard let styleURL = Self.writeStyle(port: port, globe: self.globeProjection,
+                                                     theme: MapTheme.forTheme(self.inTheme)) else { self.onRenderStalled?(); return }
                 m.styleURL = styleURL
             }
             applyLatest()   // push whatever updateUIView cached before the map existed
@@ -395,7 +402,7 @@ struct MapLibreChartView: UIViewRepresentable {
 
         // MARK: style + layers
 
-        private static func writeStyle(port: UInt16, globe: Bool) -> URL? {
+        private static func writeStyle(port: UInt16, globe: Bool, theme: MapTheme) -> URL? {
             // FULLY OFFLINE style: FAA sectional raster from the loopback server over a #0b1a2b sea, with a
             // bundled vector land base (setupLandBase, added at didFinishLoading) drawn between. NO network
             // dependency — glyphs + FAA tiles are loopback, land is bundled. Only ever called with a bound
@@ -406,10 +413,9 @@ struct MapLibreChartView: UIViewRepresentable {
             // Vendor/MapLibre.xcframework) honors — curving the map onto a sphere. Remount to re-apply.
             let projection = globe ? "\"projection\": { \"type\": \"globe\" },\n              " : ""
             // Sea colour: on the globe the background renders as the SPHERE surface (ocean), and the area outside
-            // the sphere is "space" (the app's near-black palette bg, #0B1117). The flat sea #0b1a2b is almost
-            // that same near-black, so on the globe the ocean melts into space. Use a deeper, clearly-blue ocean
-            // on the globe so the sphere reads as a planet against the void; the flat chart keeps its dark sea.
-            let sea = globe ? "#0f3a63" : "#0b1a2b"
+            // the sphere is "space". A near-black flat sea would melt into space on the globe, so the globe keeps
+            // a clearly-blue ocean; both values come from the per-theme MapTheme.
+            let sea = MapTheme.hexString(globe ? theme.globeSea : theme.sea)
             // Chart tiles use the plain "{z}/{x}/{y}" path on BOTH projections. (An earlier globe-only "/uz/"
             // underzoom path was never reachable — syncFAASource rebuilt the source with a prefix-less template
             // before any reader was mounted — and the bundled raster bases superseded it: the globe now gets its
@@ -425,7 +431,10 @@ struct MapLibreChartView: UIViewRepresentable {
               },
               "layers": [
                 { "id": "bg", "type": "background", "paint": { "background-color": "\(sea)" } },
-                { "id": "faa", "type": "raster", "source": "faa" }
+                { "id": "faa", "type": "raster", "source": "faa",
+                  "paint": { "raster-brightness-max": \(theme.rasterBrightnessMax),
+                             "raster-saturation": \(theme.rasterSaturation),
+                             "raster-contrast": \(theme.rasterContrast) } }
               ]
             }
             """
@@ -437,7 +446,9 @@ struct MapLibreChartView: UIViewRepresentable {
             servedReadersSig = nil               // the faa source is freshly (re)created empty here → force a remount
             appliedTrackCount = -1               // the "track" source is recreated empty → force a re-apply below
             appliedRadarTemplate = nil           // wxradar source gone after reload → force updateRadar to re-add
+            appliedMapTheme = nil                // freshly-built layers carry setup colors → force a theme pass
             setupOverlayLayers(style)            // airspace/airways/nav + TFR/route/traffic/ownship (empty)
+            applyMapThemeIfNeeded(on: mapView)   // recolor the fresh layers for the active theme
             updateRoute(routeCoords, on: mapView)
             updateTrack(trackCoords, on: mapView)
             updateRadar(inRadarTemplate, on: mapView)
@@ -912,6 +923,83 @@ struct MapLibreChartView: UIViewRepresentable {
                 "R", 2.4, "P", 2.4, "TFR", 2.4, "W", 1.8, "A", 1.8, "MOA", 1.8, "B", 1.5, "C", 1.5, 1.2])
         }
 
+        // MARK: per-theme palette re-apply (cinematic restyle)
+
+        /// One-shot palette application: runs only when the theme actually changed, or after a style
+        /// rebuild reset `appliedMapTheme`. A LIVE restyle via runtime paint setters — the map is never
+        /// remounted for a theme change (ARCHITECTURE.md: the map is never torn down; remount would
+        /// refetch + re-upload ~40 MB of raster for what a dozen GPU uniform updates accomplish).
+        func applyMapThemeIfNeeded(on map: MLNMapView) {
+            guard styleConfigured, let style = map.style, inTheme != appliedMapTheme else { return }
+            let t = MapTheme.forTheme(inTheme)
+            applyBaseMapTheme(style, t)
+            applyVectorMapTheme(style, t)
+            applyRasterMapTheme(style, t)
+            appliedMapTheme = inTheme
+        }
+
+        private func applyBaseMapTheme(_ style: MLNStyle, _ t: MapTheme) {
+            (style.layer(withIdentifier: "bg") as? MLNBackgroundStyleLayer)?.backgroundColor =
+                NSExpression(forConstantValue: globeProjection ? t.globeSea : t.sea)
+            (style.layer(withIdentifier: "land-fill") as? MLNFillStyleLayer)?.fillColor =
+                NSExpression(forConstantValue: t.land)
+            (style.layer(withIdentifier: "coastline") as? MLNLineStyleLayer)?.lineColor =
+                NSExpression(forConstantValue: t.coastline)
+        }
+
+        private func applyVectorMapTheme(_ style: MLNStyle, _ t: MapTheme) {
+            (style.layer(withIdentifier: "airways-line") as? MLNLineStyleLayer)?.lineColor =
+                NSExpression(forConstantValue: t.airway)
+            if let l = style.layer(withIdentifier: "airways-label") as? MLNSymbolStyleLayer {
+                l.textColor = NSExpression(forConstantValue: t.airwayLabelText)
+                l.textHaloColor = NSExpression(forConstantValue: t.airwayLabelHalo)
+            }
+            let asp = Self.aspColorExpr(t)
+            (style.layer(withIdentifier: "airspace-fill") as? MLNFillStyleLayer)?.fillColor = asp
+            (style.layer(withIdentifier: "airspace-outline") as? MLNLineStyleLayer)?.lineColor = asp
+            (style.layer(withIdentifier: "airspace-label") as? MLNSymbolStyleLayer)?.textColor = asp
+            if let l = style.layer(withIdentifier: "nav-sym") as? MLNSymbolStyleLayer {
+                l.textColor = NSExpression(forConstantValue: t.navLabelText)
+                l.textHaloColor = NSExpression(forConstantValue: t.navLabelHalo)
+            }
+            let tfr = NSExpression(forConstantValue: t.airspaceColor("TFR"))
+            (style.layer(withIdentifier: "tfr-fill") as? MLNFillStyleLayer)?.fillColor = tfr
+            (style.layer(withIdentifier: "tfr-outline") as? MLNLineStyleLayer)?.lineColor = tfr
+            (style.layer(withIdentifier: "tfr-label") as? MLNSymbolStyleLayer)?.textColor = tfr
+            (style.layer(withIdentifier: "track-line") as? MLNLineStyleLayer)?.lineColor =
+                NSExpression(forConstantValue: t.track)
+            (style.layer(withIdentifier: "route-line") as? MLNLineStyleLayer)?.lineColor =
+                NSExpression(forConstantValue: t.route)
+        }
+
+        /// Raster paint on every chart raster (faa + bundled bases + satellite). The radar keeps its
+        /// own translucency and the plate overlay its user-controlled opacity/invert — both excluded.
+        private func applyRasterMapTheme(_ style: MLNStyle, _ t: MapTheme) {
+            assert(style.layers.count < 256, "applyRasterMapTheme: unexpected layer explosion")
+            for layer in style.layers {                              // bounded (style layer list)
+                guard let rl = layer as? MLNRasterStyleLayer,
+                      rl.identifier != "wxradar-layer", rl.identifier != "plate-raster" else { continue }
+                Self.applyRasterPaint(to: rl, t)
+            }
+        }
+
+        /// Shared with syncFAASource: the "faa" layer is destroyed + recreated on every pack-set change
+        /// (pan into new coverage, VFR⇄IFR switch, late download), and a fresh layer must not wash out
+        /// the theme's raster dim until the next theme switch.
+        static func applyRasterPaint(to rl: MLNRasterStyleLayer, _ t: MapTheme) {
+            rl.maximumRasterBrightness = NSExpression(forConstantValue: t.rasterBrightnessMax)
+            rl.rasterSaturation = NSExpression(forConstantValue: t.rasterSaturation)
+            rl.rasterContrast = NSExpression(forConstantValue: t.rasterContrast)
+        }
+
+        /// Theme-aware variant of `aspColorExpr` used by the re-apply pass (setup keeps the classic one).
+        private static func aspColorExpr(_ t: MapTheme) -> NSExpression {
+            func h(_ cls: String) -> String { MapTheme.hexString(t.airspaceColor(cls)) }
+            return NSExpression(mglJSONObject: ["match", ["get", "cls"],
+                "C", h("C"), "TFR", h("TFR"), "R", h("R"), "P", h("P"),
+                "W", h("W"), "A", h("A"), "MOA", h("MOA"), h("B")])
+        }
+
         private func ensureVisiblePacks(_ mapView: MLNMapView) {
             let b = mapView.visibleCoordinateBounds
             let ne = MKMapPoint(b.ne), sw = MKMapPoint(b.sw)
@@ -1028,6 +1116,7 @@ struct MapLibreChartView: UIViewRepresentable {
                           .maximumZoomLevel: NSNumber(value: faaMax + MBTilesTileOverlay.overzoomLevels)])
             style.addSource(fresh)
             let faaRaster = MLNRasterStyleLayer(identifier: "faa", source: fresh)   // BOTTOM (below the first vector layer)
+            Self.applyRasterPaint(to: faaRaster, MapTheme.forTheme(inTheme))   // fresh layer must keep the theme's dim
             // Anchor the OPAQUE FAA chart BELOW the translucent radar when the radar exists — else a pack
             // remount (pan to new coverage, VFR⇄IFR switch, late download) re-inserts faa above the radar
             // (they shared the "airways-line" anchor) and the precipitation vanishes until the next ~10-min
