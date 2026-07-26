@@ -113,7 +113,7 @@ struct MapObjectView: View {
         .sheet(item: $climateTarget) { target in
             // Pass the palette by value (not the whole model) so the climate sheet isn't re-rendered
             // by every live-data publish while it's open.
-            AirportClimateView(palette: model.palette, ident: target.ident, coord: target.coord)
+            AirportClimateView(palette: model.palette, theme: model.theme, ident: target.ident, coord: target.coord)
         }
     }
 
