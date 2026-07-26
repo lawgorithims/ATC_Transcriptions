@@ -36,7 +36,7 @@ struct WhatsNewSheet: View {
             .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
         }
         .tint(p.accent)
-        .preferredColorScheme(model.theme == .day ? .light : .dark)
+        .preferredColorScheme(model.theme.colorScheme)
         .accessibilityIdentifier("whats-new-sheet")
         // Record the running build as "seen" however the sheet is dismissed (button or swipe), so the
         // popup doesn't reappear until the next update (a `--whats-new` preview is exempted inside).
