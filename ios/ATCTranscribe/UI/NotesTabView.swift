@@ -281,6 +281,15 @@ struct NoteCanvas: UIViewRepresentable {
         }
     }
 
+    /// The palette is a SYSTEM overlay keyed to the canvas responder — it does not go away with the
+    /// view. Without this teardown, closing the editor (Done/Library, or leaving the tab) left the
+    /// tool palette floating over the bottom tab bar, swallowing its taps until an app restart.
+    static func dismantleUIView(_ canvas: PKCanvasView, coordinator: Coordinator) {
+        coordinator.toolPicker.setVisible(false, forFirstResponder: canvas)
+        coordinator.toolPicker.removeObserver(canvas)
+        canvas.resignFirstResponder()
+    }
+
     final class Coordinator: NSObject, PKCanvasViewDelegate {
         let parent: NoteCanvas
         let toolPicker = PKToolPicker()
