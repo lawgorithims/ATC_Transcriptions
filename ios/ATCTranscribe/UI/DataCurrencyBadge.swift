@@ -38,7 +38,7 @@ struct DataCurrencyBadge: View {
     var body: some View {
         Button { showDetail = true } label: {
             HStack(spacing: 3) {
-                Image(systemName: glyph).font(.caption2)
+                Image(systemName: glyph).font(.dsLabelS)
                 if !compact || currency.isExpired {
                     Text(currency.label).font(.system(size: 9, weight: .semibold))
                 }
@@ -55,21 +55,21 @@ struct DataCurrencyBadge: View {
     private var detail: some View {
         let p = model.palette
         return VStack(alignment: .leading, spacing: 10) {
-            Text("Data currency").font(.caption.weight(.bold)).foregroundStyle(p.textDim)
+            Text("Data currency").font(.dsLabelBold).foregroundStyle(p.textDim)
             ForEach(Array(sources.enumerated()), id: \.offset) { _, src in
                 VStack(alignment: .leading, spacing: 2) {
                     HStack(spacing: 6) {
                         Image(systemName: Self.glyph(for: src.currency()))
-                            .font(.caption2).foregroundStyle(Self.tint(for: src.currency(), p))
+                            .font(.dsLabelS).foregroundStyle(Self.tint(for: src.currency(), p))
                         Text(src.source.isEmpty ? "Unnamed dataset" : src.source)
-                            .font(.caption).foregroundStyle(p.text)
+                            .font(.dsLabel).foregroundStyle(p.text)
                     }
                     Text(src.summary.isEmpty ? "No cycle recorded" : src.summary)
-                        .font(.caption2).foregroundStyle(p.textDim)
+                        .font(.dsLabelS).foregroundStyle(p.textDim)
                 }
             }
             Text("Aeronautical data is republished on a fixed cycle. Expired data may not reflect current procedures — verify against an official source before use.")
-                .font(.caption2).foregroundStyle(p.textDim)
+                .font(.dsLabelS).foregroundStyle(p.textDim)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(14).frame(minWidth: 280, maxWidth: 360)
