@@ -51,6 +51,7 @@ struct MapLibreChartView: UIViewRepresentable {
     var renderMeter: MapRenderMeter? = nil                         // battery diagnostics: per-frame counter → map fps
     var globeProjection: Bool = false                             // DEV: emit projection:globe (inert on stock 6.27.0)
     var theme: AppTheme = .cockpit                                // map palette; re-applied LIVE (no remount)
+    var chartBrightness: Double = 1.0                             // pilot's raster-brightness scale (layers panel)
 
     func makeCoordinator() -> Coordinator { Coordinator(store: store, routeCoords: routeCoords) }
 
@@ -67,6 +68,7 @@ struct MapLibreChartView: UIViewRepresentable {
         context.coordinator.renderMeter = renderMeter
         context.coordinator.globeProjection = globeProjection   // read once at style install (createMap)
         context.coordinator.inTheme = theme                     // style JSON is written with this palette
+        context.coordinator.inChartBrightness = chartBrightness
         context.coordinator.mount(in: container, initialCenter: initialCenter, routeFirst: routeCoords.first)
         return container
     }
@@ -78,6 +80,7 @@ struct MapLibreChartView: UIViewRepresentable {
         c.inMapCommand = mapCommand
         c.northLocked = northLocked
         c.inTheme = theme
+        c.inChartBrightness = chartBrightness
         c.cacheInputs(layer: layer, routeCoords: routeCoords, breadcrumbCoords: breadcrumbCoords,
                       radarTemplate: radarTemplate, ownship: ownship, ownshipCourse: ownshipCourse,
                       ownshipAccuracyM: ownshipAccuracyM, ownshipIntegrity: ownshipIntegrity,
@@ -113,8 +116,13 @@ struct MapLibreChartView: UIViewRepresentable {
         private var plateCornersCoord: (tl: CLLocationCoordinate2D, tr: CLLocationCoordinate2D)?  // chrome anchors
         var northLocked: Bool = true          // mirrors AppModel.northLocked; applied in applyLatest
         var inTheme: AppTheme = .cockpit      // mirrors model.theme; applied one-shot in applyMapThemeIfNeeded
+        var inChartBrightness: Double = 1.0   // mirrors model.chartBrightness (layers-panel slider)
         private var appliedMapTheme: AppTheme?   // last palette actually applied (nil → force apply)
+        private var appliedBrightness: Double?   // last raster-brightness scale applied
         private weak var starfield: StarfieldView?   // globe space backdrop; retinted on theme change
+
+        /// The palette for the CURRENT theme + pilot brightness — the single source every apply path uses.
+        var currentMapTheme: MapTheme { MapTheme.forTheme(inTheme, chartBrightness: inChartBrightness) }
         private var serverPort: UInt16 = 0         // bound loopback port, delivered async by the tile server
         private var servedReadersSig: String?      // (layer + sorted mounted packIDs) last handed to the tile server
         // Bundled always-present RASTER bases for the globe (loaded once): a global Blue Marble satellite backstop
@@ -352,7 +360,7 @@ struct MapLibreChartView: UIViewRepresentable {
                 m.backgroundColor = .clear
                 let sky = StarfieldView(frame: container.bounds)
                 sky.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-                let t = MapTheme.forTheme(inTheme)
+                let t = currentMapTheme
                 sky.apply(space: t.space, starColor: t.starColor, alphaScale: CGFloat(t.starAlphaScale))
                 container.addSubview(sky)   // inserted before the map → sits behind it (= "space")
                 self.starfield = sky
@@ -370,7 +378,7 @@ struct MapLibreChartView: UIViewRepresentable {
                 guard self.serverPort == 0 else { return }                 // install the style ONCE
                 self.serverPort = port
                 guard let styleURL = Self.writeStyle(port: port, globe: self.globeProjection,
-                                                     theme: MapTheme.forTheme(self.inTheme)) else { self.onRenderStalled?(); return }
+                                                     theme: self.currentMapTheme) else { self.onRenderStalled?(); return }
                 m.styleURL = styleURL
             }
             applyLatest()   // push whatever updateUIView cached before the map existed
@@ -959,12 +967,14 @@ struct MapLibreChartView: UIViewRepresentable {
         /// remounted for a theme change (ARCHITECTURE.md: the map is never torn down; remount would
         /// refetch + re-upload ~40 MB of raster for what a dozen GPU uniform updates accomplish).
         func applyMapThemeIfNeeded(on map: MLNMapView) {
-            guard styleConfigured, let style = map.style, inTheme != appliedMapTheme else { return }
-            let t = MapTheme.forTheme(inTheme)
+            guard styleConfigured, let style = map.style,
+                  inTheme != appliedMapTheme || inChartBrightness != appliedBrightness else { return }
+            let t = currentMapTheme
             applyBaseMapTheme(style, t)
             applyVectorMapTheme(style, t)
             applyRasterMapTheme(style, t)
             appliedMapTheme = inTheme
+            appliedBrightness = inChartBrightness
         }
 
         private func applyBaseMapTheme(_ style: MLNStyle, _ t: MapTheme) {
@@ -1081,7 +1091,7 @@ struct MapLibreChartView: UIViewRepresentable {
                                   .maximumZoomLevel: NSNumber(value: reader.maxZoom)])
                     style.addSource(src)
                     let rl = MLNRasterStyleLayer(identifier: ident, source: src)
-                    Self.applyRasterPaint(to: rl, MapTheme.forTheme(inTheme))   // created after the theme pass
+                    Self.applyRasterPaint(to: rl, currentMapTheme)   // created after the theme pass
                     if let sat = style.layer(withIdentifier: "satellite") { style.insertLayer(rl, above: sat) }
                     else if let bg = style.layer(withIdentifier: "bg") { style.insertLayer(rl, above: bg) }
                     else { style.addLayer(rl) }
@@ -1125,7 +1135,7 @@ struct MapLibreChartView: UIViewRepresentable {
                           .maximumZoomLevel: NSNumber(value: bundledSatelliteBase?.maxZoom ?? 5)])
             style.addSource(src)
             let layer = MLNRasterStyleLayer(identifier: "satellite", source: src)   // bottom raster (above bg)
-            Self.applyRasterPaint(to: layer, MapTheme.forTheme(inTheme))   // created after the theme pass
+            Self.applyRasterPaint(to: layer, currentMapTheme)   // created after the theme pass
             if let bg = style.layer(withIdentifier: "bg") { style.insertLayer(layer, above: bg) }
             else { style.addLayer(layer) }
         }
@@ -1152,7 +1162,7 @@ struct MapLibreChartView: UIViewRepresentable {
                           .maximumZoomLevel: NSNumber(value: faaMax + MBTilesTileOverlay.overzoomLevels)])
             style.addSource(fresh)
             let faaRaster = MLNRasterStyleLayer(identifier: "faa", source: fresh)   // BOTTOM (below the first vector layer)
-            Self.applyRasterPaint(to: faaRaster, MapTheme.forTheme(inTheme))   // fresh layer must keep the theme's dim
+            Self.applyRasterPaint(to: faaRaster, currentMapTheme)   // fresh layer must keep the theme's dim
             // Anchor the OPAQUE FAA chart BELOW the translucent radar when the radar exists — else a pack
             // remount (pan to new coverage, VFR⇄IFR switch, late download) re-inserts faa above the radar
             // (they shared the "airways-line" anchor) and the precipitation vanishes until the next ~10-min
