@@ -114,6 +114,7 @@ struct MapLibreChartView: UIViewRepresentable {
         var northLocked: Bool = true          // mirrors AppModel.northLocked; applied in applyLatest
         var inTheme: AppTheme = .cockpit      // mirrors model.theme; applied one-shot in applyMapThemeIfNeeded
         private var appliedMapTheme: AppTheme?   // last palette actually applied (nil → force apply)
+        private weak var starfield: StarfieldView?   // globe space backdrop; retinted on theme change
         private var serverPort: UInt16 = 0         // bound loopback port, delivered async by the tile server
         private var servedReadersSig: String?      // (layer + sorted mounted packIDs) last handed to the tile server
         // Bundled always-present RASTER bases for the globe (loaded once): a global Blue Marble satellite backstop
@@ -351,7 +352,10 @@ struct MapLibreChartView: UIViewRepresentable {
                 m.backgroundColor = .clear
                 let sky = StarfieldView(frame: container.bounds)
                 sky.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+                let t = MapTheme.forTheme(inTheme)
+                sky.apply(space: t.space, starColor: t.starColor, alphaScale: CGFloat(t.starAlphaScale))
                 container.addSubview(sky)   // inserted before the map → sits behind it (= "space")
+                self.starfield = sky
             }
             container.addSubview(m)
             self.map = m
@@ -508,6 +512,7 @@ struct MapLibreChartView: UIViewRepresentable {
             // before their sources, or MapLibre throws), then build fresh — self-healing + fully idempotent.
             clearManagedStyle(style)
             setupLandBase(style)               // OFFLINE vector land/coastline, bottom-most (above bg, below faa)
+            setupNightVeil(style)              // red dark-adaptation wash over the chart (night theme only)
             setupAirwayAirspaceLayers(style)   // airways-line + airspace fill/outline (below labels)
             setupLabelLayers(style)            // airway idents + airspace altitude blocks (SDF text)
             setupNavLayers(style)              // FAA nav glyphs + idents
@@ -522,12 +527,12 @@ struct MapLibreChartView: UIViewRepresentable {
             let layers = ["plate-raster", "ownship-sym", "accuracy-fill", "accuracy-line", "traffic-sym", "route-line", "track-line",
                           "wxradar-layer", "tfr-label", "tfr-outline", "tfr-fill", "nav-sym",
                           "airspace-label", "airways-label", "airspace-outline", "airspace-fill",
-                          "airways-line", "coastline", "land-fill"]
+                          "airways-line", "night-veil-fill", "coastline", "land-fill"]
             for id in layers where style.layer(withIdentifier: id) != nil {          // bounded (rule 2)
                 if let l = style.layer(withIdentifier: id) { style.removeLayer(l) }
             }
             let sources = ["plate", "ownship", "accuracy", "traffic", "route", "track", "wxradar", "tfr-labels", "tfr",
-                           "nav", "airspace-labels", "airspace", "airways", "land"]
+                           "nav", "airspace-labels", "airspace", "airways", "night-veil", "land"]
             for id in sources where style.source(withIdentifier: id) != nil {        // bounded (rule 2)
                 if let s = style.source(withIdentifier: id) { style.removeSource(s) }
             }
@@ -568,6 +573,30 @@ struct MapLibreChartView: UIViewRepresentable {
             } else {
                 style.addLayer(fill); style.addLayer(coast)
             }
+        }
+
+        /// A static world polygon washed over the chart for the night theme's red shift (dark
+        /// adaptation) — opacity 0 / hidden in every other theme, so cockpit and day pay nothing.
+        /// FLAT MAP ONLY: on the globe the world polygon would tessellate onto the sphere and
+        /// z-fight the raster (the globe gets the raster dim without the red wash). Added before
+        /// the vector layers so airways/TFR/route/ownship render at full intensity ABOVE the veil;
+        /// syncFAASource re-floats it directly above the recreated "faa" layer on every pack change.
+        private func setupNightVeil(_ style: MLNStyle) {
+            guard !globeProjection else { return }
+            guard style.source(withIdentifier: "night-veil") == nil else { return }   // idempotent
+            var corners = [CLLocationCoordinate2D(latitude: 85, longitude: -180),
+                           CLLocationCoordinate2D(latitude: 85, longitude: 180),
+                           CLLocationCoordinate2D(latitude: -85, longitude: 180),
+                           CLLocationCoordinate2D(latitude: -85, longitude: -180)]
+            assert(corners.count == 4, "night veil must be a quad")
+            let world = MLNPolygonFeature(coordinates: &corners, count: UInt(corners.count))
+            let src = MLNShapeSource(identifier: "night-veil", shape: world, options: nil)
+            style.addSource(src)
+            let veil = MLNFillStyleLayer(identifier: "night-veil-fill", source: src)
+            veil.fillColor = NSExpression(forConstantValue: MapTheme.nightVeilColor)
+            veil.fillOpacity = NSExpression(forConstantValue: 0)
+            veil.isVisible = false
+            style.addLayer(veil)   // later setup* addLayer calls stack the vectors above it
         }
 
         /// Airways line + airspace fill/outline, stacked bottom-most of the vector context.
@@ -945,6 +974,11 @@ struct MapLibreChartView: UIViewRepresentable {
                 NSExpression(forConstantValue: t.land)
             (style.layer(withIdentifier: "coastline") as? MLNLineStyleLayer)?.lineColor =
                 NSExpression(forConstantValue: t.coastline)
+            if let veil = style.layer(withIdentifier: "night-veil-fill") as? MLNFillStyleLayer {
+                veil.fillOpacity = NSExpression(forConstantValue: t.nightVeilOpacity)
+                veil.isVisible = t.nightVeilOpacity > 0
+            }
+            starfield?.apply(space: t.space, starColor: t.starColor, alphaScale: CGFloat(t.starAlphaScale))
         }
 
         private func applyVectorMapTheme(_ style: MLNStyle, _ t: MapTheme) {
@@ -1047,6 +1081,7 @@ struct MapLibreChartView: UIViewRepresentable {
                                   .maximumZoomLevel: NSNumber(value: reader.maxZoom)])
                     style.addSource(src)
                     let rl = MLNRasterStyleLayer(identifier: ident, source: src)
+                    Self.applyRasterPaint(to: rl, MapTheme.forTheme(inTheme))   // created after the theme pass
                     if let sat = style.layer(withIdentifier: "satellite") { style.insertLayer(rl, above: sat) }
                     else if let bg = style.layer(withIdentifier: "bg") { style.insertLayer(rl, above: bg) }
                     else { style.addLayer(rl) }
@@ -1090,6 +1125,7 @@ struct MapLibreChartView: UIViewRepresentable {
                           .maximumZoomLevel: NSNumber(value: bundledSatelliteBase?.maxZoom ?? 5)])
             style.addSource(src)
             let layer = MLNRasterStyleLayer(identifier: "satellite", source: src)   // bottom raster (above bg)
+            Self.applyRasterPaint(to: layer, MapTheme.forTheme(inTheme))   // created after the theme pass
             if let bg = style.layer(withIdentifier: "bg") { style.insertLayer(layer, above: bg) }
             else { style.addLayer(layer) }
         }
@@ -1133,6 +1169,12 @@ struct MapLibreChartView: UIViewRepresentable {
             else if let bottom = style.layer(withIdentifier: "airways-line") { style.insertLayer(faaRaster, below: bottom) }
             else if let plate = style.layer(withIdentifier: "plate-raster") { style.insertLayer(faaRaster, below: plate) }
             else { style.addLayer(faaRaster) }
+            // The night veil must sit DIRECTLY above the chart, whatever anchor faa landed under —
+            // re-float it every remount so a pan into new coverage can't leave the veil buried.
+            if let veil = style.layer(withIdentifier: "night-veil-fill") {
+                style.removeLayer(veil)
+                style.insertLayer(veil, above: faaRaster)
+            }
         }
 
         // MARK: route line
@@ -1632,8 +1674,19 @@ struct MapLibreChartScreen: View {
 /// (non-opaque) MLNMapView so "space" outside the sphere reads as a night sky instead of the ocean colour. Star
 /// positions are generated once in unit space (resize is a free rescale) and drawn stably across redraws.
 final class StarfieldView: UIView {
-    private static let space = UIColor(red: 0.02, green: 0.03, blue: 0.06, alpha: 1)  // deep night-sky navy
+    private var space = UIColor(red: 0.02, green: 0.03, blue: 0.06, alpha: 1)  // deep night-sky navy
+    private var starColor = UIColor.white
+    private var alphaScale: CGFloat = 1
     private let stars: [(pos: CGPoint, r: CGFloat, a: CGFloat)]
+
+    /// Retint for the active theme (night dims + red-shifts the stars). One redraw per theme change.
+    func apply(space: UIColor, starColor: UIColor, alphaScale: CGFloat) {
+        assert(alphaScale > 0 && alphaScale <= 1, "starfield alpha scale out of range")
+        self.space = space; self.starColor = starColor; self.alphaScale = alphaScale
+        backgroundColor = space
+        setNeedsDisplay()
+    }
+
     override init(frame: CGRect) {
         var rng = SystemRandomNumberGenerator()
         var s: [(CGPoint, CGFloat, CGFloat)] = []
@@ -1646,23 +1699,24 @@ final class StarfieldView: UIView {
         }
         stars = s
         super.init(frame: frame)
-        backgroundColor = Self.space
+        backgroundColor = space
         isUserInteractionEnabled = false
         contentMode = .redraw
     }
     required init?(coder: NSCoder) { nil }
     override func draw(_ rect: CGRect) {
         guard let ctx = UIGraphicsGetCurrentContext() else { return }
-        ctx.setFillColor(Self.space.cgColor); ctx.fill(rect)
+        ctx.setFillColor(space.cgColor); ctx.fill(rect)
         for star in stars {                                  // bounded (rule 2)
             let c = CGPoint(x: star.pos.x * rect.width, y: star.pos.y * rect.height)
+            let a = star.a * alphaScale
             if star.r > 1.5 {                                // soft glow on the bright stars → night-sky sparkle
                 ctx.setShadow(offset: .zero, blur: star.r * 2.6,
-                              color: UIColor(white: 0.85, alpha: min(1, star.a)).cgColor)
+                              color: starColor.withAlphaComponent(min(1, a) * 0.85).cgColor)
             } else {
                 ctx.setShadow(offset: .zero, blur: 0, color: nil)
             }
-            ctx.setFillColor(UIColor(white: 1, alpha: star.a).cgColor)
+            ctx.setFillColor(starColor.withAlphaComponent(a).cgColor)
             ctx.fillEllipse(in: CGRect(x: c.x - star.r, y: c.y - star.r, width: star.r * 2, height: star.r * 2))
         }
         ctx.setShadow(offset: .zero, blur: 0, color: nil)
