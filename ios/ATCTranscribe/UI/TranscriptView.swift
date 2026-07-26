@@ -434,11 +434,9 @@ struct TranscriptRow: View {
         }
     }
 
-    /// Distinct color per diarization speaker id (cycles for many speakers).
+    /// Distinct color per diarization speaker id (cycles) — shared EntityTint table, night-safe.
     private func speakerColor(_ i: Int) -> Color {
-        let colors: [Color] = [.hex(0x3B9EFF), .hex(0x2EE6A6), .hex(0xF5C451),
-                               .hex(0xC58CFF), .hex(0xFF8FB1), .hex(0x5AD1E6)]
-        return colors[((i % colors.count) + colors.count) % colors.count]
+        EntityTint.speaker(i, model.theme)
     }
 }
 

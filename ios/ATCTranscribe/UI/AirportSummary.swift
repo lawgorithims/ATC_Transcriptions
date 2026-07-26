@@ -77,14 +77,17 @@ struct AirportSummary: Equatable {
 // MARK: - Flight-category chip
 
 /// The VFR / MVFR / IFR / LIFR pill (ForeFlight-style colour coding). `nil` metar → a muted "— WX".
+/// The FAA-standard category colors are KEPT in every theme — pilots pattern-match them — but night
+/// dims the pill (`dimmed`) so the green/blue emission stays low without changing the meaning.
 struct FlightCategoryChip: View {
     let metar: Metar?
+    var dimmed: Bool = false
     var body: some View {
         let cat = metar?.category ?? .unknown
         return Text(cat == .mvfr ? "MVFR" : cat.rawValue)
             .font(.caption2.weight(.heavy))
             .padding(.horizontal, 7).padding(.vertical, 3)
-            .background(Capsule().fill(Self.color(cat)))
+            .background(Capsule().fill(Self.color(cat).opacity(dimmed ? 0.75 : 1)))
             .foregroundStyle(.white)
             .accessibilityIdentifier("flight-category")
             .accessibilityLabel("Flight category \(cat.rawValue)")
