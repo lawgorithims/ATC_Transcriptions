@@ -19,11 +19,11 @@ struct BatteryDiagnosticsView: View {
                 Card(title: "Collect battery data") {
                     VStack(alignment: .leading, spacing: 10) {
                         Toggle(isOn: $battery.enabled) {
-                            Text("Sample battery every minute").font(.caption).foregroundStyle(p.text)
+                            Text("Sample battery every minute").font(.dsLabel).foregroundStyle(p.text)
                         }
                         .accessibilityIdentifier("battery-diag-toggle")
                         Text("Records battery level, thermal state, and what the app is doing (transcription, map layer, Stratux, GPS) once a minute while open, so a drain spike can be traced to a cause. Off costs nothing. Fly a normal session with it on, then Copy the log.")
-                            .font(.caption2).foregroundStyle(p.textDim)
+                            .font(.dsLabelS).foregroundStyle(p.textDim)
                     }
                 }
 
@@ -38,7 +38,7 @@ struct BatteryDiagnosticsView: View {
                             KV("Doing", s.activity)
                         } else {
                             Text("No samples yet — enable collection above and leave the app open a couple of minutes.")
-                                .font(.caption).foregroundStyle(p.textDim)
+                                .font(.dsLabel).foregroundStyle(p.textDim)
                         }
                         if let rate = battery.dischargeRate {
                             KV("Discharge", String(format: "%.1f %%/hr (recent avg)", rate))
@@ -67,10 +67,10 @@ struct BatteryDiagnosticsView: View {
                                         .foregroundStyle(s.thermal >= 2 ? p.warn : p.text)
                                         .frame(width: 40, alignment: .leading)
                                     if s.charging {
-                                        Image(systemName: "bolt.fill").font(.caption2).foregroundStyle(p.accent)
+                                        Image(systemName: "bolt.fill").font(.dsLabelS).foregroundStyle(p.accent)
                                             .frame(width: 20, alignment: .leading)
                                     } else { Color.clear.frame(width: 20, height: 1) }
-                                    Text(s.activity).font(.caption2).foregroundStyle(p.textDim)
+                                    Text(s.activity).font(.dsLabelS).foregroundStyle(p.textDim)
                                         .fixedSize(horizontal: false, vertical: true)
                                 }
                             }
@@ -82,10 +82,10 @@ struct BatteryDiagnosticsView: View {
                     Card(title: "By activity (averages)") {
                         VStack(alignment: .leading, spacing: 7) {
                             Text("Isolates the drain: compare CPU (Whisper/ANE) and map fps (idle redraw) across what the app was doing.")
-                                .font(.caption2).foregroundStyle(p.textDim)
+                                .font(.dsLabelS).foregroundStyle(p.textDim)
                             ForEach(BatteryDiagnostics.activityAverages(battery.samples), id: \.tag) { row in
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(row.tag).font(.caption2.weight(.semibold)).foregroundStyle(p.text)
+                                    Text(row.tag).font(.dsLabelSBold).foregroundStyle(p.text)
                                         .fixedSize(horizontal: false, vertical: true)
                                     Text(String(format: "CPU %.0f%% · map %.1f fps · whisper %.0f%% · %d min",
                                                 row.cpu, row.fps, row.whisper, row.count))
