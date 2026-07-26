@@ -58,6 +58,20 @@ struct MapLayersPanel: View {
 
                     header("Map controls", p)
                     layerToggle($showZoomControls, "Map buttons (zoom, north, center)", "plus.magnifyingglass", p, id: "layer-zoom-controls")
+
+                    Divider().padding(.vertical, 2)
+
+                    header("Chart brightness", p)
+                    HStack(spacing: 9) {
+                        Image(systemName: "sun.min").font(.dsLabel).foregroundStyle(p.textDim)
+                        Slider(value: $model.chartBrightness, in: 0.3...1.0)
+                            .tint(p.accent)
+                            .accessibilityIdentifier("chart-brightness-slider")
+                            .accessibilityLabel("Chart brightness")
+                        Image(systemName: "sun.max").font(.dsLabel).foregroundStyle(p.textDim)
+                    }
+                    Text("Dims the FAA chart imagery only — route, traffic, TFRs and labels stay at full strength. Scales the theme's own level (Night is already dimmed).")
+                        .font(.dsLabelS).foregroundStyle(p.textDim)
                     // REMOVED with the globe becoming the only engine:
                     //  • "3D terrain" — it only ever drove MKMapConfiguration.elevationStyle on the FLAT
                     //    Apple base; the globe engine has no DEM path, so the switch did nothing on the

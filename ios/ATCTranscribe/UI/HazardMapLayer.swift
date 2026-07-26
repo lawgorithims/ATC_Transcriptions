@@ -18,8 +18,17 @@ final class HazardAnnotation: NSObject, MKAnnotation {
     }
 
     /// Marker / overlay tint per category — warm hazard hues, distinct from the airspace blues and
-    /// the magenta route so the layer reads at a glance.
-    static func tint(_ cat: EONETCategory) -> UIColor {
+    /// the magenta route so the layer reads at a glance. `night` swaps the violet storm hue (a
+    /// dark-adaptation violation) for a dim rose and keeps the rest warm-dim.
+    static func tint(_ cat: EONETCategory, night: Bool = false) -> UIColor {
+        if night {
+            switch cat {
+            case .wildfires:    return UIColor(red: 0.88, green: 0.38, blue: 0.09, alpha: 1)
+            case .severeStorms: return UIColor(red: 0.54, green: 0.29, blue: 0.36, alpha: 1)   // dim rose
+            case .dustHaze:     return UIColor(red: 0.63, green: 0.42, blue: 0.13, alpha: 1)
+            case .volcanoes:    return UIColor(red: 0.82, green: 0.13, blue: 0.13, alpha: 1)
+            }
+        }
         switch cat {
         case .wildfires:    return UIColor(red: 0.98, green: 0.45, blue: 0.09, alpha: 1)   // orange
         case .severeStorms: return UIColor(red: 0.55, green: 0.36, blue: 0.96, alpha: 1)   // violet

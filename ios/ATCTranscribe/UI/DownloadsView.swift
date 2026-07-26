@@ -119,7 +119,7 @@ struct DownloadsView: View {
                 Text("Cycle \(library.cycle.isEmpty ? "—" : library.cycle)").font(.callout).foregroundStyle(p.text)
                 DataCurrencyBadge(sources: [library.chartProvenance], compact: false).environmentObject(model)
                 Spacer()
-                Text("56-day").font(.caption2).foregroundStyle(p.textDim)
+                Text("56-day").font(.dsLabelS).foregroundStyle(p.textDim)
             }
             // An EXPIRED chart catalog is the one case a pilot must not have to go looking for: the map
             // keeps drawing, and out-of-cycle charts look exactly as authoritative as current ones.
@@ -202,10 +202,10 @@ struct DownloadsView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     ProgressView(value: Double(done), total: Double(max(total, 1))).tint(p.accent)
                     HStack {
-                        Text("Downloading \(done) of \(total) packs…").font(.caption2).foregroundStyle(p.textDim)
+                        Text("Downloading \(done) of \(total) packs…").font(.dsLabelS).foregroundStyle(p.textDim)
                         Spacer()
                         Button("Cancel") { library.cancelBulkDownload() }
-                            .font(.caption2.weight(.semibold)).foregroundStyle(p.bad)
+                            .font(.dsLabelSBold).foregroundStyle(p.bad)
                     }
                 }
             }
@@ -220,7 +220,7 @@ struct DownloadsView: View {
             DisclosureGroup {
                 if entries.isEmpty {
                     Text(warming ? "Loading chart index…" : "No charts available.")
-                        .font(.caption2).foregroundStyle(model.palette.textDim)
+                        .font(.dsLabelS).foregroundStyle(model.palette.textDim)
                 } else {
                     bulkRow(layer, entries: entries, cached: cached)
                     ForEach(entries, id: \.id) { chartRow($0) }
@@ -234,7 +234,7 @@ struct DownloadsView: View {
     private func layerLabel(_ layer: ChartLayer, cached: Int, total: Int) -> some View {
         let p = model.palette
         return HStack {
-            Text(layer.title).font(.callout.weight(.semibold)).foregroundStyle(p.text)
+            Text(layer.title).font(.dsHeadline).foregroundStyle(p.text)
             Spacer()
             if total > 0 {
                 if cached == total {
@@ -259,7 +259,7 @@ struct DownloadsView: View {
             HStack {
                 Image(systemName: "arrow.down.circle.fill").foregroundStyle(allDone ? p.textDim : p.accent)
                 Text(allDone ? "All regions downloaded" : "Download all — \(size(remaining))")
-                    .font(.caption.weight(.semibold)).foregroundStyle(allDone ? p.textDim : p.accent)
+                    .font(.dsLabelBold).foregroundStyle(allDone ? p.textDim : p.accent)
                 Spacer()
             }
         }
@@ -275,7 +275,7 @@ struct DownloadsView: View {
         return HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text(Self.regionLabel(e)).font(.callout).foregroundStyle(p.text)
-                Text(size(e.bytes)).font(.caption2).foregroundStyle(p.textDim)
+                Text(size(e.bytes)).font(.dsLabelS).foregroundStyle(p.textDim)
             }
             Spacer()
             if downloading {
@@ -285,7 +285,7 @@ struct DownloadsView: View {
                     Button(role: .destructive) { library.remove(e) } label: { Label("Remove", systemImage: "trash") }
                 } label: {
                     Label("Up to date", systemImage: "checkmark.circle.fill")
-                        .font(.caption2.weight(.semibold)).foregroundStyle(p.good)
+                        .font(.dsLabelSBold).foregroundStyle(p.good)
                 }
             } else {
                 Button { Task { await library.download(e) } } label: {
@@ -320,19 +320,19 @@ struct DownloadsView: View {
             if let d = Procedures.daysUntilExpiry(), d <= 7 { return ("\(max(d, 0))d left", p.warn) }
             return ("Current", p.good)
         }()
-        return Text(text).font(.caption2.weight(.bold)).foregroundStyle(.white)
+        return Text(text).font(.dsLabelSBold).foregroundStyle(.white)
             .padding(.horizontal, 8).padding(.vertical, 3).background(Capsule().fill(color))
     }
 
     private var plateProgressRow: some View {
         let p = model.palette
         return VStack(alignment: .leading, spacing: 6) {
-            Text(bag.job.label).font(.caption).foregroundStyle(p.text).lineLimit(1)
+            Text(bag.job.label).font(.dsLabel).foregroundStyle(p.text).lineLimit(1)
             HStack(spacing: 8) {
                 ProgressView(value: Double(bag.job.done), total: Double(max(bag.job.total, 1))).tint(p.accent)
                 Text("\(bag.job.done)/\(bag.job.total)").font(.caption2.monospacedDigit()).foregroundStyle(p.textDim)
             }
-            Button("Cancel", role: .destructive) { bag.cancel() }.font(.caption2)
+            Button("Cancel", role: .destructive) { bag.cancel() }.font(.dsLabelS)
         }
     }
 
@@ -346,16 +346,16 @@ struct DownloadsView: View {
                 Text(r).font(.callout).foregroundStyle(p.text)
                 if let st, st.total > 0 {
                     Text("\(st.downloaded) of \(st.total) plates")
-                        .font(.caption2).foregroundStyle(complete ? p.good : p.textDim)
+                        .font(.dsLabelS).foregroundStyle(complete ? p.good : p.textDim)
                 } else {
                     Text("\(airports) airports\(scanningPlates ? " · scanning…" : "")")
-                        .font(.caption2).foregroundStyle(p.textDim)
+                        .font(.dsLabelS).foregroundStyle(p.textDim)
                 }
             }
             Spacer()
             if complete {
                 Label("Up to date", systemImage: "checkmark.circle.fill")
-                    .font(.caption2.weight(.semibold)).foregroundStyle(p.good)
+                    .font(.dsLabelSBold).foregroundStyle(p.good)
             } else {
                 Button { confirmRegion = r } label: {
                     Image(systemName: "arrow.down.circle").font(.body).foregroundStyle(p.accent)

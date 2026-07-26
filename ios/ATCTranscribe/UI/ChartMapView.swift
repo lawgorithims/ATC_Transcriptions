@@ -571,6 +571,10 @@ struct ChartMapView: UIViewRepresentable {
         Self.configure(mv, for: layer, realistic: realistic)
         context.coordinator.appliedLayer = layer
         context.coordinator.appliedRealistic = realistic
+        // Theme the Apple base + the coordinator palette from first paint (day = light base).
+        mv.overrideUserInterfaceStyle = model.theme == .day ? .light : .dark
+        context.coordinator.mapTheme = MapTheme.forTheme(model.theme)
+        context.coordinator.appliedTheme = model.theme
         let center = ChartLayer.launchCenter ?? CLLocationCoordinate2D(latitude: 39, longitude: -96)
         let s = ChartLayer.launchSpan ?? 42
         mv.setRegion(MKCoordinateRegion(center: center,
@@ -632,6 +636,12 @@ struct ChartMapView: UIViewRepresentable {
         if c.appliedLayer != layer || c.appliedRealistic != realistic {
             c.appliedLayer = layer; c.appliedRealistic = realistic
             Self.configure(mv, for: layer, realistic: realistic)
+        }
+        // One-shot fallback-engine restyle on an explicit theme change (before the route/procedure
+        // reconciles below, so they rebuild in this same pass with the new palette).
+        if c.appliedTheme != model.theme {
+            c.appliedTheme = model.theme
+            c.noteThemeChanged(mv, theme: model.theme)
         }
 
         // Reconcile the route line + waypoint markers whenever the filed route changes (initial resolve,
@@ -851,6 +861,8 @@ struct ChartMapView: UIViewRepresentable {
         var overlays: [ObjectIdentifier: MBTilesTileOverlay] = [:]
         var appliedLayer: ChartLayer?               // last base config applied — reconfigure only on a real change
         var appliedRealistic = false                // last 3D-terrain state applied to the base config (opt-in + thermal)
+        var mapTheme = MapTheme.forTheme(.cockpit)  // fallback-engine palette (minimal theming pass)
+        var appliedTheme: AppTheme?                 // last theme applied — restyle only on a real change
         var appliedReplacesBase = false             // last raster canReplaceMapContent mode (map-background toggle)
         var appliedNativeWebP = true                // last WebP pass-through mode (compatibility toggle)
         var plateOverlayObj: PlateImageOverlay?     // the superimposed plate, if any
@@ -1083,6 +1095,24 @@ struct ChartMapView: UIViewRepresentable {
         /// Recompute the in-view context layers (airspace outlines [Class B/C/D + special use] + nearby navaids/airports)
         /// off-main for the settled region. Gated on angular scale so a zoomed-out view stays legible, and
         /// count-capped to keep MapKit snappy. Mirrors `RouteMapSheet`'s former overlay refresh.
+        /// One-shot fallback-engine restyle on an explicit theme change: flip the Apple base's
+        /// appearance, swap the palette, and rebuild the colored vector overlays through their own
+        /// reconcile paths (which preserve z-levels). TFR/hazard overlays recolor on their next
+        /// natural reconcile — their identity-keyed caches refresh with the live feeds.
+        func noteThemeChanged(_ mv: MKMapView, theme: AppTheme) {
+            assert(Thread.isMainThread, "overlay mutation must run on the main thread")
+            mapTheme = MapTheme.forTheme(theme)
+            mv.overrideUserInterfaceStyle = theme == .day ? .light : .dark
+            for (key, poly) in airspaceByKey {                       // bounded: on-screen ring cap is 260
+                mv.removeOverlay(poly); airspaceClass[ObjectIdentifier(poly)] = nil; airspaceByKey[key] = nil
+            }
+            for (key, pl) in airwayByIdent { mv.removeOverlay(pl); airwayByIdent[key] = nil }
+            lastRouteKey = []; lastProcKey = []                       // rebuilt by the same update pass
+            if let to = trackOverlay { mv.removeOverlay(to); trackOverlay = nil }
+            lastTrackCount = -1
+            refreshContext(mv)                                        // repopulate airspace/airways recolored
+        }
+
         func refreshContext(_ mv: MKMapView) {
             let region = mv.region
             let scale = max(region.span.latitudeDelta,
@@ -1332,7 +1362,7 @@ struct ChartMapView: UIViewRepresentable {
             if let tile = overlay as? MKTileOverlay { return MKTileOverlayRenderer(tileOverlay: tile) }
             // EONET hazards first — identity-keyed so a hazard polygon is never mistaken for airspace.
             if let cat = hazardOverlayCategory[ObjectIdentifier(overlay)] {
-                let color = HazardAnnotation.tint(cat)
+                let color = HazardAnnotation.tint(cat, night: mapTheme.id == .night)
                 if let poly = overlay as? MKPolygon {
                     let r = MKPolygonRenderer(polygon: poly)
                     r.strokeColor = color
@@ -1350,7 +1380,7 @@ struct ChartMapView: UIViewRepresentable {
             }
             // Live TFRs next — identity-keyed like hazards so a TFR polygon is never mistaken for airspace.
             if tfrOverlayIDs.contains(ObjectIdentifier(overlay)), let poly = overlay as? MKPolygon {
-                let color = Self.airspaceColor("TFR")
+                let color = mapTheme.airspaceColor("TFR")
                 let r = MKPolygonRenderer(polygon: poly)
                 r.strokeColor = color
                 r.lineWidth = 2.4                                  // bold restriction outline
@@ -1359,7 +1389,7 @@ struct ChartMapView: UIViewRepresentable {
             }
             if let poly = overlay as? MKPolygon {
                 let cls = airspaceClass[ObjectIdentifier(poly)] ?? "D"
-                let color = Self.airspaceColor(cls)
+                let color = mapTheme.airspaceColor(cls)
                 let r = MKPolygonRenderer(polygon: poly)
                 r.strokeColor = color
                 if Self.isSpecialUse(cls) {                        // restrictions: bolder outline + more fill
@@ -1373,26 +1403,26 @@ struct ChartMapView: UIViewRepresentable {
                 }
                 return r
             }
-            if let awy = overlay as? AirwayPolyline {             // enroute airway — slate-blue, chart-style
+            if let awy = overlay as? AirwayPolyline {             // enroute airway — chart-style, per theme
                 let r = MKPolylineRenderer(polyline: awy)
-                r.strokeColor = UIColor(red: 0.42, green: 0.58, blue: 0.86, alpha: 0.75)
+                r.strokeColor = mapTheme.airway
                 r.lineWidth = 1.6
                 return r
             }
-            if let track = overlay as? TrackPolyline {            // flight-recorder breadcrumb — translucent orange
+            if let track = overlay as? TrackPolyline {            // flight-recorder breadcrumb
                 let r = MKPolylineRenderer(polyline: track)
-                r.strokeColor = UIColor(red: 1.0, green: 0.62, blue: 0.20, alpha: 0.85)
+                r.strokeColor = mapTheme.track
                 r.lineWidth = 4
                 return r
             }
             if let line = overlay as? MKPolyline {
                 let r = MKPolylineRenderer(polyline: line)
-                if line === procedureOverlay {                    // previewed procedure — cyan dashed
-                    r.strokeColor = UIColor(red: 0.16, green: 0.78, blue: 0.94, alpha: 1)
+                if line === procedureOverlay {                    // previewed procedure — dashed
+                    r.strokeColor = mapTheme.procedure
                     r.lineWidth = 3
                     r.lineDashPattern = [8, 5]
-                } else {                                          // filed route — magenta solid
-                    r.strokeColor = UIColor(red: 0.92, green: 0.10, blue: 0.55, alpha: 1)
+                } else {                                          // filed route — solid
+                    r.strokeColor = mapTheme.route
                     r.lineWidth = 3
                 }
                 return r
