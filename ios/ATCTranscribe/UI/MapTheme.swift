@@ -15,6 +15,9 @@ struct MapTheme: Equatable {
     // Base
     let sea: UIColor            // flat-map background
     let globeSea: UIColor       // globe sphere ocean (must read as a planet against space)
+    let space: UIColor          // globe void backdrop (StarfieldView)
+    let starColor: UIColor      // starfield star tint (red-shifted at night)
+    let starAlphaScale: Double  // dims the whole starfield at night
     let land: UIColor
     let coastline: UIColor
     // Vector context
@@ -33,6 +36,9 @@ struct MapTheme: Equatable {
     let rasterContrast: Double
     /// Red world-veil opacity over the chart (night only; 0 disables the layer).
     let nightVeilOpacity: Double
+
+    /// The veil's red — chosen so the dimmed chart reads warm without crushing magenta symbology.
+    static let nightVeilColor = rgb(0xFF2E14)
 
     /// Class color for a "cls" attribute value, defaulting to Class B chart blue.
     func airspaceColor(_ cls: String) -> UIColor {
@@ -68,14 +74,21 @@ struct MapTheme: Equatable {
         "MOA": ChartMapView.Coordinator.airspaceColor("MOA"),
     ]
 
+    /// Night ramp: warm dim tones for dark adaptation, with the SAFETY-CRITICAL distinctions kept —
+    /// TFR is the brightest, most alarming mark on the night map; Prohibited reads as deep danger red.
+    private static let nightAirspace: [String: UIColor] = [
+        "B": rgb(0x8A4A26), "D": rgb(0x8A4A26), "C": rgb(0xB04058),
+        "TFR": rgb(0xFF3B30), "R": rgb(0xD0392A), "P": rgb(0x8F1010),
+        "W": rgb(0xC85A30), "A": rgb(0xC89030), "MOA": rgb(0x7E4A62),
+    ]
+
     static func forTheme(_ t: AppTheme) -> MapTheme {
         switch t {
-        case .cockpit, .night:
-            // Night refinements (dim red ramp, raster dim + veil) land with the night-map pass;
-            // until then night deliberately aliases the cockpit map, which is already dark.
+        case .cockpit:
             return MapTheme(
-                id: t,
+                id: .cockpit,
                 sea: rgb(0x05080C), globeSea: rgb(0x0F3A63),
+                space: rgb(0x020407), starColor: .white, starAlphaScale: 1.0,
                 land: rgb(0x10161B), coastline: rgb(0x2A3A44, 0.7),
                 airway: rgb(0x3D5F80, 0.75),
                 airwayLabelText: rgb(0xE6F0F6), airwayLabelHalo: rgb(0x2A3F55, 0.9),
@@ -86,8 +99,9 @@ struct MapTheme: Equatable {
                 nightVeilOpacity: 0)
         case .day:
             return MapTheme(
-                id: t,
+                id: .day,
                 sea: rgb(0xD7E2EA), globeSea: rgb(0x2E6EA8),
+                space: rgb(0x0A1520), starColor: .white, starAlphaScale: 1.0,
                 land: rgb(0xEAE6DC), coastline: rgb(0xA9BAC6, 0.9),
                 airway: rgb(0x4C74C4, 0.8),
                 // Halo scheme swaps in day: dark text needs a LIGHT halo to read over the map.
@@ -97,6 +111,22 @@ struct MapTheme: Equatable {
                 route: rgb(0xF23D9E), track: rgb(0xFF9E33, 0.85),
                 rasterBrightnessMax: 1.0, rasterSaturation: 0, rasterContrast: 0,
                 nightVeilOpacity: 0)
+        case .night:
+            // Red-only emission where practical: dim brick airways, warm labels, dimmed +
+            // desaturated chart under a faint red veil. Route stays a bright red-orange so it
+            // reads over the dim context; TFR keeps pure alarm red.
+            return MapTheme(
+                id: .night,
+                sea: rgb(0x000000), globeSea: rgb(0x231010),
+                space: rgb(0x050202), starColor: rgb(0xFF6B5A), starAlphaScale: 0.5,
+                land: rgb(0x0D0505), coastline: rgb(0x331512, 0.7),
+                airway: rgb(0x7A2A1E, 0.8),
+                airwayLabelText: rgb(0xF0A898), airwayLabelHalo: rgb(0x200A08, 0.9),
+                navLabelText: rgb(0xF2B0A0), navLabelHalo: UIColor.black.withAlphaComponent(0.85),
+                airspace: nightAirspace,
+                route: rgb(0xFF5A3C), track: rgb(0xB0521E, 0.85),
+                rasterBrightnessMax: 0.55, rasterSaturation: -0.65, rasterContrast: 0.10,
+                nightVeilOpacity: 0.10)
         }
     }
 }
