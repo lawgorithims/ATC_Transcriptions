@@ -644,6 +644,18 @@ final class AppModel: ObservableObject {
         didSet { UserDefaults.standard.set(useGlobeProjection, forKey: "atc.map.globe") }
     }
 
+    /// User chart-brightness scale (Map layers panel) — multiplies the active theme's FAA-raster
+    /// brightness, so night dim / cockpit glare are tunable in the cockpit instead of hardcoded.
+    /// Floored at 0.3 (a chart must never fade to invisible — same rationale as plateMinOpacity).
+    @Published var chartBrightness: Double =
+        min(max((UserDefaults.standard.object(forKey: "atc.map.chartBrightness") as? Double) ?? 1.0, 0.3), 1.0) {
+        didSet {
+            let clamped = min(max(chartBrightness, 0.3), 1.0)
+            if clamped != chartBrightness { chartBrightness = clamped; return }   // didSet re-fires with the clamp
+            UserDefaults.standard.set(chartBrightness, forKey: "atc.map.chartBrightness")
+        }
+    }
+
     /// Lock the chart north-up. When true the two-finger rotate gesture is DISABLED on the map and the
     /// camera is snapped back to a 0° bearing — an accidental twist in turbulence can't leave the pilot
     /// flying a rotated chart. Default ON (north-up is the chart convention); the map's compass button

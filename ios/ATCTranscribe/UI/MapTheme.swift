@@ -83,7 +83,27 @@ struct MapTheme: Equatable {
         "W": rgb(0xC85A30), "A": rgb(0xA0701F), "MOA": rgb(0x7E4A62),
     ]
 
-    static func forTheme(_ t: AppTheme) -> MapTheme {
+    /// `chartBrightness` is the pilot's Map-layers slider (0.3…1.0): it scales the theme's FAA-raster
+    /// brightness so the night dim / cockpit glare trim are tunable, not hardcoded. Vector overlays
+    /// and safety marks are NOT scaled — only the chart imagery.
+    static func forTheme(_ t: AppTheme, chartBrightness: Double = 1.0) -> MapTheme {
+        assert(chartBrightness > 0, "chart brightness must be positive")
+        let scale = min(max(chartBrightness, 0.3), 1.0)
+        let base = baseTheme(t)
+        if scale >= 1.0 { return base }
+        return MapTheme(
+            id: base.id, sea: base.sea, globeSea: base.globeSea,
+            space: base.space, starColor: base.starColor, starAlphaScale: base.starAlphaScale,
+            land: base.land, coastline: base.coastline,
+            airway: base.airway, airwayLabelText: base.airwayLabelText, airwayLabelHalo: base.airwayLabelHalo,
+            navLabelText: base.navLabelText, navLabelHalo: base.navLabelHalo,
+            airspace: base.airspace, route: base.route, track: base.track, procedure: base.procedure,
+            rasterBrightnessMax: base.rasterBrightnessMax * scale,
+            rasterSaturation: base.rasterSaturation, rasterContrast: base.rasterContrast,
+            nightVeilOpacity: base.nightVeilOpacity)
+    }
+
+    private static func baseTheme(_ t: AppTheme) -> MapTheme {
         switch t {
         case .cockpit:
             return MapTheme(

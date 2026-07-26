@@ -276,7 +276,8 @@ struct MapHostView: View {
             },
             renderMeter: model.renderMeter,   // battery diagnostics: per-frame counter → map fps
             globeProjection: model.useGlobeProjection,   // DEV harness: flat vs globe (inert on stock 6.27.0)
-            theme: model.theme)               // live palette re-apply — never a remount
+            theme: model.theme,               // live palette re-apply — never a remount
+            chartBrightness: model.chartBrightness)   // pilot's raster-brightness slider (layers panel)
     }
     #endif
 

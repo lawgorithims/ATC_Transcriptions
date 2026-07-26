@@ -43,6 +43,22 @@ final class MapThemeSyncTests: XCTestCase {
         }
     }
 
+    /// The pilot brightness slider scales ONLY the raster brightness, clamped to the 0.3 floor —
+    /// vector/safety colors must be untouched at any setting.
+    func testChartBrightnessScalesRasterOnly() {
+        for theme in AppTheme.allCases {
+            let base = MapTheme.forTheme(theme)
+            let dimmed = MapTheme.forTheme(theme, chartBrightness: 0.5)
+            XCTAssertEqual(dimmed.rasterBrightnessMax, base.rasterBrightnessMax * 0.5, accuracy: 0.0001)
+            XCTAssertEqual(dimmed.route, base.route, "route color must not scale with chart brightness")
+            XCTAssertEqual(dimmed.airspaceColor("TFR"), base.airspaceColor("TFR"), "TFR must not scale")
+            // Below-floor requests clamp to 0.3, and full brightness is identity.
+            XCTAssertEqual(MapTheme.forTheme(theme, chartBrightness: 0.05).rasterBrightnessMax,
+                           base.rasterBrightnessMax * 0.3, accuracy: 0.0001)
+            XCTAssertEqual(MapTheme.forTheme(theme, chartBrightness: 1.0), base)
+        }
+    }
+
     /// The night airspace ramp must keep TFR the brightest mark on the map (safety hierarchy).
     func testNightTFRBrightest() {
         let t = MapTheme.forTheme(.night)
