@@ -25,7 +25,7 @@ struct ClearanceTestBenchView: View {
                     if !group.isEmpty { section(cat, group, p) }
                 }
                 Text("Transcript-injection mode replays each clearance as text through the live parser, ownship gate, and plan amendment — the same path a real transmission takes after speech-to-text. Audio-clip mode (real recordings through Whisper) drops in per the ClearanceClips README as clips are collected.")
-                    .font(.caption2).foregroundStyle(p.textDim).padding(.top, 4)
+                    .font(.dsLabelS).foregroundStyle(p.textDim).padding(.top, 4)
             }
             .padding(16)
         }
@@ -41,13 +41,13 @@ struct ClearanceTestBenchView: View {
     private func banner(_ p: Palette) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Label("TEST MODE", systemImage: "testtube.2")
-                .font(.caption.weight(.bold)).foregroundStyle(p.warn)
+                .font(.dsLabelBold).foregroundStyle(p.warn)
             Text("Your real flight plan, aircraft, and airport are saved and restored automatically when you leave — even if the app closes. Nothing here changes your filed plan or sends anything to ATC.")
-                .font(.caption2).foregroundStyle(p.text)
+                .font(.dsLabelS).foregroundStyle(p.text)
         }
         .padding(12).frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 10).fill(p.warn.opacity(0.14)))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(p.warn.opacity(0.5), lineWidth: 1))
+        .background(RoundedRectangle(cornerRadius: DS.Radius.r4).fill(p.warn.opacity(0.14)))
+        .overlay(RoundedRectangle(cornerRadius: DS.Radius.r4).stroke(p.warn.opacity(0.5), lineWidth: 1))
         .accessibilityIdentifier("test-bench-banner")
     }
 
@@ -58,7 +58,7 @@ struct ClearanceTestBenchView: View {
                 for s in scenarios { results[s.id] = model.diagnosticRunScenario(s) }
             } label: {
                 Label("Run all \(scenarios.count)", systemImage: "play.fill")
-                    .font(.caption.weight(.bold)).foregroundStyle(.white)
+                    .font(.dsLabelBold).foregroundStyle(.white)
                     .padding(.horizontal, 14).padding(.vertical, 8)
                     .background(Capsule().fill(p.accent))
             }
@@ -67,7 +67,7 @@ struct ClearanceTestBenchView: View {
             if !results.isEmpty {
                 let passed = results.values.filter(\.passed).count
                 Text("\(passed)/\(results.count) passed")
-                    .font(.caption.weight(.semibold))
+                    .font(.dsLabelBold)
                     .foregroundStyle(passed == results.count ? p.good : p.warn)
             }
         }
@@ -92,7 +92,7 @@ struct ClearanceTestBenchView: View {
             HStack(spacing: 8) {
                 statusDot(result, p)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(s.title).font(.caption.weight(.semibold)).foregroundStyle(p.text)
+                    Text(s.title).font(.dsLabelBold).foregroundStyle(p.text)
                     Text(s.detail).font(.system(size: 10)).foregroundStyle(p.textDim).lineLimit(2)
                 }
                 Spacer(minLength: 6)
@@ -101,7 +101,7 @@ struct ClearanceTestBenchView: View {
                     results[s.id] = model.diagnosticRunScenario(s)
                     expanded.insert(s.id)
                 } label: {
-                    Text("Run").font(.caption2.weight(.bold)).foregroundStyle(p.accent)
+                    Text("Run").font(.dsLabelSBold).foregroundStyle(p.accent)
                 }
                 .buttonStyle(.plainHaptic).accessibilityIdentifier("run-\(s.id)")
             }
@@ -141,7 +141,7 @@ struct ClearanceTestBenchView: View {
                     model.openInForeFlight()             // …then hand exactly that to ForeFlight
                 } label: {
                     Label("Send this plan to ForeFlight", systemImage: "paperplane.fill")
-                        .font(.caption2.weight(.bold)).foregroundStyle(.white)
+                        .font(.dsLabelSBold).foregroundStyle(.white)
                         .padding(.horizontal, 10).padding(.vertical, 6)
                         .background(Capsule().fill(p.accent))
                 }
@@ -149,7 +149,7 @@ struct ClearanceTestBenchView: View {
             }
         }
         .padding(10)
-        .background(RoundedRectangle(cornerRadius: 8).fill(p.surfaceAlt))
+        .background(RoundedRectangle(cornerRadius: DS.Radius.r2).fill(p.surfaceAlt))
     }
 
     // MARK: bits

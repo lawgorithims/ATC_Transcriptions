@@ -75,7 +75,9 @@ extension Font {
     static var dsHeadline: Font { dinBold(15, relativeTo: .headline) }
     static var dsBody: Font { .subheadline }
     static var dsLabel: Font { din(13, relativeTo: .footnote) }
+    static var dsLabelBold: Font { dinBold(13, relativeTo: .footnote) }
     static var dsLabelS: Font { din(11, relativeTo: .caption2) }
+    static var dsLabelSBold: Font { dinBold(11, relativeTo: .caption2) }
     static var dsDataMono: Font { .system(.caption, design: .monospaced).weight(.semibold) }
     static var dsDataMonoL: Font { .system(.body, design: .monospaced).weight(.semibold) }
 }

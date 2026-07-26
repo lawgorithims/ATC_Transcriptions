@@ -51,7 +51,7 @@ struct GPSBottomBar: View {
                 }
             }
             VStack(alignment: .leading, spacing: 1) {
-                Text(Self.signalWord(r.fixQuality)).font(.caption.weight(.semibold)).foregroundStyle(p.text)
+                Text(Self.signalWord(r.fixQuality)).font(.dsLabelBold).foregroundStyle(p.text)
                 Text(sourceBadge(r.source)).font(.system(size: 9, weight: .semibold)).foregroundStyle(p.textDim).tracking(0.5)
             }
         }
@@ -147,7 +147,7 @@ struct RecordingIndicator: View {
                 Circle().fill(palette.bad)
                     .frame(width: 8, height: 8)
                     .opacity(Int(elapsed / 0.5) % 2 == 0 ? 1 : 0.25)
-                Text(LoggedFlight.hms(elapsed)).font(.caption.monospaced().weight(.semibold))
+                Text(LoggedFlight.hms(elapsed)).font(.dsDataMono)
                     .foregroundStyle(palette.text)
             }
         }
