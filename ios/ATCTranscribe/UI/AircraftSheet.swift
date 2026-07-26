@@ -36,7 +36,7 @@ struct AircraftSheet: View {
                             labeled("Cruise", "kts — e.g. 165", $cruiseText, keyboard: .numberPad)
                             labeled("Fuel burn", "gph — e.g. 16.5", $burnText, keyboard: .decimalPad)
                             Text("Planning numbers for the flight-plan strip's ETE, ETA, and fuel. Leave blank to show “–”.")
-                                .font(.caption2).foregroundStyle(p.textDim)
+                                .font(.dsLabelS).foregroundStyle(p.textDim)
                         }
                     }
                     if isExisting {
@@ -45,11 +45,11 @@ struct AircraftSheet: View {
                             model.deleteAircraft(profile)
                             dismiss()
                         } label: {
-                            Text("Remove from my aircraft").font(.subheadline.weight(.semibold))
+                            Text("Remove from my aircraft").font(.dsHeadline)
                                 .frame(maxWidth: .infinity).padding(.vertical, 11)
                                 .background(p.surfaceAlt).foregroundStyle(p.bad)
-                                .clipShape(RoundedRectangle(cornerRadius: 10))
-                                .overlay(RoundedRectangle(cornerRadius: 10).stroke(p.border, lineWidth: 1))
+                                .clipShape(RoundedRectangle(cornerRadius: DS.Radius.r4))
+                                .overlay(RoundedRectangle(cornerRadius: DS.Radius.r4).stroke(p.border, lineWidth: 1))
                         }
                         .buttonStyle(.plainHaptic).accessibilityIdentifier("aircraft-delete")
                     }
@@ -98,16 +98,16 @@ struct AircraftSheet: View {
                          keyboard: UIKeyboardType = .default) -> some View {
         let p = model.palette
         return HStack(spacing: 10) {
-            Text(label).font(.caption).foregroundStyle(p.textDim)
+            Text(label).font(.dsLabel).foregroundStyle(p.textDim)
                 .frame(width: 84, alignment: .leading)
             TextField(placeholder, text: text)
                 .textFieldStyle(.plain).autocorrectionDisabled()
                 .textInputAutocapitalization(autocap)
                 .keyboardType(keyboard)
-                .font(.caption)
+                .font(.dsLabel)
                 .padding(.horizontal, 10).padding(.vertical, 8)
-                .background(p.surfaceAlt).clipShape(RoundedRectangle(cornerRadius: 8))
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(p.border, lineWidth: 1))
+                .background(p.surfaceAlt).clipShape(RoundedRectangle(cornerRadius: DS.Radius.r2))
+                .overlay(RoundedRectangle(cornerRadius: DS.Radius.r2).stroke(p.border, lineWidth: 1))
                 .frame(maxWidth: .infinity)
         }
     }

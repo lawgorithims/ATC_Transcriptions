@@ -53,8 +53,8 @@ struct SidePane<Content: View>: View {
 
     private func header(_ p: Palette) -> some View {
         HStack(spacing: 8) {
-            Image(systemName: kind.symbol).font(.caption)
-            Text(kind.title).font(.subheadline.weight(.semibold)).lineLimit(1)
+            Image(systemName: kind.symbol).font(.dsLabel)
+            Text(kind.title).font(.dsHeadline).lineLimit(1)
             Spacer(minLength: 4)
             Button { Haptics.impact(.light); withAnimation(.easeInOut(duration: 0.2)) { widgets.undockToWidget(side) } } label: {
                 Image(systemName: "arrow.up.forward.app").font(.callout).padding(4).contentShape(Rectangle())

@@ -14,9 +14,9 @@ struct TranscriptCard: View {
         let p = model.palette
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 12) {
-                Text("Transcript").font(.headline).foregroundStyle(p.text)
+                Text("Transcript").font(.dsHeadline).foregroundStyle(p.text)
                 Spacer(minLength: 4)
-                Text(model.sourceLabel).font(.caption).foregroundStyle(p.textDim).lineLimit(1)
+                Text(model.sourceLabel).font(.dsLabel).foregroundStyle(p.textDim).lineLimit(1)
                 // Live run status, moved here from the old controls bar so it stays visible no matter
                 // which heading-bar strips are open: the "Transcribing…" pulse and the input-level
                 // meter (tap → squelch). Both appear only during a live session.
@@ -37,7 +37,7 @@ struct TranscriptCard: View {
                         Image(systemName: model.transcriptNewestFirst ? "arrow.up" : "arrow.down")
                         Text("Newest")
                     }
-                    .font(.caption2.weight(.semibold))
+                    .font(.dsLabelSBold)
                 }
                 .buttonStyle(.plainHaptic).foregroundStyle(p.textDim)
                 .accessibilityIdentifier("transcript-sort")
@@ -52,14 +52,14 @@ struct TranscriptCard: View {
                             }
                         }
                     } label: {
-                        Image(systemName: "rectangle.stack.badge.plus").font(.caption)
+                        Image(systemName: "rectangle.stack.badge.plus").font(.dsLabel)
                     }
                     .buttonStyle(.plainHaptic).foregroundStyle(p.textDim)
                     .accessibilityIdentifier("transcript-add-widget")
                     .accessibilityLabel("Add widget")
                 }
                 Button("Clear") { model.clear() }
-                    .font(.caption).foregroundStyle(p.textDim).buttonStyle(.plainHaptic)
+                    .font(.dsLabel).foregroundStyle(p.textDim).buttonStyle(.plainHaptic)
             }
             .padding(14)
             Rectangle().fill(p.border).frame(height: 1)
@@ -82,7 +82,7 @@ struct TranscriptCard: View {
         // When floating over the map, the container owns the (opacity-adjustable) background.
         .background(floating ? Color.clear : p.surface)
         .clipShape(RoundedRectangle(cornerRadius: floating ? 0 : 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(p.border, lineWidth: floating ? 0 : 1))
+        .overlay(RoundedRectangle(cornerRadius: DS.Radius.r4).stroke(p.border, lineWidth: floating ? 0 : 1))
     }
 
     private var emptyState: some View {
@@ -92,7 +92,7 @@ struct TranscriptCard: View {
                 .font(.system(size: 34)).foregroundStyle(p.textDim.opacity(0.7))
             Text("No transmissions yet.").foregroundStyle(p.textDim)
             Text("Pick a source above and press Start.")
-                .font(.caption).foregroundStyle(p.textDim.opacity(0.8))
+                .font(.dsLabel).foregroundStyle(p.textDim.opacity(0.8))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity).padding(40)
     }
@@ -144,14 +144,14 @@ struct TranscriptListSection: View, Equatable {
         VStack(alignment: .leading, spacing: 0) {
             if let cs = callsignFilter {
                 HStack(spacing: 8) {
-                    Image(systemName: "line.3.horizontal.decrease.circle.fill").font(.caption)
-                    Text("Showing ").font(.caption).foregroundStyle(p.textDim)
-                        + Text(cs).font(.caption.weight(.semibold)).foregroundStyle(p.text)
+                    Image(systemName: "line.3.horizontal.decrease.circle.fill").font(.dsLabel)
+                    Text("Showing ").font(.dsLabel).foregroundStyle(p.textDim)
+                        + Text(cs).font(.dsLabelBold).foregroundStyle(p.text)
                         + Text("  ·  \(ordered.count) msg\(ordered.count == 1 ? "" : "s")")
-                            .font(.caption).foregroundStyle(p.textDim)
+                            .font(.dsLabel).foregroundStyle(p.textDim)
                     Spacer(minLength: 4)
                     Button("Clear") { onClearFilter() }
-                        .font(.caption.weight(.semibold)).foregroundStyle(p.accent).buttonStyle(.plainHaptic)
+                        .font(.dsLabelBold).foregroundStyle(p.accent).buttonStyle(.plainHaptic)
                         .accessibilityIdentifier("callsign-filter-clear")
                 }
                 .foregroundStyle(p.accent)
@@ -224,7 +224,7 @@ struct TranscriptListSection: View, Equatable {
             Image(systemName: "airplane.circle").font(.system(size: 30)).foregroundStyle(p.textDim.opacity(0.7))
             Text("No messages for \(callsignFilter ?? "this aircraft") yet.").foregroundStyle(p.textDim)
             Button("Clear filter") { onClearFilter() }
-                .font(.caption.weight(.semibold)).foregroundStyle(p.accent).buttonStyle(.plainHaptic)
+                .font(.dsLabelBold).foregroundStyle(p.accent).buttonStyle(.plainHaptic)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity).padding(40)
     }
@@ -251,7 +251,7 @@ struct TranscriptRow: View {
                     // colored "S1/S2" chip for developers only.
                     if model.showDebug, let spk = record.speaker {
                         Text("S\(spk + 1)")
-                            .font(.caption2.weight(.bold))
+                            .font(.dsLabelSBold)
                             .padding(.horizontal, 6).padding(.vertical, 1)
                             .background(speakerColor(spk).opacity(0.22))
                             .foregroundStyle(speakerColor(spk))
@@ -278,7 +278,7 @@ struct TranscriptRow: View {
                             HStack(spacing: 2) {
                                 Image(systemName: inRange ? "airplane.circle.fill" : "airplane")
                                     .font(.system(size: 8))
-                                Text(cs).font(.caption2.weight(.bold))
+                                Text(cs).font(.dsLabelSBold)
                             }
                             .padding(.horizontal, 6).padding(.vertical, 1)
                             .background(on ? color : color.opacity(0.18))
@@ -310,9 +310,9 @@ struct TranscriptRow: View {
                 refinementStatus(p)
                 if !record.allEdits.isEmpty {
                     HStack(spacing: 6) {
-                        Image(systemName: "wand.and.stars").font(.caption2)
+                        Image(systemName: "wand.and.stars").font(.dsLabelS)
                         Text(record.allEdits.map { "\($0.from) → \($0.to)" }.joined(separator: ",  "))
-                            .font(.caption2)
+                            .font(.dsLabelS)
                     }
                     .foregroundStyle(p.warn)
                 }
@@ -346,7 +346,7 @@ struct TranscriptRow: View {
         case .pending:
             HStack(spacing: 6) {
                 ProgressView().controlSize(.mini)
-                Text("AI fixer running…").font(.caption2)
+                Text("AI fixer running…").font(.dsLabelS)
             }
             .foregroundStyle(p.textDim)
         case .refined:
@@ -362,8 +362,8 @@ struct TranscriptRow: View {
 
     private func statusLine(_ symbol: String, _ text: String, _ color: Color) -> some View {
         HStack(spacing: 5) {
-            Image(systemName: symbol).font(.caption2)
-            Text(text).font(.caption2)
+            Image(systemName: symbol).font(.dsLabelS)
+            Text(text).font(.dsLabelS)
         }
         .foregroundStyle(color)
     }
@@ -410,7 +410,7 @@ struct TranscriptRow: View {
             HStack(spacing: 3) {
                 Image(systemName: inferred ? "waveform" : "antenna.radiowaves.left.and.right")
                     .font(.system(size: 8))
-                Text("ATC").font(.caption2.weight(.bold))
+                Text("ATC").font(.dsLabelSBold)
             }
             .padding(.horizontal, 6).padding(.vertical, 1)
             .background(inferred ? Color.clear : p.accent.opacity(0.18))
@@ -422,7 +422,7 @@ struct TranscriptRow: View {
         case .pilot:
             Label("Pilot", systemImage: "airplane")
                 .labelStyle(.titleAndIcon)
-                .font(.caption2.weight(.bold))
+                .font(.dsLabelSBold)
                 .padding(.horizontal, 6).padding(.vertical, 1)
                 .background(p.good.opacity(0.18))
                 .foregroundStyle(p.good)
@@ -457,23 +457,23 @@ struct ModelLoadingView: View {
         let elapsed = model.modelLoadStartedAt.map { max(0, Int(now.timeIntervalSince($0))) }
         return VStack(spacing: 12) {
             ProgressView().controlSize(.large).tint(p.accent)
-            Text("Loading \(model.activeModelLabel)…").font(.headline).foregroundStyle(p.text)
+            Text("Loading \(model.activeModelLabel)…").font(.dsHeadline).foregroundStyle(p.text)
             if let elapsed {
                 Text(elapsed >= 60 ? String(format: "%d:%02d elapsed", elapsed / 60, elapsed % 60) : "\(elapsed)s elapsed")
                     .font(.caption.monospaced()).foregroundStyle(p.textDim)
             }
             Text("Large models can take a few minutes to load the first time as your device compiles them. Keep CommSight open — it speeds up after the first load.")
-                .font(.caption).foregroundStyle(p.textDim)
+                .font(.dsLabel).foregroundStyle(p.textDim)
                 .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, 12)
             HStack(spacing: 6) {
-                Image(systemName: "thermometer.medium").font(.caption2)
+                Image(systemName: "thermometer.medium").font(.dsLabelS)
                 Text("Device temperature: \(thermal.label)").font(.caption.monospaced())
             }
             .foregroundStyle(thermalColor(p))
             if thermal == .serious || thermal == .critical {
                 Text("Your device is warming up while it loads — this eases once the model is ready. A smaller model (Small) loads far faster and runs cooler.")
-                    .font(.caption2).foregroundStyle(p.warn)
+                    .font(.dsLabelS).foregroundStyle(p.warn)
                     .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 12)
             }
