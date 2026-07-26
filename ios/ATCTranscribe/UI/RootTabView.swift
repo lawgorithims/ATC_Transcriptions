@@ -72,7 +72,7 @@ struct RootTabView: View {
         .task { model.refreshDataCurrency() }
         .ignoresSafeArea(.keyboard, edges: .bottom)   // the bar stays pinned; the search keyboard covers it
         .tint(model.palette.accent)
-        .preferredColorScheme(model.theme == .day ? .light : .dark)
+        .preferredColorScheme(model.theme.colorScheme)
         .animation(.easeInOut(duration: 0.15), value: model.selectedTab)
         .animation(.easeInOut(duration: 0.2), value: model.showGPSBar)
     }

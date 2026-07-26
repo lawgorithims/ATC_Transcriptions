@@ -74,7 +74,7 @@ struct OnboardingDownloadView: View {
             .frame(maxWidth: 460)
             .padding(20)
         }
-        .preferredColorScheme(model.theme == .day ? .light : .dark)
+        .preferredColorScheme(model.theme.colorScheme)
     }
 
     /// The artifacts the big button grabs in bulk — the required speech model and the AI fixer (so

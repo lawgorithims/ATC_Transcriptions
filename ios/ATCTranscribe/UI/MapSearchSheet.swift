@@ -34,7 +34,7 @@ struct MapSearchSheet: View {
             .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
         }
         .tint(p.accent)
-        .preferredColorScheme(model.theme == .day ? .light : .dark)
+        .preferredColorScheme(model.theme.colorScheme)
         .onChange(of: query) { _, q in refresh(q) }
         .onAppear {
             if !initialQuery.isEmpty { query = initialQuery } else { focused = true }
