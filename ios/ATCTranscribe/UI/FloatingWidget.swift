@@ -432,8 +432,8 @@ struct FloatingWidgetContainer<Content: View>: View {
         .environment(\.floatingSurface, true)
         .frame(width: w, height: h)
         .background(p.surface.opacity(frame.opacity))
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(p.border.opacity(0.7), lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.r4, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: DS.Radius.r4, style: .continuous).stroke(p.border.opacity(0.7), lineWidth: 1))
         .overlay(alignment: .bottomTrailing) { if !frame.pinned { resizeGrip(p) } }
         // Two-finger MOVE anywhere on the card via the window-attached pan (single-finger passes through to
         // the header drag / content scroll / corner grip). Only when unpinned — a pinned card is locked.
@@ -515,17 +515,17 @@ struct FloatingWidgetContainer<Content: View>: View {
 
     private func header(_ p: Palette) -> some View {
         HStack(spacing: 6) {
-            Image(systemName: frame.kind.symbol).font(.caption2)
-            Text(frame.kind.title).font(.caption.weight(.semibold)).lineLimit(1)
+            Image(systemName: frame.kind.symbol).font(.dsLabelS)
+            Text(frame.kind.title).font(.dsLabelBold).lineLimit(1)
             if frame.pinned { Image(systemName: "pin.fill").font(.system(size: 9)).foregroundStyle(p.accent) }
             Spacer(minLength: 4)
             Button { showControls = true } label: {
-                Image(systemName: "slider.horizontal.3").font(.caption2).padding(5).contentShape(Rectangle())
+                Image(systemName: "slider.horizontal.3").font(.dsLabelS).padding(5).contentShape(Rectangle())
             }
             .buttonStyle(.plainHaptic)
             .popover(isPresented: $showControls, arrowEdge: .top) { controls(p) }
             Button { close() } label: {
-                Image(systemName: "xmark").font(.caption2).padding(5).contentShape(Rectangle())
+                Image(systemName: "xmark").font(.dsLabelS).padding(5).contentShape(Rectangle())
             }
             .buttonStyle(.plainHaptic)
         }

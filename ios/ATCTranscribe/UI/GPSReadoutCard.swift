@@ -34,8 +34,8 @@ struct GPSReadoutCard: View {
                 }
             }
             VStack(alignment: .leading, spacing: 1) {
-                Text(qualityText(r)).font(.caption.weight(.semibold)).foregroundStyle(p.text)
-                Text(sourceLabel(r.source)).font(.caption2).foregroundStyle(p.textDim).tracking(0.6)
+                Text(qualityText(r)).font(.dsLabelBold).foregroundStyle(p.text)
+                Text(sourceLabel(r.source)).font(.dsLabelS).foregroundStyle(p.textDim).tracking(0.6)
             }
             Spacer()
         }

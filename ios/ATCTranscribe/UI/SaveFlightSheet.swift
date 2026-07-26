@@ -23,7 +23,7 @@ struct SaveFlightSheet: View {
                 VStack(alignment: .leading, spacing: 14) {
                     Card(title: "Trip") {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text(flight.routeSummary).font(.headline).foregroundStyle(p.text)
+                            Text(flight.routeSummary).font(.dsHeadline).foregroundStyle(p.text)
                             KV("Duration", flight.durationText)
                             KV("Distance", flight.distanceText)
                             KV("Max speed", flight.maxSpeedText)
@@ -41,7 +41,7 @@ struct SaveFlightSheet: View {
                         } label: {
                             HStack {
                                 Text(aircraftLabel).foregroundStyle(p.text)
-                                Spacer(); Image(systemName: "chevron.up.chevron.down").font(.caption).foregroundStyle(p.textDim)
+                                Spacer(); Image(systemName: "chevron.up.chevron.down").font(.dsLabel).foregroundStyle(p.textDim)
                             }
                         }
                         .accessibilityIdentifier("save-flight-aircraft")

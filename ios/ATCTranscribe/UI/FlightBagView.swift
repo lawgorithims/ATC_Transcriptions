@@ -55,7 +55,7 @@ struct FlightBagView: View {
                         .font(.callout).foregroundStyle(p.text)
                     if let eff = Procedures.effectiveDate, let exp = Procedures.expiryDate {
                         Text("\(Self.df.string(from: eff)) – \(Self.df.string(from: exp))")
-                            .font(.caption2).foregroundStyle(p.textDim)
+                            .font(.dsLabelS).foregroundStyle(p.textDim)
                     }
                 }
                 Spacer()
@@ -71,7 +71,7 @@ struct FlightBagView: View {
             if let d = Procedures.daysUntilExpiry(), d <= 7 { return ("\(max(d, 0))d left", .orange) }
             return ("Current", p.good)
         }()
-        return Text(text).font(.caption2.weight(.bold)).foregroundStyle(.white)
+        return Text(text).font(.dsLabelSBold).foregroundStyle(.white)
             .padding(.horizontal, 8).padding(.vertical, 3).background(Capsule().fill(color))
     }
 
@@ -80,13 +80,13 @@ struct FlightBagView: View {
     private var progressSection: some View {
         Section {
             VStack(alignment: .leading, spacing: 6) {
-                Text(bag.job.label).font(.caption).foregroundStyle(model.palette.text).lineLimit(1)
+                Text(bag.job.label).font(.dsLabel).foregroundStyle(model.palette.text).lineLimit(1)
                 HStack(spacing: 8) {
                     ProgressView(value: Double(bag.job.done), total: Double(max(bag.job.total, 1)))
-                    Text("\(bag.job.done)/\(bag.job.total)").font(.caption2).monospacedDigit()
+                    Text("\(bag.job.done)/\(bag.job.total)").font(.dsLabelS).monospacedDigit()
                         .foregroundStyle(model.palette.textDim)
                 }
-                Button("Cancel", role: .destructive) { bag.cancel() }.font(.caption)
+                Button("Cancel", role: .destructive) { bag.cancel() }.font(.dsLabel)
             }
         }
     }
@@ -99,7 +99,7 @@ struct FlightBagView: View {
             Toggle("Auto-pack when I file a flight plan", isOn: $model.autoPackFlightBag)
             if airports.isEmpty {
                 Text("File a flight plan and its airports' plates download automatically.")
-                    .font(.caption).foregroundStyle(model.palette.textDim)
+                    .font(.dsLabel).foregroundStyle(model.palette.textDim)
             } else {
                 Button {
                     bag.download(airports: airports, label: "Route · \(airports.count) airports")
@@ -123,8 +123,8 @@ struct FlightBagView: View {
                 Label("Download all \(plates.count) charts", systemImage: "arrow.down.circle")
             }
             .disabled(bag.isRunning || cached == plates.count)
-            if cached == plates.count { Text("All \(plates.count) charts downloaded.").font(.caption2).foregroundStyle(model.palette.good) }
-            else { Text("\(cached) of \(plates.count) downloaded.").font(.caption2).foregroundStyle(model.palette.textDim) }
+            if cached == plates.count { Text("All \(plates.count) charts downloaded.").font(.dsLabelS).foregroundStyle(model.palette.good) }
+            else { Text("\(cached) of \(plates.count) downloaded.").font(.dsLabelS).foregroundStyle(model.palette.textDim) }
         }
     }
 
@@ -138,8 +138,8 @@ struct FlightBagView: View {
                         Text(r).foregroundStyle(model.palette.text)
                         Spacer()
                         Text("\(Procedures.airports(inRegion: r).count) airports")
-                            .font(.caption2).foregroundStyle(model.palette.textDim)
-                        Image(systemName: "arrow.down.circle").font(.caption).foregroundStyle(model.palette.accent)
+                            .font(.dsLabelS).foregroundStyle(model.palette.textDim)
+                        Image(systemName: "arrow.down.circle").font(.dsLabel).foregroundStyle(model.palette.accent)
                     }
                 }
                 .buttonStyle(.plainHaptic).disabled(bag.isRunning)

@@ -61,19 +61,19 @@ struct GPSIntegrityBanner: View {
     var body: some View {
         if assessment.state >= .degraded || showsThreat {
             HStack(spacing: 8) {
-                Image(systemName: icon).font(.callout.weight(.semibold)).foregroundStyle(tint)
+                Image(systemName: icon).font(.dsHeadline).foregroundStyle(tint)
                 VStack(alignment: .leading, spacing: 1) {
                     HStack(spacing: 6) {
-                        Text(headline).font(.caption.weight(.semibold)).foregroundStyle(palette.text)
+                        Text(headline).font(.dsLabelBold).foregroundStyle(palette.text)
                         if let m = assessment.horizontalAccuracyM, assessment.state != .suspect, !showsThreat {
                             Text("±\(Int(m.rounded())) m").font(.caption2.monospacedDigit())
                                 .foregroundStyle(palette.textDim)
                         }
                     }
-                    Text(detail).font(.caption2).foregroundStyle(palette.textDim)
+                    Text(detail).font(.dsLabelS).foregroundStyle(palette.textDim)
                     let why = showsThreat ? threat.reasonText : assessment.reasonText
                     if !why.isEmpty {
-                        Text(why).font(.caption2).foregroundStyle(tint.opacity(0.9))
+                        Text(why).font(.dsLabelS).foregroundStyle(tint.opacity(0.9))
                     }
                 }
                 Spacer(minLength: 0)
