@@ -117,6 +117,15 @@ targets:
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         UILaunchScreen: {}
         ITSAppUsesNonExemptEncryption: false
+        # Bundled D-DIN family (SIL OFL 1.1, Resources/Fonts/ + OFL-1.1.txt) — the app's
+        # display/label face. The glob copies .otf flat into the bundle root, so bare
+        # filenames here. PostScript names (verified): D-DIN, D-DIN-Bold, D-DINCondensed,
+        # D-DINCondensed-Bold. DesignSystem.FontRegistry degrades to system if absent.
+        UIAppFonts:
+          - D-DIN.otf
+          - D-DIN-Bold.otf
+          - D-DINCondensed.otf
+          - D-DINCondensed-Bold.otf
         # Expose Documents/ in the Files app + Finder so the opt-in transcript log (atc-transcripts.jsonl)
         # can be pulled off-device into the training pipeline. No effect unless logging is enabled.
         UIFileSharingEnabled: true

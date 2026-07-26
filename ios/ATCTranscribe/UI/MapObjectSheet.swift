@@ -17,6 +17,6 @@ struct MapObjectSheet: View {
         }
         .presentationDetents([.medium, .large])
         .tint(model.palette.accent)
-        .preferredColorScheme(model.theme == .day ? .light : .dark)
+        .preferredColorScheme(model.theme.colorScheme)
     }
 }
