@@ -35,7 +35,7 @@ struct AirportsTabView: View {
                         prompt: "Airport — KBOS, or “Logan”")
         }
         .tint(model.palette.accent)
-        .preferredColorScheme(model.theme == .day ? .light : .dark)
+        .preferredColorScheme(model.theme.colorScheme)
         .sheet(item: $infoProbe) { probe in
             MapObjectSheet(result: probe).environmentObject(model)   // full card: weather tab + 7-day outlook
         }

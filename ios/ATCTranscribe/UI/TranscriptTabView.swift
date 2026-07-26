@@ -34,6 +34,6 @@ struct TranscriptTabView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(p.bg.ignoresSafeArea())
-        .preferredColorScheme(model.theme == .day ? .light : .dark)
+        .preferredColorScheme(model.theme.colorScheme)
     }
 }

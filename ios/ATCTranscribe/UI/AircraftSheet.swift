@@ -68,7 +68,7 @@ struct AircraftSheet: View {
             }
         }
         .tint(p.accent)
-        .preferredColorScheme(model.theme == .day ? .light : .dark)
+        .preferredColorScheme(model.theme.colorScheme)
         .onAppear(perform: seed)
     }
 

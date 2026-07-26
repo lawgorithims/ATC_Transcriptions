@@ -58,7 +58,7 @@ struct ConsoleView: View {
             }
         }
         .tint(p.accent)
-        .preferredColorScheme(model.theme == .day ? .light : .dark)
+        .preferredColorScheme(model.theme.colorScheme)
         .sheet(isPresented: $model.showSettings) {
             SettingsSheet().environmentObject(model).environmentObject(downloads)
         }

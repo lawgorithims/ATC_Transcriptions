@@ -48,7 +48,7 @@ struct NotesTabView: View {
                 library
             }
         }
-        .preferredColorScheme(model.theme == .day ? .light : .dark)
+        .preferredColorScheme(model.theme.colorScheme)
         .confirmationDialog("Delete this note?", isPresented: deletePresented, presenting: confirmDelete) { note in
             Button("Delete", role: .destructive) { notes.delete(note); if editing?.id == note.id { editing = nil } }
         }
