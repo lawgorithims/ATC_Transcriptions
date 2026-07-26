@@ -1707,7 +1707,9 @@ struct Card<Content: View>: View {
     var body: some View {
         let p = model.palette
         VStack(alignment: .leading, spacing: 10) {
-            Text(title)
+            // Literal .uppercased() (not just textCase): the rendered string IS the accessibility
+            // string, and UI tests + AX match the uppercase title (staticTexts["HOST"]).
+            Text(title.uppercased())
                 .dsSectionHeader(p)
             content
         }
