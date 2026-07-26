@@ -161,6 +161,18 @@ struct PlateViewer: View {
                                traffic: showOverlay ? trafficMarkers : [],
                                showTraffic: showOverlay)
                         .ignoresSafeArea(edges: .bottom)
+                        // Night: a non-interactive dark + red scrim tames the white-page blast while
+                        // keeping PDFKit's vector zoom (true inversion of a live PDFView isn't cheap).
+                        .overlay {
+                            if model.theme == .night {
+                                ZStack {
+                                    Color.black.opacity(0.35)
+                                    Color.hex(0xFF2E14).opacity(0.08)
+                                }
+                                .ignoresSafeArea()
+                                .allowsHitTesting(false)
+                            }
+                        }
                         .overlay(alignment: .bottom) { if showOverlay { trafficLegend } }
                 } else if loading {
                     ProgressView("Downloading plate…").tint(palette.accent)

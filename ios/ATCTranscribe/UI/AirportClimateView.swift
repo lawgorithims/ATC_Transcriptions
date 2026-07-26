@@ -10,6 +10,9 @@ struct AirportClimateView: View {
     // re-run its body — full histogram scans + a CIFP.runways SQLite read — on every unrelated
     // AppModel publish during live capture. Same lesson as FloatingCanvas (ConsoleView.swift).
     let palette: Palette
+    /// Passed as a value alongside the palette (same perf rule) — the wind ramp swaps to a warm
+    /// night variant, and Palette alone doesn't carry the theme identity.
+    var theme: AppTheme = .cockpit
     @Environment(\.dismiss) private var dismiss
     let ident: String
     let coord: Coord
@@ -260,7 +263,14 @@ struct AirportClimateView: View {
         Color(red: 0.92, green: 0.62, blue: 0.28),   // moderate 12–18
         Color(red: 0.88, green: 0.40, blue: 0.36),   // strong   18+
     ]
-    private func windTierColor(_ tier: Int) -> Color { Self.windRamp[min(max(tier, 0), 3)] }
+    /// Night: a monotonic warm ramp — no green emission, ordering still legible by luminance.
+    private static let nightWindRamp: [Color] = [
+        .hex(0x6E2A1E), .hex(0x9A421E), .hex(0xC4581E), .hex(0xE8503F),
+    ]
+    private func windTierColor(_ tier: Int) -> Color {
+        let ramp = theme == .night ? Self.nightWindRamp : Self.windRamp
+        return ramp[min(max(tier, 0), 3)]
+    }
 
     // MARK: Seasonal winds — mean wind by month
 

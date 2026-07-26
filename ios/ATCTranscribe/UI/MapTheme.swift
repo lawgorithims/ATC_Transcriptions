@@ -30,6 +30,7 @@ struct MapTheme: Equatable {
     let airspace: [String: UIColor]
     let route: UIColor
     let track: UIColor
+    let procedure: UIColor      // previewed coded procedure (classic engine's dashed preview line)
     // FAA raster paint (identity = 1.0 / 0 / 0)
     let rasterBrightnessMax: Double
     let rasterSaturation: Double
@@ -79,7 +80,7 @@ struct MapTheme: Equatable {
     private static let nightAirspace: [String: UIColor] = [
         "B": rgb(0x8A4A26), "D": rgb(0x8A4A26), "C": rgb(0xB04058),
         "TFR": rgb(0xFF3B30), "R": rgb(0xD0392A), "P": rgb(0x8F1010),
-        "W": rgb(0xC85A30), "A": rgb(0xC89030), "MOA": rgb(0x7E4A62),
+        "W": rgb(0xC85A30), "A": rgb(0xA0701F), "MOA": rgb(0x7E4A62),
     ]
 
     static func forTheme(_ t: AppTheme) -> MapTheme {
@@ -94,7 +95,7 @@ struct MapTheme: Equatable {
                 airwayLabelText: rgb(0xE6F0F6), airwayLabelHalo: rgb(0x2A3F55, 0.9),
                 navLabelText: .white, navLabelHalo: UIColor.black.withAlphaComponent(0.85),
                 airspace: chartAirspace,
-                route: rgb(0xF23D9E), track: rgb(0xFF9E33, 0.85),
+                route: rgb(0xF23D9E), track: rgb(0xFF9E33, 0.85), procedure: rgb(0x29C7F0),
                 rasterBrightnessMax: 0.95, rasterSaturation: 0, rasterContrast: 0,
                 nightVeilOpacity: 0)
         case .day:
@@ -108,7 +109,7 @@ struct MapTheme: Equatable {
                 airwayLabelText: rgb(0x17242E), airwayLabelHalo: UIColor.white.withAlphaComponent(0.9),
                 navLabelText: rgb(0x17242E), navLabelHalo: UIColor.white.withAlphaComponent(0.9),
                 airspace: chartAirspace,
-                route: rgb(0xF23D9E), track: rgb(0xFF9E33, 0.85),
+                route: rgb(0xF23D9E), track: rgb(0xFF9E33, 0.85), procedure: rgb(0x29C7F0),
                 rasterBrightnessMax: 1.0, rasterSaturation: 0, rasterContrast: 0,
                 nightVeilOpacity: 0)
         case .night:
@@ -124,7 +125,7 @@ struct MapTheme: Equatable {
                 airwayLabelText: rgb(0xF0A898), airwayLabelHalo: rgb(0x200A08, 0.9),
                 navLabelText: rgb(0xF2B0A0), navLabelHalo: UIColor.black.withAlphaComponent(0.85),
                 airspace: nightAirspace,
-                route: rgb(0xFF5A3C), track: rgb(0xB0521E, 0.85),
+                route: rgb(0xFF5A3C), track: rgb(0xB0521E, 0.85), procedure: rgb(0xE07A5A),
                 rasterBrightnessMax: 0.55, rasterSaturation: -0.65, rasterContrast: 0.10,
                 nightVeilOpacity: 0.10)
         }

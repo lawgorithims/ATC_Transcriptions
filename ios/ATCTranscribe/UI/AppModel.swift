@@ -503,6 +503,9 @@ final class AppModel: ObservableObject {
                                          centerLat: g.centerLat, centerLon: g.centerLon,
                                          widthMeters: g.widthMeters, rotationDeg: g.rotationDeg,
                                          opacity: 0.7)
+        // Night theme: a white FAA plate is a dark-adaptation blast — default new overlays to the
+        // inverted page (the corner menu still toggles back; togglePlateInvert owns the async raster).
+        if theme == .night { togglePlateInvert() }
         // Frame the WHOLE plate (not just its center): the gear button rides the plate's top-right
         // corner, so the plate must arrive fully on-screen for its control to be visible.
         mapFrameRect = PlatePlacement.boundingMapRect(centerLat: g.centerLat, centerLon: g.centerLon,
