@@ -128,7 +128,54 @@ struct IdentifiedObject: Identifiable {
     var airwayArea: String? = nil     // populated when kind == .airway — the ARINC area for the MEA lookup
 
     /// Stable across a single probe so `.sheet(item:)` / `ForEach` are well-behaved.
-    var id: String { "\(kind.rawValue)|\(ident)|\(coord.lat),\(coord.lon)" }
+    ///
+    /// The altitude block is part of the identity because every airspace object is built at the TAPPED
+    /// point, so kind+ident+coord is identical for two records that share a name. White Sands publishes
+    /// R-5111C as separate shelves (13,000–24,000 and 45,000–unlimited); without the altitudes they
+    /// collide into duplicate ForEach ids, which SwiftUI leaves undefined — rows that may not render or
+    /// may route a tap to the wrong shelf of the same restriction.
+    var id: String {
+        let band = airspace.map { "|\($0.floorFt ?? -1),\($0.ceilingFt ?? -1)" } ?? ""
+        return "\(kind.rawValue)|\(ident)|\(coord.lat),\(coord.lon)" + band
+    }
+}
+
+extension MapProbe {
+    /// Airspace classes a pilot may not simply fly into. Promoted above ordinary chart features so a
+    /// tapped restriction opens on the restriction, not on whichever fix happened to be nearest.
+    static let prohibitiveClasses: Set<String> = ["TFR", "P", "R"]
+
+    static func isProhibitive(_ cls: String) -> Bool { prohibitiveClasses.contains(cls.uppercased()) }
+
+    /// Merge the ranked point/line hits with the containing restrictions, in ONE documented order.
+    ///
+    /// Build 93 hand-rolled this at the call site and inverted the policy the codebase already stated:
+    /// it inserted standing airspace at index 0 AFTER live TFRs had been appended, so a live NOTAM — the
+    /// only object here carrying a reason, an effective time and an expiry — sank below permanent chart
+    /// furniture and below every nearby VOR. `MapObjectKind.priority` says the opposite (tfr 2 before
+    /// airspace 3), and so did the comment directly above the code doing it. One policy, here:
+    ///
+    ///   1. live TFRs — a restriction that did not exist yesterday and expires tomorrow
+    ///   2. standing prohibited / restricted / national-defense areas
+    ///   3. the distance-ranked fixes, navaids, traffic and airways
+    ///   4. ambient airspace (B/C/D/MOA/W/A) — context, and never above the airport you tapped
+    ///
+    /// De-duplication is by `id`, which includes the altitude band, so two shelves of one restricted
+    /// area both survive while a genuinely duplicated record collapses.
+    static func merge(ranked: [IdentifiedObject],
+                      liveTFRs: [IdentifiedObject],
+                      airspaces: [IdentifiedObject]) -> [IdentifiedObject] {
+        assert(ranked.count + liveTFRs.count + airspaces.count <= 4096, "probe result set out of range")
+        let prohibitive = airspaces.filter { $0.airspace.map { isProhibitive($0.cls) } ?? false }
+        let ambient = airspaces.filter { !($0.airspace.map { isProhibitive($0.cls) } ?? false) }
+        var seen = Set<String>()
+        var out: [IdentifiedObject] = []
+        for o in (liveTFRs + prohibitive + ranked + ambient).prefix(4096) where seen.insert(o.id).inserted {
+            out.append(o)
+        }
+        assert(out.count <= 4096, "merged probe result out of range")
+        return out
+    }
 }
 
 /// The result of one tap: the ranked candidates under the finger. Presented via `.sheet(item:)`; the
