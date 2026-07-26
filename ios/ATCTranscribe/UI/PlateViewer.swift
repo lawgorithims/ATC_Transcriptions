@@ -177,8 +177,8 @@ struct PlateViewer: View {
                 }
                 ToolbarItem(placement: .principal) {
                     VStack(spacing: 0) {
-                        Text(procedure.name).font(.headline).lineLimit(1)
-                        Text(airport).font(.caption2).foregroundStyle(palette.textDim)
+                        Text(procedure.name).font(.dsHeadline).lineLimit(1)
+                        Text(airport).font(.dsLabelS).foregroundStyle(palette.textDim)
                     }
                 }
                 // Ownship + traffic overlay — only possible on a georeferenced plate (needs world→page).
@@ -220,7 +220,7 @@ struct PlateViewer: View {
             Label("Traffic", systemImage: "triangle.fill").foregroundStyle(.orange)
             if ownshipCoord == nil { Text("· waiting for GPS").foregroundStyle(palette.textDim) }
         }
-        .font(.caption2).padding(.horizontal, 12).padding(.vertical, 6)
+        .font(.dsLabelS).padding(.horizontal, 12).padding(.vertical, 6)
         .background(palette.overlay, in: Capsule())
         .padding(.bottom, 10)
     }
@@ -228,9 +228,9 @@ struct PlateViewer: View {
     private var offlineState: some View {
         VStack(spacing: 12) {
             Image(systemName: "wifi.slash").font(.system(size: 34)).foregroundStyle(palette.textDim)
-            Text("Plate not downloaded").font(.headline).foregroundStyle(palette.text)
+            Text("Plate not downloaded").font(.dsHeadline).foregroundStyle(palette.text)
             Text("This plate isn’t cached yet and couldn’t be fetched. Connect to the internet once to download it, then it works offline.")
-                .font(.caption).foregroundStyle(palette.textDim)
+                .font(.dsLabel).foregroundStyle(palette.textDim)
                 .multilineTextAlignment(.center).padding(.horizontal, 32)
             Button("Try again") { Haptics.impact(.light); Task { loading = true; await load() } }
                 .buttonStyle(.borderedProminent).tint(palette.accent)

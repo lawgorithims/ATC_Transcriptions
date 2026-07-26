@@ -277,8 +277,8 @@ struct PlateMenuBar: View {
             HStack(spacing: 10) {
                 Image(systemName: "doc.richtext").foregroundStyle(p.accent)
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(state.name).font(.callout.weight(.semibold)).foregroundStyle(p.text).lineLimit(1)
-                    Text("Plate on map · \(state.airport)").font(.caption2).foregroundStyle(p.textDim)
+                    Text(state.name).font(.dsHeadline).foregroundStyle(p.text).lineLimit(1)
+                    Text("Plate on map · \(state.airport)").font(.dsLabelS).foregroundStyle(p.textDim)
                 }
                 Spacer(minLength: 8)
                 Button {
@@ -313,7 +313,7 @@ struct PlateMenuBar: View {
             }
             // Opacity slider (in normal screen space → no MapKit gesture conflict)
             HStack(spacing: 8) {
-                Image(systemName: "circle.lefthalf.filled").font(.caption).foregroundStyle(p.textDim).frame(width: 18)
+                Image(systemName: "circle.lefthalf.filled").font(.dsLabel).foregroundStyle(p.textDim).frame(width: 18)
                 Slider(value: opacityBinding, in: AppModel.plateMinOpacity...1).tint(p.accent)
                     .accessibilityIdentifier("plate-opacity-slider")
             }
@@ -351,13 +351,13 @@ struct PlateMenuBar: View {
         } label: {
             VStack(spacing: 3) {
                 Image(systemName: icon).font(.body)
-                Text(label).font(.caption2)
+                Text(label).font(.dsLabelS)
             }
             .foregroundStyle(active ? p.bg : p.text)
             .frame(maxWidth: .infinity).padding(.vertical, 10)
             .background(active ? p.accent : p.surfaceAlt)
-            .clipShape(RoundedRectangle(cornerRadius: 10))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(p.border, lineWidth: 1))
+            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.r4))
+            .overlay(RoundedRectangle(cornerRadius: DS.Radius.r4).stroke(p.border, lineWidth: 1))
         }
         .buttonStyle(.plainHaptic).accessibilityIdentifier(id)
     }

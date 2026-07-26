@@ -79,7 +79,7 @@ struct MapLayersPanel: View {
     }
 
     private func header(_ t: String, _ p: Palette) -> some View {
-        Text(t.uppercased()).font(.caption2.weight(.bold)).foregroundStyle(p.textDim).tracking(0.7)
+        Text(t.uppercased()).font(.dsLabelSBold).foregroundStyle(p.textDim).tracking(0.7)
             .padding(.bottom, 2)
     }
 
@@ -91,10 +91,10 @@ struct MapLayersPanel: View {
                     .foregroundStyle(selected ? p.accent : p.textDim)
                 Text(layer.title).font(.callout).foregroundStyle(p.text)
                 Spacer(minLength: 4)
-                if selected { Image(systemName: "checkmark").font(.caption.weight(.bold)).foregroundStyle(p.accent) }
+                if selected { Image(systemName: "checkmark").font(.dsLabelBold).foregroundStyle(p.accent) }
             }
             .padding(.vertical, 7).padding(.horizontal, 8).contentShape(Rectangle())
-            .background(selected ? p.accent.opacity(0.14) : .clear, in: RoundedRectangle(cornerRadius: 8))
+            .background(selected ? p.accent.opacity(0.14) : .clear, in: RoundedRectangle(cornerRadius: DS.Radius.r2))
         }
         .buttonStyle(.plainHaptic)
         .accessibilityIdentifier("base-\(layer.rawValue)")

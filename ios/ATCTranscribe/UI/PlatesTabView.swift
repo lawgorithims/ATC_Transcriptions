@@ -164,11 +164,11 @@ struct PlatesTabView: View {
                             VStack(alignment: .leading, spacing: 1) {
                                 Text(o.ident).font(.system(.body, design: .monospaced)).foregroundStyle(model.palette.text)
                                 if let n = NavMeta.airport(o.ident)?.name {
-                                    Text(n).font(.caption).foregroundStyle(model.palette.textDim)
+                                    Text(n).font(.dsLabel).foregroundStyle(model.palette.textDim)
                                 }
                             }
                             Spacer()
-                            Text("\(Procedures.forAirport(o.ident).count) charts").font(.caption2).foregroundStyle(model.palette.textDim)
+                            Text("\(Procedures.forAirport(o.ident).count) charts").font(.dsLabelS).foregroundStyle(model.palette.textDim)
                         }
                         .contentShape(Rectangle())
                     }
@@ -208,7 +208,7 @@ struct PlatesTabView: View {
                     ForEach(runwayKeys, id: \.self) { key in
                         VStack(alignment: .leading, spacing: 8) {
                             Text(key == circling ? key : "Runway \(key)")
-                                .font(.subheadline.weight(.semibold)).foregroundStyle(p.text).padding(.horizontal, 4)
+                                .font(.dsHeadline).foregroundStyle(p.text).padding(.horizontal, 4)
                             thumbGrid(byRunway[key] ?? [])
                         }
                     }
@@ -230,7 +230,7 @@ struct PlatesTabView: View {
     private var thumbZoomControl: some View {
         let p = model.palette
         return HStack(spacing: 8) {
-            Image(systemName: "minus.magnifyingglass").font(.caption2).foregroundStyle(p.textDim)
+            Image(systemName: "minus.magnifyingglass").font(.dsLabelS).foregroundStyle(p.textDim)
             Slider(value: $thumbSize, in: Self.thumbMin...Self.thumbMax).frame(width: 130).tint(p.accent)
                 .accessibilityIdentifier("plate-thumb-size")
             Image(systemName: "plus.magnifyingglass").font(.callout).foregroundStyle(p.textDim)
@@ -252,8 +252,8 @@ struct PlatesTabView: View {
     private func sectionHeader(_ title: String, _ count: Int) -> some View {
         let p = model.palette
         return HStack(spacing: 6) {
-            Text(title).font(.headline).foregroundStyle(p.text)
-            Text("\(count)").font(.caption).foregroundStyle(p.textDim)
+            Text(title).font(.dsHeadline).foregroundStyle(p.text)
+            Text("\(count)").font(.dsLabel).foregroundStyle(p.textDim)
             Spacer()
         }
         .padding(.horizontal, 4).padding(.top, 6)
@@ -306,7 +306,7 @@ struct PlatesTabView: View {
                     Image(systemName: "books.vertical").font(.system(size: 40)).foregroundStyle(p.textDim.opacity(0.7))
                     Text("Search an airport to open its binder").foregroundStyle(p.textDim)
                     Text("Your route's fields and nearby airports appear here as binders.")
-                        .font(.caption).foregroundStyle(p.textDim.opacity(0.8)).multilineTextAlignment(.center)
+                        .font(.dsLabel).foregroundStyle(p.textDim.opacity(0.8)).multilineTextAlignment(.center)
                 }
                 .frame(maxWidth: .infinity).padding(.vertical, 60).listRowSeparator(.hidden)
             }
@@ -326,12 +326,12 @@ struct PlatesTabView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(ident).font(.system(.headline, design: .monospaced)).foregroundStyle(p.text)
                     if let n = NavMeta.airport(ident)?.name {
-                        Text(n).font(.caption).foregroundStyle(p.textDim).lineLimit(1)
+                        Text(n).font(.dsLabel).foregroundStyle(p.textDim).lineLimit(1)
                     }
-                    Text("\(count) chart\(count == 1 ? "" : "s")").font(.caption2.weight(.semibold)).foregroundStyle(p.accent)
+                    Text("\(count) chart\(count == 1 ? "" : "s")").font(.dsLabelSBold).foregroundStyle(p.accent)
                 }
                 Spacer(minLength: 4)
-                Image(systemName: "chevron.right").font(.caption).foregroundStyle(p.textDim)
+                Image(systemName: "chevron.right").font(.dsLabel).foregroundStyle(p.textDim)
             }
             .contentShape(Rectangle())
         }
@@ -400,17 +400,17 @@ struct PlateThumb: View {
                 }
                 .aspectRatio(aspect, contentMode: .fit)
                 .frame(maxWidth: .infinity)
-                .clipShape(RoundedRectangle(cornerRadius: 7))
-                .overlay(RoundedRectangle(cornerRadius: 7).stroke(p.border, lineWidth: 0.5))
+                .clipShape(RoundedRectangle(cornerRadius: DS.Radius.r2))
+                .overlay(RoundedRectangle(cornerRadius: DS.Radius.r2).stroke(p.border, lineWidth: 0.5))
                 .overlay(alignment: .topTrailing) {
                     HStack(spacing: 3) {
                         if PlateGeoref.lookup(pdf: proc.pdf) != nil { Image(systemName: "scope").foregroundStyle(p.good) }
                         if PlateStore.isCached(proc) { Image(systemName: "arrow.down.circle.fill").foregroundStyle(p.good) }
                     }
-                    .font(.caption2).padding(5)
+                    .font(.dsLabelS).padding(5)
                     .background(p.overlay, in: Capsule()).padding(4)   // legible over the chart, not floating on white
                 }
-                Text(proc.name).font(.caption2).foregroundStyle(p.text).lineLimit(2)
+                Text(proc.name).font(.dsLabelS).foregroundStyle(p.text).lineLimit(2)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
