@@ -141,7 +141,7 @@ struct MapHostView: View {
         // of which layers are on. Not hit-testable so it never eats a map tap.
         .overlay {
             if live, let hl = model.searchHighlight, let pt = searchPoint {
-                SearchHighlightMarker(kind: hl.kind).position(x: pt.x, y: pt.y).allowsHitTesting(false)
+                SearchHighlightMarker(kind: hl.kind, theme: model.theme).position(x: pt.x, y: pt.y).allowsHitTesting(false)
             }
         }
         .overlay(alignment: .top) { statusPills }
@@ -404,10 +404,11 @@ struct MapHostView: View {
 /// happen. Engine-agnostic (positioned by MapHostView from a streamed screen point). Non-interactive.
 struct SearchHighlightMarker: View {
     let kind: MapObjectKind
+    var theme: AppTheme = .cockpit
     @State private var pulse = false
 
     var body: some View {
-        let color = Self.color(kind)
+        let color = Self.color(kind, theme)
         ZStack {
             // Expanding ring that fades out — the "pulse".
             Circle().stroke(color, lineWidth: 2.5)
@@ -428,12 +429,10 @@ struct SearchHighlightMarker: View {
         }
     }
 
-    static func color(_ kind: MapObjectKind) -> Color {
+    static func color(_ kind: MapObjectKind, _ theme: AppTheme) -> Color {
         switch kind {
-        case .airport: return .hex(0xE879F9)
-        case .vor:     return .hex(0x34D399)
-        case .fix:     return .hex(0x60A5FA)
-        default:       return .hex(0xF59E0B)
+        case .airport, .vor, .fix: return EntityTint.color(kind, theme)
+        default: return theme == .night ? .hex(0xF5B04E) : .hex(0xF59E0B)
         }
     }
     static func icon(_ kind: MapObjectKind) -> String {

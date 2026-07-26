@@ -109,12 +109,12 @@ struct AirportsTabView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 8) {
                         Text(s.ident).font(.system(.headline, design: .monospaced)).foregroundStyle(p.text)
-                        FlightCategoryChip(metar: metar)
+                        FlightCategoryChip(metar: metar, dimmed: model.theme == .night)
                         Spacer(minLength: 4)
                         Button { Haptics.impact(.light); model.toggleFavoriteAirport(ident) } label: {
                             Image(systemName: model.isFavoriteAirport(ident) ? "star.fill" : "star")
                                 .font(.callout)
-                                .foregroundStyle(model.isFavoriteAirport(ident) ? Color.hex(0xF5C451) : p.textDim)
+                                .foregroundStyle(model.isFavoriteAirport(ident) ? EntityTint.favorite(model.theme) : p.textDim)
                                 .frame(width: 32, height: 28).contentShape(Rectangle())
                         }
                         .buttonStyle(.plainHaptic)

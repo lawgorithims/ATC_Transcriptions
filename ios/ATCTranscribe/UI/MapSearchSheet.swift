@@ -87,14 +87,7 @@ struct MapSearchSheet: View {
     }
 
     private func badge(_ kind: MapObjectKind) -> some View {
-        let color: Color = {
-            switch kind {
-            case .airport: return .hex(0xE879F9)
-            case .vor:     return .hex(0x34D399)
-            case .fix:     return .hex(0x60A5FA)
-            default:       return .gray
-            }
-        }()
+        let color = EntityTint.color(kind, model.theme)
         let icon: String = {
             switch kind {
             case .airport: return "airplane"
