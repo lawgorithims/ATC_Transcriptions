@@ -141,11 +141,11 @@ struct MapObjectView: View {
                                 Text(title(o))
                                     .font(.system(.body, design: .monospaced)).foregroundStyle(model.palette.text)
                                 if let sub = subtitle(o) {
-                                    Text(sub).font(.caption).foregroundStyle(model.palette.textDim)
+                                    Text(sub).font(.dsLabel).foregroundStyle(model.palette.textDim)
                                 }
                             }
                             Spacer()
-                            Image(systemName: "chevron.right").font(.caption2).foregroundStyle(model.palette.textDim)
+                            Image(systemName: "chevron.right").font(.dsLabelS).foregroundStyle(model.palette.textDim)
                         }
                     }
                 }
@@ -231,16 +231,16 @@ struct MapObjectView: View {
                             FlightCategoryChip(metar: metar)
                         }
                         if let name = displayName(o) {
-                            Text(name).font(.caption).foregroundStyle(p.textDim).lineLimit(1)
+                            Text(name).font(.dsLabel).foregroundStyle(p.textDim).lineLimit(1)
                         }
                         Text(metar?.summary ?? "Latest weather unavailable")
-                            .font(.caption).foregroundStyle(metar == nil ? p.textDim : p.text).lineLimit(2)
+                            .font(.dsLabel).foregroundStyle(metar == nil ? p.textDim : p.text).lineLimit(2)
                         if !summary.keyFreqs.isEmpty {
                             Text(summary.keyFreqs.map { "\($0.label) \($0.value)" }.joined(separator: "  ·  "))
                                 .font(.caption2.monospaced()).foregroundStyle(p.accent).lineLimit(1)
                         }
                         Text(airportDetailLine(summary))
-                            .font(.caption2).foregroundStyle(p.textDim).lineLimit(2)
+                            .font(.dsLabelS).foregroundStyle(p.textDim).lineLimit(2)
                     }
                     Spacer(minLength: 0)
                 }
@@ -384,18 +384,18 @@ struct MapObjectView: View {
                     HStack(spacing: 10) {
                         Image(systemName: ev.category.glyph).foregroundStyle(Color.hex(0xF97316))
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(ev.title).font(.caption).foregroundStyle(p.text).lineLimit(1)
-                            Text(ev.category.label).font(.caption2).foregroundStyle(p.textDim)
+                            Text(ev.title).font(.dsLabel).foregroundStyle(p.text).lineLimit(1)
+                            Text(ev.category.label).font(.dsLabelS).foregroundStyle(p.textDim)
                         }
                         Spacer()
-                        Text(String(format: "%.0f nm", nm)).font(.caption2).foregroundStyle(p.textDim)
+                        Text(String(format: "%.0f nm", nm)).font(.dsLabelS).foregroundStyle(p.textDim)
                     }
                 }
             }
         }
         Section {} footer: {
             Text("METAR from aviationweather.gov (requires a connection). Hazards are satellite-observed (NASA EONET). Neither substitutes for an official weather briefing.")
-                .font(.caption2).foregroundStyle(p.textDim)
+                .font(.dsLabelS).foregroundStyle(p.textDim)
         }
     }
 
@@ -438,9 +438,9 @@ struct MapObjectView: View {
                 ForEach(Array(periods.enumerated()), id: \.offset) { _, per in
                     VStack(alignment: .leading, spacing: 2) {
                         Text(per.header(lat: o.coord.lat, lon: o.coord.lon))
-                            .font(.caption.weight(.semibold)).foregroundStyle(p.accent)
+                            .font(.dsLabelBold).foregroundStyle(p.accent)
                             .fixedSize(horizontal: false, vertical: true)
-                        Text(per.summary).font(.caption2).foregroundStyle(p.textDim)
+                        Text(per.summary).font(.dsLabelS).foregroundStyle(p.textDim)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -448,7 +448,7 @@ struct MapObjectView: View {
         }
         Section {} footer: {
             Text("TAF from aviationweather.gov — a forecast for the airport's immediate vicinity, valid 24–30 h. Not a substitute for an official briefing.")
-                .font(.caption2).foregroundStyle(p.textDim)
+                .font(.dsLabelS).foregroundStyle(p.textDim)
         }
     }
 
@@ -460,10 +460,10 @@ struct MapObjectView: View {
                 ForEach(Array(periods.enumerated()), id: \.offset) { _, per in
                     HStack(alignment: .top, spacing: 10) {
                         VStack(alignment: .leading, spacing: 1) {
-                            Text(per.name).font(.caption.weight(.semibold)).foregroundStyle(p.text)
+                            Text(per.name).font(.dsLabelBold).foregroundStyle(p.text)
                             Text([per.shortForecast, per.windText.isEmpty ? nil : "Wind \(per.windText)"]
                                     .compactMap { $0 }.joined(separator: " · "))
-                                .font(.caption2).foregroundStyle(p.textDim)
+                                .font(.dsLabelS).foregroundStyle(p.textDim)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                         Spacer(minLength: 4)
@@ -476,14 +476,14 @@ struct MapObjectView: View {
                 switch forecasts.state(o.ident) {
                 case .failed:
                     Label("Outlook unavailable — reopen to retry.", systemImage: "wifi.slash")
-                        .font(.caption).foregroundStyle(p.textDim)
+                        .font(.dsLabel).foregroundStyle(p.textDim)
                 case .empty:
                     Label("No NWS outlook for this location.", systemImage: "calendar")
-                        .font(.caption).foregroundStyle(p.textDim)
+                        .font(.dsLabel).foregroundStyle(p.textDim)
                 default:
                     HStack(spacing: 10) {
                         ProgressView().controlSize(.small)
-                        Text("Fetching the outlook…").font(.caption).foregroundStyle(p.textDim)
+                        Text("Fetching the outlook…").font(.dsLabel).foregroundStyle(p.textDim)
                     }
                 }
             }
@@ -491,7 +491,7 @@ struct MapObjectView: View {
         .onAppear { forecasts.ensure(o.ident, coord: o.coord) }
         Section {} footer: {
             Text("7-day outlook from the U.S. National Weather Service (api.weather.gov). Planning context, not an aviation forecast — always check the TAF and an official briefing.")
-                .font(.caption2).foregroundStyle(p.textDim)
+                .font(.dsLabelS).foregroundStyle(p.textDim)
         }
     }
 
@@ -502,7 +502,7 @@ struct MapObjectView: View {
         climateSection(o)
         Section {} footer: {
             Text("NASA POWER historical winds, seasonal normals & density altitude (decades of climatology) — planning context, not current weather. Always check current METAR/TAF.")
-                .font(.caption2).foregroundStyle(p.textDim)
+                .font(.dsLabelS).foregroundStyle(p.textDim)
         }
     }
 
@@ -520,12 +520,12 @@ struct MapObjectView: View {
                             .rotationEffect(.degrees(pair.a.trueHeadingDeg - 90)).foregroundStyle(p.accent).font(.callout)
                         VStack(alignment: .leading, spacing: 1) {
                             Text("\(RunwayGeometry.label(pair.a.designator)) / \(RunwayGeometry.label(pair.b.designator))")
-                                .font(.callout.weight(.semibold)).foregroundStyle(p.text)
+                                .font(.dsHeadline).foregroundStyle(p.text)
                             Text(String(format: "%03.0f°T / %03.0f°T", pair.a.trueHeadingDeg, pair.b.trueHeadingDeg))
-                                .font(.caption2).foregroundStyle(p.textDim)
+                                .font(.dsLabelS).foregroundStyle(p.textDim)
                         }
                         Spacer()
-                        if let l = pair.lengthFt { Text("\(l) ft").font(.caption).foregroundStyle(p.textDim) }
+                        if let l = pair.lengthFt { Text("\(l) ft").font(.dsLabel).foregroundStyle(p.textDim) }
                     }
                 }
             }
@@ -563,9 +563,9 @@ struct MapObjectView: View {
         return HStack(spacing: 8) {
             Button { Haptics.impact(.light); plate = proc } label: {
                 HStack(spacing: 7) {
-                    Image(systemName: "doc.richtext").font(.caption).foregroundStyle(p.accent)
+                    Image(systemName: "doc.richtext").font(.dsLabel).foregroundStyle(p.accent)
                     Text(proc.name).font(.callout).foregroundStyle(p.text).lineLimit(2)
-                    if auto { Image(systemName: "scope").font(.caption2).foregroundStyle(p.good) }  // auto-aligns
+                    if auto { Image(systemName: "scope").font(.dsLabelS).foregroundStyle(p.good) }  // auto-aligns
                     Spacer(minLength: 4)
                     Text(cached ? "SAVED" : "NOT SAVED")
                         .font(.system(size: 9, weight: .semibold))
@@ -581,8 +581,8 @@ struct MapObjectView: View {
                 Button { sendPlateToMap(proc, ident: ident) } label: {
                     HStack(spacing: 3) {
                         if sending { ProgressView().controlSize(.mini) }
-                        else { Image(systemName: "square.on.square").font(.caption2) }
-                        Text("Map").font(.caption2.weight(.semibold))
+                        else { Image(systemName: "square.on.square").font(.dsLabelS) }
+                        Text("Map").font(.dsLabelSBold)
                     }
                     .padding(.horizontal, 9).padding(.vertical, 5)
                     .background(Capsule().fill(p.accent.opacity(0.16)))
@@ -598,8 +598,8 @@ struct MapObjectView: View {
                 if !coded.isEmpty {
                     Button { Haptics.impact(.light); activateTarget = ActivateTarget(proc: proc, candidates: coded) } label: {
                         HStack(spacing: 3) {
-                            Image(systemName: "paperplane.circle").font(.caption2)
-                            Text("Activate").font(.caption2.weight(.semibold))
+                            Image(systemName: "paperplane.circle").font(.dsLabelS)
+                            Text("Activate").font(.dsLabelSBold)
                         }
                         .padding(.horizontal, 9).padding(.vertical, 5)
                         .background(Capsule().fill(p.good.opacity(0.18)))
@@ -645,7 +645,7 @@ struct MapObjectView: View {
                 Image(systemName: "bell.slash").font(.system(size: 30)).foregroundStyle(p.textDim.opacity(0.7))
                 Text("NOTAMs need a connection").font(.callout).foregroundStyle(p.text)
                 Text("Offline NOTAM/TFR data isn't bundled yet. Check an official source before flight.")
-                    .font(.caption2).foregroundStyle(p.textDim).multilineTextAlignment(.center)
+                    .font(.dsLabelS).foregroundStyle(p.textDim).multilineTextAlignment(.center)
             }
             .frame(maxWidth: .infinity).padding(.vertical, 20)
         }
@@ -654,7 +654,7 @@ struct MapObjectView: View {
     private func emptyRow(_ title: String, _ sub: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title).font(.callout).foregroundStyle(model.palette.text)
-            Text(sub).font(.caption2).foregroundStyle(model.palette.textDim)
+            Text(sub).font(.dsLabelS).foregroundStyle(model.palette.textDim)
         }
     }
 
@@ -672,10 +672,10 @@ struct MapObjectView: View {
                     VStack(alignment: .leading, spacing: 1) {
                         Text("Airport Climate").font(.callout).foregroundStyle(p.text)
                         Text("Windrose · best time of day · seasonal winds · density altitude")
-                            .font(.caption2).foregroundStyle(p.textDim)
+                            .font(.dsLabelS).foregroundStyle(p.textDim)
                     }
                     Spacer()
-                    Image(systemName: "chevron.right").font(.caption2).foregroundStyle(p.textDim)
+                    Image(systemName: "chevron.right").font(.dsLabelS).foregroundStyle(p.textDim)
                 }
             }
             .buttonStyle(.plainHaptic).accessibilityIdentifier("airport-climate")
@@ -726,7 +726,7 @@ struct MapObjectView: View {
                     KV("Floor", Self.altText(a.floorFt))
                     KV("Ceiling", Self.altText(a.ceilingFt))
                     if let note = Self.airspaceExplanation(a.cls) {
-                        Text(note).font(.caption).foregroundStyle(p.textDim)
+                        Text(note).font(.dsLabel).foregroundStyle(p.textDim)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -750,7 +750,7 @@ struct MapObjectView: View {
             case .tfr:
                 if let t = o.tfr {
                     HStack(spacing: 8) {
-                        Text(t.type.label).font(.headline).foregroundStyle(p.text)
+                        Text(t.type.label).font(.dsHeadline).foregroundStyle(p.text)
                         Spacer(minLength: 0)
                         Self.tfrStatusChip(t)
                     }
@@ -762,7 +762,7 @@ struct MapObjectView: View {
                     if !where_.isEmpty { KV("Center", where_) }
                     KV("NOTAM", t.id)
                     if !t.title.isEmpty {
-                        Text(t.title).font(.caption).foregroundStyle(p.text)
+                        Text(t.title).font(.dsLabel).foregroundStyle(p.text)
                             .fixedSize(horizontal: false, vertical: true)
                             .textSelection(.enabled)
                     }
@@ -775,7 +775,7 @@ struct MapObjectView: View {
                         .accessibilityIdentifier("tfr-notam-link")
                     }
                     Text("Awareness only — confirm against an official briefing.")
-                        .font(.caption2).foregroundStyle(p.textDim)
+                        .font(.dsLabelS).foregroundStyle(p.textDim)
                 }
                 bearingRow(o.coord)
             case .airway:
@@ -792,7 +792,7 @@ struct MapObjectView: View {
                 }
                 if let maa = alt.maa { KV("Maximum authorized", Self.altText(maa)) }
                 Text("To file it, type the airway between two of its fixes in the route — e.g. “GDM \(o.ident) ORW”.")
-                    .font(.caption).foregroundStyle(p.textDim)
+                    .font(.dsLabel).foregroundStyle(p.textDim)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -816,7 +816,7 @@ struct MapObjectView: View {
         Section {
         } footer: {
             Text("Satellite-observed by NASA EONET. Not a substitute for official NOTAMs, TFRs, or weather briefings.")
-                .font(.caption2)
+                .font(.dsLabelS)
                 .foregroundStyle(model.palette.textDim)
         }
     }
@@ -827,7 +827,7 @@ struct MapObjectView: View {
         } footer: {
             let stale = model.tfrsUpdatedAt.map { Self.relative.localizedString(for: $0, relativeTo: Date()) }
             Text("FAA TFR feed\(stale.map { ", updated \($0)" } ?? ""). Boundaries are approximate — confirm against the official NOTAM before flight.")
-                .font(.caption2)
+                .font(.dsLabelS)
                 .foregroundStyle(model.palette.textDim)
         }
     }
@@ -953,7 +953,7 @@ struct MapObjectView: View {
             }
         }()
         Text(text.uppercased())
-            .font(.caption2.weight(.bold))
+            .font(.dsLabelSBold)
             .padding(.horizontal, 7).padding(.vertical, 2)
             .background(color.opacity(0.18), in: Capsule())
             .foregroundStyle(color)
@@ -1043,10 +1043,10 @@ struct AirportDiagramThumbnail: View {
             if let image {
                 Image(uiImage: image).resizable().aspectRatio(contentMode: .fit)
                     .frame(maxWidth: .infinity).frame(maxHeight: 240)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .clipShape(RoundedRectangle(cornerRadius: DS.Radius.r2))
                     .overlay(alignment: .bottomTrailing) {
                         Label("Open", systemImage: "arrow.up.left.and.arrow.down.right")
-                            .font(.caption2.weight(.semibold))
+                            .font(.dsLabelSBold)
                             .padding(.horizontal, 8).padding(.vertical, 4)
                             .background(p.overlay, in: Capsule())
                             .padding(8)
@@ -1057,7 +1057,7 @@ struct AirportDiagramThumbnail: View {
                     Image(systemName: phase == .failed ? "exclamationmark.triangle" : "doc.richtext")
                         .foregroundStyle(p.textDim)
                     Text(phase == .failed ? "Diagram unavailable offline" : "Loading airport diagram…")
-                        .font(.caption).foregroundStyle(p.textDim)
+                        .font(.dsLabel).foregroundStyle(p.textDim)
                 }
                 .frame(maxWidth: .infinity, minHeight: 72)
             }

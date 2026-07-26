@@ -377,7 +377,7 @@ struct MapHostView: View {
     private func statusPill(_ text: String, _ icon: String, spin: Bool = false) -> some View {
         HStack(spacing: 8) {
             if spin { ProgressView().controlSize(.small) } else { Image(systemName: icon) }
-            Text(text).font(.caption.weight(.medium))
+            Text(text).font(.dsLabel)
         }
         .padding(.horizontal, 14).padding(.vertical, 8)
         .background(model.palette.overlay, in: Capsule())
@@ -464,7 +464,7 @@ private struct RadarStatusPill: View {
             if show, let content = state {
                 HStack(spacing: 8) {
                     if content.spin { ProgressView().controlSize(.small) } else { Image(systemName: content.icon) }
-                    Text(content.text).font(.caption.weight(.medium))
+                    Text(content.text).font(.dsLabel)
                 }
                 .padding(.horizontal, 12).padding(.vertical, 7)
                 .background(palette.overlay, in: Capsule())

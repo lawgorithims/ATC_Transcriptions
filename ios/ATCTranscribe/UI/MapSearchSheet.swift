@@ -53,8 +53,8 @@ struct MapSearchSheet: View {
                     .buttonStyle(.plainHaptic)
             }
         }
-        .padding(10).background(p.surfaceAlt).clipShape(RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(p.border, lineWidth: 1))
+        .padding(10).background(p.surfaceAlt).clipShape(RoundedRectangle(cornerRadius: DS.Radius.r4))
+        .overlay(RoundedRectangle(cornerRadius: DS.Radius.r4).stroke(p.border, lineWidth: 1))
         .padding(.horizontal, 16).padding(.vertical, 10)
     }
 
@@ -63,10 +63,10 @@ struct MapSearchSheet: View {
             badge(o.kind)
             VStack(alignment: .leading, spacing: 1) {
                 Text(o.ident).font(.system(.body, design: .monospaced)).foregroundStyle(p.text)
-                if let sub = subtitle(o) { Text(sub).font(.caption).foregroundStyle(p.textDim).lineLimit(1) }
+                if let sub = subtitle(o) { Text(sub).font(.dsLabel).foregroundStyle(p.textDim).lineLimit(1) }
             }
             Spacer()
-            Image(systemName: "chevron.right").font(.caption2).foregroundStyle(p.textDim)
+            Image(systemName: "chevron.right").font(.dsLabelS).foregroundStyle(p.textDim)
         }
     }
 
