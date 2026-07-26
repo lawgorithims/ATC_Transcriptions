@@ -99,6 +99,49 @@ final class ChartLibrary: ObservableObject {
         return await warm()
     }
 
+    /// What a "check for a new cycle" actually found. The old flow refreshed the catalog and said
+    /// NOTHING, so the honest outcomes — "you are already current" and "the publisher has not put out a
+    /// newer cycle yet" — were indistinguishable from a broken button.
+    enum CycleCheck: Equatable {
+        case upToDate(cycle: String)
+        /// A newer cycle exists and `packs` of the pilot's installed packs can be replaced from it.
+        case newCycle(from: String, to: String, packs: Int)
+        case offline
+    }
+
+    /// The pack ids the pilot has on disk right now, cycle-independent. Captured BEFORE a catalog
+    /// refresh so an update can restore exactly the coverage they already had at the new cycle.
+    func installedPackIDs() -> Set<String> {
+        guard let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
+        else { return [] }
+        var out = Set<String>()
+        for f in files.prefix(4096) where f.pathExtension == "mbtiles" {     // bounded (rule 2)
+            if let id = Self.packID(f.lastPathComponent) { out.insert(id) }
+        }
+        assert(out.count <= 4096, "installed pack set out of range")
+        return out
+    }
+
+    /// Re-fetch the catalog and report what it means for THIS install.
+    func checkForNewCycle() async -> CycleCheck {
+        let before = cycle
+        let installed = installedPackIDs()
+        guard await refreshCatalog() else { return .offline }
+        guard cycle != before, !cycle.isEmpty else { return .upToDate(cycle: cycle.isEmpty ? before : cycle) }
+        let replaceable = (catalog?.entries ?? []).filter { installed.contains($0.id) }.count
+        return .newCycle(from: before, to: cycle, packs: replaceable)
+    }
+
+    /// Re-download, at the current catalog cycle, every pack the pilot already had. This is the action
+    /// the expired banner was missing: refreshing the catalog alone changes the cycle the app READS
+    /// from, which without this leaves the pilot with fewer charts than they started with.
+    func updateInstalledPacks(_ ids: Set<String>) {
+        let wanted = (catalog?.entries ?? []).filter { ids.contains($0.id) && !isCached($0) }
+        guard !wanted.isEmpty else { bulk = .idle; return }
+        bulkTask?.cancel()
+        bulkTask = Task { [weak self] in await self?.runBulkEntries(wanted) }
+    }
+
     @discardableResult
     func warm() async -> Bool {
         if catalog != nil { return true }
@@ -310,6 +353,20 @@ final class ChartLibrary: ObservableObject {
         bulkTask?.cancel()
         bulkTask = nil
         bulk = .idle
+    }
+
+    /// Bulk-download an explicit entry list (the cycle-update path), sharing the bulk progress state.
+    private func runBulkEntries(_ list: [ChartCatalog.Entry]) async {
+        var done = 0
+        bulk = .running(done: 0, total: list.count)
+        for e in list.prefix(4096) {                                          // bounded (rule 2)
+            if Task.isCancelled { bulk = .idle; return }
+            _ = await download(e)
+            done += 1
+            bulk = .running(done: done, total: list.count)
+        }
+        bulk = .idle
+        refreshCachedBytes()
     }
 
     private func runBulk(layers: [ChartLayer]) async {

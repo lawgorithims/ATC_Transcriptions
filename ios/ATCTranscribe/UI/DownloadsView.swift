@@ -11,6 +11,7 @@ import SwiftUI
 ///    demand from the FAA via `PlateBag` (28-day d-TPP cycle) with a Current / expiring / EXPIRED badge.
 struct DownloadsView: View {
     @State private var checkingForCycle = false
+    @State private var cycleCheck: ChartLibrary.CycleCheck?
     @EnvironmentObject var model: AppModel
     @ObservedObject var library = ChartLibrary.shared
     @ObservedObject var bag: PlateBag
@@ -134,8 +135,14 @@ struct DownloadsView: View {
                         Haptics.impact(.medium)
                         checkingForCycle = true
                         Task {
-                            await library.refreshCatalog()
+                            let installed = library.installedPackIDs()
+                            let result = await library.checkForNewCycle()
                             checkingForCycle = false
+                            cycleCheck = result
+                            // A newer cycle changes which files the reader opens, so the packs the pilot
+                            // already had must be re-fetched or they are left with LESS coverage than
+                            // before they tapped. Do it as part of the update, not as a second chore.
+                            if case .newCycle = result { library.updateInstalledPacks(installed) }
                         }
                     } label: {
                         HStack(spacing: 5) {
@@ -150,6 +157,30 @@ struct DownloadsView: View {
                     }
                     .buttonStyle(.plainHaptic).disabled(checkingForCycle)
                     .accessibilityIdentifier("charts-check-cycle")
+                    if let outcome = cycleCheck {
+                        // Saying nothing was the actual defect the pilot hit: the button appeared to do
+                        // nothing, whether it had found a new cycle, confirmed the current one, or failed.
+                        switch outcome {
+                        case .upToDate(let c):
+                            Label("Cycle \(c) is the newest the publisher has issued. These charts are past "
+                                  + "their date and no replacement exists yet — cross-check against a current source.",
+                                  systemImage: "info.circle")
+                                .font(.caption2).foregroundStyle(p.textDim)
+                                .fixedSize(horizontal: false, vertical: true)
+                        case .newCycle(let from, let to, let packs):
+                            Label(packs > 0
+                                  ? "Cycle \(to) found — replacing \(packs) downloaded \(packs == 1 ? "chart" : "charts") (was \(from))."
+                                  : "Updated to cycle \(to) (was \(from)).",
+                                  systemImage: "checkmark.circle")
+                                .font(.caption2).foregroundStyle(p.good)
+                                .fixedSize(horizontal: false, vertical: true)
+                        case .offline:
+                            Label("Couldn't reach the chart server. Try again when you have a connection.",
+                                  systemImage: "wifi.slash")
+                                .font(.caption2).foregroundStyle(p.bad)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
                 }
                 .padding(.vertical, 4)
             }

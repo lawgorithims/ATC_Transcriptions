@@ -731,7 +731,9 @@ struct MapLibreChartView: UIViewRepresentable {
             let red = ChartMapView.Coordinator.airspaceColor("TFR")     // #F71433 — reuse, no hand-typed hex
             let tfrSrc = MLNShapeSource(identifier: "tfr", shape: nil, options: nil); style.addSource(tfrSrc)
             let tfrFill = MLNFillStyleLayer(identifier: "tfr-fill", source: tfrSrc)   // no minzoom: TFRs show at any zoom
-            tfrFill.fillColor = NSExpression(forConstantValue: red); tfrFill.fillOpacity = NSExpression(forConstantValue: 0.18)
+            tfrFill.fillColor = NSExpression(forConstantValue: red)
+            // Louder than the 0.14 standing national-defense areas: a live NOTAM outranks chart furniture.
+            tfrFill.fillOpacity = NSExpression(forConstantValue: 0.24)
             style.addLayer(tfrFill)
             let tfrLine = MLNLineStyleLayer(identifier: "tfr-outline", source: tfrSrc)
             tfrLine.lineColor = NSExpression(forConstantValue: red); tfrLine.lineWidth = NSExpression(forConstantValue: 2.4)
@@ -960,8 +962,13 @@ struct MapLibreChartView: UIViewRepresentable {
                     guard let top = a.rings.flatMap({ $0 }).max(by: { $0.lat < $1.lat }) else { continue }
                     let f = MLNPointFeature()
                     f.coordinate = CLLocationCoordinate2D(latitude: top.lat, longitude: top.lon)
-                    f.attributes = ["cls": a.cls,
-                                    "alt": "\(AirspaceLabelAnnotation.altText(a.ceilingFt))\n\(AirspaceLabelAnnotation.altText(a.floorFt))"]
+                    // Restricted areas get a NAME line above the altitude block. Without it a standing
+                    // national-defense area was two lines of red numbers with nothing saying what they
+                    // belonged to — a pilot could see a restriction and not know it was one, let alone
+                    // which. Class B/C/D stay altitudes-only; they are ambient and the shape says enough.
+                    let alts = "\(AirspaceLabelAnnotation.altText(a.ceilingFt))\n\(AirspaceLabelAnnotation.altText(a.floorFt))"
+                    let tag = Coordinator.restrictionTag(cls: a.cls, name: a.name)
+                    f.attributes = ["cls": a.cls, "alt": tag.isEmpty ? alts : "\(tag)\n\(alts)"]
                     lbls.append(f)
                 }
             }
@@ -1024,14 +1031,36 @@ struct MapLibreChartView: UIViewRepresentable {
                 "C", hex("C"), "TFR", hex("TFR"), "R", hex("R"), "P", hex("P"),
                 "W", hex("W"), "A", hex("A"), "MOA", hex("MOA"), hex("B")])
         }
-        // The bundled "TFR" features are STANDING national-defense areas, not live NOTAMs. At 0.18 they
-        // were pixel-identical to the live TFR layer — same red, same opacity, same stroke — so a pilot
-        // tapped one expecting a reason and effective times and got an airspace card instead. Drawn
-        // faintly they still show, but a live TFR at 0.18 now clearly reads as the louder thing.
+        // The bundled "TFR" features are the 8 STANDING national-defense areas (Dallas, Beale AFB,
+        // Grand Forks …), not live NOTAMs. They were pixel-identical to the live TFR layer, so a pilot
+        // tapped one expecting a reason and effective times; dropping them to 0.06 fixed the confusion
+        // by making them nearly INVISIBLE, which is worse — they are surface-to-unlimited restrictions
+        // and belong on the chart. They are visible again here and told apart by the card instead: the
+        // live TFR layer now draws louder (0.24), and tapping either one opens the right explanation.
         private static func aspOpacityExpr() -> NSExpression {
             NSExpression(mglJSONObject: ["match", ["get", "cls"],
-                "P", 0.18, "TFR", 0.06, "R", 0.10, "W", 0.10, "A", 0.10, "MOA", 0.10, 0.05])
+                "P", 0.18, "TFR", 0.14, "R", 0.10, "W", 0.10, "A", 0.10, "MOA", 0.10, 0.05])
         }
+        /// A short, chart-style tag for airspace you may not simply enter, or "" for ambient classes.
+        ///
+        /// The bundled `cls == "TFR"` features are the 8 permanent national-defense areas, all named
+        /// "<PLACE> NATIONAL DEFENSE AIRSPACE TFR" — far too long for a chart label, and the trailing
+        /// "TFR" is exactly the word that makes a pilot expect a live NOTAM. Prohibited and restricted
+        /// areas already carry their designator (P-40, R-2301) in the name; lift it out.
+        static func restrictionTag(cls: String, name: String) -> String {
+            switch cls.uppercased() {
+            case "TFR": return "NAT'L DEFENSE"
+            case "P", "R":
+                let upper = name.uppercased()
+                for token in upper.split(separator: " ").prefix(8)
+                where token.count <= 8 && (token.hasPrefix("P-") || token.hasPrefix("R-")) {
+                    return String(token)
+                }
+                return cls.uppercased() == "P" ? "PROHIBITED" : "RESTRICTED"
+            default: return ""
+            }
+        }
+
         private static func aspWidthExpr() -> NSExpression {
             NSExpression(mglJSONObject: ["match", ["get", "cls"],
                 "R", 2.4, "P", 2.4, "TFR", 2.4, "W", 1.8, "A", 1.8, "MOA", 1.8, "B", 1.5, "C", 1.5, 1.2])
@@ -1568,9 +1597,19 @@ struct MapLibreChartView: UIViewRepresentable {
                 guard Geo.pointInRing(here, t.polygon), !results.contains(where: { $0.tfr?.id == t.id }) else { continue }
                 results.append(IdentifiedObject(kind: .tfr, ident: t.id, coord: t.labelCoord ?? here, onRoute: false, tfr: t))
             }
+            // Airspace you may not simply fly into — national defense, prohibited, restricted — goes to
+            // the FRONT. Appended last it sat under every nearby fix and VOR, so tapping a standing
+            // national-defense area in a busy terminal area opened on a waypoint and the pilot never
+            // reached the row explaining the restriction they were pointing at. Class B/C/D and MOAs
+            // stay at the back: they are ambient context, and burying the airport you tapped under the
+            // Class B you are standing in would be the same mistake in reverse.
+            let prohibitive = Set(["TFR", "P", "R"])
+            var front: [IdentifiedObject] = []
             for asp in airspaces where !results.contains(where: { $0.kind == .airspace && $0.ident == asp.name }) {
-                results.append(IdentifiedObject(kind: .airspace, ident: asp.name, coord: here, onRoute: false, airspace: asp))
+                let obj = IdentifiedObject(kind: .airspace, ident: asp.name, coord: here, onRoute: false, airspace: asp)
+                if prohibitive.contains(asp.cls.uppercased()) { front.append(obj) } else { results.append(obj) }
             }
+            results.insert(contentsOf: front, at: 0)
             if userPoint { results.insert(IdentifiedObject(kind: .userPoint, ident: UserPoint.token(here), coord: here, onRoute: false), at: 0) }
             guard !results.isEmpty else { return }
             onTapObjects?(results)

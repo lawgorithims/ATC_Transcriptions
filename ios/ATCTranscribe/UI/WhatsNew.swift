@@ -32,6 +32,26 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 93, version: "1.0", headline: "Restricted airspace you can see, and charts you can actually update",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "exclamationmark.octagon",
+                    title: "National defense areas are visible again",
+                    detail: "Build 92 dimmed the standing national-defense areas almost to nothing while trying to tell them apart from live TFRs — which left red altitude numbers floating with no shading under them. They are drawn clearly again, and now carry a NAT’L DEFENSE label so you can tell what they are without tapping. Prohibited and restricted areas show their designator the same way. Live TFRs draw brighter still."),
+                WhatsNewHighlight(
+                    icon: "hand.tap",
+                    title: "Tapping a restriction opens the restriction",
+                    detail: "Airspace you may not simply fly into — national defense, prohibited, restricted — now goes to the top of the tap list. It used to sit below every nearby waypoint, so tapping one in a busy area opened on a VOR and you never reached the row explaining what you were pointing at. Class B, C, D and MOAs stay where they were, so tapping an airport still opens the airport."),
+                WhatsNewHighlight(
+                    icon: "arrow.down.circle",
+                    title: "The chart update button now does something and tells you what",
+                    detail: "Checking for a new cycle used to complete silently, so there was no way to tell a successful check from a broken button. It now says what it found: if a newer cycle exists it downloads replacements for the charts you already had, and if none has been published yet it says so plainly rather than leaving you guessing."),
+                WhatsNewHighlight(
+                    icon: "ant",
+                    title: "Crash reports from the map engine are readable",
+                    detail: "Debug symbols for the custom map renderer are included again, so a crash inside the globe reports where it happened instead of an address."),
+            ]),
+        ReleaseNote(
             build: 92, version: "1.0", headline: "Approach data you can trust, and a globe without seams",
             highlights: [
                 WhatsNewHighlight(
