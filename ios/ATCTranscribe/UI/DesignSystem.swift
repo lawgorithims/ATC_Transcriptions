@@ -99,6 +99,65 @@ extension View {
     }
 }
 
+/// Aviation entity tints — the single source for the chip/legend/object-card colors that used to
+/// be copy-pasted hex across five files. Cockpit and day keep the chart-convention hues; night maps
+/// every entity onto an ordered warm ramp (dark adaptation) that stays distinguishable by luminance,
+/// with TFR keeping pure alarm red.
+enum EntityTint {
+    static func color(_ kind: MapObjectKind, _ theme: AppTheme) -> Color {
+        if theme == .night { return nightColor(kind) }
+        switch kind {
+        case .airport:   return .hex(0xE879F9)   // purple-pink — chart airport magenta family
+        case .vor:       return .hex(0x34D399)   // green — navaid
+        case .fix:       return .hex(0x60A5FA)   // blue — RNAV/GPS fix
+        case .airspace:  return .hex(0x2F6FED)
+        case .traffic:   return .orange
+        case .userPoint: return .hex(0xFBBF24)
+        case .hazard:    return .hex(0xF97316)
+        case .tfr:       return .hex(0xF71433)
+        case .airway:    return .hex(0x6B94DB)
+        }
+    }
+    private static func nightColor(_ kind: MapObjectKind) -> Color {
+        switch kind {
+        case .airport:   return .hex(0xFF5A3C)
+        case .vor:       return .hex(0xC85A30)
+        case .fix:       return .hex(0xD98A4A)
+        case .airspace:  return .hex(0x8A4A26)
+        case .traffic:   return .hex(0xE06018)
+        case .userPoint: return .hex(0xF5B04E)
+        case .hazard:    return .hex(0xE06018)
+        case .tfr:       return .hex(0xFF3B30)
+        case .airway:    return .hex(0xB0521E)
+        }
+    }
+    /// Route-leg chip color (flight-plan strip / route editor).
+    static func leg(_ kind: RouteKind, _ p: Palette, _ theme: AppTheme) -> Color {
+        switch kind {
+        case .airport:  return color(.airport, theme)
+        case .vor:      return color(.vor, theme)
+        case .waypoint: return color(.fix, theme)
+        case .airway:   return theme == .night ? .hex(0xF5B04E) : .hex(0xF5C451)
+        case .other:    return p.text            // DCT / procedure / unknown
+        }
+    }
+    /// Distinct per-speaker diarization colors (cycles). Night is a warm luminance ramp — the old
+    /// blue/green/violet set was a genuine night-vision violation.
+    static func speaker(_ i: Int, _ theme: AppTheme) -> Color {
+        let chart: [Color] = [.hex(0x3B9EFF), .hex(0x2EE6A6), .hex(0xF5C451),
+                              .hex(0xC58CFF), .hex(0xFF8FB1), .hex(0x5AD1E6)]
+        let night: [Color] = [.hex(0xFF6A50), .hex(0xD98A4A), .hex(0xF5B04E),
+                              .hex(0xE8503F), .hex(0xB0521E), .hex(0x8C2F26)]
+        let table = theme == .night ? night : chart
+        assert(!table.isEmpty, "speaker palette must be non-empty")
+        return table[((i % table.count) + table.count) % table.count]
+    }
+    /// Favorites star.
+    static func favorite(_ theme: AppTheme) -> Color {
+        theme == .night ? .hex(0xF5B04E) : .hex(0xF5C451)
+    }
+}
+
 /// Thin-outline button: transparent fill, 1px stroke, quiet press fill. `prominent`
 /// promotes the stroke/label to the accent for the screen's primary action. Coexists
 /// with `.plainHaptic` — a label that draws its own chrome keeps `.plainHaptic`, a bare

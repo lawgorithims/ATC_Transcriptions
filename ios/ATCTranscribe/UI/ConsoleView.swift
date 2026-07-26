@@ -1176,15 +1176,9 @@ struct FlightPlanBar: View {
             .overlay(RoundedRectangle(cornerRadius: DS.Radius.r2).stroke(p.border, lineWidth: 1))
     }
 
-    /// Colour per route-leg kind (airports purple-pink, VOR green, GPS blue, airways amber).
+    /// Colour per route-leg kind — the shared EntityTint table (night-safe warm ramp included).
     private func legColor(_ kind: RouteKind, _ p: Palette) -> Color {
-        switch kind {
-        case .airport:  return .hex(0xE879F9)   // purple-pink — departure / destination
-        case .vor:      return .hex(0x34D399)   // green — VOR / navaid
-        case .waypoint: return .hex(0x60A5FA)   // blue — RNAV / GPS named fix
-        case .airway:   return .hex(0xF5C451)   // amber — airway designator
-        case .other:    return p.text           // DCT / procedure / unknown
-        }
+        EntityTint.leg(kind, p, model.theme)
     }
 }
 
