@@ -68,6 +68,8 @@ final class ChartLibrary: ObservableObject {
     private var inFlight: Set<String> = []
     private var warming: Task<Bool, Never>?
     private var bulkTask: Task<Void, Never>?
+    /// Bumped per bulk run so a finishing run only releases its OWN handle.
+    private var bulkGeneration = 0
     private let location = OneShotLocation()
 
     /// Pack ids the user explicitly downloaded for offline use — **pinned**: exempt from the LRU cap so a
@@ -154,8 +156,17 @@ final class ChartLibrary: ObservableObject {
         let wanted = (catalog?.entries ?? []).filter { ids.contains($0.id) && !isCached($0) }
         guard !wanted.isEmpty else { bulk = .idle; return true }
         if !allowExpensive, await NetPath.isExpensive() { return false }
+        // Record the pilot's INTENT before a single byte moves. loadPinned() clears the pin set on a
+        // cycle change, so the first completed download used to rewrite UserDefaults with only that one
+        // id — and an update interrupted after 3 of 40 packs left the app believing the pilot had ever
+        // wanted 3. pruneOldCycleFiles then deleted the other 37 old-cycle files, which were the only
+        // copies they still had. Their coverage must survive a cancelled or crashed update.
+        pinned.formUnion(ids)
+        savePinned()
         bulkTask?.cancel()
-        bulkTask = Task { [weak self] in await self?.runBulkEntries(wanted) }
+        bulkGeneration &+= 1
+        let gen = bulkGeneration
+        bulkTask = Task { [weak self] in await self?.runBulkEntries(wanted, generation: gen) }
         return true
     }
 
@@ -401,11 +412,13 @@ final class ChartLibrary: ObservableObject {
     }
 
     /// Bulk-download an explicit entry list (the cycle-update path), sharing the bulk progress state.
-    private func runBulkEntries(_ list: [ChartCatalog.Entry]) async {
+    private func runBulkEntries(_ list: [ChartCatalog.Entry], generation: Int) async {
         // bulkTask is the mutual-exclusion token for bulk downloading, so EVERY exit must release it —
         // leaking it permanently poisons startBulkDownload's `guard bulkTask == nil` and the
-        // "Download all" row becomes a dead button for the rest of the launch.
-        defer { bulkTask = nil; bulk = .idle }
+        // "Download all" row becomes a dead button for the rest of the launch. The generation check
+        // stops a finishing run from clearing a NEWER run's handle, which would let two bulk downloads
+        // proceed at once and leave the Cancel button wired to neither.
+        defer { if generation == bulkGeneration { bulkTask = nil; bulk = .idle } }
         var done = 0
         bulk = .running(done: 0, total: list.count)
         for e in list.prefix(4096) {                                          // bounded (rule 2)

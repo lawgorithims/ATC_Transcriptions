@@ -1588,28 +1588,18 @@ struct MapLibreChartView: UIViewRepresentable {
                 cands.append((IdentifiedObject(kind: .airway, ident: id, coord: here, onRoute: false,
                                                airwayArea: (f.attributes["area"] as? String) ?? "USA"), 0))
             }
-            var results = MapProbe.rank(cands, within: Double(radius))
-            // Live TFRs go in BEFORE the bundled airspace areas. Both are appended after ranking, and a
-            // TFR sits over exactly the cities and airports that produce a long "several things are
-            // here" list — so appended last it was the bottom row, under every standing area, which is
-            // the opposite of its urgency. A live restriction outranks permanent charted airspace.
+            let ranked = MapProbe.rank(cands, within: Double(radius))
+            var liveTFRs: [IdentifiedObject] = []
             for t in tfrByID.values where t.polygon.count >= 3 {           // geometric containment (any zoom)
-                guard Geo.pointInRing(here, t.polygon), !results.contains(where: { $0.tfr?.id == t.id }) else { continue }
-                results.append(IdentifiedObject(kind: .tfr, ident: t.id, coord: t.labelCoord ?? here, onRoute: false, tfr: t))
+                guard Geo.pointInRing(here, t.polygon) else { continue }
+                liveTFRs.append(IdentifiedObject(kind: .tfr, ident: t.id, coord: t.labelCoord ?? here,
+                                                 onRoute: false, tfr: t))
             }
-            // Airspace you may not simply fly into — national defense, prohibited, restricted — goes to
-            // the FRONT. Appended last it sat under every nearby fix and VOR, so tapping a standing
-            // national-defense area in a busy terminal area opened on a waypoint and the pilot never
-            // reached the row explaining the restriction they were pointing at. Class B/C/D and MOAs
-            // stay at the back: they are ambient context, and burying the airport you tapped under the
-            // Class B you are standing in would be the same mistake in reverse.
-            let prohibitive = Set(["TFR", "P", "R"])
-            var front: [IdentifiedObject] = []
-            for asp in airspaces where !results.contains(where: { $0.kind == .airspace && $0.ident == asp.name }) {
-                let obj = IdentifiedObject(kind: .airspace, ident: asp.name, coord: here, onRoute: false, airspace: asp)
-                if prohibitive.contains(asp.cls.uppercased()) { front.append(obj) } else { results.append(obj) }
+            let aspObjs = airspaces.map {
+                IdentifiedObject(kind: .airspace, ident: $0.name, coord: here, onRoute: false, airspace: $0)
             }
-            results.insert(contentsOf: front, at: 0)
+            // One ordering policy, shared with the classic engine and unit-tested — see MapProbe.merge.
+            var results = MapProbe.merge(ranked: ranked, liveTFRs: liveTFRs, airspaces: aspObjs)
             if userPoint { results.insert(IdentifiedObject(kind: .userPoint, ident: UserPoint.token(here), coord: here, onRoute: false), at: 0) }
             guard !results.isEmpty else { return }
             onTapObjects?(results)

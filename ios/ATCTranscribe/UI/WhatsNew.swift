@@ -32,6 +32,26 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 95, version: "1.0", headline: "A live TFR opens first, and your offline kit survives an interrupted update",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "exclamationmark.triangle.fill",
+                    title: "Live TFRs are back at the top of a tap",
+                    detail: "Build 93 promoted restricted areas above nearby waypoints, which was right — but it accidentally pushed LIVE temporary restrictions below the permanent ones, so the only thing on the list with a reason and an expiry ended up underneath the chart furniture. A live TFR now opens first, then standing prohibited and national-defense areas, then fixes and navaids, then ordinary Class B/C/D."),
+                WhatsNewHighlight(
+                    icon: "list.bullet.rectangle",
+                    title: "No more duplicate rows in the tap list",
+                    detail: "The same restriction could appear two to four times with nothing to tell the rows apart. Where an area is genuinely published in separate altitude shelves — White Sands R-5111C runs 13,000 to 24,000 and again from 45,000 up — both now show with their altitudes, and a truly duplicated record collapses to one."),
+                WhatsNewHighlight(
+                    icon: "internaldrive.fill",
+                    title: "An interrupted chart update no longer forgets what you had",
+                    detail: "The app recorded which regions you had downloaded only as each one finished, and a new cycle clears that record first — so an update stopped partway left it believing you had only ever wanted the few that completed, and the next cleanup deleted the rest. Your full list is now recorded before anything downloads."),
+                WhatsNewHighlight(
+                    icon: "map",
+                    title: "Both map engines behave the same",
+                    detail: "The classic map is what you land on if the main engine stalls in flight. It now uses the same tap ordering as the globe, so a restriction opens the same way whichever engine you are on."),
+            ]),
+        ReleaseNote(
             build: 94, version: "1.0", headline: "Your downloaded charts survive a cycle change",
             highlights: [
                 WhatsNewHighlight(

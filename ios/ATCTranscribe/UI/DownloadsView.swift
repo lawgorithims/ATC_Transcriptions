@@ -164,6 +164,12 @@ struct DownloadsView: View {
                         // Saying nothing was the actual defect the pilot hit: the button appeared to do
                         // nothing, whether it had found a new cycle, confirmed the current one, or failed.
                         switch outcome {
+                        case _ where cycleUpdateDeclined:
+                            Label("A new cycle is available, but downloading it over a metered connection "
+                                  + "was skipped. Reconnect to Wi-Fi and check again.",
+                                  systemImage: "antenna.radiowaves.left.and.right.slash")
+                                .font(.caption2).foregroundStyle(p.textDim)
+                                .fixedSize(horizontal: false, vertical: true)
                         case .upToDate(let c):
                             // Must not contradict the banner above it, which says a newer cycle exists.
                             // That line is an INFERENCE from the 56-day calendar; this one is what the
@@ -181,12 +187,6 @@ struct DownloadsView: View {
                                   : "Updated to cycle \(to) (was \(from)).",
                                   systemImage: "checkmark.circle")
                                 .font(.caption2).foregroundStyle(p.good)
-                                .fixedSize(horizontal: false, vertical: true)
-                        case _ where cycleUpdateDeclined:
-                            Label("A new cycle is available, but downloading it over a metered connection "
-                                  + "was skipped. Reconnect to Wi-Fi and check again.",
-                                  systemImage: "antenna.radiowaves.left.and.right.slash")
-                                .font(.caption2).foregroundStyle(p.textDim)
                                 .fixedSize(horizontal: false, vertical: true)
                         case .offline:
                             Label("Couldn't reach the chart server. Try again when you have a connection.",

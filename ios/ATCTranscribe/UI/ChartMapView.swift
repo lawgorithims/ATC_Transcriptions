@@ -1010,22 +1010,26 @@ struct ChartMapView: UIViewRepresentable {
             }
             cands.append(contentsOf: airwayCandidates(pt: pt, here: here, radius: radius, in: mv))
 
-            var results = MapProbe.rank(cands, within: radius)
-            for asp in airspaces {   // "you're inside Class B" — containment already filtered off-main
-                results.append(IdentifiedObject(kind: .airspace, ident: asp.name, coord: here, onRoute: false, airspace: asp))
-            }
+            let ranked = MapProbe.rank(cands, within: radius)
+            var hazards: [IdentifiedObject] = []
             for ev in hazardEventsByID.values where ev.polygon.count >= 3 {   // inside a hazard perimeter
-                guard Geo.pointInRing(here, ev.polygon),
-                      !results.contains(where: { $0.hazard?.id == ev.id }) else { continue }
-                results.append(IdentifiedObject(kind: .hazard, ident: ev.title, coord: ev.point,
+                guard Geo.pointInRing(here, ev.polygon) else { continue }
+                hazards.append(IdentifiedObject(kind: .hazard, ident: ev.title, coord: ev.point,
                                                 onRoute: false, hazard: ev))
             }
+            var liveTFRs: [IdentifiedObject] = []
             for t in tfrByID.values where t.polygon.count >= 3 {              // inside a TFR boundary
-                guard Geo.pointInRing(here, t.polygon),
-                      !results.contains(where: { $0.tfr?.id == t.id }) else { continue }
-                results.append(IdentifiedObject(kind: .tfr, ident: t.id, coord: t.labelCoord ?? here,
-                                                onRoute: false, tfr: t))
+                guard Geo.pointInRing(here, t.polygon) else { continue }
+                liveTFRs.append(IdentifiedObject(kind: .tfr, ident: t.id, coord: t.labelCoord ?? here,
+                                                 onRoute: false, tfr: t))
             }
+            let aspObjs = airspaces.map {   // "you're inside Class B" — containment already filtered off-main
+                IdentifiedObject(kind: .airspace, ident: $0.name, coord: here, onRoute: false, airspace: $0)
+            }
+            // The SAME ordering policy the globe uses. This engine is not decorative: a MapLibre render
+            // stall drops the pilot into it mid-flight, so a restriction that opens first on the globe
+            // must open first here too.
+            var results = MapProbe.merge(ranked: ranked + hazards, liveTFRs: liveTFRs, airspaces: aspObjs)
             if userPoint {   // long-press: offer the exact pressed coordinate as a droppable waypoint, first
                 results.insert(IdentifiedObject(kind: .userPoint, ident: UserPoint.token(here), coord: here, onRoute: false), at: 0)
             }
