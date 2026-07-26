@@ -33,8 +33,8 @@ struct GPSBottomBar: View {
         }
         .padding(.horizontal, 12).padding(.vertical, 8)   // ~25% taller than before (was vertical 6, no boxes)
         .frame(maxWidth: .infinity)
-        .background(.ultraThinMaterial)
-        .overlay(alignment: .top) { Rectangle().fill(p.border).frame(height: 0.5) }
+        .background(p.overlay)
+        .overlay(alignment: .top) { Rectangle().fill(p.hairline).frame(height: DS.Stroke.hairline) }
         .accessibilityIdentifier("gps-bottom-bar")
         .onReceive(model.deviceLocation.$fix) { deviceFix = $0 }
     }
@@ -129,8 +129,8 @@ private struct BoxCell: ViewModifier {
     func body(content: Content) -> some View {
         content
             .padding(.horizontal, 10).padding(.vertical, 6)
-            .background(p.surface.opacity(0.55), in: RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(p.border, lineWidth: 0.5))
+            .background(p.surface.opacity(0.55), in: RoundedRectangle(cornerRadius: DS.Radius.r2))
+            .overlay(RoundedRectangle(cornerRadius: DS.Radius.r2).stroke(p.border, lineWidth: DS.Stroke.hairline))
     }
 }
 

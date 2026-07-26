@@ -1713,17 +1713,16 @@ struct Card<Content: View>: View {
     var body: some View {
         let p = model.palette
         VStack(alignment: .leading, spacing: 10) {
-            Text(title.uppercased())
-                .font(.caption2.weight(.semibold)).foregroundStyle(p.textDim)
-                .tracking(0.8)
+            Text(title)
+                .dsSectionHeader(p)
             content
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
         // When floating, the container owns the (opacity-adjustable) background — drop our own chrome.
         .background(floating ? Color.clear : p.surface)
-        .clipShape(RoundedRectangle(cornerRadius: floating ? 0 : 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(p.border, lineWidth: floating ? 0 : 1))
+        .clipShape(RoundedRectangle(cornerRadius: floating ? 0 : DS.Radius.r4))
+        .overlay(RoundedRectangle(cornerRadius: DS.Radius.r4).stroke(p.border, lineWidth: floating ? 0 : DS.Stroke.control))
     }
 }
 
