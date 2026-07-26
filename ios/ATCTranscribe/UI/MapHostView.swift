@@ -444,9 +444,8 @@ struct MapHostView: View {
             Divider().frame(width: 28).overlay(model.palette.border)
             sideButton("scope", id: "map-center-ownship", label: "Center on aircraft") { model.sendMapCommand(.centerOwnship) }
         }
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))   // semi-transparent bar
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(model.palette.border, lineWidth: 0.5))
-        .shadow(radius: 4)
+        .background(model.palette.overlay, in: RoundedRectangle(cornerRadius: DS.Radius.r4))   // flat translucent bar
+        .overlay(RoundedRectangle(cornerRadius: DS.Radius.r4).stroke(model.palette.border, lineWidth: DS.Stroke.control))
         .padding(.trailing, 12)
         .offset(y: 80)                                    // bias below center → lower-right, clear of the corners
     }
@@ -473,9 +472,9 @@ struct MapHostView: View {
             Text(text).font(.caption.weight(.medium))
         }
         .padding(.horizontal, 14).padding(.vertical, 8)
-        .background(.ultraThinMaterial, in: Capsule())
-        .foregroundStyle(.primary)
-        .shadow(radius: 4)
+        .background(model.palette.overlay, in: Capsule())
+        .overlay(Capsule().stroke(model.palette.border, lineWidth: DS.Stroke.hairline))
+        .foregroundStyle(model.palette.text)
     }
 
     private func buildRoute() async {
@@ -560,9 +559,9 @@ private struct RadarStatusPill: View {
                     Text(content.text).font(.caption.weight(.medium))
                 }
                 .padding(.horizontal, 12).padding(.vertical, 7)
-                .background(.ultraThinMaterial, in: Capsule())
-                .foregroundStyle(.primary)
-                .shadow(radius: 4)
+                .background(palette.overlay, in: Capsule())
+                .overlay(Capsule().stroke(palette.border, lineWidth: DS.Stroke.hairline))
+                .foregroundStyle(palette.text)
                 .padding(.top, topInset)                    // MEASURED top chrome (see MapHostView)
                 .padding(.trailing, trailingInset)          // clear a docked right side-pane
                 .accessibilityIdentifier("radar-status-pill")
@@ -638,9 +637,9 @@ private struct RadarLoopBar: View {
                     .accessibilityIdentifier("radar-loop-now")
                 }
                 .padding(.horizontal, 14).padding(.vertical, 8)
-                .background(.ultraThinMaterial, in: Capsule())
-                .foregroundStyle(.primary)
-                .shadow(radius: 4)
+                .background(palette.overlay, in: Capsule())
+                .overlay(Capsule().stroke(palette.border, lineWidth: DS.Stroke.hairline))
+                .foregroundStyle(palette.text)
                 .frame(maxWidth: 460)
                 .padding(.horizontal, 16)
                 .padding(.leading, widgets.leftPane != nil ? paneWidth(widgets.leftPaneWidth) : 0)

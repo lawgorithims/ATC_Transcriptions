@@ -59,7 +59,7 @@ struct RouteMapSheet: View {
             .overlay(alignment: .center) {
                 if loading {
                     ProgressView("Plotting route…")
-                        .padding(14).background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
+                        .padding(14).background(p.overlay, in: RoundedRectangle(cornerRadius: DS.Radius.r4))
                 }
             }
             .safeAreaInset(edge: .bottom) { legend(p) }
@@ -120,7 +120,7 @@ struct RouteMapSheet: View {
         }
         .pickerStyle(.segmented)
         .padding(.horizontal, 10).padding(.vertical, 6)
-        .background(.thinMaterial, in: Capsule())
+        .background(model.palette.overlay, in: Capsule())
         .padding(.horizontal, 20)
         .accessibilityIdentifier("chart-layer-picker")
     }
@@ -147,7 +147,8 @@ struct RouteMapSheet: View {
         HStack(spacing: 8) { content() }
             .font(.caption)
             .padding(.horizontal, 14).padding(.vertical, 8)
-            .background(.thinMaterial, in: Capsule())
+            .background(model.palette.overlay, in: Capsule())
+            .overlay(Capsule().stroke(model.palette.border, lineWidth: DS.Stroke.hairline))
     }
 
     // MARK: legend
@@ -192,7 +193,7 @@ struct RouteMapSheet: View {
         }
         .font(.system(size: 10)).foregroundStyle(p.text).lineLimit(1)
         .padding(.horizontal, 12).padding(.vertical, 6)
-        .background(.thinMaterial)
+        .background(p.overlay)
     }
 
     @ViewBuilder private func statusText(_ p: Palette) -> some View {

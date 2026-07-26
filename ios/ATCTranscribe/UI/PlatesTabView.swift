@@ -236,9 +236,8 @@ struct PlatesTabView: View {
             Image(systemName: "plus.magnifyingglass").font(.callout).foregroundStyle(p.textDim)
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
-        .background(.ultraThinMaterial, in: Capsule())
-        .overlay(Capsule().stroke(p.border, lineWidth: 0.5))
-        .shadow(radius: 4)
+        .background(p.overlay, in: Capsule())
+        .overlay(Capsule().stroke(p.border, lineWidth: DS.Stroke.control))
         .padding(.trailing, 14).padding(.bottom, 14)
         .accessibilityLabel("Resize plate thumbnails")
     }
@@ -409,7 +408,7 @@ struct PlateThumb: View {
                         if PlateStore.isCached(proc) { Image(systemName: "arrow.down.circle.fill").foregroundStyle(p.good) }
                     }
                     .font(.caption2).padding(5)
-                    .background(.ultraThinMaterial, in: Capsule()).padding(4)   // legible over the chart, not floating on white
+                    .background(p.overlay, in: Capsule()).padding(4)   // legible over the chart, not floating on white
                 }
                 Text(proc.name).font(.caption2).foregroundStyle(p.text).lineLimit(2)
                     .frame(maxWidth: .infinity, alignment: .leading)

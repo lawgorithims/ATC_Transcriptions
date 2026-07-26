@@ -1110,7 +1110,7 @@ struct AirportDiagramThumbnail: View {
                         Label("Open", systemImage: "arrow.up.left.and.arrow.down.right")
                             .font(.caption2.weight(.semibold))
                             .padding(.horizontal, 8).padding(.vertical, 4)
-                            .background(.ultraThinMaterial, in: Capsule())
+                            .background(p.overlay, in: Capsule())
                             .padding(8)
                     }
             } else {
