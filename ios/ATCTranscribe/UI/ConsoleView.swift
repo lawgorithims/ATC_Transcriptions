@@ -69,7 +69,7 @@ struct ConsoleView: View {
             MicCalibrationSheet().environmentObject(model)
         }
         .sheet(isPresented: $model.showDemoClimate) {          // --demo-climate: synthetic Airport Climate card
-            AirportClimateView(palette: model.palette, ident: "KDEN",
+            AirportClimateView(palette: model.palette, theme: model.theme, ident: "KDEN",
                                coord: Coord(lat: 39.8617, lon: -104.6731))
         }
         .fullScreenCover(isPresented: $model.needsOnboarding) {

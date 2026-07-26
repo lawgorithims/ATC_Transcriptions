@@ -503,6 +503,9 @@ final class AppModel: ObservableObject {
                                          centerLat: g.centerLat, centerLon: g.centerLon,
                                          widthMeters: g.widthMeters, rotationDeg: g.rotationDeg,
                                          opacity: 0.7)
+        // Night theme: a white FAA plate is a dark-adaptation blast — default new overlays to the
+        // inverted page (the corner menu still toggles back; togglePlateInvert owns the async raster).
+        if theme == .night { togglePlateInvert() }
         // Frame the WHOLE plate (not just its center): the gear button rides the plate's top-right
         // corner, so the plate must arrive fully on-screen for its control to be visible.
         mapFrameRect = PlatePlacement.boundingMapRect(centerLat: g.centerLat, centerLon: g.centerLon,
@@ -663,6 +666,18 @@ final class AppModel: ObservableObject {
     /// so a pilot who turns it off keeps it off.
     @Published var useGlobeProjection = (UserDefaults.standard.object(forKey: "atc.map.globe") as? Bool) ?? true {
         didSet { UserDefaults.standard.set(useGlobeProjection, forKey: "atc.map.globe") }
+    }
+
+    /// User chart-brightness scale (Map layers panel) — multiplies the active theme's FAA-raster
+    /// brightness, so night dim / cockpit glare are tunable in the cockpit instead of hardcoded.
+    /// Floored at 0.3 (a chart must never fade to invisible — same rationale as plateMinOpacity).
+    @Published var chartBrightness: Double =
+        min(max((UserDefaults.standard.object(forKey: "atc.map.chartBrightness") as? Double) ?? 1.0, 0.3), 1.0) {
+        didSet {
+            let clamped = min(max(chartBrightness, 0.3), 1.0)
+            if clamped != chartBrightness { chartBrightness = clamped; return }   // didSet re-fires with the clamp
+            UserDefaults.standard.set(chartBrightness, forKey: "atc.map.chartBrightness")
+        }
     }
 
     /// Lock the chart north-up. When true the two-finger rotate gesture is DISABLED on the map and the

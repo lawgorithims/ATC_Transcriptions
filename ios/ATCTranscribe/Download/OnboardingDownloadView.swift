@@ -28,7 +28,7 @@ struct OnboardingDownloadView: View {
                     Image("BrandMark")
                         .resizable().scaledToFit()
                         .frame(width: 64, height: 64)
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.r4))
                     Text("CommSight").font(.title2.weight(.bold)).foregroundStyle(p.text)
                     Text("On-device air-traffic-control transcription runs a speech model that lives on your device. Download it once to get started — it stays offline afterward.")
                         .font(.subheadline).foregroundStyle(p.textDim)
@@ -43,7 +43,7 @@ struct OnboardingDownloadView: View {
                     // of the box. Shown here for transparency; not required.
                     ModelDownloadRow(entry: ModelCatalog.llm)
                     Text("The speech model is required to transcribe. The AI context fixer installs automatically alongside it. You can manage both later in Settings.")
-                        .font(.caption2).foregroundStyle(p.textDim)
+                        .font(.dsLabelS).foregroundStyle(p.textDim)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .padding(.horizontal, 4)
@@ -54,18 +54,18 @@ struct OnboardingDownloadView: View {
                         else { allEntries.forEach { downloads.download($0) } }
                     } label: {
                         Text(primaryLabel)
-                            .font(.subheadline.weight(.semibold))
+                            .font(.dsHeadline)
                             .frame(maxWidth: .infinity).padding(.vertical, 12)
                             .background(primaryEnabled ? p.accent : p.surfaceAlt)
                             .foregroundStyle(primaryEnabled ? p.bg : p.textDim)
-                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.r4))
                     }
                     .buttonStyle(.plainHaptic)
                     .disabled(!primaryEnabled)
                     .accessibilityIdentifier("gate-primary")
 
                     Button("Skip — explore with demo data") { model.finishOnboarding() }
-                        .font(.caption).foregroundStyle(p.textDim)
+                        .font(.dsLabel).foregroundStyle(p.textDim)
                         .accessibilityIdentifier("gate-skip")
                 }
                 .padding(.horizontal, 16)
@@ -124,9 +124,9 @@ struct ModelDownloadRow: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top, spacing: 10) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(entry.displayName).font(.subheadline.weight(.semibold)).foregroundStyle(p.text)
+                    Text(entry.displayName).font(.dsHeadline).foregroundStyle(p.text)
                     Text("\(entry.sizeLabel) · \(entry.detail)")
-                        .font(.caption2).foregroundStyle(p.textDim)
+                        .font(.dsLabelS).foregroundStyle(p.textDim)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 8)
@@ -141,21 +141,21 @@ struct ModelDownloadRow: View {
                 }
             }
             if case .failed(let msg) = state {
-                Text(msg).font(.caption2).foregroundStyle(p.bad)
+                Text(msg).font(.dsLabelS).foregroundStyle(p.bad)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(12)
         .background(p.surfaceAlt)
-        .clipShape(RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(p.border, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.r4))
+        .overlay(RoundedRectangle(cornerRadius: DS.Radius.r4).stroke(p.border, lineWidth: 1))
     }
 
     @ViewBuilder private func trailing(_ p: Palette) -> some View {
         if isBundled {
             HStack(spacing: 5) {
                 Image(systemName: "checkmark.seal.fill")
-                Text("Built in").font(.caption.weight(.semibold))
+                Text("Built in").font(.dsLabelBold)
             }
             .foregroundStyle(p.good)
         } else {
@@ -164,7 +164,7 @@ struct ModelDownloadRow: View {
                 HStack(spacing: 10) {
                     HStack(spacing: 5) {
                         Image(systemName: "checkmark.circle.fill")
-                        Text("Ready").font(.caption.weight(.semibold))
+                        Text("Ready").font(.dsLabelBold)
                     }
                     .foregroundStyle(p.good)
                     // Recover a corrupt/partial download without leaving Settings.
@@ -178,15 +178,15 @@ struct ModelDownloadRow: View {
                 }
             case .downloading:
                 Button("Cancel") { downloads.cancel(entry) }
-                    .font(.caption.weight(.semibold)).foregroundStyle(p.bad)
+                    .font(.dsLabelBold).foregroundStyle(p.bad)
                     .buttonStyle(.plainHaptic)
             case .notDownloaded, .failed:
                 Button { downloads.download(entry) } label: {
                     Text("Download")
-                        .font(.caption.weight(.semibold))
+                        .font(.dsLabelBold)
                         .padding(.horizontal, 12).padding(.vertical, 7)
                         .background(p.accent).foregroundStyle(p.bg)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.r2))
                 }
                 .buttonStyle(.plainHaptic)
             }

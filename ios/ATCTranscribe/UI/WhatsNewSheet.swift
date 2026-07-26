@@ -22,10 +22,10 @@ struct WhatsNewSheet: View {
             .safeAreaInset(edge: .bottom) {
                 Button { dismiss() } label: {
                     Text("Got it")
-                        .font(.subheadline.weight(.semibold))
+                        .font(.dsHeadline)
                         .frame(maxWidth: .infinity).padding(.vertical, 13)
                         .background(p.accent).foregroundStyle(p.bg)
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.r4))
                 }
                 .buttonStyle(.plainHaptic)
                 .padding(.horizontal, 16).padding(.bottom, 10)
@@ -48,7 +48,7 @@ struct WhatsNewSheet: View {
             Image("BrandMark")
                 .resizable().scaledToFit()
                 .frame(width: 52, height: 52)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .clipShape(RoundedRectangle(cornerRadius: DS.Radius.r4))
             Text("What’s new in CommSight").font(.title3.weight(.bold)).foregroundStyle(p.text)
                 .multilineTextAlignment(.center)
             Text("Version \(WhatsNew.currentVersion()) · build \(WhatsNew.currentBuild())")
@@ -84,7 +84,7 @@ struct WhatsNewContent: View {
     private func releaseCard(_ note: ReleaseNote, _ p: Palette) -> some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 8) {
-                Text(note.headline).font(.headline).foregroundStyle(p.text)
+                Text(note.headline).font(.dsHeadline).foregroundStyle(p.text)
                 Spacer(minLength: 4)
                 Text("build \(note.build)")
                     .font(.caption2.monospaced()).foregroundStyle(p.textDim)
@@ -98,10 +98,10 @@ struct WhatsNewContent: View {
                         .foregroundStyle(p.accent)
                         .frame(width: 26, height: 26)
                         .background(p.accent.opacity(0.14))
-                        .clipShape(RoundedRectangle(cornerRadius: 7))
+                        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.r2))
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(h.title).font(.subheadline.weight(.semibold)).foregroundStyle(p.text)
-                        Text(h.detail).font(.caption).foregroundStyle(p.textDim)
+                        Text(h.title).font(.dsHeadline).foregroundStyle(p.text)
+                        Text(h.detail).font(.dsLabel).foregroundStyle(p.textDim)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -110,7 +110,7 @@ struct WhatsNewContent: View {
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(p.surface)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(p.border, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.r4))
+        .overlay(RoundedRectangle(cornerRadius: DS.Radius.r4).stroke(p.border, lineWidth: 1))
     }
 }

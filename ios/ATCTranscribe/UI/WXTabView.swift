@@ -58,7 +58,7 @@ struct WXTabView: View {
                                         products: WXCatalog.products(in: cat), p)
                             }
                             Text("Imagery: NOAA (NESDIS · WPC · SPC · AWC · NDFD). Downloaded charts stay available offline. Not a substitute for an official weather briefing.")
-                                .font(.caption2).foregroundStyle(p.textDim)
+                                .font(.dsLabelS).foregroundStyle(p.textDim)
                                 .padding(.horizontal, 16).padding(.top, 12)
                         }
                         // Clear the bottom chrome: the tab bar is a safe-area inset, but the live GPS bar (an
@@ -121,9 +121,9 @@ struct WXTabView: View {
                     Circle().fill(Self.color(fresh, p)).frame(width: 11, height: 11)
                         .overlay(Circle().stroke(.white.opacity(0.25), lineWidth: 0.5))
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(Self.title(fresh)).font(.subheadline.weight(.semibold)).foregroundStyle(p.text)
+                        Text(Self.title(fresh)).font(.dsHeadline).foregroundStyle(p.text)
                         Text(subtitle(fresh, now: ctx.date))
-                            .font(.caption2).foregroundStyle(p.textDim)
+                            .font(.dsLabelS).foregroundStyle(p.textDim)
                     }
                     Spacer()
                     if updating {
@@ -137,8 +137,8 @@ struct WXTabView: View {
                 }
                 .padding(14)
                 .frame(maxWidth: .infinity)
-                .background(p.surface, in: RoundedRectangle(cornerRadius: 12))
-                .overlay(RoundedRectangle(cornerRadius: 12).stroke(Self.color(fresh, p).opacity(0.55), lineWidth: 1))
+                .background(p.surface, in: RoundedRectangle(cornerRadius: DS.Radius.r4))
+                .overlay(RoundedRectangle(cornerRadius: DS.Radius.r4).stroke(Self.color(fresh, p).opacity(0.55), lineWidth: 1))
             }
             .buttonStyle(.plainHaptic)
             .disabled(updating)
@@ -197,7 +197,7 @@ struct WXTabView: View {
     @ViewBuilder private func section(title: String, symbol: String, tint: Color, products: [WXProduct], _ p: Palette) -> some View {
         HStack(spacing: 8) {
             Image(systemName: symbol).foregroundStyle(tint).frame(width: 22)
-            Text(title).font(.headline).foregroundStyle(p.text)
+            Text(title).font(.dsHeadline).foregroundStyle(p.text)
         }
         .padding(.horizontal, 16).padding(.top, 18).padding(.bottom, 6)
         ForEach(products) { product in
@@ -235,10 +235,10 @@ struct WXTabView: View {
                     }
                     Spacer()
                     if cache.isCached(product.url()) {   // decode-free — never decodes a multi-MB image in a row
-                        Image(systemName: "arrow.down.circle.fill").font(.caption).foregroundStyle(p.good)
+                        Image(systemName: "arrow.down.circle.fill").font(.dsLabel).foregroundStyle(p.good)
                             .accessibilityLabel("Available offline")
                     }
-                    Image(systemName: "chevron.right").font(.caption).foregroundStyle(p.textDim)
+                    Image(systemName: "chevron.right").font(.dsLabel).foregroundStyle(p.textDim)
                 }
                 .contentShape(Rectangle())
             }
@@ -269,7 +269,7 @@ struct WXProductView: View {
                 // Release time (NOAA Last-Modified), in the iPad's local time, right after the chart name.
                 if let rel = current?.releasedAt {
                     Label("Released \(WXTabView.releaseTime.string(from: rel)) local", systemImage: "clock.badge.checkmark")
-                        .font(.caption).foregroundStyle(p.textDim)
+                        .font(.dsLabel).foregroundStyle(p.textDim)
                         .accessibilityIdentifier("wx-released")
                 }
                 if let axis = product.axisA { axisPicker(axis, selection: $a, p) }
@@ -277,9 +277,9 @@ struct WXProductView: View {
                 imagePane(p)
                 stampRow(p)
                 if !product.note.isEmpty {
-                    Text(product.note).font(.caption2).foregroundStyle(p.textDim)
+                    Text(product.note).font(.dsLabelS).foregroundStyle(p.textDim)
                 }
-                Text(product.attribution).font(.caption2).foregroundStyle(p.textDim.opacity(0.8))
+                Text(product.attribution).font(.dsLabelS).foregroundStyle(p.textDim.opacity(0.8))
             }
             .padding(16)
             .padding(.bottom, model.showGPSBar ? 96 : 56)   // clear the GPS bar so the chart bottom is visible
@@ -316,7 +316,7 @@ struct WXProductView: View {
             .pickerStyle(.segmented)
         } else {
             HStack {
-                Text(axis.name).font(.caption).foregroundStyle(p.textDim)
+                Text(axis.name).font(.dsLabel).foregroundStyle(p.textDim)
                 Spacer()
                 Picker(axis.name, selection: selection) {
                     ForEach(axis.options.indices, id: \.self) { i in Text(axis.options[i].label).tag(i) }
@@ -331,9 +331,9 @@ struct WXProductView: View {
             WXZoomableImage(image: cur.image)
                 .frame(maxWidth: .infinity)
                 .frame(minHeight: 260)
-                .background(Color.white.opacity(0.02), in: RoundedRectangle(cornerRadius: 12))
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                .overlay(RoundedRectangle(cornerRadius: 12).stroke(p.border, lineWidth: 1))
+                .background(Color.white.opacity(0.02), in: RoundedRectangle(cornerRadius: DS.Radius.r4))
+                .clipShape(RoundedRectangle(cornerRadius: DS.Radius.r4))
+                .overlay(RoundedRectangle(cornerRadius: DS.Radius.r4).stroke(p.border, lineWidth: 1))
         } else {
             VStack(spacing: 10) {
                 if loading {
@@ -345,7 +345,7 @@ struct WXProductView: View {
                 }
             }
             .frame(maxWidth: .infinity).frame(height: 260)
-            .background(p.surface, in: RoundedRectangle(cornerRadius: 12))
+            .background(p.surface, in: RoundedRectangle(cornerRadius: DS.Radius.r4))
         }
     }
 
@@ -353,9 +353,9 @@ struct WXProductView: View {
         HStack(spacing: 8) {
             if let cur = current {
                 Image(systemName: cur.fromCache ? "internaldrive" : "checkmark.circle")
-                    .font(.caption).foregroundStyle(cur.fromCache ? p.warn : p.good)
+                    .font(.dsLabel).foregroundStyle(cur.fromCache ? p.warn : p.good)
                 Text("\(cur.fromCache ? "Offline copy — downloaded" : "Downloaded") \(Self.relative.localizedString(for: cur.fetchedAt, relativeTo: Date()))")
-                    .font(.caption).foregroundStyle(p.textDim)
+                    .font(.dsLabel).foregroundStyle(p.textDim)
                     .accessibilityIdentifier("wx-stamp")
             }
             Spacer()

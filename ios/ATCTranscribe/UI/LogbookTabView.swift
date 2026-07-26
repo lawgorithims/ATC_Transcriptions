@@ -40,24 +40,24 @@ struct LogbookTabView: View {
     private func row(_ f: LoggedFlight, _ p: Palette) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                Text(f.routeSummary).font(.headline).foregroundStyle(p.text)
+                Text(f.routeSummary).font(.dsHeadline).foregroundStyle(p.text)
                 Spacer()
-                Text(Self.day.string(from: f.startedAt)).font(.caption).foregroundStyle(p.textDim)
+                Text(Self.day.string(from: f.startedAt)).font(.dsLabel).foregroundStyle(p.textDim)
             }
             Text("\(f.durationText) · \(f.distanceText) · max \(f.maxSpeedText)")
                 .font(.caption.monospaced()).foregroundStyle(p.textDim)
-            Text(f.aircraftLine).font(.caption2).foregroundStyle(p.textDim)
+            Text(f.aircraftLine).font(.dsLabelS).foregroundStyle(p.textDim)
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(p.surface, in: RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(p.border, lineWidth: 1))
+        .background(p.surface, in: RoundedRectangle(cornerRadius: DS.Radius.r4))
+        .overlay(RoundedRectangle(cornerRadius: DS.Radius.r4).stroke(p.border, lineWidth: 1))
     }
 
     private func emptyState(_ p: Palette) -> some View {
         VStack(spacing: 10) {
             Image(systemName: "book.closed").font(.system(size: 40)).foregroundStyle(p.textDim)
-            Text("No flights yet").font(.headline).foregroundStyle(p.text)
+            Text("No flights yet").font(.dsHeadline).foregroundStyle(p.text)
             Text("Tap the ⏺ record button on the map to log a flight — the trip is saved here when you stop.")
                 .font(.callout).foregroundStyle(p.textDim).multilineTextAlignment(.center)
         }
@@ -92,7 +92,7 @@ struct LoggedFlightDetailView: View {
         return ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 if let region = flight.mapRegion {
-                    trailMap(region, p).frame(height: 220).clipShape(RoundedRectangle(cornerRadius: 12))
+                    trailMap(region, p).frame(height: 220).clipShape(RoundedRectangle(cornerRadius: DS.Radius.r4))
                     replayControl(p)
                 }
                 Card(title: "Metrics") {
@@ -122,7 +122,7 @@ struct LoggedFlightDetailView: View {
                         }
                     } label: {
                         HStack { Text(flight.aircraftLine).foregroundStyle(p.text); Spacer()
-                            Image(systemName: "chevron.up.chevron.down").font(.caption).foregroundStyle(p.textDim) }
+                            Image(systemName: "chevron.up.chevron.down").font(.dsLabel).foregroundStyle(p.textDim) }
                     }
                 }
                 Card(title: "Notes") {
@@ -191,7 +191,7 @@ struct LoggedFlightDetailView: View {
         let p = model.palette
         return VStack(alignment: .leading, spacing: 1) {
             Text(label).font(.system(size: 9, weight: .semibold)).foregroundStyle(p.textDim).tracking(0.5)
-            Text(value).font(.caption.monospaced().weight(.semibold)).foregroundStyle(p.text)
+            Text(value).font(.dsDataMono).foregroundStyle(p.text)
         }
     }
 
