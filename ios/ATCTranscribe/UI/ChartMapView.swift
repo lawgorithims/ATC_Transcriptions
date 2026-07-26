@@ -212,6 +212,10 @@ struct ChartCatalog: Decodable {
     let ifrHighRaw: [Entry]?
     var ifrHigh: [Entry] { ifrHighRaw ?? [] }
 
+    /// Every pack in the catalog, across all layers — what a cycle update has to work from, since the
+    /// pilot's installed packs are identified by id and do not remember which layer they came from.
+    var entries: [Entry] { sectional + ifrLow + ifrHigh }
+
     private enum CodingKeys: String, CodingKey {
         case cycle, sectional, ifrLow
         case ifrHighRaw = "ifrHigh"
