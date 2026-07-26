@@ -95,7 +95,7 @@ private struct BottomTabBar: View {
         .frame(maxWidth: .infinity)
         .background(
             palette.surface
-                .overlay(alignment: .top) { Rectangle().fill(palette.border).frame(height: 0.5) }
+                .overlay(alignment: .top) { Rectangle().fill(palette.hairline).frame(height: DS.Stroke.hairline) }
                 .ignoresSafeArea(.container, edges: .bottom)
         )
     }
@@ -108,7 +108,7 @@ private struct BottomTabBar: View {
         } label: {
             VStack(spacing: 3) {
                 Image(systemName: icon).font(.system(size: 22))
-                Text(label).font(.system(size: 11, weight: .medium))
+                Text(label).dsCapsLabel()
             }
             .foregroundStyle(active ? palette.accent : palette.textDim)
             .frame(maxWidth: .infinity)

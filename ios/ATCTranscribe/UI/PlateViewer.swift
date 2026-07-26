@@ -221,7 +221,7 @@ struct PlateViewer: View {
             if ownshipCoord == nil { Text("· waiting for GPS").foregroundStyle(palette.textDim) }
         }
         .font(.caption2).padding(.horizontal, 12).padding(.vertical, 6)
-        .background(.ultraThinMaterial, in: Capsule())
+        .background(palette.overlay, in: Capsule())
         .padding(.bottom, 10)
     }
 
