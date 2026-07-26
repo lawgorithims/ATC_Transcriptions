@@ -140,18 +140,18 @@ struct AirportsTabView: View {
                         .buttonStyle(.plainHaptic)
                         .accessibilityIdentifier("airport-info")
                         .accessibilityLabel("Airport details")
-                        Image(systemName: "chevron.right").font(.caption2).foregroundStyle(p.textDim)
+                        Image(systemName: "chevron.right").font(.dsLabelS).foregroundStyle(p.textDim)
                     }
                     if let name = s.name {
-                        Text(name).font(.caption).foregroundStyle(p.textDim).lineLimit(1)
+                        Text(name).font(.dsLabel).foregroundStyle(p.textDim).lineLimit(1)
                     }
                     Text(metar?.summary ?? "Latest weather unavailable")
-                        .font(.caption).foregroundStyle(metar == nil ? p.textDim : p.text).lineLimit(1)
+                        .font(.dsLabel).foregroundStyle(metar == nil ? p.textDim : p.text).lineLimit(1)
                     if !s.keyFreqs.isEmpty {
                         Text(s.keyFreqs.map { "\($0.label) \($0.value)" }.joined(separator: "  ·  "))
                             .font(.caption2.monospaced()).foregroundStyle(p.accent).lineLimit(1)
                     }
-                    Text(detailLine(s)).font(.caption2).foregroundStyle(p.textDim).lineLimit(1)
+                    Text(detailLine(s)).font(.dsLabelS).foregroundStyle(p.textDim).lineLimit(1)
                 }
             }
             .padding(.vertical, 6)

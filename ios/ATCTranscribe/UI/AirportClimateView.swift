@@ -77,9 +77,9 @@ struct AirportClimateView: View {
         VStack(spacing: 10) {
             ProgressView()
             Text(year > 0 ? "Downloading year \(year) of \(of)…" : "Checking cached climate…")
-                .font(.caption).foregroundStyle(palette.textDim)
+                .font(.dsLabel).foregroundStyle(palette.textDim)
             Text("One-time ~2 MB download, then saved for offline use.")
-                .font(.caption2).foregroundStyle(palette.textDim)
+                .font(.dsLabelS).foregroundStyle(palette.textDim)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -89,7 +89,7 @@ struct AirportClimateView: View {
             Image(systemName: "wifi.slash").font(.title2).foregroundStyle(palette.textDim)
             Text("Climate data needs one connection").font(.callout).foregroundStyle(palette.text)
             Text("A one-time ~2 MB download from NASA POWER is saved for offline use. Try again when online.")
-                .font(.caption).foregroundStyle(palette.textDim)
+                .font(.dsLabel).foregroundStyle(palette.textDim)
                 .multilineTextAlignment(.center).padding(.horizontal, 24)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -116,7 +116,7 @@ struct AirportClimateView: View {
                     KV("Prevailing", "calm / no data")
                 }
                 Text(periodCaption(stats))                       // when the data is from (period + download)
-                    .font(.caption2).foregroundStyle(p.textDim)
+                    .font(.dsLabelS).foregroundStyle(p.textDim)
                     .accessibilityIdentifier("climate-period")
             } header: {
                 Text(headerLine(stats))
@@ -128,7 +128,7 @@ struct AirportClimateView: View {
             Section {
             } footer: {
                 Text("Historical climatology from NASA POWER (MERRA-2 reanalysis, ~50 km grid), \(yearsLabel(stats)). This is not current weather — winds are 10 m grid-cell averages and can differ from field observations, especially near coasts and terrain. For planning awareness only; check current METAR/TAF.")
-                    .font(.caption2).foregroundStyle(p.textDim)
+                    .font(.dsLabelS).foregroundStyle(p.textDim)
             }
         }
         .scrollContentBackground(.hidden)
@@ -156,7 +156,7 @@ struct AirportClimateView: View {
             }
             .pickerStyle(.segmented)
             HStack {
-                Text("Month").font(.caption).foregroundStyle(p.textDim)
+                Text("Month").font(.dsLabel).foregroundStyle(p.textDim)
                 Spacer()
                 Picker("Month", selection: $monthFilter) {
                     Text("All months").tag(Int?.none)
@@ -371,7 +371,7 @@ struct AirportClimateView: View {
             HStack {
                 Text(pair.id).font(.callout.monospaced().weight(.semibold)).foregroundStyle(p.text)
                 Spacer()
-                if let len = pair.lengthFt { Text("\(len) ft").font(.caption2).foregroundStyle(p.textDim) }
+                if let len = pair.lengthFt { Text("\(len) ft").font(.dsLabelS).foregroundStyle(p.textDim) }
             }
             HStack(spacing: 12) {
                 favoredLabel(pair.a, favored: favored)
@@ -379,7 +379,7 @@ struct AirportClimateView: View {
             }
             if let x10, let x15 {
                 Text(String(format: "Crosswind >10 kt: %.0f%% · >15 kt: %.0f%% of windy hours", x10, x15))
-                    .font(.caption2).foregroundStyle(p.textDim)
+                    .font(.dsLabelS).foregroundStyle(p.textDim)
             }
         }
         .padding(.vertical, 2)
@@ -389,7 +389,7 @@ struct AirportClimateView: View {
         let p = palette
         let pct = favored[end.designator] ?? 0
         return Text(String(format: "Rwy %@ favored %.0f%%", end.designator, pct))
-            .font(.caption)
+            .font(.dsLabel)
             .foregroundStyle(pct >= 50 ? p.accent : p.textDim)
     }
 }
@@ -418,7 +418,7 @@ struct WindroseCanvas: View {
                 let angle = Double(i) * 90.0 * .pi / 180 - .pi / 2
                 let pt = CGPoint(x: center.x + (radius + 9) * CGFloat(cos(angle)),
                                  y: center.y + (radius + 9) * CGFloat(sin(angle)))
-                ctx.draw(Text(name).font(.caption2).foregroundStyle(palette.textDim), at: pt)
+                ctx.draw(Text(name).font(.dsLabelS).foregroundStyle(palette.textDim), at: pt)
             }
             for sector in 0..<16 {                                 // petals (fixed 16)
                 let pct = rose.petalPct[sector]

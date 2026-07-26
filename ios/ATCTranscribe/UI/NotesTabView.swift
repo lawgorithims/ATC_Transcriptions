@@ -68,7 +68,7 @@ struct NotesTabView: View {
                 Spacer()
                 Button { newNote() } label: {
                     Label("New note", systemImage: "square.and.pencil")
-                        .font(.subheadline.weight(.semibold))
+                        .font(.dsHeadline)
                         .padding(.horizontal, 14).padding(.vertical, 8)
                         .background(Capsule().fill(p.accent)).foregroundStyle(.white)
                 }
@@ -96,7 +96,7 @@ struct NotesTabView: View {
             Image(systemName: "pencil.and.scribble").font(.system(size: 40)).foregroundStyle(p.textDim.opacity(0.7))
             Text("No notes yet.").foregroundStyle(p.textDim)
             Text("Tap “New note” to jot down a clearance, frequency, or a quick diagram with your finger or Apple Pencil.")
-                .font(.caption).foregroundStyle(p.textDim.opacity(0.85))
+                .font(.dsLabel).foregroundStyle(p.textDim.opacity(0.85))
                 .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true).padding(.horizontal, 40)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity).padding(40)
@@ -115,16 +115,16 @@ struct NotesTabView: View {
                 }
                 .frame(height: 150).frame(maxWidth: .infinity).clipped()
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(note.title).font(.subheadline.weight(.semibold)).foregroundStyle(p.text).lineLimit(1)
+                    Text(note.title).font(.dsHeadline).foregroundStyle(p.text).lineLimit(1)
                     Text(note.updatedAt.formatted(date: .abbreviated, time: .shortened))
-                        .font(.caption2).foregroundStyle(p.textDim)
+                        .font(.dsLabelS).foregroundStyle(p.textDim)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(10)
             }
             .background(p.surface)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12).stroke(p.border, lineWidth: 1))
+            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.r4))
+            .overlay(RoundedRectangle(cornerRadius: DS.Radius.r4).stroke(p.border, lineWidth: 1))
         }
         .buttonStyle(.plainHaptic)
         .accessibilityIdentifier("note-tile")
@@ -140,12 +140,12 @@ struct NotesTabView: View {
         return VStack(spacing: 0) {
             HStack(spacing: 12) {
                 Button { cancelEdit() } label: {
-                    Label("Library", systemImage: "chevron.left").font(.subheadline.weight(.semibold))
+                    Label("Library", systemImage: "chevron.left").font(.dsHeadline)
                 }
                 .buttonStyle(.plainHaptic).foregroundStyle(p.accent).accessibilityIdentifier("notes-back")
                 TextField("Title", text: Binding(get: { editing?.title ?? "" },
                                                  set: { editing?.title = $0 }))
-                    .textFieldStyle(.plain).font(.headline).foregroundStyle(p.text)
+                    .textFieldStyle(.plain).font(.dsHeadline).foregroundStyle(p.text)
                     .frame(maxWidth: 320)
                 Spacer()
                 Button { clearCanvas() } label: { Image(systemName: "eraser.line.dashed") }
@@ -157,7 +157,7 @@ struct NotesTabView: View {
                     .buttonStyle(.plainHaptic).foregroundStyle(p.bad).accessibilityIdentifier("notes-delete")
                 }
                 Button { saveEdit() } label: {
-                    Text("Done").font(.subheadline.weight(.bold))
+                    Text("Done").font(.dsHeadline)
                         .padding(.horizontal, 16).padding(.vertical, 7)
                         .background(Capsule().fill(p.accent)).foregroundStyle(.white)
                 }

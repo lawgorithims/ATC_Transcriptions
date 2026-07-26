@@ -55,7 +55,7 @@ struct SatellitesView: View {
                     .accessibilityIdentifier("sky-plot")
                 Text("Computed from the bundled almanac for your position and the current time. "
                      + "North is up; the outer ring is the horizon and the centre is straight overhead.")
-                    .font(.caption2).foregroundStyle(p.textDim)
+                    .font(.dsLabelS).foregroundStyle(p.textDim)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
@@ -79,7 +79,7 @@ struct SatellitesView: View {
                      : (healthy >= 4
                         ? "Bare minimum for a 3-D fix — no redundancy to catch a faulty satellite."
                         : "Fewer than four usable satellites: a 3-D position is not possible from this geometry."))
-                    .font(.caption2).foregroundStyle(healthy >= 5 ? p.textDim : p.warn)
+                    .font(.dsLabelS).foregroundStyle(healthy >= 5 ? p.textDim : p.warn)
             }
         }
     }
@@ -99,11 +99,11 @@ struct SatellitesView: View {
                     Text("Dilution of precision multiplies ranging error: satellites spread across the sky "
                          + "give a low number, satellites clustered together give a high one. Vertical is "
                          + "always worse than horizontal because every satellite is above you.")
-                        .font(.caption2).foregroundStyle(p.textDim)
+                        .font(.dsLabelS).foregroundStyle(p.textDim)
                 }
             } else {
                 Text("Not enough satellites above the mask to compute geometry.")
-                    .font(.caption).foregroundStyle(p.warn)
+                    .font(.dsLabel).foregroundStyle(p.warn)
             }
         }
     }
@@ -117,11 +117,11 @@ struct SatellitesView: View {
                     statTile("GEOMETRY", t.geometry.label.uppercased(), geometryColor(t.geometry, p), p)
                     statTile("REPORTED ±", measured.map { "\(Int($0.rounded())) m" } ?? "—", p.text, p)
                 }
-                Text(t.advisory).font(.caption).foregroundStyle(t.warrantsAlert ? p.bad : p.textDim)
+                Text(t.advisory).font(.dsLabel).foregroundStyle(t.warrantsAlert ? p.bad : p.textDim)
                 Text("The left number is computed from orbits. The right one is the only satellite-related "
                      + "figure iOS actually measures. When good geometry is paired with a poor reported "
                      + "accuracy, geometry does not explain it — that is the interference signature.")
-                    .font(.caption2).foregroundStyle(p.textDim)
+                    .font(.dsLabelS).foregroundStyle(p.textDim)
             }
         }
     }
@@ -132,7 +132,7 @@ struct SatellitesView: View {
                 Text("iOS does not report satellites. There is no measured satellite list, signal strength, "
                      + "satellite count or DOP available to any iPhone or iPad app, so every satellite on "
                      + "this page is computed from published orbital elements — never observed.")
-                    .font(.caption2).foregroundStyle(p.textDim)
+                    .font(.dsLabelS).foregroundStyle(p.textDim)
                 if let first = model.almanac.first {
                     let age = GPSAlmanac.ageDays(first, at: Date())
                     Text(String(format: "Almanac: %d satellites, GPS week %d, %.0f days old.",
@@ -142,11 +142,11 @@ struct SatellitesView: View {
                     if abs(age) > 90 {
                         Text("This almanac is old enough that the predicted positions have drifted. "
                              + "Update the app to refresh it.")
-                            .font(.caption2).foregroundStyle(p.warn)
+                            .font(.dsLabelS).foregroundStyle(p.warn)
                     }
                 }
                 Text("Awareness only. Not for navigation, and not a substitute for a certified receiver.")
-                    .font(.caption2).foregroundStyle(p.textDim)
+                    .font(.dsLabelS).foregroundStyle(p.textDim)
             }
         }
     }
@@ -155,7 +155,7 @@ struct SatellitesView: View {
         Card(title: "Satellites") {
             Text("No almanac is bundled with this build, so predicted satellite geometry is unavailable. "
                  + "GPS itself is unaffected — only this page's prediction is.")
-                .font(.caption).foregroundStyle(p.textDim)
+                .font(.dsLabel).foregroundStyle(p.textDim)
         }
     }
 
@@ -163,7 +163,7 @@ struct SatellitesView: View {
         Card(title: "Satellites") {
             Text("Waiting for a GPS fix. Satellite positions depend on where you are, so the sky view "
                  + "appears once the device has a position.")
-                .font(.caption).foregroundStyle(p.textDim)
+                .font(.dsLabel).foregroundStyle(p.textDim)
         }
     }
 
@@ -175,8 +175,8 @@ struct SatellitesView: View {
             Text(value).font(.title3.monospacedDigit().weight(.semibold)).foregroundStyle(tint)
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
-        .background(p.surface.opacity(0.55), in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(p.border, lineWidth: 0.5))
+        .background(p.surface.opacity(0.55), in: RoundedRectangle(cornerRadius: DS.Radius.r2))
+        .overlay(RoundedRectangle(cornerRadius: DS.Radius.r2).stroke(p.border, lineWidth: 0.5))
     }
 
     /// The conventional aviation reading of DOP: under 2 is good, 2-5 is usable, above 5 is poor.
