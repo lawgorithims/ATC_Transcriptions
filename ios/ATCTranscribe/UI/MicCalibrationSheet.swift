@@ -16,13 +16,13 @@ struct MicCalibrationSheet: View {
                     Card(title: "Calibrate microphone") {
                         VStack(alignment: .leading, spacing: 14) {
                             Text("Set the squelch for your device and room. First stay quiet while it listens to the background, then say a short test call at your normal volume — it sets the threshold to sit between the two, so the quiet room is ignored and your voice comes through.")
-                                .font(.caption).foregroundStyle(p.textDim)
+                                .font(.dsLabel).foregroundStyle(p.textDim)
                                 .fixedSize(horizontal: false, vertical: true)
 
                             if !model.canCalibrateMic {
                                 Label("Stop the feed first — calibration needs the microphone to itself.",
                                       systemImage: "stop.circle")
-                                    .font(.caption.weight(.semibold)).foregroundStyle(.orange)
+                                    .font(.dsLabelBold).foregroundStyle(.orange)
                                     .fixedSize(horizontal: false, vertical: true)
                             }
 
@@ -79,11 +79,11 @@ struct MicCalibrationSheet: View {
         let p = model.palette
         return HStack(alignment: .top, spacing: 10) {
             Text("\(n)")
-                .font(.caption.weight(.bold)).foregroundStyle(p.bg)
+                .font(.dsLabelBold).foregroundStyle(p.bg)
                 .frame(width: 22, height: 22).background(p.accent).clipShape(Circle())
             VStack(alignment: .leading, spacing: 3) {
-                Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(p.text)
-                Text(detail).font(.caption).foregroundStyle(p.textDim)
+                Text(title).font(.dsHeadline).foregroundStyle(p.text)
+                Text(detail).font(.dsLabel).foregroundStyle(p.textDim)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -104,8 +104,8 @@ struct MicCalibrationSheet: View {
         return HStack(alignment: .top, spacing: 10) {
             Image(systemName: icon).font(.title3).foregroundStyle(tint)
             VStack(alignment: .leading, spacing: 3) {
-                Text(title).font(.subheadline.weight(.semibold)).foregroundStyle(p.text)
-                Text(detail).font(.caption).foregroundStyle(p.textDim)
+                Text(title).font(.dsHeadline).foregroundStyle(p.text)
+                Text(detail).font(.dsLabel).foregroundStyle(p.textDim)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -115,11 +115,11 @@ struct MicCalibrationSheet: View {
         let p = model.palette
         return Button(action: action) {
             Label(title, systemImage: icon)
-                .font(.subheadline.weight(.semibold))
+                .font(.dsHeadline)
                 .frame(maxWidth: .infinity).padding(.vertical, 11)
                 .background(enabled ? p.accent : p.surfaceAlt)
                 .foregroundStyle(enabled ? p.bg : p.textDim)
-                .clipShape(RoundedRectangle(cornerRadius: 9))
+                .clipShape(RoundedRectangle(cornerRadius: DS.Radius.r2))
         }
         .buttonStyle(.plainHaptic).disabled(!enabled)
         .accessibilityIdentifier("mic-calibration-action")

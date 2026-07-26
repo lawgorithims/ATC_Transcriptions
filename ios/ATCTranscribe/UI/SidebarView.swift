@@ -57,10 +57,10 @@ struct SidebarColumn: View {
             if model.editingWidgets {
                 if !model.availableWidgets.isEmpty { AddWidgetTile() }
                 Button { withAnimation { model.editingWidgets = false } } label: {
-                    Text("Done").font(.subheadline.weight(.semibold))
+                    Text("Done").font(.dsHeadline)
                         .frame(maxWidth: .infinity).padding(.vertical, 10)
                         .background(p.accent).foregroundStyle(p.bg)
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.r4))
                 }
                 .buttonStyle(.plainHaptic)
                 .accessibilityIdentifier("widgets-done")
@@ -86,7 +86,7 @@ struct SidebarColumn: View {
             }
             .overlay {
                 if model.editingWidgets {
-                    RoundedRectangle(cornerRadius: 12)
+                    RoundedRectangle(cornerRadius: DS.Radius.r4)
                         .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
                         .foregroundStyle(model.palette.accent.opacity(0.7))
                 }
@@ -142,13 +142,13 @@ struct AddWidgetTile: View {
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: "plus.circle.fill")
-                Text("Add widget").font(.subheadline.weight(.semibold))
+                Text("Add widget").font(.dsHeadline)
             }
             .foregroundStyle(p.accent)
             .frame(maxWidth: .infinity).padding(.vertical, 16)
             .background(p.surface)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
-            .overlay(RoundedRectangle(cornerRadius: 12)
+            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.r4))
+            .overlay(RoundedRectangle(cornerRadius: DS.Radius.r4)
                 .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
                 .foregroundStyle(p.border))
         }
@@ -208,7 +208,7 @@ struct StatCell: View {
         let p = model.palette
         VStack(alignment: .leading, spacing: 2) {
             Text(value).font(.title3.weight(.semibold).monospacedDigit()).foregroundStyle(color ?? p.text)
-            Text(key).font(.caption2).foregroundStyle(p.textDim)
+            Text(key).font(.dsLabelS).foregroundStyle(p.textDim)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -224,7 +224,7 @@ struct ProofOfLifeCard: View {
                     HStack(spacing: 8) {
                         Image(systemName: pol.passed ? "checkmark.seal.fill" : "xmark.seal.fill")
                             .foregroundStyle(pol.passed ? p.good : p.bad)
-                        Text(pol.passed ? "PASS" : "FAIL").font(.subheadline.weight(.bold))
+                        Text(pol.passed ? "PASS" : "FAIL").font(.dsHeadline)
                             .foregroundStyle(pol.passed ? p.good : p.bad)
                     }
                     if let wer = pol.meanWER {
@@ -245,18 +245,18 @@ struct ProofOfLifeCard: View {
                     if model.polRunning {
                         HStack(spacing: 6) {
                             ProgressView().controlSize(.mini).tint(p.text)
-                            Text("Running…").font(.caption.weight(.semibold))
+                            Text("Running…").font(.dsLabelBold)
                         }
                     } else {
                         Label("Run performance check", systemImage: "arrow.clockwise")
-                            .font(.caption.weight(.semibold))
+                            .font(.dsLabelBold)
                     }
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 8)
                 .background(p.surfaceAlt)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(p.border, lineWidth: 1))
+                .clipShape(RoundedRectangle(cornerRadius: DS.Radius.r2))
+                .overlay(RoundedRectangle(cornerRadius: DS.Radius.r2).stroke(p.border, lineWidth: 1))
             }
             .buttonStyle(.plainHaptic).foregroundStyle(p.text)
             .disabled(model.polRunning)
@@ -291,11 +291,11 @@ struct StratuxCard: View {
         Card(title: "Stratux link") {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Text("Connection").font(.caption).foregroundStyle(p.textDim)
+                    Text("Connection").font(.dsLabel).foregroundStyle(p.textDim)
                     Spacer()
                     HStack(spacing: 5) {
                         Circle().fill(statusColor(p)).frame(width: 8, height: 8)
-                        Text(statusText).font(.caption.monospaced().weight(.semibold)).foregroundStyle(p.text)
+                        Text(statusText).font(.dsDataMono).foregroundStyle(p.text)
                     }
                 }
                 KV("Receiver", model.stratuxHost)
@@ -307,7 +307,7 @@ struct StratuxCard: View {
                 KV("Traffic", active ? "\(model.aircraft.count) in range" : "—")
                 if !active {
                     Text("Turn on the Stratux link in Settings or the Stratux bar. Pick “Stratux receiver” as the input source to transcribe its audio.")
-                        .font(.caption2).foregroundStyle(p.textDim)
+                        .font(.dsLabelS).foregroundStyle(p.textDim)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
@@ -350,13 +350,13 @@ struct DiagnosticsCard: View {
                 KV("CPU (app)", String(format: "%.0f%%", cpu))
                 KV("Memory", String(format: "%.0f MB", mem))
                 HStack {
-                    Text("Thermal").font(.caption).foregroundStyle(p.textDim)
+                    Text("Thermal").font(.dsLabel).foregroundStyle(p.textDim)
                     Spacer()
-                    Text(thermal.label).font(.caption.monospaced().weight(.semibold))
+                    Text(thermal.label).font(.dsDataMono)
                         .foregroundStyle(thermalColor(p))
                 }
                 Text("GPU / Neural Engine load isn't exposed by iOS — thermal state is the signal.")
-                    .font(.caption2).foregroundStyle(p.textDim)
+                    .font(.dsLabelS).foregroundStyle(p.textDim)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
@@ -390,7 +390,7 @@ struct KV: View {
     var body: some View {
         let p = model.palette
         HStack {
-            Text(key).font(.caption).foregroundStyle(p.textDim)
+            Text(key).font(.dsLabel).foregroundStyle(p.textDim)
             Spacer()
             Text(value).font(.caption.monospaced()).foregroundStyle(p.text)
         }

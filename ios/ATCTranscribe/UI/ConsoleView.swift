@@ -211,8 +211,8 @@ struct ConsoleView: View {
             } label: {
                 HStack(spacing: 6) {
                     Text("Plate on map · \(plate.airport) · \(plate.name)")
-                        .font(.caption.weight(.semibold)).foregroundStyle(p.text).lineLimit(1)
-                    Image(systemName: "slider.horizontal.3").font(.caption2).foregroundStyle(p.textDim)
+                        .font(.dsLabelBold).foregroundStyle(p.text).lineLimit(1)
+                    Image(systemName: "slider.horizontal.3").font(.dsLabelS).foregroundStyle(p.textDim)
                     Spacer(minLength: 4)
                 }
                 .contentShape(Rectangle())
@@ -241,7 +241,7 @@ struct ConsoleView: View {
             Image(systemName: "paperplane.circle.fill").foregroundStyle(p.good)
             VStack(alignment: .leading, spacing: 1) {
                 Text("Approach · \(appr.shortLabel)")
-                    .font(.caption.weight(.semibold)).foregroundStyle(p.text).lineLimit(1)
+                    .font(.dsLabelBold).foregroundStyle(p.text).lineLimit(1)
                 Text(appr.entry == .vectors ? "Vectors to final" : "Via \(appr.entry.label)")
                     .font(.system(size: 10)).foregroundStyle(p.textDim)
             }
@@ -251,8 +251,8 @@ struct ConsoleView: View {
                 model.armMissedApproach()
             } label: {
                 HStack(spacing: 4) {
-                    Image(systemName: "arrow.uturn.up").font(.caption2.weight(.bold))
-                    Text("MISSED").font(.caption2.weight(.bold))
+                    Image(systemName: "arrow.uturn.up").font(.dsLabelSBold)
+                    Text("MISSED").font(.dsLabelSBold)
                 }
                 .padding(.horizontal, 10).padding(.vertical, 5)
                 .background(Capsule().fill(p.warn.opacity(0.22)))
@@ -303,7 +303,7 @@ struct ConsoleView: View {
         return HStack(spacing: 8) {
             Image(systemName: "point.topleft.down.to.point.bottomright.curvepath")
                 .foregroundStyle(Color(red: 0.16, green: 0.78, blue: 0.94))
-            Text("\(proc.airport) · \(proc.name)").font(.caption.weight(.semibold)).foregroundStyle(p.text).lineLimit(1)
+            Text("\(proc.airport) · \(proc.name)").font(.dsLabelBold).foregroundStyle(p.text).lineLimit(1)
             Spacer(minLength: 4)
             Button { Haptics.impact(.light); model.previewedProcedure = nil } label: {
                 Image(systemName: "xmark.circle.fill").foregroundStyle(p.textDim)
@@ -323,17 +323,17 @@ struct ConsoleView: View {
         return HStack(spacing: 10) {
             Image(systemName: "sparkles").font(.callout).foregroundStyle(p.accent)
             VStack(alignment: .leading, spacing: 1) {
-                Text(sug.title).font(.callout.weight(.semibold)).foregroundStyle(p.text).lineLimit(1)
-                Text(sug.source).font(.caption2).foregroundStyle(p.textDim).lineLimit(1)
+                Text(sug.title).font(.dsHeadline).foregroundStyle(p.text).lineLimit(1)
+                Text(sug.source).font(.dsLabelS).foregroundStyle(p.textDim).lineLimit(1)
             }
             Spacer(minLength: 4)
             Button { Haptics.impact(.light); model.dismissEFBSuggestion() } label: {
-                Text("Dismiss").font(.caption.weight(.semibold)).foregroundStyle(p.textDim)
+                Text("Dismiss").font(.dsLabelBold).foregroundStyle(p.textDim)
                     .padding(.horizontal, 10).padding(.vertical, 6).contentShape(Rectangle())
             }
             .buttonStyle(.plainHaptic).accessibilityIdentifier("efb-dismiss")
             Button { model.acceptEFBSuggestion() } label: {
-                Text("Accept").font(.caption.weight(.bold)).foregroundStyle(.white)
+                Text("Accept").font(.dsLabelBold).foregroundStyle(.white)
                     .padding(.horizontal, 14).padding(.vertical, 6)
                     .background(Capsule().fill(p.accent))
             }
@@ -343,7 +343,7 @@ struct ConsoleView: View {
             // installed; skipped when accepting turns out not to change the plan.
             if model.offersForeFlight {
                 Button { model.acceptEFBSuggestionSendingToForeFlight() } label: {
-                    Text("Accept ➔ ForeFlight").font(.caption.weight(.bold)).foregroundStyle(.white)
+                    Text("Accept ➔ ForeFlight").font(.dsLabelBold).foregroundStyle(.white)
                         .padding(.horizontal, 12).padding(.vertical, 6)
                         .background(Capsule().fill(p.accent))
                 }
@@ -376,13 +376,13 @@ struct ConsoleView: View {
                 .font(.callout)
                 .foregroundStyle(Color(uiColor: HazardAnnotation.tint(lead?.category ?? .wildfires)))
             VStack(alignment: .leading, spacing: 1) {
-                Text(headline).font(.callout.weight(.semibold)).foregroundStyle(p.text).lineLimit(1)
+                Text(headline).font(.dsHeadline).foregroundStyle(p.text).lineLimit(1)
                 Text("Satellite-observed (NASA EONET) · not an official NOTAM")
-                    .font(.caption2).foregroundStyle(p.textDim).lineLimit(1)
+                    .font(.dsLabelS).foregroundStyle(p.textDim).lineLimit(1)
             }
             Spacer(minLength: 4)
             Button { Haptics.impact(.light); model.showHazardAlertDetails() } label: {
-                Text("Details").font(.caption.weight(.bold)).foregroundStyle(.white)
+                Text("Details").font(.dsLabelBold).foregroundStyle(.white)
                     .padding(.horizontal, 12).padding(.vertical, 6)
                     .background(Capsule().fill(p.accent))
             }
@@ -454,13 +454,13 @@ struct TopBar: View {
         HStack(spacing: 10) {
             Image("BrandMark").resizable().scaledToFit()
                 .frame(width: 30, height: 30)
-                .clipShape(RoundedRectangle(cornerRadius: 7))
+                .clipShape(RoundedRectangle(cornerRadius: DS.Radius.r2))
             // Wordmark + subtitle only where there's room (iPad / regular width). On iPhone the logo
             // stands alone so the larger control icons fit one row.
             if hSize == .regular {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("CommSight").font(.headline).foregroundStyle(p.text)
-                    Text("On-device ATC transcription").font(.caption2).foregroundStyle(p.textDim)
+                    Text("CommSight").font(.dsHeadline).foregroundStyle(p.text)
+                    Text("On-device ATC transcription").font(.dsLabelS).foregroundStyle(p.textDim)
                 }
             }
         }
@@ -481,7 +481,7 @@ struct TopBar: View {
                 .frame(width: hit.width, height: hit.height)
                 .foregroundStyle(on ? p.accent : p.textDim)
                 .background(on ? p.accent.opacity(0.16) : .clear)
-                .clipShape(RoundedRectangle(cornerRadius: 7))
+                .clipShape(RoundedRectangle(cornerRadius: DS.Radius.r2))
         }
         .buttonStyle(.plainHaptic)
         .accessibilityIdentifier(id)
@@ -518,7 +518,7 @@ struct TopBar: View {
                 .frame(width: hit.width, height: hit.height)
                 .foregroundStyle(on ? p.accent : p.textDim)
                 .background(on ? p.accent.opacity(0.16) : .clear)
-                .clipShape(RoundedRectangle(cornerRadius: 7))
+                .clipShape(RoundedRectangle(cornerRadius: DS.Radius.r2))
                 .overlay(alignment: .topTrailing) {
                     if model.flightPlan?.isStale == true {
                         Image(systemName: "exclamationmark.triangle.fill")
@@ -546,7 +546,7 @@ struct TopBar: View {
                 .frame(width: hit.width, height: hit.height)
                 .foregroundStyle(stratuxTint(p))
                 .background(on ? p.accent.opacity(0.16) : .clear)
-                .clipShape(RoundedRectangle(cornerRadius: 7))
+                .clipShape(RoundedRectangle(cornerRadius: DS.Radius.r2))
         }
         .buttonStyle(.plainHaptic)
         .accessibilityIdentifier("stratux-toggle")
@@ -619,8 +619,8 @@ struct PowerButton: View {
             .frame(width: 40, height: 32)
             .background(bg)
             .foregroundStyle(p.bg)
-            .clipShape(RoundedRectangle(cornerRadius: 9))
-            .contentShape(RoundedRectangle(cornerRadius: 9))
+            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.r2))
+            .contentShape(RoundedRectangle(cornerRadius: DS.Radius.r2))
             .onTapGesture {
                 Haptics.impact(.medium)
                 running ? model.stop() : model.start()
@@ -693,7 +693,7 @@ struct StatusPill: View {
         let p = model.palette
         HStack(spacing: 6) {
             Circle().fill(color(p)).frame(width: 8, height: 8)
-            Text(label).font(.caption).foregroundStyle(p.text)
+            Text(label).font(.dsLabel).foregroundStyle(p.text)
         }
         .padding(.horizontal, 10).padding(.vertical, 6)
         .background(p.surface)
@@ -746,13 +746,13 @@ struct StratuxStatusChip: View {
             }
         }()
         return HStack(spacing: 5) {
-            Image(systemName: "dot.radiowaves.up.forward").font(.caption2)
-            Text(text).font(.caption2).lineLimit(1).minimumScaleFactor(0.8)
+            Image(systemName: "dot.radiowaves.up.forward").font(.dsLabelS)
+            Text(text).font(.dsLabelS).lineLimit(1).minimumScaleFactor(0.8)
         }
         .foregroundStyle(color)
         .padding(.horizontal, 10).padding(.vertical, 8)
-        .background(p.surfaceAlt).clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(p.border, lineWidth: 1))
+        .background(p.surfaceAlt).clipShape(RoundedRectangle(cornerRadius: DS.Radius.r2))
+        .overlay(RoundedRectangle(cornerRadius: DS.Radius.r2).stroke(p.border, lineWidth: 1))
         .accessibilityIdentifier("stratux-status")
     }
 }
@@ -880,14 +880,14 @@ struct FlightPlanBar: View {
         } label: {
             box(p) {
                 HStack(spacing: 6) {
-                    Image(systemName: "airplane").font(.caption2).foregroundStyle(p.textDim)
+                    Image(systemName: "airplane").font(.dsLabelS).foregroundStyle(p.textDim)
                     Text(model.flightPlan?.callsign.isEmpty == false
                          ? model.flightPlan!.callsign : "Aircraft")
                         .font(.caption.weight(.semibold).monospaced())
                         .foregroundStyle(model.flightPlan?.callsign.isEmpty == false ? p.text : p.textDim)
                         .lineLimit(1)
                     Spacer(minLength: 0)
-                    Image(systemName: "chevron.down").font(.caption2).foregroundStyle(p.textDim)
+                    Image(systemName: "chevron.down").font(.dsLabelS).foregroundStyle(p.textDim)
                 }
             }
         }
@@ -900,13 +900,13 @@ struct FlightPlanBar: View {
     private func altitudeBox(_ p: Palette) -> some View {
         box(p) {
             HStack(spacing: 6) {
-                Image(systemName: "arrow.up.forward").font(.caption2).foregroundStyle(p.textDim)
+                Image(systemName: "arrow.up.forward").font(.dsLabelS).foregroundStyle(p.textDim)
                 TextField("Altitude", text: $altitudeText)
                     .textFieldStyle(.plain).keyboardType(.numberPad)
                     .font(.caption.weight(.semibold).monospaced())
                     .focused($altitudeFocused)
                     .accessibilityIdentifier("plan-altitude")
-                Text("ft").font(.caption2).foregroundStyle(p.textDim)
+                Text("ft").font(.dsLabelS).foregroundStyle(p.textDim)
             }
         }
     }
@@ -915,7 +915,7 @@ struct FlightPlanBar: View {
     private func alternateBox(_ p: Palette) -> some View {
         box(p) {
             HStack(spacing: 6) {
-                Image(systemName: "arrow.triangle.branch").font(.caption2).foregroundStyle(p.textDim)
+                Image(systemName: "arrow.triangle.branch").font(.dsLabelS).foregroundStyle(p.textDim)
                 TextField("Alternate", text: $alternateText)
                     .textFieldStyle(.plain).autocorrectionDisabled()
                     .textInputAutocapitalization(.characters)
@@ -934,7 +934,7 @@ struct FlightPlanBar: View {
             box(p) {
                 HStack(spacing: 6) {
                     Image(systemName: "point.topleft.down.to.point.bottomright.curvepath")
-                        .font(.caption2).foregroundStyle(p.textDim)
+                        .font(.dsLabelS).foregroundStyle(p.textDim)
                     TextField("Route — e.g. KMSP GEP KAMMA KORD", text: $routeText)
                         .textFieldStyle(.plain).autocorrectionDisabled()
                         .textInputAutocapitalization(.characters)
@@ -944,7 +944,7 @@ struct FlightPlanBar: View {
                         .accessibilityIdentifier("plan-route")
                     if !routeText.isEmpty || model.flightPlan != nil {   // clearable even when only
                         Button { Haptics.impact(.light); confirmClear = true } label: {  // altitude/procedures remain
-                            Image(systemName: "xmark.circle.fill").font(.caption).foregroundStyle(p.textDim)
+                            Image(systemName: "xmark.circle.fill").font(.dsLabel).foregroundStyle(p.textDim)
                         }
                         .buttonStyle(.plainHaptic).accessibilityIdentifier("plan-clear")
                     }
@@ -965,7 +965,7 @@ struct FlightPlanBar: View {
                     ForEach(Array(fp.fullRoute.enumerated()), id: \.offset) { i, leg in
                         if i > 0 {
                             Image(systemName: "chevron.compact.right")
-                                .font(.caption2).foregroundStyle(p.textDim.opacity(0.5))
+                                .font(.dsLabelS).foregroundStyle(p.textDim.opacity(0.5))
                         }
                         Text(leg.ident)
                             .font(.caption.weight(.semibold).monospaced())
@@ -976,10 +976,10 @@ struct FlightPlanBar: View {
                     ForEach(fp.loadedProcedures, id: \.kind) { proc in
                         HStack(spacing: 4) {
                             Image(systemName: "point.topleft.down.to.point.bottomright.curvepath")
-                                .font(.caption2)
-                            Text(proc.displayLine).font(.caption2.weight(.semibold)).lineLimit(1)
+                                .font(.dsLabelS)
+                            Text(proc.displayLine).font(.dsLabelSBold).lineLimit(1)
                             Button { Haptics.impact(.light); model.clearLoadedProcedure(kind: proc.kind) } label: {
-                                Image(systemName: "xmark.circle.fill").font(.caption2)
+                                Image(systemName: "xmark.circle.fill").font(.dsLabelS)
                             }
                             .buttonStyle(.plainHaptic).accessibilityIdentifier("clear-loaded-\(proc.kind)")
                         }
@@ -989,7 +989,7 @@ struct FlightPlanBar: View {
                     }
                 } else {
                     Text("Type a route above — airports, fixes, VORs, and airways are recognized as you go.")
-                        .font(.caption2).foregroundStyle(p.textDim)
+                        .font(.dsLabelS).foregroundStyle(p.textDim)
                 }
             }
             .padding(.trailing, 16)
@@ -1011,7 +1011,7 @@ struct FlightPlanBar: View {
         HStack(spacing: 10) {
             // Import a plan built in ForeFlight (its share sheet exports a Garmin .fpl).
             Button { Haptics.impact(.light); showFPLImporter = true } label: {
-                Image(systemName: "square.and.arrow.down").font(.caption).foregroundStyle(p.accent)
+                Image(systemName: "square.and.arrow.down").font(.dsLabel).foregroundStyle(p.accent)
             }
             .buttonStyle(.plainHaptic)
             .accessibilityIdentifier("plan-import-fpl").accessibilityLabel("Import .fpl plan")
@@ -1023,12 +1023,12 @@ struct FlightPlanBar: View {
             }
             if let fplURL {
                 ShareLink(item: fplURL) {
-                    Image(systemName: "square.and.arrow.up").font(.caption).foregroundStyle(p.accent)
+                    Image(systemName: "square.and.arrow.up").font(.dsLabel).foregroundStyle(p.accent)
                 }
                 .buttonStyle(.plainHaptic).accessibilityIdentifier("plan-share-fpl")
             }
             Button { Haptics.impact(.light); model.showRouteMap = true } label: {
-                Image(systemName: "map").font(.caption).foregroundStyle(p.accent)
+                Image(systemName: "map").font(.dsLabel).foregroundStyle(p.accent)
             }
             .buttonStyle(.plainHaptic)
             .accessibilityIdentifier("flight-plan-map").accessibilityLabel("View route on map")
@@ -1037,7 +1037,7 @@ struct FlightPlanBar: View {
                 commitPendingEdits()   // the number-pad altitude has no submit — don't lose it
                 withAnimation(.easeInOut(duration: 0.22)) { model.showFlightPlanBar = false }
             } label: {
-                Image(systemName: "checkmark").font(.caption.weight(.semibold)).foregroundStyle(p.accent)
+                Image(systemName: "checkmark").font(.dsLabelBold).foregroundStyle(p.accent)
             }
             .buttonStyle(.plainHaptic)
             .accessibilityIdentifier("plan-bar-done").accessibilityLabel("Collapse flight plan")
@@ -1053,7 +1053,7 @@ struct FlightPlanBar: View {
             model.openInForeFlight()
         } label: {
             Label("ForeFlight", systemImage: "paperplane.fill")
-                .font(.caption.weight(.bold))
+                .font(.dsLabelBold)
                 .foregroundStyle(enabled ? .white : p.textDim)
                 .padding(.horizontal, 12).padding(.vertical, 6)
                 .background(Capsule().fill(enabled ? p.accent : p.surfaceAlt))
@@ -1079,10 +1079,10 @@ struct FlightPlanBar: View {
             Spacer(minLength: 4)
             if model.flightPlan?.isStale == true {
                 Label("Update plan", systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption2.weight(.semibold)).foregroundStyle(p.warn)
+                    .font(.dsLabelSBold).foregroundStyle(p.warn)
             } else if model.flightPlan != nil, !contextReady {
                 Label("AI context downloading", systemImage: "arrow.down.circle")
-                    .font(.caption2).foregroundStyle(p.textDim)
+                    .font(.dsLabelS).foregroundStyle(p.textDim)
             }
         }
         .accessibilityIdentifier("plan-stats")
@@ -1172,8 +1172,8 @@ struct FlightPlanBar: View {
     private func box(_ p: Palette, @ViewBuilder content: () -> some View) -> some View {
         content()
             .padding(.horizontal, 10).padding(.vertical, 8)
-            .background(p.surfaceAlt).clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(p.border, lineWidth: 1))
+            .background(p.surfaceAlt).clipShape(RoundedRectangle(cornerRadius: DS.Radius.r2))
+            .overlay(RoundedRectangle(cornerRadius: DS.Radius.r2).stroke(p.border, lineWidth: 1))
     }
 
     /// Colour per route-leg kind (airports purple-pink, VOR green, GPS blue, airways amber).
@@ -1204,7 +1204,7 @@ struct StratuxBar: View {
             // The always-on Stratux link: traffic + GPS stream whenever this is on and the app is
             // foregrounded — independent of the input source (that only gates cockpit audio + Start).
             Toggle(isOn: linkBinding) {
-                Text("Stratux link").font(.caption.weight(.semibold)).foregroundStyle(p.text)
+                Text("Stratux link").font(.dsLabelBold).foregroundStyle(p.text)
             }
             .tint(p.accent)
             .padding(.horizontal, 16)
@@ -1243,7 +1243,7 @@ struct StratuxBar: View {
         case .connecting:
             HStack(spacing: 10) {
                 ProgressView().controlSize(.mini).tint(p.warn)
-                Text("Connecting to Stratux…").font(.caption.weight(.semibold)).foregroundStyle(p.warn)
+                Text("Connecting to Stratux…").font(.dsLabelBold).foregroundStyle(p.warn)
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 16)
@@ -1264,13 +1264,13 @@ struct StratuxBar: View {
                                       title: String, trailing: String?, emptyNote: String? = nil) -> some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(spacing: 8) {
-                Image(systemName: icon).font(.caption2).foregroundStyle(iconColor)
-                Text(title).font(.caption.weight(.semibold)).foregroundStyle(titleColor)
+                Image(systemName: icon).font(.dsLabelS).foregroundStyle(iconColor)
+                Text(title).font(.dsLabelBold).foregroundStyle(titleColor)
                 Spacer(minLength: 4)
-                if let trailing { Text(trailing).font(.caption2).foregroundStyle(p.textDim).lineLimit(1) }
+                if let trailing { Text(trailing).font(.dsLabelS).foregroundStyle(p.textDim).lineLimit(1) }
             }
             if model.aircraft.isEmpty {
-                Text(emptyNote ?? "No traffic in range").font(.caption2).foregroundStyle(p.textDim)
+                Text(emptyNote ?? "No traffic in range").font(.dsLabelS).foregroundStyle(p.textDim)
             } else {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 5) {
@@ -1305,7 +1305,7 @@ struct StratuxBar: View {
         let c = color ?? p.textDim
         return HStack(spacing: 10) {
             Image(systemName: icon).font(.callout).foregroundStyle(c)
-            Text(text).font(.caption).foregroundStyle(c).lineLimit(2)
+            Text(text).font(.dsLabel).foregroundStyle(c).lineLimit(2)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 16)
@@ -1330,7 +1330,7 @@ struct InputBar: View {
         VStack(spacing: 8) {
             HStack(spacing: 10) {
                 HStack(spacing: 6) {
-                    Text("Input").font(.caption).foregroundStyle(p.textDim)
+                    Text("Input").font(.dsLabel).foregroundStyle(p.textDim)
                     Picker("Input", selection: $model.source) {
                         ForEach(SourceKind.allCases) { Text($0.rawValue).tag($0) }
                     }
@@ -1343,8 +1343,8 @@ struct InputBar: View {
                     .accessibilityIdentifier("source-picker")
                 }
                 .padding(.horizontal, 10).padding(.vertical, 6)
-                .background(p.surfaceAlt).clipShape(RoundedRectangle(cornerRadius: 8))
-                .overlay(RoundedRectangle(cornerRadius: 8).stroke(p.border, lineWidth: 1))
+                .background(p.surfaceAlt).clipShape(RoundedRectangle(cornerRadius: DS.Radius.r2))
+                .overlay(RoundedRectangle(cornerRadius: DS.Radius.r2).stroke(p.border, lineWidth: 1))
 
                 Spacer(minLength: 0)
 
@@ -1407,8 +1407,8 @@ struct InputBar: View {
                     }
                     .labelsHidden().pickerStyle(.menu).tint(p.text)
                     .padding(.horizontal, 10).padding(.vertical, 8)
-                    .background(p.surfaceAlt).clipShape(RoundedRectangle(cornerRadius: 8))
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(p.border, lineWidth: 1))
+                    .background(p.surfaceAlt).clipShape(RoundedRectangle(cornerRadius: DS.Radius.r2))
+                    .overlay(RoundedRectangle(cornerRadius: DS.Radius.r2).stroke(p.border, lineWidth: 1))
                 }
             }
 
@@ -1423,7 +1423,7 @@ struct InputBar: View {
             }
 
             HStack(spacing: 8) {
-                Text(model.detail).font(.caption).foregroundStyle(p.textDim).lineLimit(1)
+                Text(model.detail).font(.dsLabel).foregroundStyle(p.textDim).lineLimit(1)
                 Spacer(minLength: 4)
             }
         }
@@ -1436,14 +1436,14 @@ struct InputBar: View {
     private func field(icon: String, placeholder: String, text: Binding<String>) -> some View {
         let p = model.palette
         return HStack(spacing: 8) {
-            Image(systemName: icon).font(.caption).foregroundStyle(p.textDim)
+            Image(systemName: icon).font(.dsLabel).foregroundStyle(p.textDim)
             TextField(placeholder, text: text)
                 .textFieldStyle(.plain).autocorrectionDisabled()
                 .textInputAutocapitalization(.never)
         }
         .padding(.horizontal, 10).padding(.vertical, 8)
-        .background(p.surfaceAlt).clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(p.border, lineWidth: 1))
+        .background(p.surfaceAlt).clipShape(RoundedRectangle(cornerRadius: DS.Radius.r2))
+        .overlay(RoundedRectangle(cornerRadius: DS.Radius.r2).stroke(p.border, lineWidth: 1))
         .frame(maxWidth: .infinity)
     }
 }
@@ -1464,12 +1464,12 @@ struct StandbyBanner: View {
             VStack(spacing: 12) {
                 HStack(spacing: 8) {
                     Image(systemName: "power").foregroundStyle(p.accent)
-                    Text("Standby — capture paused").font(.subheadline.weight(.semibold))
+                    Text("Standby — capture paused").font(.dsHeadline)
                         .foregroundStyle(p.text)
                 }
                 Button { model.exitStandby() } label: {
                     Text(model.resumeSourceLabel.map { "Resume \($0)" } ?? "Resume")
-                        .font(.subheadline.weight(.semibold))
+                        .font(.dsHeadline)
                         .padding(.horizontal, 28).padding(.vertical, 12)
                         .background(p.accent).foregroundStyle(p.bg)
                         .clipShape(Capsule())
@@ -1479,8 +1479,8 @@ struct StandbyBanner: View {
             }
             .padding(20)
             .background(p.surface)
-            .clipShape(RoundedRectangle(cornerRadius: 16))
-            .overlay(RoundedRectangle(cornerRadius: 16).stroke(p.border, lineWidth: 1))
+            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.r4))
+            .overlay(RoundedRectangle(cornerRadius: DS.Radius.r4).stroke(p.border, lineWidth: 1))
             .shadow(color: .black.opacity(0.3), radius: 12, y: 4)
             Spacer()
         }
@@ -1503,7 +1503,7 @@ struct InputLevelMeter: View {
         let active = level > 0.02
         return HStack(spacing: 4) {
             Image(systemName: model.source == .liveFeed ? "dot.radiowaves.left.and.right" : "mic.fill")
-                .font(.caption2)
+                .font(.dsLabelS)
                 .foregroundStyle(active ? p.accent : p.textDim)
             HStack(alignment: .bottom, spacing: 2) {
                 ForEach(0..<bars, id: \.self) { i in
@@ -1557,15 +1557,15 @@ struct SquelchControls: View {
         let p = model.palette
         return VStack(alignment: .leading, spacing: 10) {
             Toggle(isOn: $model.squelchAuto) {
-                Text("Auto squelch").font(.caption).foregroundStyle(p.text)
+                Text("Auto squelch").font(.dsLabel).foregroundStyle(p.text)
             }
             Text("Auto learns the channel's noise floor from the gaps between transmissions and only wakes the transcriber on real speech. Turn it off to set the minimum energy yourself.")
-                .font(.caption2).foregroundStyle(p.textDim)
+                .font(.dsLabelS).foregroundStyle(p.textDim)
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 10) {
-                Image(systemName: "speaker.wave.1").font(.caption2).foregroundStyle(p.textDim)
+                Image(systemName: "speaker.wave.1").font(.dsLabelS).foregroundStyle(p.textDim)
                 Slider(value: $model.manualSquelch, in: 0...1)
-                Image(systemName: "speaker.wave.3").font(.caption2).foregroundStyle(p.textDim)
+                Image(systemName: "speaker.wave.3").font(.dsLabelS).foregroundStyle(p.textDim)
             }
             .disabled(model.squelchAuto)
             .opacity(model.squelchAuto ? 0.4 : 1)
@@ -1573,26 +1573,26 @@ struct SquelchControls: View {
             Text(model.squelchAuto
                  ? "Threshold is automatic — turn off Auto to set it manually."
                  : "Higher = needs a louder signal to start transcribing (fewer false wakes); lower = more sensitive.")
-                .font(.caption2).foregroundStyle(p.textDim)
+                .font(.dsLabelS).foregroundStyle(p.textDim)
                 .fixedSize(horizontal: false, vertical: true)
             Button { model.showMicCalibration = true } label: {
                 Label("Calibrate microphone…", systemImage: "mic.badge.plus")
-                    .font(.caption.weight(.semibold)).foregroundStyle(p.accent)
+                    .font(.dsLabelBold).foregroundStyle(p.accent)
             }
             .buttonStyle(.plainHaptic)
             .accessibilityIdentifier("calibrate-mic-button")
             if !model.squelchAuto, model.calibratedGateRMS != nil {
                 Label("Calibrated to your mic — move the slider to override.", systemImage: "checkmark.seal.fill")
-                    .font(.caption2).foregroundStyle(.green)
+                    .font(.dsLabelS).foregroundStyle(.green)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
                 Text("Records your background noise, then your voice, and sets the threshold between them — best when Auto isn't gating a noisy room.")
-                    .font(.caption2).foregroundStyle(p.textDim)
+                    .font(.dsLabelS).foregroundStyle(p.textDim)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if model.isRunning {
                 HStack(spacing: 8) {
-                    Text("Live input").font(.caption2).foregroundStyle(p.textDim)
+                    Text("Live input").font(.dsLabelS).foregroundStyle(p.textDim)
                     InputLevelMeter()
                 }
                 .padding(.top, 2)
