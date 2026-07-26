@@ -21,18 +21,18 @@ struct DataCurrencyBanner: View {
                 Image(systemName: worst.expired ? "exclamationmark.triangle.fill" : "clock.badge.exclamationmark")
                     .foregroundStyle(worst.expired ? p.bad : p.warn)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(worst.headline).font(.caption.weight(.semibold)).foregroundStyle(p.text)
-                    Text(worst.detail).font(.caption2).foregroundStyle(p.textDim)
+                    Text(worst.headline).font(.dsLabelBold).foregroundStyle(p.text)
+                    Text(worst.detail).font(.dsLabelS).foregroundStyle(p.textDim)
                 }
                 Spacer(minLength: 4)
                 Button("Update") { onOpenDownloads() }
-                    .font(.caption.weight(.semibold)).foregroundStyle(p.accent)
+                    .font(.dsLabelBold).foregroundStyle(p.accent)
                     .buttonStyle(.plainHaptic)
                     .accessibilityIdentifier("data-currency-update")
                 Button {
                     model.dataCurrencyBannerDismissed = true
                 } label: {
-                    Image(systemName: "xmark").font(.caption2.weight(.semibold)).foregroundStyle(p.textDim)
+                    Image(systemName: "xmark").font(.dsLabelSBold).foregroundStyle(p.textDim)
                 }
                 .buttonStyle(.plainHaptic)
                 .accessibilityIdentifier("data-currency-dismiss")
