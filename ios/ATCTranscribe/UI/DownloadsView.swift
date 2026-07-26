@@ -12,6 +12,7 @@ import SwiftUI
 struct DownloadsView: View {
     @State private var checkingForCycle = false
     @State private var cycleCheck: ChartLibrary.CycleCheck?
+    @State private var cycleUpdateDeclined = false
     @EnvironmentObject var model: AppModel
     @ObservedObject var library = ChartLibrary.shared
     @ObservedObject var bag: PlateBag
@@ -128,7 +129,7 @@ struct DownloadsView: View {
                         Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(p.bad)
                         Text("These charts have expired").font(.callout.weight(.semibold)).foregroundStyle(p.text)
                     }
-                    Text("Cycle \(library.cycle) ended \(expiryText). The FAA has published a newer cycle — charts drawn from this one may not match current procedures.")
+                    Text("Cycle \(library.cycle) ended \(expiryText). Charts drawn from this one may not match current procedures.")
                         .font(.caption2).foregroundStyle(p.textDim)
                         .fixedSize(horizontal: false, vertical: true)
                     Button {
@@ -142,7 +143,9 @@ struct DownloadsView: View {
                             // A newer cycle changes which files the reader opens, so the packs the pilot
                             // already had must be re-fetched or they are left with LESS coverage than
                             // before they tapped. Do it as part of the update, not as a second chore.
-                            if case .newCycle = result { library.updateInstalledPacks(installed) }
+                            if case .newCycle = result {
+                                cycleUpdateDeclined = !(await library.updateInstalledPacks(installed))
+                            }
                         }
                     } label: {
                         HStack(spacing: 5) {
@@ -162,9 +165,14 @@ struct DownloadsView: View {
                         // nothing, whether it had found a new cycle, confirmed the current one, or failed.
                         switch outcome {
                         case .upToDate(let c):
-                            Label("Cycle \(c) is the newest the publisher has issued. These charts are past "
-                                  + "their date and no replacement exists yet — cross-check against a current source.",
-                                  systemImage: "info.circle")
+                            // Must not contradict the banner above it, which says a newer cycle exists.
+                            // That line is an INFERENCE from the 56-day calendar; this one is what the
+                            // server actually offers. When they disagree the server is the fact, and the
+                            // pilot needs the operational conclusion, not the discrepancy.
+                            Label("The chart server still offers only cycle \(c), which is past its date. "
+                                  + "A newer cycle is published but has not been posted here yet — use a "
+                                  + "current source for anything you rely on.",
+                                  systemImage: "exclamationmark.circle")
                                 .font(.caption2).foregroundStyle(p.textDim)
                                 .fixedSize(horizontal: false, vertical: true)
                         case .newCycle(let from, let to, let packs):
@@ -173,6 +181,12 @@ struct DownloadsView: View {
                                   : "Updated to cycle \(to) (was \(from)).",
                                   systemImage: "checkmark.circle")
                                 .font(.caption2).foregroundStyle(p.good)
+                                .fixedSize(horizontal: false, vertical: true)
+                        case _ where cycleUpdateDeclined:
+                            Label("A new cycle is available, but downloading it over a metered connection "
+                                  + "was skipped. Reconnect to Wi-Fi and check again.",
+                                  systemImage: "antenna.radiowaves.left.and.right.slash")
+                                .font(.caption2).foregroundStyle(p.textDim)
                                 .fixedSize(horizontal: false, vertical: true)
                         case .offline:
                             Label("Couldn't reach the chart server. Try again when you have a connection.",

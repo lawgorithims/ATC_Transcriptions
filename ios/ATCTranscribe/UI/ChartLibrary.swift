@@ -92,11 +92,22 @@ final class ChartLibrary: ObservableObject {
     /// "Check for a new cycle" action calls: `warm()` deliberately fetches only once per launch, so
     /// without this an expired catalog would stay expired for the whole session even after the FAA
     /// published a new one.
+    /// Re-fetch the catalog, KEEPING the current one if the fetch fails.
+    ///
+    /// Nil-ing it first was a cockpit hazard: `warm()` returns false without restoring, so one tap on a
+    /// marginal connection left `catalog == nil` for the rest of the offline period — and a nil catalog
+    /// means ChartStore draws NO charts even though the packs are sitting on disk, and the expired
+    /// banner disappears because provenance falls back to `.unknown`. A pilot who taps "check" while
+    /// taxiing must not lose the charts they already have.
     @discardableResult
     func refreshCatalog() async -> Bool {
+        let previous = catalog
         catalog = nil
         warming = nil
-        return await warm()
+        if await warm() { return true }
+        catalog = previous                       // fetch failed — keep flying on what we had
+        if let previous { cycle = previous.cycle }
+        return false
     }
 
     /// What a "check for a new cycle" actually found. The old flow refreshed the catalog and said
@@ -109,16 +120,16 @@ final class ChartLibrary: ObservableObject {
         case offline
     }
 
-    /// The pack ids the pilot has on disk right now, cycle-independent. Captured BEFORE a catalog
-    /// refresh so an update can restore exactly the coverage they already had at the new cycle.
+    /// The packs a cycle update should restore: the ones the pilot DELIBERATELY downloaded.
+    ///
+    /// Deliberately not "every file on disk". The charts directory holds two populations — pinned packs
+    /// the pilot chose, and packs that route/around-me prefetch and free panning pulled in incidentally,
+    /// which `enforceDiskBudget` is free to evict under a 600 MB LRU. Re-downloading the incidental set
+    /// at a new cycle would promote a pack the pilot never asked for into a permanent resident and
+    /// defeat that budget. Read the PERSISTED pins, since an in-memory set is dropped on a cycle change.
     func installedPackIDs() -> Set<String> {
-        guard let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
-        else { return [] }
-        var out = Set<String>()
-        for f in files.prefix(4096) where f.pathExtension == "mbtiles" {     // bounded (rule 2)
-            if let id = Self.packID(f.lastPathComponent) { out.insert(id) }
-        }
-        assert(out.count <= 4096, "installed pack set out of range")
+        let out = Set(UserDefaults.standard.stringArray(forKey: pinnedKey) ?? [])
+        assert(out.count <= 4096, "pinned pack set out of range")
         return out
     }
 
@@ -135,11 +146,17 @@ final class ChartLibrary: ObservableObject {
     /// Re-download, at the current catalog cycle, every pack the pilot already had. This is the action
     /// the expired banner was missing: refreshing the catalog alone changes the cycle the app READS
     /// from, which without this leaves the pilot with fewer charts than they started with.
-    func updateInstalledPacks(_ ids: Set<String>) {
+    /// Returns false when the update was declined because the connection is metered — every other bulk
+    /// path in the app checks this first, and a multi-gigabyte re-download over a cockpit hotspot is
+    /// exactly what those checks exist to prevent.
+    @discardableResult
+    func updateInstalledPacks(_ ids: Set<String>, allowExpensive: Bool = false) async -> Bool {
         let wanted = (catalog?.entries ?? []).filter { ids.contains($0.id) && !isCached($0) }
-        guard !wanted.isEmpty else { bulk = .idle; return }
+        guard !wanted.isEmpty else { bulk = .idle; return true }
+        if !allowExpensive, await NetPath.isExpensive() { return false }
         bulkTask?.cancel()
         bulkTask = Task { [weak self] in await self?.runBulkEntries(wanted) }
+        return true
     }
 
     @discardableResult
@@ -232,10 +249,38 @@ final class ChartLibrary: ObservableObject {
         }
     }
 
-    /// The pack id from an on-disk `<id>-<cycle>.mbtiles` filename (id may contain dashes → split at the LAST).
+    /// The pack id from an on-disk `<id>-<cycle>.mbtiles` filename.
+    ///
+    /// Two cycle shapes exist on disk, because the naming changed and old files outlive the change: the
+    /// current FAA effective date `MM-DD-YYYY`, and an older 4-digit `YYNN`. The date form CONTAINS TWO
+    /// DASHES, so the previous rule — everything before the LAST dash — returned "New_York_SEC-05-14"
+    /// for every file the app writes today and matched no catalog id at all. That silently broke the one
+    /// guarantee `pruneOldCycleFiles` exists to make: unable to recognise a pinned pack, it deleted the
+    /// pilot's explicitly-downloaded kit at the next cycle rollover — exactly the cockpit failure its
+    /// own comment describes preventing.
+    ///
+    /// So the cycle is stripped by SHAPE, never by position, and a pack id is free to contain dashes.
+    /// A name with no recognisable cycle is not a pack file, and reports nil.
     nonisolated static func packID(_ name: String) -> String? {
-        guard name.hasSuffix(".mbtiles"), let dash = name.range(of: "-", options: .backwards) else { return nil }
-        return String(name[name.startIndex..<dash.lowerBound])
+        guard name.hasSuffix(".mbtiles") else { return nil }
+        let stem = String(name.dropLast(".mbtiles".count))
+        let parts = stem.split(separator: "-", omittingEmptySubsequences: false)
+        let digits = { (s: Substring, n: Int) in s.count == n && s.allSatisfy(\.isNumber) }
+
+        // MM-DD-YYYY (the current form)
+        if parts.count >= 4 {
+            let t = Array(parts.suffix(3))
+            if digits(t[0], 2), digits(t[1], 2), digits(t[2], 4) {
+                let id = parts.dropLast(3).joined(separator: "-")
+                return id.isEmpty ? nil : id
+            }
+        }
+        // YYNN (the legacy form)
+        if parts.count >= 2, let last = parts.last, digits(last, 4) {
+            let id = parts.dropLast().joined(separator: "-")
+            return id.isEmpty ? nil : id
+        }
+        return nil
     }
 
     /// Ensure a pack is on disk, downloading it if missing. Integrity-checked (openable + has tile
@@ -357,15 +402,18 @@ final class ChartLibrary: ObservableObject {
 
     /// Bulk-download an explicit entry list (the cycle-update path), sharing the bulk progress state.
     private func runBulkEntries(_ list: [ChartCatalog.Entry]) async {
+        // bulkTask is the mutual-exclusion token for bulk downloading, so EVERY exit must release it —
+        // leaking it permanently poisons startBulkDownload's `guard bulkTask == nil` and the
+        // "Download all" row becomes a dead button for the rest of the launch.
+        defer { bulkTask = nil; bulk = .idle }
         var done = 0
         bulk = .running(done: 0, total: list.count)
         for e in list.prefix(4096) {                                          // bounded (rule 2)
-            if Task.isCancelled { bulk = .idle; return }
+            if Task.isCancelled { return }
             _ = await download(e)
             done += 1
             bulk = .running(done: done, total: list.count)
         }
-        bulk = .idle
         refreshCachedBytes()
     }
 

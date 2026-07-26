@@ -32,6 +32,26 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 94, version: "1.0", headline: "Your downloaded charts survive a cycle change",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "internaldrive",
+                    title: "Downloaded charts are no longer deleted at a cycle rollover",
+                    detail: "The app matched a chart file to its region by splitting the filename at the last dash — but a chart cycle is a date like 05-14-2026, which has dashes of its own, so nothing ever matched. The cleanup that runs at a new cycle is supposed to spare the charts you deliberately downloaded, and it could not recognise a single one of them. If you have downloaded regions for offline use, this is the fix that keeps them."),
+                WhatsNewHighlight(
+                    icon: "wifi.exclamationmark",
+                    title: "Checking for charts while offline no longer blanks the map",
+                    detail: "Tapping \u{201C}check for a new cycle\u{201D} without a connection discarded the chart index and did not put it back, so the map stopped drawing charts that were sitting on the device and the expiry warning quietly disappeared. The index is now kept whenever the check fails."),
+                WhatsNewHighlight(
+                    icon: "antenna.radiowaves.left.and.right",
+                    title: "Cycle updates respect a metered connection",
+                    detail: "A cycle update could start a multi-gigabyte download over cellular or a hotspot without asking — every other bulk download in the app already checked. It now skips and tells you to reconnect to Wi-Fi."),
+                WhatsNewHighlight(
+                    icon: "text.bubble",
+                    title: "Straight answers about chart currency",
+                    detail: "The expiry notice claimed a newer cycle had been published while the check underneath it reported none available. The notice now states only what it knows, and the check reports what the server actually offers."),
+            ]),
+        ReleaseNote(
             build: 93, version: "1.0", headline: "Restricted airspace you can see, and charts you can actually update",
             highlights: [
                 WhatsNewHighlight(
