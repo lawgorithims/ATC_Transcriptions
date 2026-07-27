@@ -39,6 +39,16 @@ struct TranscriptionOutput: Sendable {
 /// without touching the pipeline.
 protocol Transcribing: Sendable {
     func transcribe(_ audio: [Float], context: String?) async throws -> TranscriptionOutput
+    /// Prompt-aware entry point. The head/tail split lets the transcriber budget the priming and the
+    /// history from opposite ends (see `ATCContext.PromptParts`). Defaulted so the string-based
+    /// engines and the scripted test doubles keep working unchanged.
+    func transcribe(_ audio: [Float], prompt: ATCContext.PromptParts?) async throws -> TranscriptionOutput
+}
+
+extension Transcribing {
+    func transcribe(_ audio: [Float], prompt: ATCContext.PromptParts?) async throws -> TranscriptionOutput {
+        try await transcribe(audio, context: prompt?.joined)
+    }
 }
 
 /// Audio is expected already preprocessed (mono 16 kHz float32 in [-1, 1]); the
@@ -46,7 +56,10 @@ protocol Transcribing: Sendable {
 actor ATCTranscriber: Transcribing {
     /// Whisper shares a 448-token decoder window between prompt and generated text; cap
     /// the prompt well below it so generation always has room. (= Python `MAX_PROMPT_TOKENS`)
-    static let maxPromptTokens = 220
+    /// Derived from WhisperKit's own constant, NOT hard-coded: `TextDecoder` trims the prompt with
+    /// `suffix(Constants.maxTokenContext / 2 - 1)`, so anything larger loses its front inside
+    /// WhisperKit. Deriving it means a dependency bump can't silently re-open that bug.
+    static let maxPromptTokens = Constants.maxTokenContext / 2 - 1   // = 111
 
     private let modelFolder: String
     private let language: String
@@ -98,6 +111,13 @@ actor ATCTranscriber: Transcribing {
     /// the ASR confidence; `text` is "" when the decode stays degenerate after fallback (the
     /// caller treats "" as "skip this segment"). Port of `ATCTranscriber.transcribe`.
     func transcribe(_ audio: [Float], context: String? = nil) async throws -> TranscriptionOutput {
+        // A bare string has no head/tail structure, so treat it all as head (priming-priority):
+        // truncating a caller-supplied prompt from the front is never what they meant.
+        try await transcribe(audio, prompt: (context?.isEmpty ?? true)
+                             ? nil : ATCContext.PromptParts(head: context!, tail: ""))
+    }
+
+    func transcribe(_ audio: [Float], prompt: ATCContext.PromptParts?) async throws -> TranscriptionOutput {
         guard let pipe else { throw TranscriberError.notLoaded }
 
         let options = DecodingOptions(
@@ -108,7 +128,7 @@ actor ATCTranscriber: Transcribing {
             usePrefillPrompt: true,
             skipSpecialTokens: true,
             withoutTimestamps: true,
-            promptTokens: promptTokens(for: context, tokenizer: pipe.tokenizer),
+            promptTokens: promptTokens(for: prompt, tokenizer: pipe.tokenizer),
             compressionRatioThreshold: compressionRatioThreshold,
             noSpeechThreshold: 0.6
         )
@@ -147,19 +167,36 @@ actor ATCTranscriber: Transcribing {
         return TranscriptionOutput(text: text, asr: asr)
     }
 
-    /// Encode the airport-context string to prompt token ids, drop special tokens, and cap
-    /// to the budget. (WhisperKit's text decoder also trims + filters specials, but we cap
-    /// here for parity with the Python prompt budget.)
-    private func promptTokens(for context: String?, tokenizer: WhisperTokenizer?) -> [Int]? {
-        let ctx = (context ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !ctx.isEmpty, let tokenizer else { return nil }
-        var ids = tokenizer.encode(text: " " + ctx)
-            .filter { $0 < tokenizer.specialTokens.specialTokenBegin }
-        // Keep the LEADING tokens (the static facility prefix), matching the Python
-        // `prompt_ids[..., :MAX_PROMPT_TOKENS]`. Dropping the head (suffix) would discard
-        // the airport/runway/phraseology priming and keep only recent-history tokens.
-        if ids.count > Self.maxPromptTokens { ids = Array(ids.prefix(Self.maxPromptTokens)) }
+    /// Encode the context to prompt token ids, drop special tokens, and fit the decoder's budget.
+    ///
+    /// The budget is NOT arbitrary: WhisperKit re-trims with `promptTokens.suffix(maxTokenContext/2 - 1)`
+    /// (TextDecoder.swift). Any prompt longer than that loses its FRONT inside WhisperKit — which used
+    /// to silently delete every priming section (facility, ownship, plate fixes, and the live ADS-B
+    /// "Aircraft on frequency" bias) and forward only rolling history. Budgeting to exactly that size
+    /// here makes WhisperKit's `suffix()` a no-op, so what we prioritize is what the model actually sees.
+    private func promptTokens(for parts: ATCContext.PromptParts?,
+                              tokenizer: WhisperTokenizer?) -> [Int]? {
+        guard let parts, !parts.isEmpty, let tokenizer else { return nil }
+        let encode = { (s: String) -> [Int] in
+            s.isEmpty ? [] : tokenizer.encode(text: " " + s.trimmingCharacters(in: .whitespacesAndNewlines))
+                .filter { $0 < tokenizer.specialTokens.specialTokenBegin }
+        }
+        let ids = Self.assemblePromptIds(head: encode(parts.head), tail: encode(parts.tail),
+                                         budget: Self.maxPromptTokens)
         return ids.isEmpty ? nil : ids
+    }
+
+    /// Fit `head` + `tail` into `budget` tokens: the head keeps its FRONT (priming order is
+    /// priority order), and whatever budget survives is filled with the END of the tail (the most
+    /// recent transmissions). Pure + tokenizer-free so the budgeting is unit-testable on its own.
+    static func assemblePromptIds(head: [Int], tail: [Int], budget: Int) -> [Int] {
+        guard budget > 0 else { return [] }
+        let h = head.count > budget ? Array(head.prefix(budget)) : head
+        let remaining = budget - h.count
+        let t = remaining <= 0 ? [] : (tail.count > remaining ? Array(tail.suffix(remaining)) : tail)
+        let out = h + t
+        assert(out.count <= budget, "prompt budget overflow — WhisperKit would re-trim from the front")
+        return out
     }
 
     enum TranscriberError: Error { case notLoaded }
