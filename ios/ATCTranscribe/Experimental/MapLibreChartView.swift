@@ -538,6 +538,9 @@ struct MapLibreChartView: UIViewRepresentable {
                 configured = token
                 return true
             }
+            /// Read-only: has THIS style object been configured? (The theme re-apply pass must not
+            /// latch "applied" against the throwaway default style's empty layer set.)
+            func isConfigured(_ style: AnyObject) -> Bool { configured == ObjectIdentifier(style) }
         }
 
         // MARK: airspace + airways overlays (milestone 2)
@@ -1121,7 +1124,7 @@ struct MapLibreChartView: UIViewRepresentable {
         /// remounted for a theme change (ARCHITECTURE.md: the map is never torn down; remount would
         /// refetch + re-upload ~40 MB of raster for what a dozen GPU uniform updates accomplish).
         func applyMapThemeIfNeeded(on map: MLNMapView) {
-            guard styleConfigured, let style = map.style,
+            guard let style = map.style, styleGate.isConfigured(style),
                   inTheme != appliedMapTheme || inChartBrightness != appliedBrightness else { return }
             let t = currentMapTheme
             applyBaseMapTheme(style, t)
