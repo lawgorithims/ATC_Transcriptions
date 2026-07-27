@@ -32,6 +32,22 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 97, version: "1.0", headline: "Airport symbols show the runways you can actually use",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "airplane.circle",
+                    title: "Only paved runways are drawn",
+                    detail: "Every published runway used to be drawn the same way, so a field with one paved strip and four gravel ones looked like it had five ways to land — Truth or Consequences is exactly that. The symbol now draws only paved, in-service runways. Across the country that removes about 15,800 marks: grass, gravel, dirt, water, landing mats and rooftops."),
+                WhatsNewHighlight(
+                    icon: "circle",
+                    title: "Grass and water fields read as grass and water fields",
+                    detail: "A soft-surface field now gets the plain open circle the sectional uses, instead of a runway outline that implied pavement. Helipads are no longer drawn as runway strips across an airport that has none."),
+                WhatsNewHighlight(
+                    icon: "checkmark.seal",
+                    title: "The surface comes from the FAA, not an estimate",
+                    detail: "Whether a field counts as hard-surfaced is now read from the published runway record rather than a value inferred from a weather feed. Where the FAA lists a mixed surface, the order tells you which is primary — asphalt with a turf shoulder is paved, a grass strip with some paving is not."),
+            ]),
+        ReleaseNote(
             build: 96, version: "1.0", headline: "A new look: cinematic cockpit, day, and night themes",
             highlights: [
                 WhatsNewHighlight(

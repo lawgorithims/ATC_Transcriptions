@@ -33,6 +33,13 @@ enum AirportSymbolData {
     /// The symbol attributes for an ident, merged with the airport's display name (used to spot
     /// military fields whose owner code doesn't say so).
     static func attributes(_ ident: String) -> AirportSymbol.Attributes {
+        attributes(ident, nasr: AirportData.runways(airport: ident))
+    }
+
+    /// `nasr` is passed in so `spec` can read the runway table ONCE per airport. It is read on the glyph
+    /// build path, which runs for every field on screen while the pilot pans, and a second query per
+    /// airport there is pure waste on a battery-sensitive device.
+    static func attributes(_ ident: String, nasr: [AirportData.Runway]) -> AirportSymbol.Attributes {
         let key = ident.trimmingCharacters(in: .whitespaces).uppercased()
         let name = NavMeta.airport(key)?.name
         guard let r = table[key] else {
@@ -42,23 +49,57 @@ enum AirportSymbolData {
             hasTower: r.t.map { $0 != 0 },
             hasFuel: r.f.map { $0 != 0 },
             hasBeacon: r.b.map { $0 != 0 },
-            hardSurface: r.s.map { $0.uppercased() == "H" },
+            // Prefer the PUBLISHED surface over the approximated flag in airport_symbols.json
+            // (derived from aviationweather.gov because NASR was unavailable at the time). A
+            // field with any paved runway is hard-surfaced; one with runway records and none
+            // paved is definitively soft, which is a stronger statement than the flag could make.
+            hardSurface: Self.hardSurface(nasr) ?? r.s.map { $0.uppercased() == "H" },
             owner: r.o,
             typeCode: r.y,
             name: name)
     }
 
-    /// The runways an airport's symbol draws, from the coded CIFP data (real per-end bearings and
-    /// lengths). Bounded; empty for the ~7,700 fields CIFP has no runway record for.
+    /// The runways an airport's symbol draws: PAVED, in service, and actual runways.
+    ///
+    /// NASR first, because it is the only source that carries a surface. CIFP has real per-end bearings
+    /// but no surface at all, so every published strip was drawn the same — KTCS showed five runways
+    /// when four of them are gravel, and grass fields drew a full runway outline as though they were
+    /// paved. NASR also covers 19,436 fields against CIFP's ~6,400.
+    ///
+    /// CIFP remains the fallback for a field NASR has no runway record for, so nothing that drew
+    /// before stops drawing.
     static func runways(_ ident: String) -> [AirportSymbol.Runway] {
-        CIFP.runways(airport: ident).prefix(32).compactMap { r in
+        runways(ident, nasr: AirportData.runways(airport: ident))
+    }
+
+    static func runways(_ ident: String, nasr: [AirportData.Runway]) -> [AirportSymbol.Runway] {
+        if !nasr.isEmpty {
+            return nasr.prefix(32).compactMap { r -> AirportSymbol.Runway? in
+                guard r.isPaved, !r.isHelipad, !r.isFailed,
+                      let b = r.bearingDeg, let len = r.lengthFt, len > 0 else { return nil }
+                return AirportSymbol.Runway(bearingDeg: b, lengthFt: Int(len))
+            }
+        }
+        return CIFP.runways(airport: ident).prefix(32).compactMap { r in
             guard let b = r.bearingMag, b.isFinite, let len = r.lengthFt, len > 0 else { return nil }
-            return AirportSymbol.Runway(bearingDeg: b, lengthFt: len)
+            return AirportSymbol.Runway(bearingDeg: b, lengthFt: Int(len))
         }
     }
 
+    /// Whether the field has any paved runway, from NASR. Nil when NASR knows no runways for it, so
+    /// the caller falls back to the approximated flag rather than asserting "soft" from silence.
+    static func hardSurface(_ nasr: [AirportData.Runway]) -> Bool? {
+        let r = nasr.filter { !$0.isHelipad }
+        guard !r.isEmpty else { return nil }
+        return r.contains { $0.isPaved && !$0.isFailed }
+    }
+
+    static func hardSurface(_ ident: String) -> Bool? { hardSurface(AirportData.runways(airport: ident)) }
+
     /// The complete drawing spec for one airport at its current reported category.
     static func spec(_ ident: String, category: AirportSymbol.Category? = nil) -> AirportSymbol.Spec {
-        AirportSymbol.spec(attributes: attributes(ident), runways: runways(ident), category: category)
+        let nasr = AirportData.runways(airport: ident)          // one read, both consumers
+        return AirportSymbol.spec(attributes: attributes(ident, nasr: nasr),
+                                  runways: runways(ident, nasr: nasr), category: category)
     }
 }
