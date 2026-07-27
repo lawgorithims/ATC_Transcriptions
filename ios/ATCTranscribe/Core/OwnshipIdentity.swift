@@ -57,6 +57,13 @@ struct OwnshipIdentity: Equatable {
     private static let mentionCues: Set<String> = [
         "follow", "following", "behind", "traffic", "number", "caution", "wake", "pass", "after",
     ]
+    /// Unit words that mark the digit before them as a DISTANCE / POSITION descriptor inside a traffic
+    /// call ("two miles", "ten o'clock"), not a prior aircraft's callsign number. The mention lookback
+    /// steps over such a digit instead of halting, so a traffic advisory that quotes a range no longer
+    /// reads as a clearance to ownship.
+    private static let descriptorUnits: Set<String> = [
+        "miles", "mile", "oclock", "clock", "thousand", "hundred", "feet", "foot", "knots", "knot",
+    ]
     // The mention lookback scans back to the clause start, halting at a `digit` or `instructionWords`
     // token — those bound a prior aircraft's clause, so the scan never reaches across another aircraft.
 
@@ -152,7 +159,18 @@ struct OwnshipIdentity: Equatable {
         while k >= 0 {                                                // bounded by the token count (≤ maxTokens)
             let t = tokens[k]
             if OwnshipIdentity.mentionCues.contains(t) { return true }
-            if OwnshipIdentity.digit(t) != nil || OwnshipIdentity.instructionWords.contains(t) { return false }
+            if OwnshipIdentity.digit(t) != nil {
+                // A digit normally bounds a prior aircraft's clause and halts the scan. But a digit that
+                // is part of a distance/position descriptor ("two miles", "ten o'clock") belongs to THIS
+                // traffic call, not another aircraft — stepping over it lets the scan still reach the
+                // "traffic"/"follow" cue behind it. Erring toward detecting the mention is the safe
+                // direction: a missed mention mis-reads a traffic advisory as a clearance (dangerous),
+                // whereas a false mention merely suppresses one real suggestion (a benign miss).
+                let unit = (k + 1 < tokens.count) ? tokens[k + 1] : ""
+                if OwnshipIdentity.descriptorUnits.contains(unit) { k -= 1; continue }
+                return false
+            }
+            if OwnshipIdentity.instructionWords.contains(t) { return false }
             k -= 1
         }
         return false
@@ -210,8 +228,18 @@ struct OwnshipIdentity: Equatable {
         if fullAlnum.count >= 2 { add([fullAlnum.lowercased()]) }   // collapsed "n8925t"
 
         guard isGA, bodyAlnum.count >= 2 else { return variants }
-        add(spokenChars(bodyAlnum))                      // body (drop the N) — the whole reg, no cue
-        add([bodyAlnum.lowercased()])                    // collapsed "8925t"
+        // The body variant (the registration without its country prefix) is self-anchoring ONLY when it
+        // contains a letter: that letter becomes a phonetic word ("…tango") that pins the match to this
+        // one tail. An all-numeric US registration (N1234, N75) has no such anchor — its body is a bare
+        // digit run, and ATCNormalize.explodeDigits turns every spoken number into single digits, so
+        // "1 2 3 4" matches United 1234, a squawk of 1234, anyone. Attributing another aircraft's
+        // clearance to ownship is the mid-air-class failure this file's own header forbids, so a
+        // numeric-only tail is recognized only through its ANCHORED forms (full "november 1 2 3 4",
+        // or type-cued "cessna 1 2 3 4" below), never the bare body.
+        if bodyAlnum.contains(where: { $0.isLetter }) {
+            add(spokenChars(bodyAlnum))                  // body (drop the N) — anchored by its letter(s)
+            add([bodyAlnum.lowercased()])                // collapsed "8925t"
+        }
         let n = bodyAlnum.count
         var len = minCuedSuffix
         while len < n {                                  // bounded by maxRegChars

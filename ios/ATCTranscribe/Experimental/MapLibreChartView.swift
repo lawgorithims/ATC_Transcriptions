@@ -886,20 +886,30 @@ struct MapLibreChartView: UIViewRepresentable {
             for (name, img) in images { style.setImage(img, forName: name) }   // bounded (rule 2)
         }
 
-        /// Reported flight category per ident, refreshed from MetarStore by the host. Read by the static
-        /// feature builders, which run off the main actor and cannot touch the store directly.
-        nonisolated(unsafe) static var categoryByIdent: [String: AirportSymbol.Category] = [:]
-        /// Bumped whenever the host publishes new categories. An airport's glyph NAME carries its flight
-        /// category, and the names are only recomputed when the overlays rebuild — so without this the
-        /// rings appeared on the chart one pan LATE, i.e. exactly when the pilot wasn't looking for them.
-        nonisolated(unsafe) static var categoryVersion = 0
+        /// Reported flight category per ident, refreshed from MetarStore by the host and read by the
+        /// static feature builders that run OFF the main actor. A Swift Dictionary is copy-on-write and
+        /// not thread-safe: a write on main while a detached overlay-rebuild subscripts it is a data
+        /// race — a torn read or heap corruption that can crash the moving map during a normal pan. All
+        /// access goes through `categoryLock`; the version counter rides the same lock so a reader never
+        /// sees a bumped version against the old map.
+        private static let categoryLock = NSLock()
+        nonisolated(unsafe) private static var _categoryByIdent: [String: AirportSymbol.Category] = [:]
+        nonisolated(unsafe) private static var _categoryVersion = 0
+        /// Bumped whenever the host publishes new categories, so the overlay rebuild picks them up on the
+        /// SAME frame rather than a pan late.
+        static var categoryVersion: Int {
+            categoryLock.lock(); defer { categoryLock.unlock() }
+            return _categoryVersion
+        }
         static func publish(categories: [String: AirportSymbol.Category]) {
-            guard categories != categoryByIdent else { return }
-            categoryByIdent = categories
-            categoryVersion &+= 1
+            categoryLock.lock(); defer { categoryLock.unlock() }
+            guard categories != _categoryByIdent else { return }
+            _categoryByIdent = categories
+            _categoryVersion &+= 1
         }
         static func cachedCategory(_ ident: String) -> AirportSymbol.Category? {
-            categoryByIdent[ident.uppercased()]
+            categoryLock.lock(); defer { categoryLock.unlock() }
+            return _categoryByIdent[ident.uppercased()]
         }
 
         /// The registered image name for a nav point, mirroring NearbyMarkerView.navaidGlyph's classification.

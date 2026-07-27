@@ -279,7 +279,23 @@ final class AppModel: ObservableObject {
                 if flightPlan != oldValue, !diagnosticActive { hazardDismissedIDs.removeAll(); refreshHazardAlert() }
             }
             if flightPlan != oldValue { refreshTripStats() }   // strip's DIST/ETE/ETA/FUEL row
+            reconcileActiveApproach()
         }
+    }
+
+    /// Keep `activeApproach` — which drives the strip's approach label and the ARMED MISSED button —
+    /// tied to the approach the plan actually holds. The flight plan's `approachProcedure` is the single
+    /// source of truth for "an approach is loaded"; when a re-file, a direct-to, or an endpoint edit
+    /// drops or replaces it, a stale activeApproach would otherwise leave the strip showing an old
+    /// approach and let the live MISSED button rewrite the current plan with a DIFFERENT approach's
+    /// go-around. Clearing it here also disarms any staged missed for the approach that just left.
+    private func reconcileActiveApproach() {
+        guard let active = activeApproach else { return }
+        let loaded = flightPlan?.approachProcedure
+        let stillLoaded = loaded.map { $0.airport == active.airport && $0.ident == active.ident } ?? false
+        guard !stillLoaded else { return }
+        activeApproach = nil
+        disarmMissedApproach()
     }
 
     // The pilot's saved aircraft (the strip's callsign box menu). Selecting one copies its
@@ -953,6 +969,38 @@ final class AppModel: ObservableObject {
             maybeRefreshHazardAlertForMovement()   // vicinity hazard check rides the same movement edge
         }
     }
+    /// When the last Stratux fix was RECEIVED (device clock). The wire struct carries no timestamp, and
+    /// a failed poll deliberately leaves the last value published (StratuxService: "a failed GPS poll
+    /// just leaves the last value"), so without this a dropped Wi-Fi link freezes the ownship at a stale
+    /// position that keeps drawing as live. Stamped only on a fresh, fixed sample.
+    private var stratuxGPSAt: Date?
+
+    /// A Stratux ownship fix older than this is treated as lost. The receiver reports at ~1 Hz, so a gap
+    /// this long means the link, not just a single dropped packet — err toward falling back to the
+    /// device GPS rather than trusting a frozen triangle.
+    static let stratuxOwnshipMaxAge: TimeInterval = 4.0
+
+    /// The Stratux ownship position ONLY when it is both FIXED and FRESH; nil otherwise so callers fall
+    /// through to the integrity-gated device fix instead of a stale or no-fix Stratux coordinate. This
+    /// is the single gate every ownship-plotting path must go through — keying on `coordinate != nil`
+    /// alone (the old bug) drew a lost-lock or minutes-old receiver as authoritative ownship.
+    var trustedStratuxOwnship: Coord? {
+        guard let s = stratuxGPS, s.hasFix, let at = stratuxGPSAt,
+              Date().timeIntervalSince(at) <= Self.stratuxOwnshipMaxAge else { return nil }
+        return s.coordinate
+    }
+
+    /// True when a Stratux fix is currently trustworthy — used to decide whether the device-GPS
+    /// integrity verdict (which describes a DIFFERENT receiver) applies to the drawn ownship.
+    var stratuxOwnshipTrusted: Bool { trustedStratuxOwnship != nil }
+
+    /// Ingest a Stratux GPS sample on the main actor, stamping the receive time on a usable fix so
+    /// freshness can be judged. A nil or no-fix sample clears the stamp so the coordinate ages out.
+    private func ingestStratuxGPS(_ gps: StratuxGPS?) {
+        if let gps, gps.hasFix { stratuxGPSAt = Date() } else { stratuxGPSAt = nil }
+        stratuxGPS = gps
+    }
+
     @Published private(set) var stratuxStatus: StratuxStatus = .idle
     /// Built in `init` alongside `adsbService`.
     private var stratuxService: StratuxService!
@@ -1050,7 +1098,7 @@ final class AppModel: ObservableObject {
                 Task { @MainActor in self?.applyTraffic(list, snapshotAt: snapshotAt) }
             },
             onGPS: { [weak self] gps in
-                Task { @MainActor in self?.stratuxGPS = gps }
+                Task { @MainActor in self?.ingestStratuxGPS(gps) }
             },
             onStatus: { [weak self] status in
                 Task { @MainActor in self?.stratuxStatus = status }
@@ -1722,15 +1770,20 @@ final class AppModel: ObservableObject {
 
         var sids: [String] = [], stars: [String] = []
         var seenSid = Set<String>(), seenStar = Set<String>()
+        var approachRunways = Set<String>()          // bare runway NUMBERS with a published approach
         if !ident.isEmpty {
             for proc in CIFP.procedures(airport: ident).prefix(2048) {   // ONE scan, split by kind
                 if proc.kind == "SID", seenSid.insert(proc.ident).inserted { sids.append(proc.ident) }
                 else if proc.kind == "STAR", seenStar.insert(proc.ident).inserted { stars.append(proc.ident) }
+                else if proc.kind == "IAP", proc.runway.count >= 2 {
+                    approachRunways.insert(String(proc.runway.uppercased().prefix(2)))   // "16L" -> "16"
+                }
             }
         }
         assert(fixes.allSatisfy { !$0.isEmpty }, "known fixes must be non-empty (malformed CIFP/route row?)")
         assert(sids.allSatisfy { !$0.isEmpty } && stars.allSatisfy { !$0.isEmpty }, "procedure idents must be non-empty")
-        return ATCCommandParser.Grounding(fixes: fixes, airports: airports, sids: sids, stars: stars)
+        return ATCCommandParser.Grounding(fixes: fixes, airports: airports, sids: sids, stars: stars,
+                                          approachRunways: approachRunways)
     }
 
     /// The filed callsign spelled as NORMALIZED spoken tokens via the knowledge base (airline telephony +
@@ -1811,7 +1864,17 @@ final class AppModel: ObservableObject {
         NSLog("CommSight: EFB accept kind=%@ target=%@ conf=%@ callsign=%@ before=[%@] after=[%@]",
               ins.kind.rawValue, ins.target, ins.confidence.rawValue, ins.callsign,
               Self.assignmentDigest(before), Self.assignmentDigest(flightPlan))
-        Haptics.impact(.medium)
+        // A SID/STAR/approach accept silently NO-OPS when the named procedure/runway is not published at
+        // the active field (loadProcedureByIdent / loadApproachForRunway just return). Firing the success
+        // haptic and clearing the banner then teaches the pilot the procedure is loaded when the route is
+        // unchanged — a confident lie about what the aircraft will fly. Tell them instead, with a
+        // distinct "didn't take" cue, exactly as the ForeFlight-handoff path already guards.
+        if ins.kind.loadsAProcedure, flightPlan == before {
+            detail = "\(ins.kind.spokenLabel) \(ins.target) isn't published at this airport — nothing loaded."
+            Haptics.impact(.rigid)
+        } else {
+            Haptics.impact(.medium)
+        }
         efbSuggestion = nil
     }
 
@@ -2086,6 +2149,33 @@ final class AppModel: ObservableObject {
             candidates: onRunway.map { (ident: $0.ident, name: $0.name, runway: $0.runway) })
         let pick = ranked.first.flatMap { r in onRunway.first { $0.ident == r.ident } } ?? onRunway[0]
         loadProcedure(pick)
+        // ATC cleared us for THIS approach, so the strip and the armed MISSED button must track it.
+        // Previously loadProcedure updated only the flight plan, leaving activeApproach pointing at a
+        // DIFFERENT, hand-activated approach — so a go-around would have flown the wrong runway's
+        // published missed. A "cleared for the approach" with no named transition is a vectors-to-final
+        // join. (loadProcedure's flightPlan mutation already cleared the stale activeApproach via the
+        // approachProcedure invariant; this sets the correct one.)
+        activeApproach = ActiveApproach(airport: pick.airport, ident: pick.ident, name: pick.name,
+                                        runway: pick.runway, entry: .vectors,
+                                        missedFixes: publishedMissedFixes(airport: pick.airport, ident: pick.ident))
+        NSLog("CommSight: approach CLEARED-loaded %@ %@ missed=%d", pick.airport, pick.ident,
+              activeApproach?.missedFixes.count ?? 0)
+    }
+
+    /// The published missed-approach fix sequence for an approach, or [] when none is coded. The SINGLE
+    /// source of truth for the go-around, shared by activateApproach (hand-activate) and
+    /// loadApproachForRunway (ATC cleared) so both arm the identical missed. Reads the approach-proper
+    /// row, splits at the published MAP marker, and normalizes the tail (collapsing consecutive repeats,
+    /// dropping runway pseudo-fixes) exactly as the drawn route does.
+    private func publishedMissedFixes(airport: String, ident: String) -> [String] {
+        guard let proper = CIFP.approachProper(airport: airport, ident: ident) else { return [] }
+        let legs = CIFP.legs(procedureID: proper.id).prefix(256)
+        let split = ApproachActivation.splitMissed(
+            legs.map { (seq: $0.seq, fix: $0.fix, legType: $0.legType) }, roles: legs.map(\.role))
+        let missedSeqs = Set(split.missed)
+        var missedRaw: [String] = []
+        for leg in legs where missedSeqs.contains(leg.seq) { missedRaw.append(leg.fix) }
+        return ApproachActivation.missedSequence(missedRaw)
     }
 
     // MARK: Loaded procedures (Phase 5 — SID / STAR / approach into the active flight plan)
@@ -2147,15 +2237,14 @@ final class AppModel: ObservableObject {
             let split = ApproachActivation.splitMissed(
                 legs.map { (seq: $0.seq, fix: $0.fix, legType: $0.legType) }, roles: legs.map(\.role))
             let missedSeqs = Set(split.missed)
-            var missedRaw: [String] = []
-            for leg in legs {
-                if missedSeqs.contains(leg.seq) { missedRaw.append(leg.fix); continue }
+            for leg in legs where !missedSeqs.contains(leg.seq) {
                 let f = leg.fix.uppercased()
                 guard !f.isEmpty, !CIFP.isRunwayPseudoFix(f) else { continue }
                 if seen.insert(f).inserted { fixes.append(f) }
             }
-            missedFixes = ApproachActivation.missedSequence(missedRaw)
         }
+        // The go-around comes from the shared helper — one source of truth with the ATC-cleared path.
+        missedFixes = publishedMissedFixes(airport: proc.airport, ident: proc.ident)
 
         let loaded = LoadedProcedure(airport: proc.airport, kind: proc.kind, ident: proc.ident,
                                      name: proc.name, runway: proc.runway,
@@ -2253,11 +2342,17 @@ final class AppModel: ObservableObject {
     func insertInRoute(_ ident: String, at coord: Coord, resolved: [ResolvedLeg]) {
         editPlan { $0.insertWaypointInOrder(ident, at: coord, resolved: resolved) }
     }
-    /// The aircraft's present position for route anchoring — the live Stratux fix when valid, else the device
-    /// GPS, mirroring the ownship the map marker draws (MapHostView). nil until a fix exists.
+    /// The aircraft's present position for route anchoring — the FRESH, FIXED Stratux fix when valid,
+    /// else the INTEGRITY-GATED device GPS, mirroring exactly what the map marker draws (MapHostView).
+    /// nil until a trustworthy fix exists.
+    ///
+    /// This anchors directTo / joinApproach / flyMissedApproach: their first leg is drawn FROM here, so
+    /// a stale Stratux coordinate or a device fix the map itself suppresses (spoof/jump) must not seed a
+    /// clearance. Both gates match the drawn ownship so the route can never start from a point the map
+    /// is not willing to show.
     var presentPosition: Coord? {
-        if let s = stratuxGPS, s.hasFix { return s.coordinate }
-        return deviceLocation.coord
+        if let s = trustedStratuxOwnship { return s }
+        return gpsIntegrity.shouldSuppressOwnship ? nil : deviceLocation.coord
     }
 
     // MARK: flight recording (REC control + GPS bar read these; the map bridges flightRecorder.$trail)

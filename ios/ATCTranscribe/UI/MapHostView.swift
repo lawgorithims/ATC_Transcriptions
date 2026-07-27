@@ -45,13 +45,19 @@ struct MapHostView: View {
     /// trusted. Suppressing it HERE covers BOTH engines (MapLibre and the MKMapView fallback both take
     /// `ownship:` from this one place) — a position the pilot will fly is worse than no position.
     private var trustedDeviceCoord: Coord? { gpsIntegrity.shouldSuppressOwnship ? nil : deviceCoord }
-    /// Ownship for the engines: a valid Stratux fix still wins (the aircraft's own receiver), else the
-    /// device fix if it is trustworthy.
-    private var engineOwnship: Coord? { model.stratuxGPS?.coordinate ?? trustedDeviceCoord }
-    /// A Stratux fix is the aircraft's own receiver: it reports satellites and a fix type, not a metre
-    /// accuracy, and the device-GPS integrity verdict says nothing about it. When one is in use the ring
-    /// and the tint are suppressed rather than showing a number that describes a different receiver.
-    private var stratuxHasFix: Bool { model.stratuxGPS?.coordinate != nil }
+    /// Ownship for the engines: a FRESH, FIXED Stratux fix still wins (the aircraft's own receiver),
+    /// else the device fix if it is trustworthy.
+    ///
+    /// `trustedStratuxOwnship` (not the raw coordinate) is the gate: a dropped Wi-Fi link leaves the
+    /// last Stratux value published forever, and keying on `coordinate != nil` froze the ownship
+    /// triangle at a stale position drawn as live while the good, moving device GPS was ignored. When
+    /// the Stratux fix goes stale or drops lock, the map now falls through to the device fix rather
+    /// than lying about where the aircraft is.
+    private var engineOwnship: Coord? { model.trustedStratuxOwnship ?? trustedDeviceCoord }
+    /// True only when a Stratux fix is CURRENTLY trustworthy (fixed + fresh). This is what suppresses
+    /// the accuracy ring/tint — legitimate while a real Stratux fix is driving ownship, wrong the moment
+    /// that fix is stale, because then the device GPS is driving and its integrity verdict DOES apply.
+    private var stratuxHasFix: Bool { model.stratuxOwnshipTrusted }
     /// The flight recorder's breadcrumb, bridged from the nested recorder (like deviceCoord). Append-only
     /// during a recording, [] otherwise — the maps guard on its COUNT so it doesn't re-tessellate per tick.
     @State private var breadcrumb: [Coord] = []

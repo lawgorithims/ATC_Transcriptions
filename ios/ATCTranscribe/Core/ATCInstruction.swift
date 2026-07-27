@@ -30,6 +30,27 @@ enum ATCInstructionKind: String, Equatable, Sendable {
         default: return false
         }
     }
+
+    /// The load kinds that can silently no-op when the named procedure/runway is not published at the
+    /// active field — the accept path checks whether the plan actually changed for these.
+    var loadsAProcedure: Bool {
+        switch self { case .clearedApproach, .loadSID, .loadStar: return true; default: return false }
+    }
+
+    /// A short pilot-readable label for a "didn't load" message.
+    var spokenLabel: String {
+        switch self {
+        case .directTo:        return "Direct"
+        case .clearedApproach: return "Approach runway"
+        case .loadSID:         return "SID"
+        case .loadStar:        return "Arrival"
+        case .altitude:        return "Altitude"
+        case .heading:         return "Heading"
+        case .speed:           return "Speed"
+        case .squawk:          return "Squawk"
+        case .frequencyChange: return "Frequency"
+        }
+    }
 }
 
 /// A three-level confidence grade for a parsed instruction (drives the UI 🟢🟡🔴 and the actionable gate).
