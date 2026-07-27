@@ -924,8 +924,9 @@ struct ChartMapView: UIViewRepresentable {
         var hazardOverlayCategory: [ObjectIdentifier: EONETCategory] = [:]
         var hazardEventsByID: [String: EONETEvent] = [:]
         // Live FAA TFR layer — diffed like the hazard layer; reconcile lives in TFRMapLayer.swift.
-        var tfrPolyByKey: [String: MKPolygon] = [:]
-        var tfrLabelByKey: [String: AirspaceLabelAnnotation] = [:]     // altitude blocks, reusing the airspace annotation
+        // A NOTAM can define several affected areas (the DC SFRA has two) → one polygon + label PER AREA.
+        var tfrPolyByKey: [String: [MKPolygon]] = [:]
+        var tfrLabelByKey: [String: [AirspaceLabelAnnotation]] = [:]   // altitude blocks, reusing the airspace annotation
         var tfrOverlayIDs: Set<ObjectIdentifier> = []                  // marks a polygon as a TFR for the renderer
         var tfrByID: [String: TFR] = [:]                              // the full TFR for the tap probe + change detection
         var smokeOverlay: GIBSTileOverlay?                            // NASA GIBS satellite smoke layer (translucent, above the chart)
@@ -1034,8 +1035,8 @@ struct ChartMapView: UIViewRepresentable {
                                                 onRoute: false, hazard: ev))
             }
             var liveTFRs: [IdentifiedObject] = []
-            for t in tfrByID.values where t.polygon.count >= 3 {              // inside a TFR boundary
-                guard Geo.pointInRing(here, t.polygon) else { continue }
+            for t in tfrByID.values where t.hasGeometry {                     // inside ANY affected area
+                guard t.contains(here) else { continue }
                 liveTFRs.append(IdentifiedObject(kind: .tfr, ident: t.id, coord: t.labelCoord ?? here,
                                                  onRoute: false, tfr: t))
             }

@@ -1529,8 +1529,9 @@ struct MapLibreChartView: UIViewRepresentable {
             cachedTFRs = tfrs
             tfrByID = Dictionary(tfrs.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
             guard let style = map.style else { return }                  // style not up yet → didFinishLoading re-applies
-            let sig = tfrs.map { "\($0.id):\($0.polygon.count):\($0.ceilingFt ?? -1):\($0.floorFt ?? -1)" }
-                .sorted().joined(separator: "|")
+            let sig = tfrs.map { t in
+                "\(t.id):\(t.areas.map { "\($0.ring.count).\($0.ceilingFt ?? -1).\($0.floorFt ?? -1)" }.joined(separator: "+"))"
+            }.sorted().joined(separator: "|")
             guard sig != appliedTFRSig else { return }                   // unchanged TFR set → skip rebuild
             appliedTFRSig = sig
             let f = Coordinator.tfrFeatures(tfrs)
@@ -1538,22 +1539,26 @@ struct MapLibreChartView: UIViewRepresentable {
             (style.source(withIdentifier: "tfr-labels") as? MLNShapeSource)?.shape = MLNShapeCollectionFeature(shapes: f.labels)
         }
 
-        /// One polygon per TFR (single ring) + an altitude-block point. nonisolated; bounded; >=2 assertions.
+        /// One polygon + one altitude-block point PER AFFECTED AREA (a NOTAM like the DC SFRA defines
+        /// several — concatenating them drew a bogus wedge). All of a TFR's polygons carry the same "id"
+        /// attribute, so a tap on any area resolves to the one NOTAM. nonisolated; bounded; >=2 assertions.
         static func tfrFeatures(_ tfrs: [TFR]) -> (polys: [MLNPolygonFeature], labels: [MLNPointFeature]) {
             assert(tfrs.count <= 4096, "tfrFeatures: absurd TFR count")
             var polys: [MLNPolygonFeature] = []; var lbls: [MLNPointFeature] = []
-            for t in tfrs.prefix(400) where t.polygon.count >= 3 {       // bounded + ring guard (TFRMapLayer)
-                var c = t.polygon.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) }
-                let f = MLNPolygonFeature(coordinates: &c, count: UInt(c.count))
-                f.attributes = ["id": t.id, "cls": "TFR"]
-                polys.append(f)
-                if let top = t.labelCoord {
-                    let p = MLNPointFeature(); p.coordinate = CLLocationCoordinate2D(latitude: top.lat, longitude: top.lon)
-                    p.attributes = ["alt": "\(AirspaceLabelAnnotation.altText(t.ceilingFt))\n\(AirspaceLabelAnnotation.altText(t.floorFt))"]
-                    lbls.append(p)
+            for t in tfrs.prefix(400) {                                  // bounded (TFRMapLayer parity)
+                for area in t.areas.prefix(64) where area.ring.count >= 3 {
+                    var c = area.ring.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) }
+                    let f = MLNPolygonFeature(coordinates: &c, count: UInt(c.count))
+                    f.attributes = ["id": t.id, "cls": "TFR"]
+                    polys.append(f)
+                    if let top = area.labelCoord {                       // per-area band on its own north edge
+                        let p = MLNPointFeature(); p.coordinate = CLLocationCoordinate2D(latitude: top.lat, longitude: top.lon)
+                        p.attributes = ["alt": "\(AirspaceLabelAnnotation.altText(area.ceilingFt))\n\(AirspaceLabelAnnotation.altText(area.floorFt))"]
+                        lbls.append(p)
+                    }
                 }
             }
-            assert(polys.count <= 400, "tfrFeatures: cap exceeded")
+            assert(polys.count <= 400 * 64, "tfrFeatures: cap exceeded")
             return (polys, lbls)
         }
 
@@ -1744,8 +1749,8 @@ struct MapLibreChartView: UIViewRepresentable {
             }
             let ranked = MapProbe.rank(cands, within: Double(radius))
             var liveTFRs: [IdentifiedObject] = []
-            for t in tfrByID.values where t.polygon.count >= 3 {           // geometric containment (any zoom)
-                guard Geo.pointInRing(here, t.polygon) else { continue }
+            for t in tfrByID.values where t.hasGeometry {                  // inside ANY affected area (any zoom)
+                guard t.contains(here) else { continue }
                 liveTFRs.append(IdentifiedObject(kind: .tfr, ident: t.id, coord: t.labelCoord ?? here,
                                                  onRoute: false, tfr: t))
             }

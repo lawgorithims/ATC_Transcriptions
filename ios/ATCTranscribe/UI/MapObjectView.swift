@@ -816,8 +816,16 @@ struct MapObjectView: View {
                         Spacer(minLength: 0)
                         Self.tfrStatusChip(t)
                     }
-                    KV("Floor", Self.altText(t.floorFt))
-                    KV("Ceiling", Self.altText(t.ceilingFt))
+                    // WHY the restriction exists — parsed from the NOTAM text (nil = not parsed → hidden).
+                    if let reason = t.reason {
+                        Text(reason).font(.dsLabel).foregroundStyle(p.text)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                    }
+                    // Envelope across the NOTAM's areas; flagged when the per-area bands differ so the
+                    // pilot knows to read the full NOTAM rather than trust one number for every ring.
+                    KV("Floor", Self.altText(t.floorFt) + (t.altitudesVaryByArea ? " · varies by area" : ""))
+                    KV("Ceiling", Self.altText(t.ceilingFt) + (t.altitudesVaryByArea ? " · varies by area" : ""))
                     if let eff = t.effective { KV("Effective", Self.tfrTime(eff, at: o.coord)) }
                     if let exp = t.expires { KV("Expires", Self.tfrTime(exp, at: o.coord)) }
                     let where_ = [t.facility, t.state].compactMap { $0 }.joined(separator: " · ")

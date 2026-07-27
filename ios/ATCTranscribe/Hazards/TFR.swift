@@ -1,42 +1,98 @@
 import Foundation
 import CoreGraphics
 
+/// One affected area of a TFR: a single closed lateral ring with its own altitude band. A NOTAM like
+/// the DC SFRA (FDC 4/9383) defines several areas ("Area A" 30 NM ring, "Area B" the FRZ); drawing them
+/// as one concatenated ring produced a bogus wedge between the areas — each ring must stand alone.
+struct TFRArea: Sendable, Equatable, Codable {
+    let ring: [Coord]         // closed lateral boundary (>= 3 points)
+    let floorFt: Int?         // feet (0 = surface, 99999 = unlimited)
+    let ceilingFt: Int?
+
+    /// The northernmost vertex — where the per-area altitude block is drawn (chart convention).
+    var labelCoord: Coord? { ring.max(by: { $0.lat < $1.lat }) }
+}
+
 /// A Temporary Flight Restriction — the live/dynamic counterpart to the bundled Special Use Airspace.
 /// Sourced from the FAA's TFR service (`tfr.faa.gov`): a list of active NOTAMs, each with an AIXM detail
-/// carrying the boundary + altitude limits. Awareness context — always confirm against an official
-/// briefing; the display shows how stale the snapshot is.
+/// carrying one or more affected areas + altitude limits. Awareness context — always confirm against an
+/// official briefing; the display shows how stale the snapshot is.
 struct TFR: Identifiable, Sendable, Equatable, Codable {
     let id: String            // NOTAM id, e.g. "6/5198"
     let type: TFRType
     let title: String         // human description from the list
-    let polygon: [Coord]      // closed lateral boundary (>= 3 points)
-    let floorFt: Int?         // feet (0 = surface, 99999 = unlimited)
-    let ceilingFt: Int?
+    let areas: [TFRArea]      // every affected area's ring (>= 1); render + hit-test ALL of them
+    let floorFt: Int?         // envelope across areas: lowest floor (conservative for awareness)
+    let ceilingFt: Int?       // envelope across areas: highest ceiling
+    var reason: String?       // why the restriction exists, parsed from the NOTAM text (nil = unknown)
     var facility: String?     // controlling ARTCC, e.g. "ZOA" (from the list stub)
     var state: String?        // US state, e.g. "CA"
     var effective: Date?      // NOTAM effective start (UTC, from the AIXM detail)
     var expires: Date?        // NOTAM expiry (UTC); nil = indefinite/unknown
 
-    // Older cached snapshots (pre-enrichment) decode with these fields absent — hence the defaults.
-    enum CodingKeys: String, CodingKey { case id, type, title, polygon, floorFt, ceilingFt, facility, state, effective, expires }
-    init(id: String, type: TFRType, title: String, polygon: [Coord], floorFt: Int?, ceilingFt: Int?,
-         facility: String? = nil, state: String? = nil, effective: Date? = nil, expires: Date? = nil) {
-        self.id = id; self.type = type; self.title = title; self.polygon = polygon
-        self.floorFt = floorFt; self.ceilingFt = ceilingFt
+    /// The largest ring — for single-shape consumers (bbox seed, tests, legacy cache). Rendering and
+    /// containment must iterate `areas`; using this for either would silently drop the other areas.
+    var polygon: [Coord] { areas.max(by: { $0.ring.count < $1.ring.count })?.ring ?? [] }
+
+    /// True when the point is inside ANY affected area (the tap probe's containment test).
+    func contains(_ c: Coord) -> Bool {
+        areas.contains { $0.ring.count >= 3 && Geo.pointInRing(c, $0.ring) }
+    }
+    /// At least one drawable ring — the render/keep guard (mirrors the old `polygon.count >= 3`).
+    var hasGeometry: Bool { areas.contains { $0.ring.count >= 3 } }
+    /// True when the areas carry different altitude bands (the card then flags "varies by area").
+    var altitudesVaryByArea: Bool {
+        Set(areas.map { "\($0.floorFt ?? -1):\($0.ceilingFt ?? -1)" }).count > 1
+    }
+
+    // Older cached snapshots carry a single `polygon` (and no areas/reason) — decode both shapes.
+    enum CodingKeys: String, CodingKey { case id, type, title, polygon, areas, floorFt, ceilingFt, reason, facility, state, effective, expires }
+
+    /// Primary init — one entry per affected area, envelope altitudes computed by the parser.
+    init(id: String, type: TFRType, title: String, areas: [TFRArea], floorFt: Int?, ceilingFt: Int?,
+         reason: String? = nil, facility: String? = nil, state: String? = nil,
+         effective: Date? = nil, expires: Date? = nil) {
+        self.id = id; self.type = type; self.title = title; self.areas = areas
+        self.floorFt = floorFt; self.ceilingFt = ceilingFt; self.reason = reason
         self.facility = facility; self.state = state; self.effective = effective; self.expires = expires
+    }
+    /// Single-area convenience (tests, demo scenarios, legacy call sites).
+    init(id: String, type: TFRType, title: String, polygon: [Coord], floorFt: Int?, ceilingFt: Int?,
+         reason: String? = nil, facility: String? = nil, state: String? = nil,
+         effective: Date? = nil, expires: Date? = nil) {
+        self.init(id: id, type: type, title: title,
+                  areas: [TFRArea(ring: polygon, floorFt: floorFt, ceilingFt: ceilingFt)],
+                  floorFt: floorFt, ceilingFt: ceilingFt, reason: reason,
+                  facility: facility, state: state, effective: effective, expires: expires)
     }
     init(from d: Decoder) throws {
         let c = try d.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
         type = try c.decode(TFRType.self, forKey: .type)
         title = try c.decode(String.self, forKey: .title)
-        polygon = try c.decode([Coord].self, forKey: .polygon)
         floorFt = try c.decodeIfPresent(Int.self, forKey: .floorFt)
         ceilingFt = try c.decodeIfPresent(Int.self, forKey: .ceilingFt)
+        if let a = try c.decodeIfPresent([TFRArea].self, forKey: .areas), !a.isEmpty {
+            areas = a
+        } else {   // pre-areas snapshot: its single polygon becomes the one area, TFR-level altitudes
+            let poly = try c.decodeIfPresent([Coord].self, forKey: .polygon) ?? []
+            areas = [TFRArea(ring: poly, floorFt: floorFt, ceilingFt: ceilingFt)]
+        }
+        reason = try c.decodeIfPresent(String.self, forKey: .reason)
         facility = try c.decodeIfPresent(String.self, forKey: .facility)
         state = try c.decodeIfPresent(String.self, forKey: .state)
         effective = try c.decodeIfPresent(Date.self, forKey: .effective)
         expires = try c.decodeIfPresent(Date.self, forKey: .expires)
+    }
+    func encode(to e: Encoder) throws {
+        var c = e.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id); try c.encode(type, forKey: .type); try c.encode(title, forKey: .title)
+        try c.encode(areas, forKey: .areas)
+        try c.encode(polygon, forKey: .polygon)   // legacy mirror so a rolled-back build still reads the cache
+        try c.encodeIfPresent(floorFt, forKey: .floorFt); try c.encodeIfPresent(ceilingFt, forKey: .ceilingFt)
+        try c.encodeIfPresent(reason, forKey: .reason)
+        try c.encodeIfPresent(facility, forKey: .facility); try c.encodeIfPresent(state, forKey: .state)
+        try c.encodeIfPresent(effective, forKey: .effective); try c.encodeIfPresent(expires, forKey: .expires)
     }
 
     /// Where `now` falls in the NOTAM's effective window. A missing bound is open-ended on that side.
@@ -51,11 +107,12 @@ struct TFR: Identifiable, Sendable, Equatable, Codable {
     func isActive(at now: Date) -> Bool { window(at: now) == .active }
 
     var bbox: BBox {
-        let lat = polygon.map(\.lat), lon = polygon.map(\.lon)
+        let all = areas.flatMap(\.ring)
+        let lat = all.map(\.lat), lon = all.map(\.lon)
         return BBox(minLat: lat.min() ?? 0, minLon: lon.min() ?? 0, maxLat: lat.max() ?? 0, maxLon: lon.max() ?? 0)
     }
-    /// A representative "top edge" point for the altitude label (northernmost vertex).
-    var labelCoord: Coord? { polygon.max(by: { $0.lat < $1.lat }) }
+    /// A representative "top edge" point (northernmost vertex across every area) — the card's anchor.
+    var labelCoord: Coord? { areas.flatMap(\.ring).max(by: { $0.lat < $1.lat }) }
 }
 
 /// TFR categories → the map glyph/label. Colour is fixed red (a restriction) regardless of type.
@@ -121,16 +178,82 @@ enum TFRParser {
 
     /// Parse one AIXM detail XML + its stub into a TFR, or nil if it carries no usable geometry (some
     /// reference-defined security NOTAMs have no inline boundary).
+    ///
+    /// A NOTAM's areas are its `<TFRAreaGroup>` blocks — one per FAA "Affected Area" (the DC SFRA has
+    /// two: the 30 NM ring and the FRZ). Each is parsed to its OWN ring(s) with its OWN altitude band;
+    /// concatenating them (the old whole-document scan) drew a bogus wedge bridging the areas. A detail
+    /// with no group wrapper (hand-rolled fixtures, hypothetical feed variants) falls back to one area
+    /// spanning the whole document — the old behaviour, correct for the single-area case.
     static func detail(_ xml: String, stub: Stub) -> TFR? {
-        let ceil = alt(tag("valDistVerUpper", xml), tag("uomDistVerUpper", xml))
-        let floor = alt(tag("valDistVerLower", xml), tag("uomDistVerLower", xml))
-        let pts = tessellate(boundary(xml))
-        guard pts.count >= 3 else { return nil }
+        let groups = blocks("TFRAreaGroup", xml)
+        let sources = groups.isEmpty ? [xml] : groups
+        var areas: [TFRArea] = []
+        for g in sources.prefix(64) {                                   // bounded (rule 2)
+            let ceil = alt(tag("valDistVerUpper", g), tag("uomDistVerUpper", g))
+            let floor = alt(tag("valDistVerLower", g), tag("uomDistVerLower", g))
+            for ring in rings(boundary(g)) where ring.count >= 3 {
+                areas.append(TFRArea(ring: ring, floorFt: floor, ceilingFt: ceil))
+            }
+        }
+        assert(areas.count <= 64 * 8, "TFR area count bounded")
+        guard !areas.isEmpty else { return nil }
         let eff = tag("dateEffective", xml).flatMap { aixmDate.date(from: $0) }
         let exp = tag("dateExpire", xml).flatMap { aixmDate.date(from: $0) }
+        // Envelope across areas — the card's summary band. Conservative for awareness: the lowest floor
+        // and the highest ceiling that appear anywhere in the NOTAM (per-area bands stay on the areas).
+        let floors = areas.compactMap(\.floorFt), ceils = areas.compactMap(\.ceilingFt)
         return TFR(id: stub.id, type: TFRType(raw: stub.type), title: stub.title,
-                   polygon: pts, floorFt: floor, ceilingFt: ceil,
+                   areas: areas, floorFt: floors.min(), ceilingFt: ceils.max(),
+                   reason: reason(xml),
                    facility: stub.facility, state: stub.state, effective: eff, expires: exp)
+    }
+
+    // MARK: reason extraction
+
+    /// A concise "why this restriction exists", from the NOTAM text (`txtDescrTraditional`). Two tiers:
+    /// the NOTAM's own purpose sentence when present ("TO PROVIDE A SAFE ENVIRONMENT FOR FIRE FIGHTING
+    /// ACFT OPS"), else the statute it cites — every TFR class has a characteristic citation. Validated
+    /// against all 126 NOTAMs live on 2026-07-27 (125 extracted; the one miss is FAA's own
+    /// "TFR TYPE UNKNOWN" placeholder). nil = no reason parsed; the card hides the row.
+    static func reason(_ xml: String) -> String? {
+        guard let body = tag("txtDescrTraditional", xml)?.uppercased() else { return nil }
+        // Tier 1: the free-text purpose phrase. Cut at the first token that starts boilerplate (the
+        // area definition, dispatch phone/frequency contact info) so only the purpose itself survives.
+        for lead in ["TO PROVIDE A SAFE ENVIRONMENT FOR ", "FOR THE PROTECTION OF ", "FOR PROTECTION OF ", "IN SUPPORT OF "] {
+            guard let r = body.range(of: lead) else { continue }
+            var phrase = String(body[r.upperBound...].prefix(120))
+            // Purpose phrases are digit-free; the first digit starts the area definition / phone /
+            // frequency boilerplate ("...ACFT OPS 5NM RADIUS OF 360300N..."), so cut there too.
+            if let d = phrase.firstIndex(where: \.isNumber) { phrase = String(phrase[..<d]) }
+            for stop in [".", ";", ",", "(", " WI ", " TEL ", " SFC", " EFFECTIVE"] {
+                if let s = phrase.range(of: stop) { phrase = String(phrase[..<s.lowerBound]) }
+            }
+            let prefix = lead.hasPrefix("TO PROVIDE") ? "" : (lead.hasPrefix("IN SUPPORT") ? "In support of " : "Protection of ")
+            let cleaned = expandAbbreviations(phrase)
+            guard cleaned.count >= 3 else { continue }
+            let full = prefix.isEmpty ? "To provide a safe environment for \(cleaned)" : prefix + cleaned
+            return full.prefix(1).uppercased() + full.dropFirst()
+        }
+        // Tier 2: the statute. Ordered specific → general.
+        if body.contains("91.137(A)(1)") { return "Disaster/hazard area — only relief aircraft (14 CFR 91.137(a)(1))" }
+        if body.contains("91.137(A)(2)") { return "Hazard area — safety of persons and property on the surface (14 CFR 91.137(a)(2))" }
+        if body.contains("91.137(A)(3)") { return "Incident area — prevention of unsafe congestion (14 CFR 91.137(a)(3))" }
+        if body.contains("91.141") { return "Security of VIP movement (14 CFR 91.141)" }
+        if body.contains("91.145") { return "Aerial demonstration / major sporting event (14 CFR 91.145)" }
+        if body.contains("91.143") { return "Space flight operations (14 CFR 91.143)" }
+        if body.contains("44812") { return "UAS restriction — protection of a large public gathering" }
+        if body.contains("NTL DEFENSE AIRSPACE") || body.contains("NATIONAL DEFENSE AIRSPACE") || body.contains("40103(B)(3)") {
+            return "National defense airspace — security restriction (49 USC 40103(b)(3))"
+        }
+        return nil
+    }
+
+    /// Expand the NOTAM contractions that appear inside purpose phrases, then lowercase. Expansion runs
+    /// on the UPPERCASE tokens (the keys) — lowercasing first would miss every one.
+    private static func expandAbbreviations(_ s: String) -> String {
+        let abbr = ["ACFT": "aircraft", "OPS": "operations", "OPNS": "operations", "FLT": "flight"]
+        return s.split(separator: " ").map { abbr[String($0)] ?? String($0).lowercased() }
+            .joined(separator: " ").trimmingCharacters(in: .whitespaces)
     }
 
     // MARK: boundary parsing
@@ -158,16 +281,56 @@ enum TFRParser {
         return out
     }
 
-    /// Turn boundary elements into a closed vertex ring: points pass through, a lone circle expands to a
-    /// ring, and an arc is tessellated between the previous vertex and the next vertex about its centre.
+    /// Split one area's boundary elements into standalone rings. The path elements (vertices + arcs)
+    /// form one ring; each CIR becomes its OWN ring — a full circle is closed by definition and can
+    /// never be part of a path, and inlining its vertices bridged ring→circle with a bogus spike (the
+    /// "pizza slice"). 62 of the 126 NOTAMs live on 2026-07-27 encode their circle TWICE — a tessellated
+    /// vertex list AND the symbolic CIR of the same circle — so a CIR that coincides with the path ring
+    /// is dropped as a duplicate (keeping it would stack two rings + two altitude labels).
+    private static func rings(_ els: [Boundary]) -> [[Coord]] {
+        var path: [Boundary] = []; var circles: [(Coord, Double)] = []
+        for el in els {
+            if case let .circle(c, r) = el { circles.append((c, r)) } else { path.append(el) }
+        }
+        var out: [[Coord]] = []
+        let pathRing = tessellate(path)
+        if pathRing.count >= 3 { out.append(pathRing) }
+        for (c, r) in circles.prefix(8) {                              // bounded (rule 2)
+            if coincides(ring: pathRing, center: c, radiusNm: r) { continue }   // duplicate encoding
+            out.append(circle(centerLat: c.lat, centerLon: c.lon, radiusNm: r))
+        }
+        assert(out.count <= 9, "rings per area bounded")
+        return out
+    }
+
+    /// True when EVERY path vertex sits on the circle (|distance − radius| within 15% of the radius or
+    /// 0.5 NM, whichever is larger) — the duplicate-encoding test. An empty/degenerate ring never
+    /// coincides, so a lone-CIR boundary still expands to its circle.
+    private static func coincides(ring: [Coord], center: Coord, radiusNm: Double) -> Bool {
+        guard ring.count >= 3, radiusNm > 0 else { return false }
+        let cosLat = max(cos(center.lat * .pi / 180), 0.01)
+        let tol = max(0.15 * radiusNm, 0.5)
+        var i = 0
+        while i < ring.count {                                         // bounded (rule 2)
+            assert(i <= 4096, "coincides loop bound")
+            let p = ring[i]
+            let dNm = 60 * sqrt(pow(p.lat - center.lat, 2) + pow((p.lon - center.lon) * cosLat, 2))
+            if abs(dNm - radiusNm) > tol { return false }
+            i += 1
+        }
+        return true
+    }
+
+    /// Turn PATH boundary elements into a closed vertex ring: points pass through, and an arc is
+    /// tessellated between the previous vertex and the next vertex about its centre. Circles never
+    /// reach here — `rings()` splits them into standalone rings first.
     private static func tessellate(_ els: [Boundary]) -> [Coord] {
-        if els.count == 1, case let .circle(c, r) = els[0] { return circle(centerLat: c.lat, centerLon: c.lon, radiusNm: r) }
         var pts: [Coord] = []
         for (i, el) in els.enumerated() {
             assert(i <= 4096, "boundary loop bound")
             switch el {
             case .pt(let p):            pts.append(p)
-            case .circle(let c, let r): pts.append(contentsOf: circle(centerLat: c.lat, centerLon: c.lon, radiusNm: r))
+            case .circle:               break   // split into its own ring before tessellation (rings())
             case .arc(let c, let r, let cw):
                 guard let start = pts.last, let end = nextPoint(els, after: i) else { continue }
                 pts.append(contentsOf: arcBetween(center: c, radiusNm: r, from: start, to: end, cw: cw))
