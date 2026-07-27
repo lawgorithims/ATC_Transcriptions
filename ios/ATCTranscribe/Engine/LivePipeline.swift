@@ -245,13 +245,16 @@ actor LivePipeline {
     /// decoded. `speaker` tags the record with a diarization speaker id. Port of `_transcribe_segment`.
     func process(_ segment: SpeechSegment, speaker: Int? = nil,
                  speakerDistance: Float? = nil) async -> TranscriptRecord? {
-        let prompt = context.buildPrompt()
+        // Head/tail split so the transcriber can budget priming and history from opposite ends —
+        // otherwise a long prompt loses the facility/ownship/ADS-B priming inside WhisperKit.
+        let promptParts = context.buildPromptParts()
+        let prompt = promptParts.joined
         let audio = preprocessor?.preprocess(segment.audio) ?? segment.audio
 
         let t0 = Date()
         let out: TranscriptionOutput
         do {
-            out = try await transcriber.transcribe(audio, context: prompt)
+            out = try await transcriber.transcribe(audio, prompt: promptParts)
         } catch is CancellationError {
             return nil          // user stop cancelled the in-flight decode — not a failure
         } catch {
