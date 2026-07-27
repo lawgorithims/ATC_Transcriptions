@@ -1,6 +1,9 @@
 import Foundation
 import SQLite3
 
+/// sqlite copies the bound bytes. Never pass a nil destructor (SQLITE_STATIC) for a Swift String.
+private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+
 /// Runway geometry and published frequencies from the FAA NASR subscription (`apt.sqlite`).
 ///
 /// This fills the two gaps CIFP structurally cannot:
@@ -165,8 +168,14 @@ enum AirportData {
         var st: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK else { return [] }
         defer { sqlite3_finalize(st) }
-        if let a { sqlite3_bind_text(st, 1, (a as NSString).utf8String, -1, nil) }
-        if let b { sqlite3_bind_text(st, 2, (b as NSString).utf8String, -1, nil) }
+        // SQLITE_TRANSIENT, never SQLITE_STATIC (a nil destructor). `(a as NSString).utf8String`
+        // returns a pointer INTO a temporary NSString that Swift is free to release the moment this
+        // statement ends — SQLITE_STATIC promises sqlite the buffer outlives the query, so the bound
+        // parameter became a dangling pointer. It read as garbage intermittently, which is exactly the
+        // shape of the failure: whole groups of database-backed results coming back empty, escalating
+        // as the process ran. TRANSIENT makes sqlite copy the bytes, which is what this needs.
+        if let a { sqlite3_bind_text(st, 1, a, -1, SQLITE_TRANSIENT) }
+        if let b { sqlite3_bind_text(st, 2, b, -1, SQLITE_TRANSIENT) }
         var out: [T] = []
         while sqlite3_step(st) == SQLITE_ROW, out.count < 4096 {    // bounded (rule 2)
             out.append(map(st))
