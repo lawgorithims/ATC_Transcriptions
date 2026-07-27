@@ -66,6 +66,12 @@ enum ATCCommandParser {
         var airports: Set<String> = []
         var sids: [String] = []
         var stars: [String] = []
+        /// The bare runway NUMBERS ("16", "04", "31") that have a published approach at the active
+        /// airport. parseApproach grounds against this so a misheard digit ("one six" → "three six")
+        /// cannot stage a clearance to a runway the field has no approach to. The NUMBER, not the sided
+        /// designator, so "cleared ILS runway 16" is not rejected when the field publishes 16L/16R and
+        /// the controller omitted the side.
+        var approachRunways: Set<String> = []
     }
 
     // Hard caps so every loop below is statically bounded (rule 2). A radio transmission is short.
@@ -171,7 +177,7 @@ enum ATCCommandParser {
         // controller just cancelled. Abstain for all kinds (a wrong suggestion is worse than a miss).
         guard !containsRetraction(scoped) else { return nil }
         if let direct = parseDirectTo(scoped, fixes: grounding.fixes, airports: grounding.airports) { return direct }
-        if let approach = parseApproach(scoped) { return approach }
+        if let approach = parseApproach(scoped, runways: grounding.approachRunways) { return approach }
         if let sid = parseProcedure(scoped, idents: grounding.sids, keyword: "departure", kind: .loadSID) { return sid }
         return parseProcedure(scoped, idents: grounding.stars, keyword: "arrival", kind: .loadStar)
     }
@@ -350,7 +356,7 @@ enum ATCCommandParser {
     /// → clearedApproach. The approach TYPE must IMMEDIATELY follow a "cleared" anchor (only for/the may
     /// intervene), the anchor must not be negated ("not cleared"), so "cleared as filed … expect the ils"
     /// and "cancel approach clearance" abstain. Bounded scan.
-    static func parseApproach(_ tokens: [String]) -> ATCCommand? {
+    static func parseApproach(_ tokens: [String], runways: Set<String> = []) -> ATCCommand? {
         guard tokens.count >= 4 else { return nil }
         assert(tokens.count <= maxTokens, "approach scan over an oversized token list")
         let bound = min(tokens.count, maxTokens)
@@ -360,6 +366,13 @@ enum ATCCommandParser {
             guard let typeIndex = approachTypeIndex(tokens, after: i) else { continue }
             let type = approachTypes[tokens[typeIndex]] ?? ""
             if !type.isEmpty, let runway = runwayAfter(tokens, from: typeIndex + 1) {
+                // GROUND the runway. Unlike parseDirectTo/parseProcedure this used to shape-check only
+                // (1..36), so a misheard digit ("one six" → "three six") staged a real-but-reciprocal
+                // approach as a high-confidence one-tap chip. When the active field's published-approach
+                // runway numbers are known, the parsed number must be one of them; when none are known
+                // (an uncoded field) we cannot confirm either way, so the shape check stands rather than
+                // blocking every approach clearance there.
+                if !runways.isEmpty, !runways.contains(String(runway.prefix(2))) { continue }
                 return ATCCommand(kind: .clearedApproach, target: runway, qualifier: type)
             }
         }

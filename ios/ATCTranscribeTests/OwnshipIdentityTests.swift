@@ -217,3 +217,41 @@ final class OwnshipIdentityTests: XCTestCase {
                        ATCCommand(kind: .directTo, target: "BOSOX", qualifier: ""))
     }
 }
+
+/// Red-hat safety-audit regressions: a clearance to ANOTHER aircraft must never be judged as addressing
+/// ownship. These pin the two attribution defects the audit confirmed.
+final class OwnshipAttributionSafetyTests: XCTestCase {
+
+    private func addressed(_ s: String, _ id: OwnshipIdentity) -> Bool { id.isAddressed(inNormalized: s) }
+
+    /// A legal all-numeric US tail (N1234) must NOT be matched by another aircraft's callsign digits.
+    /// "United twelve thirty four" normalizes to "united 1 2 3 4"; before the fix the bare digit-run
+    /// body variant matched it and staged a one-tap plan rewrite on ownship.
+    func testNumericOnlyTailIsNotMatchedByAnotherAircraftsDigits() {
+        let n1234 = OwnshipIdentity(callsign: "N1234", aircraftType: "Cessna 172")
+        XCTAssertFalse(addressed("united 1 2 3 4 cleared direct grayt", n1234),
+                       "another aircraft's callsign digits must not address a numeric-only ownship tail")
+        XCTAssertFalse(addressed("n 5 6 7 a b squawk 1 2 3 4 cleared direct grayt", n1234),
+                       "a squawk that equals the tail digits must not address ownship")
+    }
+
+    /// …but the numeric tail is still recognized through its ANCHORED forms — a pilot flying N1234 must
+    /// still get their own clearances.
+    func testNumericOnlyTailIsStillMatchedWhenProperlyAddressed() {
+        let n1234 = OwnshipIdentity(callsign: "N1234", aircraftType: "Cessna 172")
+        XCTAssertTrue(addressed("november 1 2 3 4 cleared direct grayt", n1234),
+                      "the full tail spoken with November")
+        XCTAssertTrue(addressed("cessna 2 3 4 descend and maintain 3 thousand", n1234),
+                      "the standard type-cued abbreviation — ATC's 'Cessna two three four'")
+    }
+
+    /// A traffic advisory that quotes a range ("two miles") ahead of ownship's mention must still read
+    /// as a MENTION, not a clearance — the distance digit no longer blinds the mention lookback.
+    func testTrafficAdvisoryWithADistanceIsNotAClearance() {
+        let seneca = OwnshipIdentity(callsign: "N8925T", aircraftType: "Piper Seneca")
+        XCTAssertFalse(addressed("traffic 2 miles a seneca 8 9 2 5 tango cleared visual runway 2 2", seneca),
+                       "'traffic two miles, a Seneca…' is about ownship, not to it")
+        XCTAssertTrue(addressed("seneca 8 9 2 5 tango cleared visual runway 2 2", seneca),
+                      "the same clearance WITHOUT the traffic preamble does address ownship")
+    }
+}

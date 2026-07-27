@@ -22,8 +22,20 @@ enum ProcedureRoute {
         out.reserveCapacity(maxLegs)
         appendAirport(plan.departure, to: &out)
         appendProcedure(plan.departureProcedure, to: &out)   // SID / ODP
-        appendEnroute(plan.route, to: &out)
-        appendProcedure(plan.arrivalProcedure, to: &out)     // STAR
+        // When the departure didn't resolve (empty or unknown), the first enroute fix has no predecessor
+        // to disambiguate against, and NavDatabase.resolve(near: nil) returns an ARBITRARY worldwide
+        // candidate for a non-unique ident — which the greedy nearest-walk then drags the whole route
+        // (and its DIST/ETE) onto the wrong continent. Anchor the first leg on the DESTINATION airport
+        // instead: a filed route's fixes lie between its endpoints, so the destination is a far better
+        // guess than a random candidate, and it is an ICAO that resolves uniquely.
+        let enrouteSeed = out.last?.coord
+            ?? AirportCoordinates.coordinate(icao: plan.destination.uppercased())
+            ?? NavDatabase.resolve(plan.destination.uppercased(), near: nil)
+        appendEnroute(plan.route, to: &out, fallbackSeed: enrouteSeed)
+        // The STAR is assembled from the enroute transition that joins the filed route (its last fix)
+        // and the runway transition for the landing runway (from the loaded approach) — see starLegs.
+        appendProcedure(plan.arrivalProcedure, to: &out,
+                        connectingFix: plan.route.last, landingRunway: plan.approachProcedure?.runway)
         appendProcedure(plan.approachProcedure, to: &out)    // IAP
         appendAirport(plan.destination, to: &out)
         return out
@@ -40,20 +52,25 @@ enum ProcedureRoute {
 
     /// Resolve + append the enroute portion, SEEDED with the departure / SID-terminus coordinate so the
     /// first enroute ident disambiguates against the chain. Bounded by `maxEnroute` + `maxLegs`.
-    static func appendEnroute(_ route: [String], to out: inout [ResolvedLeg]) {
+    static func appendEnroute(_ route: [String], to out: inout [ResolvedLeg], fallbackSeed: Coord? = nil) {
         guard !route.isEmpty, out.count < maxLegs else { return }
         assert(route.count <= maxEnroute, "enroute route longer than the cap — tail is truncated")
         let legs = route.prefix(maxEnroute).map { RouteLeg(ident: $0.uppercased(), kind: RouteLeg.classify($0)) }
-        let points = RouteResolver.resolve(Array(legs), seed: out.last?.coord).points
+        let points = RouteResolver.resolve(Array(legs), seed: out.last?.coord ?? fallbackSeed).points
         for leg in points.prefix(maxLegs) where out.count < maxLegs { appendDeduped(leg, to: &out) }
     }
 
     /// Append a loaded procedure's coded legs (re-found from CIFP by its stable keys). Skips legs with no
     /// coordinate (a few vector / hold legs) and runway-threshold pseudo-fixes (RW*). Bounded.
-    static func appendProcedure(_ proc: LoadedProcedure?, to out: inout [ResolvedLeg]) {
+    static func appendProcedure(_ proc: LoadedProcedure?, to out: inout [ResolvedLeg],
+                                connectingFix: String? = nil, landingRunway: String? = nil) {
         guard let proc, !proc.ident.isEmpty, !proc.airport.isEmpty, out.count < maxLegs else { return }
-        let legs = proc.kind == "IAP" ? approachLegs(proc)
-                 : CIFP.legs(airport: proc.airport, ident: proc.ident, transition: proc.transition)
+        let legs: [CIFPLeg]
+        switch proc.kind {
+        case "IAP":  legs = approachLegs(proc)
+        case "STAR": legs = starLegs(proc, connectingFix: connectingFix, landingRunway: landingRunway)
+        default:     legs = CIFP.legs(airport: proc.airport, ident: proc.ident, transition: proc.transition)
+        }
         assert(legs.count <= maxProcedureLegs, "procedure has more legs than the cap — tail is truncated")
         for leg in legs.prefix(maxProcedureLegs) where out.count < maxLegs {
             guard let coord = leg.coord, !leg.fix.isEmpty, !CIFP.isRunwayPseudoFix(leg.fix) else { continue }
@@ -96,6 +113,52 @@ enum ProcedureRoute {
         else { return Array(flown) }
         let entry = CIFP.legs(airport: proc.airport, ident: proc.ident, transition: proc.transition)
         return Array(entry.prefix(maxProcedureLegs)) + flown
+    }
+
+    /// The full legs of a STAR AS FLOWN, assembled from its several ARINC rows.
+    ///
+    /// A STAR is coded as separate rows: enroute transitions (each named by its entry fix, running to a
+    /// common junction), an optional common row, and runway transitions (junction → landing runway). A
+    /// single (ident, transition) query returns only ONE of these — a 2-leg enroute stub for a
+    /// procedure that spans tens of miles, so a voice-loaded arrival drew a fragment diverging wildly
+    /// from the chart. Assemble the branch actually being flown: the enroute transition that joins the
+    /// filed route, then the common, then the runway transition for the landing runway.
+    ///
+    /// STRICT by design: assemble only when the enroute end is positively identified by the connecting
+    /// fix. When it cannot be, fall back to the single loaded row — a visible stub is safer than a
+    /// GUESSED connected path, which is the worse failure. The runway transition is appended only on an
+    /// exact runway-number match; absent an approach the path still connects through the junction.
+    static func starLegs(_ proc: LoadedProcedure, connectingFix: String?, landingRunway: String?) -> [CIFPLeg] {
+        let single = CIFP.legs(airport: proc.airport, ident: proc.ident, transition: proc.transition)
+        guard let connectingFix, !connectingFix.isEmpty else { return single }
+        let want = connectingFix.uppercased()
+        // ALL rows of this STAR, including the common ("") and runway ("RW…") transitions —
+        // CIFP.transitions is IAP-only and excludes both, so it cannot drive a STAR assembly.
+        let transitions = CIFP.procedures(airport: proc.airport)
+            .filter { $0.kind == "STAR" && $0.ident == proc.ident }.map { $0.transition }
+        guard transitions.count > 1 else { return single }
+        func legs(_ t: String) -> [CIFPLeg] { CIFP.legs(airport: proc.airport, ident: proc.ident, transition: t) }
+        // A STAR runway transition is "RW" + two digits + an optional side letter (incl. "B" = both) —
+        // NOT the L/C/R-only shape CIFP.isRunwayPseudoFix tests, so use a local check.
+        func isRunwayTransition(_ t: String) -> Bool {
+            let u = t.uppercased()
+            return u.hasPrefix("RW") && u.count >= 4 && u.dropFirst(2).prefix(2).allSatisfy(\.isNumber)
+        }
+        // Enroute transition whose FIRST leg is the connecting fix — the point the route joins the STAR.
+        guard let enrName = transitions.first(where: {
+            !$0.isEmpty && !isRunwayTransition($0) && legs($0).first?.fix.uppercased() == want
+        }) else { return single }
+
+        var assembled = legs(enrName)
+        if transitions.contains(where: { $0.isEmpty }) { assembled += legs("") }   // common junction
+        if let rw = landingRunway, rw.count >= 2 {
+            let num = rw.uppercased().prefix(2)
+            if let rwName = transitions.first(where: { isRunwayTransition($0) && $0.dropFirst(2).prefix(2) == num }) {
+                assembled += legs(rwName)
+            }
+        }
+        assert(assembled.count <= maxProcedureLegs * 3, "assembled STAR unexpectedly large")
+        return assembled
     }
 
     /// Append `leg` unless it repeats the previous leg's ident (collapse the join-fix duplication) or the

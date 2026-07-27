@@ -243,6 +243,12 @@ struct FlightPlan: Codable, Equatable {
         if let origin { departure = UserPoint.token(origin) }   // direct-to anchors at present position
         route = [Self.norm(iaf)]
         destination = field
+        // A direct-to-IAF join is PAST the enroute structure: the aircraft is proceeding straight to the
+        // approach. Leaving the SID/STAR loaded made resolve draw departure→SID→IAF→STAR→approach, so
+        // the magenta line backtracked out through the whole arrival before turning for the IAF. Drop
+        // them; the approach itself is loaded separately by the caller.
+        clearProcedure(kind: "SID")
+        clearProcedure(kind: "STAR")
         assert(route.count == 1, "joining an approach must not accumulate waypoints")
     }
 
@@ -259,7 +265,11 @@ struct FlightPlan: Codable, Equatable {
         let hold = f.removeLast()
         route = f
         destination = hold
-        clearProcedure(kind: "IAP")
+        // A go-around is flown FRESH from present position through the published missed. Clear ALL
+        // procedures, not just the approach: a residual SID drew the missed from the departure airport,
+        // and a residual STAR looped it back out through the arrival — resolve emits
+        // departure→SID→route→STAR→approach unconditionally. Only the missed sequence should draw.
+        clearProcedure(kind: "")
         assert(destination == hold, "the missed must end at its published hold")
     }
 
