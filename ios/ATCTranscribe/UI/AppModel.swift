@@ -290,6 +290,12 @@ final class AppModel: ObservableObject {
     /// approach and let the live MISSED button rewrite the current plan with a DIFFERENT approach's
     /// go-around. Clearing it here also disarms any staged missed for the approach that just left.
     private func reconcileActiveApproach() {
+        // The clearance test bench swaps flightPlan to sandbox plans and restores them, and it does NOT
+        // snapshot activeApproach — so, like the other didSet side-effects that guard on this exact
+        // flag (prefetch, plate auto-pack, hazard-dismissal reset), reconcile must not run during a
+        // bench replay or opening the bench would silently drop the pilot's live approach and disarm
+        // the armed MISSED, leaving no trace after restore.
+        guard !diagnosticActive else { return }
         guard let active = activeApproach else { return }
         let loaded = flightPlan?.approachProcedure
         let stillLoaded = loaded.map { $0.airport == active.airport && $0.ident == active.ident } ?? false
@@ -993,6 +999,17 @@ final class AppModel: ObservableObject {
     /// True when a Stratux fix is currently trustworthy — used to decide whether the device-GPS
     /// integrity verdict (which describes a DIFFERENT receiver) applies to the drawn ownship.
     var stratuxOwnshipTrusted: Bool { trustedStratuxOwnship != nil }
+
+    /// The Stratux sample to feed the GPS READOUTS (bottom bar, widget, ETE, breadcrumb) — the full
+    /// struct only when it is fixed AND fresh, nil otherwise so the readout merge falls through to the
+    /// device fix. The DRAWN ownship already gates on `trustedStratuxOwnship`; the numeric readouts must
+    /// use the SAME freshness or the bar keeps showing a frozen "STRATUX / Good / 120 kt" minutes after
+    /// the link dropped while the map has already fallen back — the map and the numbers disagreeing.
+    var freshStratuxGPS: StratuxGPS? {
+        guard let s = stratuxGPS, s.hasFix, let at = stratuxGPSAt,
+              Date().timeIntervalSince(at) <= Self.stratuxOwnshipMaxAge else { return nil }
+        return s
+    }
 
     /// Ingest a Stratux GPS sample on the main actor, stamping the receive time on a usable fix so
     /// freshness can be judged. A nil or no-fix sample clears the stamp so the coordinate ages out.
@@ -1826,6 +1843,21 @@ final class AppModel: ObservableObject {
         }
     }
 
+    /// Is the procedure a load-accept requested now actually present in the plan? Checks the target
+    /// SLOT, so re-accepting an approach/SID/STAR that was already loaded reads as loaded (no-change),
+    /// while a genuinely-not-published target reads as not-loaded. Approach is matched on runway number
+    /// (loadApproachForRunway keys on runway, not the coded ident the pilot never spoke).
+    private func isProcedureLoaded(kind: ATCInstructionKind, target: String) -> Bool {
+        switch kind {
+        case .loadSID:   return flightPlan?.departureProcedure?.ident.caseInsensitiveCompare(target) == .orderedSame
+        case .loadStar:  return flightPlan?.arrivalProcedure?.ident.caseInsensitiveCompare(target) == .orderedSame
+        case .clearedApproach:
+            guard let rwy = flightPlan?.approachProcedure?.runway, rwy.count >= 2 else { return false }
+            return rwy.prefix(2) == target.prefix(2)
+        default:         return true
+        }
+    }
+
     /// Apply the pending suggestion via existing, reversible mutators, then clear it. The kind switch is
     /// exhaustive (total). Validates there is a suggestion + a non-empty target (rule 7).
     func acceptEFBSuggestion() {
@@ -1868,8 +1900,10 @@ final class AppModel: ObservableObject {
         // the active field (loadProcedureByIdent / loadApproachForRunway just return). Firing the success
         // haptic and clearing the banner then teaches the pilot the procedure is loaded when the route is
         // unchanged — a confident lie about what the aircraft will fly. Tell them instead, with a
-        // distinct "didn't take" cue, exactly as the ForeFlight-handoff path already guards.
-        if ins.kind.loadsAProcedure, flightPlan == before {
+        // distinct "didn't take" cue. Test whether the target slot is actually POPULATED afterward, NOT
+        // whether the plan changed: re-accepting an already-loaded procedure is a legitimate no-change
+        // that must still read as loaded, not "isn't published".
+        if ins.kind.loadsAProcedure, !isProcedureLoaded(kind: ins.kind, target: ins.target) {
             detail = "\(ins.kind.spokenLabel) \(ins.target) isn't published at this airport — nothing loaded."
             Haptics.impact(.rigid)
         } else {
@@ -2490,7 +2524,7 @@ final class AppModel: ObservableObject {
     /// the map ownship) paired with the merged alt/speed/track so they agree. nil when there's no GPS.
     func currentBreadcrumbFix() -> BreadcrumbFix? {
         guard let coord = presentPosition, coord.lat.isFinite, coord.lon.isFinite else { return nil }
-        let r = GPSReadout.merge(stratux: stratuxGPS, device: deviceLocation.fix)
+        let r = GPSReadout.merge(stratux: freshStratuxGPS, device: deviceLocation.fix)
         return BreadcrumbFix(coord: coord, altFt: r.altitudeFtMSL, speedKt: r.groundSpeedKt,
                              track: r.trackDeg, source: r.source)
     }
@@ -2750,7 +2784,7 @@ final class AppModel: ObservableObject {
     /// Live ETAs down the filed route from PRESENT POSITION at the CURRENT ground speed — feeds the GPS bar.
     /// nil when there's no route / fix / usable ground speed. Cheap: reads the cached resolvedRoute.
     var liveETAs: RouteETAs? {
-        let gs = GPSReadout.merge(stratux: stratuxGPS, device: deviceLocation.fix).groundSpeedKt
+        let gs = GPSReadout.merge(stratux: freshStratuxGPS, device: deviceLocation.fix).groundSpeedKt
         return RouteETAs.compute(route: resolvedRoute.map { ($0.ident, $0.coord) },
                                  present: presentPosition, groundSpeedKt: gs)
     }
@@ -2902,7 +2936,7 @@ final class AppModel: ObservableObject {
         let epoch = hazardAlertEpoch
         guard showHazards, !hazardEvents.isEmpty else { hazardAlert = nil; return }
         let events = hazardEvents
-        let ownship: Coord? = (stratuxGPS?.hasFix == true) ? stratuxGPS?.coordinate : nil
+        let ownship: Coord? = presentPosition   // fresh Stratux, else integrity-gated device — never a stale fix
         let dismissed = hazardDismissedIDs
         let planRoute = flightPlan?.fullRoute ?? []
         Task.detached(priority: .utility) { [weak self] in
@@ -2950,7 +2984,7 @@ final class AppModel: ObservableObject {
     /// Ownship moved: recompute the vicinity check once it has moved a meaningful distance (a ~1 Hz
     /// GPS fix must not rescan 400 events × the route every tick).
     private func maybeRefreshHazardAlertForMovement() {
-        guard showHazards, let here = stratuxGPS?.coordinate else { return }
+        guard showHazards, let here = presentPosition else { return }   // trusted position, not a frozen Stratux one
         if let last = lastHazardAlertCenter, Geo.nmBetween(last, here) < Self.hazardRecomputeNm { return }
         lastHazardAlertCenter = here
         refreshHazardAlert()
@@ -2970,8 +3004,10 @@ final class AppModel: ObservableObject {
     /// so it's available for a mic/USB session too, not just the Stratux audio source). nil when there's
     /// no usable fix. Device CLLocation is the natural follow-up here for a phone-mic-only cockpit setup.
     private func groundingCoordinate() -> Coord? {
-        guard let gps = stratuxGPS, gps.hasFix else { return nil }
-        return gps.coordinate
+        // The trusted position: a fresh Stratux fix, else the integrity-gated device fix. Reading the
+        // raw Stratux coordinate froze the corrector's vicinity grounding at the last position after a
+        // link drop.
+        presentPosition
     }
 
     /// Re-resolve the surrounding-vicinity corrector grounding and push it into the running session —

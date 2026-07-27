@@ -10,7 +10,7 @@ struct GPSReadoutCard: View {
     @State private var deviceFix: DeviceFix?
 
     var body: some View {
-        let r = GPSReadout.merge(stratux: model.stratuxGPS, device: deviceFix)
+        let r = GPSReadout.merge(stratux: model.freshStratuxGPS, device: deviceFix)
         Card(title: "GPS") {
             signal(r)
             KV("Altitude", r.altitudeFtMSL.map { "\(Int($0.rounded())) ft" } ?? "—")

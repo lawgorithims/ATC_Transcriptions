@@ -152,10 +152,18 @@ enum ProcedureRoute {
         var assembled = legs(enrName)
         if transitions.contains(where: { $0.isEmpty }) { assembled += legs("") }   // common junction
         if let rw = landingRunway, rw.count >= 2 {
-            let num = rw.uppercased().prefix(2)
-            if let rwName = transitions.first(where: { isRunwayTransition($0) && $0.dropFirst(2).prefix(2) == num }) {
-                assembled += legs(rwName)
-            }
+            let u = rw.uppercased()
+            let num = u.prefix(2)
+            let side = u.count > 2 ? String(u[u.index(u.startIndex, offsetBy: 2)]) : ""   // "L"/"C"/"R" or ""
+            // Pick the runway transition for the SIDE actually being landed, never the wrong parallel.
+            // "RW04B" serves both 04L and 04R; a bare "RW04" is side-agnostic. Prefer exact side, then
+            // the both/bare form; if the STAR codes ONLY the other specific side, append nothing (ending
+            // at the junction is safe — drawing the opposite parallel's transition is not).
+            let rwys = transitions.filter { isRunwayTransition($0) && $0.dropFirst(2).prefix(2) == num }
+            func sideOf(_ t: String) -> String { t.count > 4 ? String(t[t.index(t.startIndex, offsetBy: 4)]) : "" }
+            let pick = rwys.first { sideOf($0) == side && !side.isEmpty }      // exact side (RW04R for 04R)
+                ?? rwys.first { sideOf($0) == "B" || sideOf($0).isEmpty }      // both / side-agnostic
+            if let rwName = pick { assembled += legs(rwName) }
         }
         assert(assembled.count <= maxProcedureLegs * 3, "assembled STAR unexpectedly large")
         return assembled

@@ -254,4 +254,14 @@ final class OwnshipAttributionSafetyTests: XCTestCase {
         XCTAssertTrue(addressed("seneca 8 9 2 5 tango cleared visual runway 2 2", seneca),
                       "the same clearance WITHOUT the traffic preamble does address ownship")
     }
+
+    /// The single-digit skip was not enough: multi-digit ranges ("one two miles" = 12) and clock
+    /// bearings ("ten o'clock") must also read as a traffic MENTION, not a clearance.
+    func testTwoDigitRangeAndClockBearingAreStillMentions() {
+        let seneca = OwnshipIdentity(callsign: "N8925T", aircraftType: "Piper Seneca")
+        XCTAssertFalse(addressed("united 3 4 5 traffic 1 2 miles a seneca 8 9 2 5 tango descending through 8 thousand", seneca),
+                       "a 12-mile traffic call about ownship is not a clearance to it")
+        XCTAssertFalse(addressed("traffic 1 0 o clock a seneca 8 9 2 5 tango maintain visual separation", seneca),
+                       "a ten-o'clock traffic call about ownship is not a clearance to it")
+    }
 }

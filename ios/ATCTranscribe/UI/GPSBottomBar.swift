@@ -10,7 +10,7 @@ struct GPSBottomBar: View {
 
     var body: some View {
         let p = model.palette
-        let r = GPSReadout.merge(stratux: model.stratuxGPS, device: deviceFix)
+        let r = GPSReadout.merge(stratux: model.freshStratuxGPS, device: deviceFix)
         return HStack(spacing: 8) {
             signalBox(r)
             altBox(r)
