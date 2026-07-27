@@ -35,10 +35,15 @@ final class AirportWeatherTabUITests: XCTestCase {
     ///
     /// Waits before each swipe: a sub-tab switch re-renders asynchronously, and a swipe fired into that
     /// gap scrolls past the row (or off the card) before it ever exists.
+    ///
+    /// `in:` names the container to swipe. When the target lives in a SECOND scrollable (the climate
+    /// popover has its own collection view), the default firstMatch swipes the card BEHIND the popover
+    /// — the lazy rows below the popover's fold never realize, and the assertion reads as "no charts".
     @discardableResult
-    private func scrollUntil(_ app: XCUIApplication, _ el: XCUIElement, maxSwipes: Int = 8) -> Bool {
+    private func scrollUntil(_ app: XCUIApplication, _ el: XCUIElement,
+                             in container: XCUIElement? = nil, maxSwipes: Int = 8) -> Bool {
         if el.waitForExistence(timeout: 3) { return true }
-        let list = scroller(app)
+        let list = container ?? scroller(app)
         for _ in 0..<maxSwipes {
             list.swipeUp()
             if el.waitForExistence(timeout: 1) { return true }
@@ -72,8 +77,12 @@ final class AirportWeatherTabUITests: XCTestCase {
         XCTAssertTrue(scrollUntil(app, climate), "History sub-tab should offer Airport Climate")
         climate.tap()
 
-        // The charts open (best-time-of-day section, from the demo climatology).
-        XCTAssertTrue(scrollUntil(app, header(app, beginsWith: "Best time of day")),
+        // The charts open (best-time-of-day section, from the demo climatology). Scroll the climate
+        // view's OWN list: in the side-pane presentation the charts live in a popover with a separate
+        // collection view, and swiping the first-match scrollable pans the card behind it instead.
+        let chartsList = el(app, "climate-charts-list")
+        XCTAssertTrue(chartsList.waitForExistence(timeout: 6), "climate charts list should present")
+        XCTAssertTrue(scrollUntil(app, header(app, beginsWith: "Best time of day"), in: chartsList),
                       "opening Airport Climate should show the charts")
 
         let shot = XCTAttachment(screenshot: app.screenshot())
