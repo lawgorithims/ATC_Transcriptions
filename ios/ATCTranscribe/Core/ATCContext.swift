@@ -177,8 +177,14 @@ final class ATCContext {
 
     /// The context string for Whisper prompt conditioning. Port of `build_prompt`:
     /// static prefix + recent transmissions, tail-truncated to `maxPromptChars`.
-    /// (The transcriber additionally caps the prompt at ~220 tokens.)
+    /// (The transcriber additionally caps the prompt to the decoder's prompt budget.)
     func buildPrompt() -> String {
+        buildPromptParts().joined
+    }
+
+    /// Builds the prompt sections, already split into the priming `head` and the history `tail`.
+    /// Single source of truth for prompt CONTENT and ORDER; the budgeting lives in the callers.
+    private func buildPromptSections() -> (head: String, tail: String) {
         var sections: [String] = []
         if !staticPrefix.isEmpty { sections.append(staticPrefix) }
         // GPS-vicinity decode bias supersedes the typed one (source-exclusive; same category).
@@ -209,16 +215,46 @@ final class ATCContext {
                 sections.append("Aircraft on frequency: " + spoken.joined(separator: ", ") + ".")
             }
         }
-        if !historyBuffer.isEmpty {
-            sections.append("Recent transmissions: " + historyBuffer.joined(separator: " "))
-        }
-        if sections.isEmpty { return "" }
+        let head = sections.joined(separator: " ").trimmingCharacters(in: .whitespaces)
+        let tail = historyBuffer.isEmpty ? ""
+            : "Recent transmissions: " + historyBuffer.joined(separator: " ")
+        return (head, tail)
+    }
 
-        var prompt = sections.joined(separator: " ").trimmingCharacters(in: .whitespaces)
-        if prompt.count > maxPromptChars {
-            prompt = String(prompt.suffix(maxPromptChars))
+    /// The prompt split into the two halves that must survive trimming DIFFERENTLY.
+    ///
+    /// `head` is the priming that identifies the situation — facility, procedures, ownship, plate
+    /// fixes, and the live ADS-B "Aircraft on frequency" bias. Its value is entirely in being
+    /// present, and its front matters most. `tail` is the rolling transmission history, whose value
+    /// is in being RECENT — so it is trimmed from the front, keeping the newest utterances.
+    ///
+    /// Why this type exists: `buildPrompt()` char-trims with `suffix(maxPromptChars)`, which drops
+    /// the head first; the transcriber then token-trims and WhisperKit token-trims AGAIN with
+    /// `suffix()`. Together those silently deleted every head section whenever the prompt grew —
+    /// i.e. exactly the decode bias we most wanted. Splitting the prompt lets each half be trimmed
+    /// from the correct end, with the head given first claim on the budget.
+    struct PromptParts: Sendable, Equatable {
+        var head: String
+        var tail: String
+        var joined: String {
+            [head, tail].filter { !$0.isEmpty }.joined(separator: " ")
+                .trimmingCharacters(in: .whitespaces)
         }
-        return prompt
+        var isEmpty: Bool { head.isEmpty && tail.isEmpty }
+        static let none = PromptParts(head: "", tail: "")
+    }
+
+    /// Same content and ordering as `buildPrompt()`, but split head/tail and budgeted head-first.
+    func buildPromptParts() -> PromptParts {
+        let full = buildPromptSections()
+        var head = full.head
+        // Head gets first claim on the budget and keeps its FRONT (facility/ownship/traffic order).
+        if head.count > maxPromptChars { head = String(head.prefix(maxPromptChars)) }
+        // History fills what's left and keeps its END (the most recent transmissions).
+        var tail = full.tail
+        let remaining = max(0, maxPromptChars - head.count)
+        if tail.count > remaining { tail = String(tail.suffix(remaining)) }
+        return PromptParts(head: head, tail: tail)
     }
 
     /// The active facility's ICAO ident (drives the `AirportContextStore` lookup for SlotSnap). Resolves
