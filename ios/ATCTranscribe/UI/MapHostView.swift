@@ -288,6 +288,7 @@ struct MapHostView: View {
                          // Remember where the user settled so a thermal rebuild restores it (M7);
                          // the settle hook is already debounced (0.4 s) in the coordinator.
                          model.lastMapCamera = SavedMapCamera(rect: rect, now: Date())
+                         model.recenterADSBForMap()   // GPS-less: poll traffic around what's on screen
                          ensureVisibleWeather(rect)
                          Task { await store.ensureVisible(rect, layer: model.chartLayer) }
                      },
@@ -370,6 +371,7 @@ struct MapHostView: View {
                 // Persist the pilot's pan/zoom so a background→foreground remount restores it, and so the
                 // classic-map fallback lands on the same view (M7 camera contract — parity with ChartMapView).
                 model.lastMapCamera = SavedMapCamera(rect: rect, now: Date())
+                model.recenterADSBForMap()   // GPS-less: poll traffic around what's on screen
                 ensureVisibleWeather(rect)   // conditions for the fields on screen → category rings + trend markers
             },
             renderMeter: model.renderMeter,   // battery diagnostics: per-frame counter → map fps
