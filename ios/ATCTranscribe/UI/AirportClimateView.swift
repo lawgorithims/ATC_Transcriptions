@@ -136,6 +136,11 @@ struct AirportClimateView: View {
         }
         .scrollContentBackground(.hidden)
         .foregroundStyle(p.text)
+        // The UI test scrolls THIS list to reach the chart sections. When the card presents in the
+        // side pane, this view opens in its own popover — a second collection view — and an
+        // unqualified collectionViews.firstMatch swipes the pane behind it instead (the sections
+        // below the fold are lazy, so they never appear and the test reads it as "no charts").
+        .accessibilityIdentifier("climate-charts-list")
     }
 
     private func headerLine(_ stats: PowerClimateStats) -> String {
