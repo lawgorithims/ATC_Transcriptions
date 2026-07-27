@@ -53,6 +53,61 @@ enum AirportData {
         let approachLights: String
     }
 
+    /// One published runway, with the surface that decides whether it is drawn on the chart symbol.
+    struct Runway: Equatable {
+        let designator: String      // "04L/22R", or "H1" for a helipad
+        let lengthFt: Double?
+        let widthFt: Double?
+        let surface: String         // NASR SURFACE_TYPE_CODE: "ASPH", "TURF", "ASPH-TURF", …
+        let condition: String       // "GOOD" / "FAIR" / "POOR" / "FAILED" / ""
+
+        /// A hyphenated NASR surface names its components PRIMARY-first, so "ASPH-TURF" is a paved
+        /// runway with a turf shoulder and "TURF-ASPH" is a grass strip with some paving. Reading only
+        /// the first component gets that right without enumerating every combination.
+        var isPaved: Bool {
+            let primary = surface.uppercased().split(separator: "-").first.map(String.init) ?? ""
+            return ["ASPH", "CONC", "PEM"].contains(primary)
+        }
+
+        /// A helipad is published in this table but is not a runway, and drawing runway lines for one
+        /// puts a strip across an airport that has none.
+        var isHelipad: Bool { designator.uppercased().hasPrefix("H") }
+
+        /// Out of service — the FAA still publishes the record, but nothing should be flown to it.
+        var isFailed: Bool { condition.uppercased() == "FAILED" }
+
+        /// Magnetic bearing from the runway NUMBER ("04L/22R" -> 40°). The published true alignment is
+        /// only present on 32% of ends, whereas the designator is the number a pilot reads off the
+        /// chart and is on every real runway. Nil for helipads and compass-named strips ("N/S", "E/W").
+        var bearingDeg: Double? {
+            let head = designator.uppercased().split(separator: "/").first.map(String.init) ?? ""
+            let digits = head.prefix { $0.isNumber }
+            guard digits.count >= 1, digits.count <= 2, let n = Int(digits), n >= 1, n <= 36 else { return nil }
+            return Double(n) * 10
+        }
+    }
+
+    /// Every published runway at the field, in NASR order.
+    static func runways(airport: String) -> [Runway] {
+        let (a, b) = keys(airport)
+        return query("""
+            SELECT designator, length_ft, width_ft, COALESCE(surface,''), COALESCE(condition,'')
+            FROM runway WHERE ident=?1 OR ident=?2 ORDER BY designator
+            """, a, b) { st in
+            Runway(designator: text(st, 0), lengthFt: dbl(st, 1), widthFt: dbl(st, 2),
+                   surface: text(st, 3), condition: text(st, 4))
+        }
+    }
+
+    /// The runways an airport SYMBOL should draw: paved, in service, and an actual runway.
+    ///
+    /// The chart symbol is a statement about where an aircraft can land. Drawing every published
+    /// runway put grass strips, gravel, helipads and out-of-service pavement on the same footing as
+    /// the one runway a pilot would actually use — KTCS drew five, of which four are gravel.
+    static func drawableRunways(airport: String) -> [Runway] {
+        runways(airport: airport).filter { $0.isPaved && !$0.isHelipad && !$0.isFailed && $0.bearingDeg != nil }
+    }
+
     struct Frequency: Equatable {
         let value: String           // "118.1"
         let use: String             // "APCH/P", "TWR", …
