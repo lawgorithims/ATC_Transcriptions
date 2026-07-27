@@ -43,6 +43,10 @@ enum WhatsNew {
                     title: "Grass and water fields read as grass and water fields",
                     detail: "A soft-surface field now gets the plain open circle the sectional uses, instead of a runway outline that implied pavement. Helipads are no longer drawn as runway strips across an airport that has none."),
                 WhatsNewHighlight(
+                    icon: "checkmark.shield",
+                    title: "Fixed: airport and runway data could come back empty",
+                    detail: "A memory bug in the airport database reader let a lookup key be freed while the query was still using it, so airport, runway and frequency results could intermittently return nothing or garbage. It affected builds 92 through 96. Found by chasing an intermittent test failure I had twice written off as flaky — it was not."),
+                WhatsNewHighlight(
                     icon: "checkmark.seal",
                     title: "The surface comes from the FAA, not an estimate",
                     detail: "Whether a field counts as hard-surfaced is now read from the published runway record rather than a value inferred from a weather feed. Where the FAA lists a mixed surface, the order tells you which is primary — asphalt with a turf shoulder is paved, a grass strip with some paving is not."),
