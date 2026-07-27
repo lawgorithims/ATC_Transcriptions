@@ -32,6 +32,22 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 98, version: "1.0", headline: "TFRs draw their real shapes — and tell you why they exist",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "exclamationmark.octagon",
+                    title: "Fixed: multi-area TFRs drew a bogus wedge",
+                    detail: "A NOTAM that defines several areas — the Washington DC SFRA and its inner Flight Restricted Zone are two — was drawn as one connected outline, which smeared a wedge between the areas that restricted nothing. Each area now draws as its own shape with its own altitude block, matching the official FAA graphic. About half the live feed also encodes its circle twice; the duplicate is now recognized and drawn once."),
+                WhatsNewHighlight(
+                    icon: "questionmark.circle",
+                    title: "Tap a TFR to see why it exists",
+                    detail: "The TFR card now states the reason for the restriction, read from the NOTAM itself — \"to provide a safe environment for fire fighting aircraft operations\", \"national defense airspace\", \"protection of large public gatherings\" — alongside the altitudes, times, and the link to the full NOTAM. Where a NOTAM's areas carry different altitude limits, the card says so instead of showing one number as if it applied everywhere."),
+                WhatsNewHighlight(
+                    icon: "antenna.radiowaves.left.and.right",
+                    title: "Fixed: internet traffic never loaded without a GPS fix",
+                    detail: "The live traffic layer polls around your position — but before a GPS fix existed it had no center at all, so it sat on \"Loading traffic…\" forever. It now loads around whatever the chart is showing, then follows the aircraft once a fix arrives."),
+            ]),
+        ReleaseNote(
             build: 97, version: "1.0", headline: "Airport symbols show the runways you can actually use",
             highlights: [
                 WhatsNewHighlight(

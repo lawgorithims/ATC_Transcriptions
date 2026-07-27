@@ -185,4 +185,166 @@ final class TFRParserTests: XCTestCase {
         XCTAssertEqual(TFRType(raw: "totally unknown"), .other)
         XCTAssertEqual(TFRType(raw: "vip").label, "VIP Movement")
     }
+
+    // MARK: multi-area NOTAMs (the DC SFRA "pizza slice" regression)
+
+    /// Two `<TFRAreaGroup>` blocks with different altitude bands — the FDC 4/9383 shape (Area A + B).
+    /// The old parser concatenated every <Avx> in the document into ONE ring, drawing a wedge that
+    /// bridged the areas.
+    private let twoAreaXML = """
+    <TFR>
+      <dateEffective>2026-07-17T04:39:00</dateEffective>
+      <TFRAreaGroup>
+        <aseTFRArea>
+          <valDistVerUpper>17999</valDistVerUpper><uomDistVerUpper>FT</uomDistVerUpper>
+          <valDistVerLower>0</valDistVerLower><uomDistVerLower>FT</uomDistVerLower>
+        </aseTFRArea>
+        <Abd>
+          <Avx><codeType>GRC</codeType><geoLat>39.00000000N</geoLat><geoLong>077.00000000W</geoLong></Avx>
+          <Avx><codeType>GRC</codeType><geoLat>39.00000000N</geoLat><geoLong>076.00000000W</geoLong></Avx>
+          <Avx><codeType>GRC</codeType><geoLat>40.00000000N</geoLat><geoLong>076.00000000W</geoLong></Avx>
+          <Avx><codeType>GRC</codeType><geoLat>40.00000000N</geoLat><geoLong>077.00000000W</geoLong></Avx>
+        </Abd>
+      </TFRAreaGroup>
+      <TFRAreaGroup>
+        <aseTFRArea>
+          <valDistVerUpper>50</valDistVerUpper><uomDistVerUpper>FL</uomDistVerUpper>
+          <valDistVerLower>2000</valDistVerLower><uomDistVerLower>FT</uomDistVerLower>
+        </aseTFRArea>
+        <Abd>
+          <Avx><codeType>GRC</codeType><geoLat>30.00000000N</geoLat><geoLong>080.00000000W</geoLong></Avx>
+          <Avx><codeType>GRC</codeType><geoLat>30.00000000N</geoLat><geoLong>079.00000000W</geoLong></Avx>
+          <Avx><codeType>GRC</codeType><geoLat>31.00000000N</geoLat><geoLong>079.50000000W</geoLong></Avx>
+        </Abd>
+      </TFRAreaGroup>
+    </TFR>
+    """
+
+    func testMultiAreaGroupsParseAsSeparateAreas() throws {
+        let tfr = try XCTUnwrap(TFRParser.detail(twoAreaXML, stub: .init(id: "4/9383", type: "SECURITY", title: "DC")))
+        XCTAssertEqual(tfr.areas.count, 2, "one area per TFRAreaGroup — never concatenated")
+        XCTAssertEqual(tfr.areas[0].ring.count, 4)
+        XCTAssertEqual(tfr.areas[1].ring.count, 3)
+        // THE WEDGE REGRESSION GUARD: no ring may mix vertices of both areas.
+        XCTAssertTrue(tfr.areas[0].ring.allSatisfy { $0.lat >= 38 }, "area 1 stays in its own latitudes")
+        XCTAssertTrue(tfr.areas[1].ring.allSatisfy { $0.lat <= 32 }, "area 2 stays in its own latitudes")
+        // Per-area bands survive; the TFR-level band is the envelope (lowest floor, highest ceiling).
+        XCTAssertEqual(tfr.areas[0].ceilingFt, 17_999)
+        XCTAssertEqual(tfr.areas[1].ceilingFt, 5_000, "FL50 → 5000 ft")
+        XCTAssertEqual(tfr.areas[1].floorFt, 2_000)
+        XCTAssertEqual(tfr.floorFt, 0); XCTAssertEqual(tfr.ceilingFt, 17_999)
+        XCTAssertTrue(tfr.altitudesVaryByArea)
+        // Containment covers BOTH areas, and the bridge between them contains nothing.
+        XCTAssertTrue(tfr.contains(Coord(lat: 39.5, lon: -76.5)))
+        XCTAssertTrue(tfr.contains(Coord(lat: 30.3, lon: -79.5)))
+        XCTAssertFalse(tfr.contains(Coord(lat: 35.0, lon: -78.0)), "midway between the areas is OUTSIDE")
+    }
+
+    /// The dominant live-feed shape (62 of 126 NOTAMs on 2026-07-27): the boundary carries the SAME
+    /// circle twice — a tessellated vertex ring AND a trailing symbolic CIR. The duplicate must be
+    /// dropped, not appended (appending doubled the ring and, when the circle differed, drew a spike).
+    func testDuplicateInlineCircleIsDeduped() throws {
+        let clat = 34.0, clon = -118.0, r = 5.0
+        let dLat = r / 60, cosLat = cos(clat * .pi / 180)
+        var avx = ""
+        for k in 0..<8 {
+            let a = Double(k) * 45 * .pi / 180
+            let la = clat + dLat * cos(a), lo = clon + dLat / cosLat * sin(a)
+            avx += "<Avx><codeType>GRC</codeType><geoLat>\(String(format: "%.8f", la))N</geoLat>"
+                 + "<geoLong>\(String(format: "%.8f", abs(lo)))W</geoLong></Avx>"
+        }
+        avx += "<Avx><codeType>CIR</codeType><geoLat>34.00000000N</geoLat><geoLong>118.00000000W</geoLong>"
+             + "<valRadiusArc>5.0</valRadiusArc></Avx>"
+        let xml = "<TFR><valDistVerUpper>5000</valDistVerUpper><uomDistVerUpper>FT</uomDistVerUpper>\(avx)</TFR>"
+        let tfr = try XCTUnwrap(TFRParser.detail(xml, stub: .init(id: "6/9104", type: "HAZARDS", title: "Fire")))
+        XCTAssertEqual(tfr.areas.count, 1, "the coincident CIR is a duplicate encoding — dropped")
+        XCTAssertEqual(tfr.areas[0].ring.count, 8, "the vertex ring stands alone, not doubled")
+    }
+
+    /// A CIR that does NOT coincide with the path ring is real geometry — its own standalone ring,
+    /// never vertices spliced into the path (the spike bug).
+    func testDistinctInlineCircleBecomesOwnRing() throws {
+        let xml = polygonXML.replacingOccurrences(of: "</TFR>", with: """
+        <Avx><codeType>CIR</codeType><geoLat>34.00000000N</geoLat><geoLong>118.00000000W</geoLong>
+        <valRadiusArc>5.0</valRadiusArc></Avx></TFR>
+        """)
+        let tfr = try XCTUnwrap(TFRParser.detail(xml, stub: .init(id: "x", type: "SECURITY", title: "t")))
+        XCTAssertEqual(tfr.areas.count, 2, "path ring + distinct circle ring")
+        XCTAssertEqual(tfr.areas[0].ring.count, 4)
+        XCTAssertEqual(tfr.areas[1].ring.count, 36, "the circle is its own 36-point ring")
+        // No spike: the path ring contains no circle vertices and vice versa.
+        XCTAssertTrue(tfr.areas[0].ring.allSatisfy { $0.lon > -80 })
+        XCTAssertTrue(tfr.areas[1].ring.allSatisfy { $0.lon < -117 })
+    }
+
+    func testMultiAreaCodableRoundTrip() throws {
+        let tfr = try XCTUnwrap(TFRParser.detail(twoAreaXML, stub: .init(id: "4/9383", type: "SECURITY", title: "DC")))
+        let back = try JSONDecoder().decode(TFR.self, from: JSONEncoder().encode(tfr))
+        XCTAssertEqual(back, tfr, "areas + per-area bands survive the disk cache")
+        XCTAssertEqual(back.areas.count, 2)
+    }
+
+    func testLegacyCacheDecodesAsSingleArea() throws {
+        // The pre-areas snapshot in testDecodesOldCachedTFRWithoutNewFields — its polygon becomes one area.
+        let json = #"{"id":"1/1","type":"security","title":"t","polygon":[{"lat":39,"lon":-77},{"lat":39,"lon":-76},{"lat":40,"lon":-76}],"floorFt":0,"ceilingFt":18000}"#
+        let tfr = try JSONDecoder().decode(TFR.self, from: Data(json.utf8))
+        XCTAssertEqual(tfr.areas.count, 1)
+        XCTAssertEqual(tfr.areas[0].ring.count, 3)
+        XCTAssertEqual(tfr.areas[0].ceilingFt, 18_000, "legacy TFR-level band lands on the single area")
+        XCTAssertTrue(tfr.contains(Coord(lat: 39.4, lon: -76.4)))
+    }
+
+    // MARK: reason extraction
+
+    private func xmlWithBody(_ body: String) -> String {
+        polygonXML.replacingOccurrences(of: "</TFR>", with: "<txtDescrTraditional>\(body)</txtDescrTraditional></TFR>")
+    }
+
+    func testReasonFirePurposePhrase() {
+        let xml = xmlWithBody("""
+        !FDC 6/9104 ZAB NM..AIRSPACE 14NM N LOS ALAMOS, NM..TEMPORARY FLIGHT RESTRICTION. PURSUANT TO \
+        14 CFR SECTION 91.137(A)(2), TEMPORARY FLIGHT RESTRICTIONS ARE IN EFFECT. TO PROVIDE A SAFE \
+        ENVIRONMENT FOR FIRE FIGHTING ACFT OPS. PUEBLO DISPATCH, TEL 719-553-1600, IS IN CHARGE.
+        """)
+        let tfr = TFRParser.detail(xml, stub: .init(id: "6/9104", type: "HAZARDS", title: "Fire"))
+        XCTAssertEqual(tfr?.reason, "To provide a safe environment for fire fighting aircraft operations",
+                       "purpose phrase wins over the statute; ACFT/OPS expanded")
+    }
+
+    func testReasonPurposePhraseCutsAtAreaBoilerplate() {
+        // No period after the purpose — the phrase runs into the area definition. Cut at the first digit.
+        let xml = xmlWithBody("TO PROVIDE A SAFE ENVIRONMENT FOR FIRE FIGHTING ACFT OPS 5NM RADIUS OF 360300N1062130W (SAF322033.8).")
+        let tfr = TFRParser.detail(xml, stub: .init(id: "x", type: "HAZARDS", title: "t"))
+        XCTAssertEqual(tfr?.reason, "To provide a safe environment for fire fighting aircraft operations")
+    }
+
+    func testReasonSecurityStatuteFallback() {
+        let xml = xmlWithBody("""
+        !FDC 4/9383 ZDC DC..AIRSPACE WASHINGTON, DC. PURSUANT TO 49 USC 40103(B)(3), THE FAA CLASSIFIES \
+        THE AIRSPACE DEFINED IN THIS NOTAM AS 'NTL DEFENSE AIRSPACE'.
+        """)
+        let tfr = TFRParser.detail(xml, stub: .init(id: "4/9383", type: "SECURITY", title: "DC"))
+        XCTAssertEqual(tfr?.reason, "National defense airspace — security restriction (49 USC 40103(b)(3))")
+    }
+
+    func testReasonUASProtectionOfGathering() {
+        let xml = xmlWithBody("""
+        PURSUANT TO 49 U.S.C. SECTION 44812 AS AMENDED BY SECTION 935 OF THE FAA REAUTHORIZATION ACT \
+        OF 2024 FOR PROTECTION OF LARGE PUBLIC GATHERINGS. UAS FLT OPS ARE PROHIBITED.
+        """)
+        let tfr = TFRParser.detail(xml, stub: .init(id: "6/8932", type: "UAS PUBLIC GATHERING", title: "STL"))
+        XCTAssertEqual(tfr?.reason, "Protection of large public gatherings")
+    }
+
+    func testReasonHazardStatuteWhenNoPurposePhrase() {
+        let xml = xmlWithBody("PURSUANT TO 14 CFR SECTION 91.137(A)(2), TEMPORARY FLIGHT RESTRICTIONS ARE IN EFFECT.")
+        let tfr = TFRParser.detail(xml, stub: .init(id: "x", type: "HAZARDS", title: "t"))
+        XCTAssertEqual(tfr?.reason, "Hazard area — safety of persons and property on the surface (14 CFR 91.137(a)(2))")
+    }
+
+    func testReasonAbsentStaysNil() {
+        // No txtDescrTraditional at all (the FAA's own "TFR TYPE UNKNOWN" placeholder shape).
+        let tfr = TFRParser.detail(polygonXML, stub: .init(id: "x", type: "SPECIAL", title: "t"))
+        XCTAssertNil(tfr?.reason, "no NOTAM text → no reason row, never a guess")
+    }
 }
