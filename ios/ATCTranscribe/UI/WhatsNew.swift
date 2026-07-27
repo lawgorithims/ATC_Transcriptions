@@ -32,6 +32,30 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 96, version: "1.0", headline: "A new look: cinematic cockpit, day, and night themes",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "circle.lefthalf.filled",
+                    title: "The whole app has been restyled",
+                    detail: "Pure-black cockpit theme with a single sectional-blue accent, a flat-white day theme, and a true red night-vision theme. Industrial condensed typography, hairline separators, and flat surfaces replace the old glassy look — it should read like avionics, not a consumer app."),
+                WhatsNewHighlight(
+                    icon: "moon.fill",
+                    title: "Night mode is now dark-adaptation safe",
+                    detail: "In the Night theme the chart dims and desaturates under a faint red wash, callsign and speaker colors shift to warm reds and ambers, approach plates open pre-inverted, and the whole interface emits essentially no blue or green light. TFRs stay the brightest, most alarming mark on the map."),
+                WhatsNewHighlight(
+                    icon: "sun.min",
+                    title: "Chart brightness is yours to set",
+                    detail: "A new Chart Brightness slider in the Map layers panel dims the FAA chart imagery only — your route, traffic, TFRs and labels stay at full strength. It scales each theme's own level, so you can trim glare in the day and deepen the dim at night."),
+                WhatsNewHighlight(
+                    icon: "paintpalette",
+                    title: "Switch themes from Settings too",
+                    detail: "The theme picker now also lives in Settings → General → Appearance, alongside the quick switcher in the map's top bar. The map recolors in place when you switch — no reload, no lost position."),
+                WhatsNewHighlight(
+                    icon: "pencil.and.scribble",
+                    title: "Notes: the pencil palette puts itself away",
+                    detail: "Closing a note no longer leaves the drawing tool palette floating over the bottom tab bar."),
+            ]),
+        ReleaseNote(
             build: 95, version: "1.0", headline: "A live TFR opens first, and your offline kit survives an interrupted update",
             highlights: [
                 WhatsNewHighlight(
