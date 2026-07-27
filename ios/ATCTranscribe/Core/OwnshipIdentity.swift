@@ -161,13 +161,24 @@ struct OwnshipIdentity: Equatable {
             if OwnshipIdentity.mentionCues.contains(t) { return true }
             if OwnshipIdentity.digit(t) != nil {
                 // A digit normally bounds a prior aircraft's clause and halts the scan. But a digit that
-                // is part of a distance/position descriptor ("two miles", "ten o'clock") belongs to THIS
-                // traffic call, not another aircraft — stepping over it lets the scan still reach the
-                // "traffic"/"follow" cue behind it. Erring toward detecting the mention is the safe
+                // is part of a distance/position descriptor ("one two miles", "ten o'clock") belongs to
+                // THIS traffic call, not another aircraft — stepping over it lets the scan still reach
+                // the "traffic"/"follow" cue behind it. Erring toward detecting the mention is the safe
                 // direction: a missed mention mis-reads a traffic advisory as a clearance (dangerous),
                 // whereas a false mention merely suppresses one real suggestion (a benign miss).
-                let unit = (k + 1 < tokens.count) ? tokens[k + 1] : ""
-                if OwnshipIdentity.descriptorUnits.contains(unit) { k -= 1; continue }
+                //
+                // ATCNormalize.explodeDigits renders every multi-digit number as single spaced digits,
+                // so "12 miles" is "1 2 miles" — the descriptor unit follows the END of a contiguous
+                // digit RUN, not each digit. Look forward across the whole run (k is its low end) and, if
+                // it terminates in a unit — or in the split "o clock" of an o'clock bearing — step over
+                // the entire run. Otherwise a bare number is a prior aircraft's and halts the scan.
+                var end = k
+                while end + 1 < tokens.count, OwnshipIdentity.digit(tokens[end + 1]) != nil { end += 1 }
+                let after = (end + 1 < tokens.count) ? tokens[end + 1] : ""
+                let after2 = (end + 2 < tokens.count) ? tokens[end + 2] : ""
+                let isDescriptor = OwnshipIdentity.descriptorUnits.contains(after)
+                    || (after == "o" && after2 == "clock")       // "ten o'clock" → "1 0 o clock"
+                if isDescriptor { k -= 1; continue }              // step past this run, digit by digit
                 return false
             }
             if OwnshipIdentity.instructionWords.contains(t) { return false }

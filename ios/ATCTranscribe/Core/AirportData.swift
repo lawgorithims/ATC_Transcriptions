@@ -20,13 +20,22 @@ private let SQLITE_TRANSIENT = unsafeBitCast(-1, to: sqlite3_destructor_type.sel
 /// `CIFP`. Everything it returns is stamped with `provenance`, because it is on a 28-day cycle of its
 /// own that will not always agree with CIFP's.
 enum AirportData {
-    private static let db: OpaquePointer? = {
+    private static func open() -> OpaquePointer? {
         // A verified downloaded cycle when one is installed, else the bundled copy (see NavDataUpdate).
         guard let path = NavDataUpdate.activeURL(.apt)?.path else { return nil }
         var handle: OpaquePointer?
-        guard sqlite3_open_v2(path, &handle, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else { return nil }
+        guard sqlite3_open_v2(path, &handle, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else { return nil }
         return handle
-    }()
+    }
+    private static var dbHandle: OpaquePointer? = open()
+    private static var db: OpaquePointer? { dbHandle }
+
+    /// Test-only: re-resolve the handle after a NavDataUpdate install/revert so a fixture DB does not
+    /// leak into later tests. Production resolves once per launch (see CIFP.reopenForTests).
+    static func reopenForTests() {
+        if let h = dbHandle { sqlite3_close(h) }
+        dbHandle = open()
+    }
 
     /// NASR keys airports by FAA identifier ("DFW"), not ICAO ("KDFW"). Look up both.
     ///

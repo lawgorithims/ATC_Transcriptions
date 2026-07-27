@@ -16,7 +16,15 @@ final class NavDataUpdateTests: XCTestCase {
     }
     override func tearDownWithError() throws {
         try? FileManager.default.removeItem(at: tmp)
+        NavDataUpdate.revertToBundled(.apt)
         NavDataUpdate.revertToBundled(.cifp)
+        // These tests INSTALL a cycle-2699 fixture DB into the shared Application Support path. CIFP's
+        // handle is a resolve-once static, so any CIFP read that happened while the override was active
+        // bound the shared handle to that tiny fixture — starving every later CIFP-backed test in the
+        // process. Reopen against the now-reverted (bundled) path so the leak cannot cross the class
+        // boundary. (revert alone is not enough once the handle is already bound.)
+        CIFP.reopenForTests()
+        AirportData.reopenForTests()
     }
 
     /// A minimal database shaped like the real one, so the invariant checks have something to bite on.

@@ -113,8 +113,19 @@ struct CIFPRunway: Equatable, Sendable {
 /// Read-only reader for the bundled `cifp.sqlite` (built by `Tools/build_cifp.py` from the FAA CIFP).
 /// One shared read-only + full-mutex connection, like `MBTilesReader`. Missing DB → empty results.
 enum CIFP {
-    private static let db: OpaquePointer? = open()
+    private static var dbHandle: OpaquePointer? = open()
+    private static var db: OpaquePointer? { dbHandle }
     static var available: Bool { db != nil }
+
+    /// Discard and re-resolve the DB handle against the CURRENT active URL. Production resolves the
+    /// handle once per launch on purpose (a downloaded-cycle swap takes effect next launch, never under
+    /// a query in flight) — this exists so a test that installs/reverts a NavDataUpdate override in the
+    /// SAME process does not leave the shared handle bound to its fixture DB, starving every later
+    /// CIFP-backed test. Test-only; never call it from production install/revert.
+    static func reopenForTests() {
+        if let h = dbHandle { sqlite3_close(h) }
+        dbHandle = open()
+    }
 
     private static func open() -> OpaquePointer? {
         // A verified downloaded cycle when one is installed, else the bundled copy. Resolved once per
