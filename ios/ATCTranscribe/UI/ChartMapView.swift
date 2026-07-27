@@ -294,6 +294,10 @@ struct SavedMapCamera: Equatable {
                            span: MKCoordinateSpan(latitudeDelta: latDelta, longitudeDelta: lonDelta))
     }
 
+    /// The camera's center — the fallback anchor for the internet ADS-B poll when there is no GPS fix
+    /// and no typed airport, so traffic loads around what the pilot is actually looking at.
+    var center: Coord { Coord(lat: centerLat, lon: centerLon) }
+
     /// A saved camera is restorable only within `maxAge` (30 min) of being set — a rebuild moments
     /// after a thermal blip restores; returning to a hours-old session re-frames the route instead.
     static let maxAge: TimeInterval = 30 * 60

@@ -1323,7 +1323,11 @@ final class AppModel: ObservableObject {
         if let recovered = flightRecorder.recoveredPendingSave { pendingLoggedFlight = recovered }
         // Keep the online-ADS-B poll centered on the aircraft as it flies (throttled to ~10 NM).
         deviceCoordCancellable = deviceLocation.$coord
-            .sink { [weak self] _ in self?.recenterADSBIfMoved() }
+            // Deferred to the next main-actor turn: @Published fires in willSet, so reading
+            // presentPosition synchronously here would see the PRE-update (still-nil-on-first-fix)
+            // coordinate and never start the poller. After the hop the coord is assigned, so the first
+            // fix reliably (re)centers ADS-B on the aircraft.
+            .sink { [weak self] _ in Task { @MainActor in self?.recenterADSBIfMoved() } }
         observeGPSIntegrity()   // mirror the integrity verdict + stamp it onto the transcript log
         // Bring the traffic providers in line with the restored state: the Stratux link is decoupled
         // from Start (see `stratuxTrafficActive`), so an enabled link must connect at launch — nothing
@@ -2855,9 +2859,13 @@ final class AppModel: ObservableObject {
     /// Reconcile the airplanes.live poller (single edge-triggered call). Polls only while online ADS-B
     /// is ON, the Stratux link is not streaming, a live session is running, and the app is foregrounded.
     func syncADSB() {
-        // Center on the AIRCRAFT (present position) so traffic follows you in flight, falling back to the
-        // airport context when there's no fix yet. Re-centered as you move via recenterADSBIfMoved.
-        let center = presentPosition ?? facilityCoordinate()
+        // Center on the AIRCRAFT (present position) so traffic follows you in flight; else the typed
+        // airport context; else the MAP CAMERA CENTER. The last fallback is what makes the feed work at
+        // all before a GPS fix, on the ground, or in the simulator: without it a nil center took the
+        // poller's `center != nil` guard down the stop() branch and nothing was ever fetched — the map
+        // sat on "Loading traffic…" forever. With it, traffic loads around whatever the pilot is looking
+        // at, then re-centers on ownship once a fix arrives.
+        let center = presentPosition ?? facilityCoordinate() ?? lastMapCamera?.center
         lastADSBCenter = center
         let active = adsbActive
         let service = adsbService
@@ -2870,6 +2878,15 @@ final class AppModel: ObservableObject {
     func recenterADSBIfMoved() {
         guard adsbActive, let pos = presentPosition else { return }
         if let last = lastADSBCenter, Geo.nmBetween(last, pos) <= 10 { return }
+        syncADSB()
+    }
+
+    /// Re-center the ADS-B poll on a MAP PAN — but only while there is no GPS fix to follow, so panning
+    /// the chart before departure updates the polled area while an in-flight fix still owns the center.
+    /// Throttled like recenterADSBIfMoved. Called when the map's visible region settles.
+    func recenterADSBForMap() {
+        guard adsbActive, presentPosition == nil, let center = lastMapCamera?.center else { return }
+        if let last = lastADSBCenter, Geo.nmBetween(last, center) <= 10 { return }
         syncADSB()
     }
 
