@@ -2851,6 +2851,43 @@ final class AppModel: ObservableObject {
     /// Either traffic provider is feeding the corrector/UI right now.
     private var trafficActive: Bool { adsbActive || stratuxTrafficActive }
 
+    /// What the online-traffic layer is ACTUALLY doing — the pill's text, and the answer to "why do I
+    /// see no aircraft?".
+    ///
+    /// ⚠️ The pill used to infer this from `aircraftUpdatedAt == nil` alone, which conflated two
+    /// opposite states: a poller that is fetching, and a poller that is **not running at all**
+    /// (`ADSBStatus.idle` — its initial value and what `stop()` publishes). A pilot in standby, or
+    /// with the layer suppressed, watched a spinner promise data that was never coming. Distinguish
+    /// them, and say what to DO about it.
+    var trafficFeed: TrafficFeedState {
+        Self.trafficFeed(enabled: adsbStreamingEnabled, stratuxEnabled: stratuxEnabled,
+                         standby: standby, foreground: scenePhaseActive, status: adsbStatus,
+                         hasCenter: lastADSBCenter != nil, updatedAt: aircraftUpdatedAt,
+                         aircraftCount: aircraft.count)
+    }
+
+    /// Pure decision table behind `trafficFeed`, so every branch is unit-tested without a live model.
+    /// Order matters: a reason the pilot can ACT on (standby, background, off) outranks a transient.
+    /// `nonisolated` because it touches no model state — only its arguments.
+    nonisolated static func trafficFeed(enabled: Bool, stratuxEnabled: Bool, standby: Bool, foreground: Bool,
+                            status: ADSBStatus, hasCenter: Bool, updatedAt: Date?,
+                            aircraftCount: Int) -> TrafficFeedState {
+        guard enabled else { return .off }
+        if stratuxEnabled { return .stratux }
+        if standby { return .paused("Traffic paused — Standby is on") }
+        if !foreground { return .paused("Traffic paused — app in the background") }
+        if case .error(let why) = status { return .failed(why) }
+        // Running, but nothing to poll around: no fix, no typed airport, no settled map camera.
+        if !hasCenter { return .waitingForCenter }
+        if updatedAt == nil {
+            // Enabled + centered + no error + no snapshot: if the service never even reported .ok the
+            // poller is idle rather than slow — surface that instead of an eternal spinner.
+            if case .idle = status { return .idleUnexpected }
+            return .loading
+        }
+        return aircraftCount == 0 ? .liveEmpty : .liveWithAircraft
+    }
+
     /// Reconcile BOTH traffic providers with the current state (at most one streams — an enabled
     /// Stratux link outranks the internet poller). Call on every transition (start/stop, source
     /// change, link toggle, standby, scene phase).

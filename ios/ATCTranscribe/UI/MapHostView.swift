@@ -116,6 +116,17 @@ struct MapHostView: View {
     /// symbology draws at all — so panning the chart doesn't turn into a network fire hose.
     private func ensureVisibleWeather(_ rect: MKMapRect) { ensureVisibleWeather(MKCoordinateRegion(rect)) }
 
+    /// Aim the precipitation-radar prefetch at what is ON SCREEN. Called from the same debounced
+    /// visible-region settle as the METAR seeding, so panning to look at weather ahead warms THAT
+    /// weather's tiles rather than the ones over the aircraft.
+    private func aimRadarPrefetch(_ region: MKCoordinateRegion) {
+        guard region.span.latitudeDelta > 0, region.span.longitudeDelta > 0 else { return }
+        model.rainViewer.viewportChanged(RadarRegion(centerLat: region.center.latitude,
+                                                     centerLon: region.center.longitude,
+                                                     latSpan: region.span.latitudeDelta,
+                                                     lonSpan: region.span.longitudeDelta))
+    }
+
     private func ensureVisibleWeather(_ region: MKCoordinateRegion) {
         let latD = region.span.latitudeDelta, lonD = region.span.longitudeDelta
         guard latD > 0, lonD > 0, latD < 5.5 else { return }        // matches the nav layer's own zoom gate
@@ -290,6 +301,7 @@ struct MapHostView: View {
                          model.lastMapCamera = SavedMapCamera(rect: rect, now: Date())
                          model.recenterADSBForMap()   // GPS-less: poll traffic around what's on screen
                          ensureVisibleWeather(rect)
+                         aimRadarPrefetch(MKCoordinateRegion(rect))   // warm the radar the pilot is looking at
                          Task { await store.ensureVisible(rect, layer: model.chartLayer) }
                      },
                      onTapObjects: { objs in
@@ -373,6 +385,7 @@ struct MapHostView: View {
                 model.lastMapCamera = SavedMapCamera(rect: rect, now: Date())
                 model.recenterADSBForMap()   // GPS-less: poll traffic around what's on screen
                 ensureVisibleWeather(rect)   // conditions for the fields on screen → category rings + trend markers
+                aimRadarPrefetch(MKCoordinateRegion(rect))   // warm the radar the pilot is looking at
             },
             renderMeter: model.renderMeter,   // battery diagnostics: per-frame counter → map fps
             globeProjection: model.useGlobeProjection,   // DEV harness: flat vs globe (inert on stock 6.27.0)
@@ -414,20 +427,12 @@ struct MapHostView: View {
     }
 
     /// Online ADS-B traffic state. Hidden while the Stratux link provides traffic (its own widget shows
-    /// status) and once aircraft are actually drawn (the planes are their own evidence).
+    /// status) and once aircraft are actually drawn (the planes are their own evidence). Every branch —
+    /// including "the poller is not running" — comes from `model.trafficFeed`, so the pill can no longer
+    /// spin "Loading…" over a feed that is paused or idle.
     @ViewBuilder private var trafficStatusPill: some View {
-        if model.adsbStreamingEnabled, !model.stratuxEnabled {
-            if case .error = model.adsbStatus {
-                statusPill("Traffic unavailable — check connection", "wifi.exclamationmark")
-            } else if model.aircraftUpdatedAt == nil {
-                if model.presentPosition == nil && model.airport.isEmpty {
-                    statusPill("Traffic is waiting for a GPS fix…", "location.slash")
-                } else {
-                    statusPill("Loading traffic…", "airplane", spin: true)
-                }
-            } else if model.aircraft.isEmpty {
-                statusPill("Traffic live — no aircraft nearby", "airplane")
-            }
+        if let text = model.trafficFeed.pillText {
+            statusPill(text, model.trafficFeed.pillIcon, spin: model.trafficFeed.pillSpins)
         }
     }
 
