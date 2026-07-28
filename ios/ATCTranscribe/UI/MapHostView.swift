@@ -252,7 +252,7 @@ struct MapHostView: View {
         .overlay(alignment: .bottom) {
             if live {
                 RadarLoopBar(rainViewer: model.rainViewer, widgets: widgets,
-                             show: model.showWxRadar, gpsBar: model.showGPSBar, palette: model.palette)
+                             show: model.showWxRadar, palette: model.palette)
             }
         }
         .overlay(alignment: .trailing) { if live, showZoomControls { mapSideControls } }
@@ -602,15 +602,16 @@ private struct RadarStatusPill: View {
     }
 }
 
-/// The weather-radar LOOP scrubber — a docked bar above the GPS bar with play/pause, a time-scale slider to
-/// jump between frames (past → now → forecast), and the selected frame's time. Replaces the build-72
-/// center-bottom play button. Insets horizontally to clear docked side-panes.
+/// The weather-radar LOOP scrubber — play/pause, a time-scale slider to jump between frames
+/// (past → now → forecast), and the selected frame's time. Insets horizontally to clear docked
+/// side-panes, and sits FLUSH on the bottom chrome: directly on the GPS bar when it is shown, else on
+/// the tab bar, with the data-currency banner (when it appears) counted too.
 private struct RadarLoopBar: View {
     @ObservedObject var rainViewer: RainViewerService
     @ObservedObject var widgets: WidgetStore
     let show: Bool
-    let gpsBar: Bool
     let palette: Palette
+
 
     var body: some View {
         Group {
@@ -658,8 +659,6 @@ private struct RadarLoopBar: View {
                 .padding(.horizontal, 16)
                 .padding(.leading, widgets.leftPane != nil ? paneWidth(widgets.leftPaneWidth) : 0)
                 .padding(.trailing, widgets.rightPane != nil ? paneWidth(widgets.rightPaneWidth) : 0)
-                // The map .ignoresSafeArea(), so clear the bottom tab bar (~84) + the GPS bar (~56) when shown.
-                .padding(.bottom, gpsBar ? 150 : 96)
                 .accessibilityIdentifier("radar-loop-bar")
             }
         }
