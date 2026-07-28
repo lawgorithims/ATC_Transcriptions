@@ -47,7 +47,22 @@ case "$type" in
       # (clip Dallas_Ft_Worth_SEC.shp ↔ download Dallas-Ft_Worth.zip). Map the known exceptions.
       urlname="$name"; case "$name" in Dallas_Ft_Worth) urlname="Dallas-Ft_Worth" ;; esac
       url="https://aeronav.faa.gov/visual/${CYCLE}/sectional-files/${urlname}.zip"
-      [ -s "$zip" ] || { echo "↓ $url"; curl -fsS -A "$UA" -o "$zip" "$url"; }
+      # ⚠️ VALIDATE the cached zip, don't just check it is non-empty. `-s` alone treats a TRUNCATED
+      # download as a finished one, so a single interrupted fetch poisons this chart on every future
+      # run — for good. That is exactly how Jacksonville (16 MB of 51) and Montreal (7 MB of 64)
+      # silently dropped out of the 07-09-2026 build three days after the partial download happened.
+      # `unzip -t` is the cheap authoritative check: a complete archive tests clean.
+      if [ -s "$zip" ] && ! unzip -tqq "$zip" >/dev/null 2>&1; then
+        echo "  ✗ cached $(basename "$zip") is corrupt/truncated — refetching"
+        rm -f "$zip"
+      fi
+      [ -s "$zip" ] || {
+        echo "↓ $url"
+        curl -fsS --retry 3 --retry-delay 2 --retry-all-errors -A "$UA" -o "$zip" "$url" || {
+          echo "!! download failed: $url"; rm -f "$zip"; exit 1; }
+        unzip -tqq "$zip" >/dev/null 2>&1 || {
+          echo "!! downloaded archive is corrupt: $url"; rm -f "$zip"; exit 1; }
+      }
       mkdir -p "$dir"; unzip -o -q "$zip" -d "$dir"
       src="$(ls "$dir"/*.tif | head -1)"
     else src="$FROM_TIF"; fi ;;
