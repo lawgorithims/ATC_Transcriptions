@@ -37,6 +37,9 @@ struct CIFPLeg: Identifiable {
     var speedLimitKt: Int?
     var verticalAngleDeg: Double?
     var rnpNm: Double?
+    /// ARINC turn direction — "R"/"L", "" when the source publishes none. Required to draw a HOLD on
+    /// the correct side of its inbound course, so it is READ, never assumed to be standard-right.
+    var turnDirection: String = ""
 
     /// The published role of this leg, if the source marks one.
     var role: LegRole { LegRole(wpDesc: wpDesc) }
@@ -154,7 +157,8 @@ enum CIFP {
         var st: OpaquePointer?
         guard sqlite3_prepare_v2(db, """
               SELECT seq,fix,lat,lon,leg_type,course_mag,alt,COALESCE(wp_desc,''),
-                     COALESCE(alt_desc,''),COALESCE(alt2,''),speed_limit,vertical_angle,rnp
+                     COALESCE(alt_desc,''),COALESCE(alt2,''),speed_limit,vertical_angle,rnp,
+                     COALESCE(turn,'')
               FROM leg WHERE procedure_id=?1 ORDER BY seq
               """, -1, &st, nil) == SQLITE_OK else { return [] }
         defer { sqlite3_finalize(st) }
@@ -170,7 +174,8 @@ enum CIFP {
                                altDesc: text(st, 8), altitude2: text(st, 9),
                                speedLimitKt: intOrNil(st, 10),
                                verticalAngleDeg: doubleOrNil(st, 11),
-                               rnpNm: doubleOrNil(st, 12)))
+                               rnpNm: doubleOrNil(st, 12),
+                               turnDirection: text(st, 13)))
         }
         return out
     }
