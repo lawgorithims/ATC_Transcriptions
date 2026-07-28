@@ -7,6 +7,44 @@ enum ADSBStatus: Sendable, Equatable {
     case error(String)     // last poll failed (offline / 429 / http / decode)
 }
 
+/// What the online-traffic layer is doing, in terms the pilot can act on. Drives the map pill — see
+/// `AppModel.trafficFeed`, which is where the ordering rationale lives.
+enum TrafficFeedState: Equatable {
+    case off                       // the layer is switched off
+    case stratux                   // the Stratux link owns traffic; its own widget reports status
+    case paused(String)            // running would be pointless right now (standby / background)
+    case waitingForCenter          // no fix, no typed airport, no settled camera → nothing to poll around
+    case loading                   // polling, no snapshot yet
+    case idleUnexpected            // enabled + centered + no error, yet the poller never reported in
+    case failed(String)            // last poll failed
+    case liveEmpty                 // fetched fine, genuinely no aircraft in range
+    case liveWithAircraft          // aircraft are drawn — the planes are their own evidence
+
+    /// The pill's text, or nil when the map should say nothing (the aircraft speak for themselves).
+    var pillText: String? {
+        switch self {
+        case .off, .stratux, .liveWithAircraft: return nil
+        case .paused(let why):    return why
+        case .waitingForCenter:   return "Traffic is waiting for a GPS fix…"
+        case .loading:            return "Loading traffic…"
+        case .idleUnexpected:     return "Traffic feed idle — toggle the layer to retry"
+        case .failed:             return "Traffic unavailable — check connection"
+        case .liveEmpty:          return "Traffic live — no aircraft nearby"
+        }
+    }
+    /// SF Symbol for the pill.
+    var pillIcon: String {
+        switch self {
+        case .waitingForCenter:            return "location.slash"
+        case .failed:                      return "wifi.exclamationmark"
+        case .paused, .idleUnexpected:     return "pause.circle"
+        default:                           return "airplane"
+        }
+    }
+    /// Only a genuine in-flight fetch spins — a paused or idle feed must not imply progress.
+    var pillSpins: Bool { self == .loading }
+}
+
 enum ADSBFeedError: Error, Equatable { case rateLimited, http(Int), badURL }
 
 /// Abstraction over the actual network fetch so the service's freshness/lifecycle logic is

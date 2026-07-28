@@ -8,6 +8,25 @@ struct RadarFrame: Equatable {
     let isForecast: Bool
 }
 
+/// The map's visible extent, in degrees — the area whose radar tiles are warmed first. Deliberately
+/// UIKit-free so the tile math stays pure and unit-testable (the hosts convert their own region type).
+struct RadarRegion: Equatable {
+    let centerLat, centerLon, latSpan, lonSpan: Double
+
+    /// A slippy tile address.
+    struct Tile: Equatable, Hashable { let z: Int, x: Int, y: Int }
+
+    /// Whether the map moved far enough to be worth re-warming: a re-prefetch on every 0.4 s settle
+    /// while the pilot drags would hammer the network for tiles that scroll off a moment later.
+    /// "Far enough" = a shift of more than a third of the span, or a zoom change beyond ±50%.
+    func differsMeaningfully(from o: RadarRegion) -> Bool {
+        let dLat = abs(centerLat - o.centerLat), dLon = abs(centerLon - o.centerLon)
+        if dLat > o.latSpan / 3 || dLon > o.lonSpan / 3 { return true }
+        let zoomRatio = latSpan / max(o.latSpan, 1e-9)
+        return zoomRatio > 1.5 || zoomRatio < 0.66
+    }
+}
+
 /// Live precipitation-radar tiles from RainViewer (free, no API key). RainViewer's tile path carries the
 /// FRAME TIMESTAMP and rolls over every ~10 min, so we can't hardcode a `{z}/{x}/{y}` template — we fetch
 /// `weather-maps.json` for the frame list (last ~2 h observed + ~30 min nowcast), then publish a standard
@@ -37,13 +56,21 @@ struct RadarFrame: Equatable {
     /// The index of the newest OBSERVED (non-forecast) frame — the "now" anchor for the loop + labels.
     private(set) var nowIndex = 0
     /// Map center the host last reported, used to pick a representative tile to prefetch (nil → CONUS).
+    /// Superseded by `prefetchRegion` when the map has reported a visible region — the pilot is often
+    /// looking AHEAD of the aircraft (or at another field entirely), and the radar they need warmed is
+    /// the radar on screen, not the radar overhead.
     var prefetchCenter: (lat: Double, lon: Double)?
+
+    /// The map's current visible region. Set from the engines' visible-region callback, so the prefetch
+    /// warms the tiles actually on screen, nearest-to-center first.
+    var prefetchRegion: RadarRegion?
 
     /// Attribution required by RainViewer's free tier.
     static let attribution = "Radar: RainViewer"
 
     private var scrubbing = false                          // a manual scrub pins the frame across refreshes
     private var lastPrefetchNewest: Date?                  // frames already warmed → don't re-prefetch/re-flash
+    private var lastPrefetchRegion: RadarRegion?           // view already warmed → only re-warm on a real move
     private var didFirstBuffer = false                     // show the buffering % only on the FIRST pass
     private var refreshTask: Task<Void, Never>?
     private var animTask: Task<Void, Never>?
@@ -94,7 +121,7 @@ struct RadarFrame: Equatable {
         stopAnimation()
         prefetchTask?.cancel(); prefetchTask = nil
         frames = []; scrubbing = false; frameLabel = ""; bufferProgress = nil
-        lastPrefetchNewest = nil; didFirstBuffer = false
+        lastPrefetchNewest = nil; lastPrefetchRegion = nil; didFirstBuffer = false
         tileTemplate = nil; failed = false; currentIndex = 0
     }
 
@@ -161,35 +188,56 @@ struct RadarFrame: Equatable {
 
     // MARK: prefetch (buffer % + smoother first loop)
 
-    /// Warm one representative tile per frame so the loop plays smoothly the first time and the loading pill
-    /// can show a real %. Light: one small tile per frame (~a dozen). Runs only when the FRAME SET actually
-    /// changed (not on every 5-min refresh of the same frames), and surfaces the % only on the FIRST pass —
-    /// subsequent new-frame warms are silent, so the corner pill never re-flashes over already-live radar.
+    /// Warm the tiles the pilot is LOOKING AT, so the radar on screen fills in first and the loop plays
+    /// smoothly. Ordering is the whole point:
+    ///
+    ///   1. the CURRENT frame's viewport cover, nearest-to-center first — what is on screen right now;
+    ///   2. then the remaining frames, one center tile each, so the animation still has something warm.
+    ///
+    /// Pass 2 is deliberately thin: a full cover × ~13 frames would be a hundred requests every rollover,
+    /// and MapLibre fetches whatever the visible frame actually needs on its own. Runs only when the frame
+    /// set changed OR the map moved meaningfully, and shows the % only on the first pass, so the corner
+    /// pill never re-flashes over already-live radar.
     private func prefetch() {
         prefetchTask?.cancel()
         let list = frames
         guard let newest = list.last?.time else { bufferProgress = nil; return }
-        guard newest != lastPrefetchNewest else { return }        // these exact frames already warmed
+        let region = prefetchRegion
+        let movedEnough = region != nil && (lastPrefetchRegion.map { region!.differsMeaningfully(from: $0) } ?? true)
+        guard newest != lastPrefetchNewest || movedEnough else { return }   // same frames, same view → done
         lastPrefetchNewest = newest
+        lastPrefetchRegion = region
         let showPct = !didFirstBuffer
-        let (z, x, y) = Self.representativeTile(center: prefetchCenter)
+        // Where to warm: the visible region when the map has reported one, else the aircraft, else CONUS.
+        let viewport: [RadarRegion.Tile]
+        if let region {
+            viewport = Self.viewportTiles(region)
+        } else {
+            let t = Self.representativeTile(center: prefetchCenter)
+            viewport = [RadarRegion.Tile(z: t.z, x: t.x, y: t.y)]
+        }
+        let centerTile = viewport.first ?? RadarRegion.Tile(z: 4, x: 0, y: 0)
+        let current = frames.indices.contains(currentIndex) ? frames[currentIndex] : list[0]
+        // The work list, in priority order: the visible frame's whole cover, then one tile per other frame.
+        var jobs: [(template: String, tile: RadarRegion.Tile)] = viewport.map { (current.template, $0) }
+        for f in list where f != current { jobs.append((f.template, centerTile)) }
         if showPct { bufferProgress = 0 }
         prefetchTask = Task { [weak self] in
             var done = 0
-            for f in list {                                       // bounded by frames.count (rule 2)
+            for job in jobs {                                     // bounded: viewport ≤ 9 + frames (rule 2)
                 if Task.isCancelled { return }
-                let tile = f.template
-                    .replacingOccurrences(of: "{z}", with: "\(z)")
-                    .replacingOccurrences(of: "{x}", with: "\(x)")
-                    .replacingOccurrences(of: "{y}", with: "\(y)")
-                if let u = URL(string: tile) {
+                let url = job.template
+                    .replacingOccurrences(of: "{z}", with: "\(job.tile.z)")
+                    .replacingOccurrences(of: "{x}", with: "\(job.tile.x)")
+                    .replacingOccurrences(of: "{y}", with: "\(job.tile.y)")
+                if let u = URL(string: url) {
                     var r = URLRequest(url: u); r.timeoutInterval = 10
                     _ = try? await URLSession.shared.data(for: r)  // warms URLCache; result ignored
                 }
                 if Task.isCancelled { return }                    // don't write a stale % after a newer prefetch reset it
                 done += 1
                 if showPct {
-                    let frac = Double(done) / Double(list.count)
+                    let frac = Double(done) / Double(jobs.count)
                     await MainActor.run { self?.bufferProgress = frac < 1 ? frac : nil }
                 }
             }
@@ -197,16 +245,91 @@ struct RadarFrame: Equatable {
         }
     }
 
+    /// The map moved (or zoomed) — re-warm around the new view if it moved far enough to matter. Called
+    /// from the engines' debounced visible-region settle, so a drag re-warms once it comes to rest.
+    func viewportChanged(_ region: RadarRegion) {
+        prefetchRegion = region
+        guard refreshTask != nil, !frames.isEmpty else { return }   // layer off / nothing fetched yet
+        prefetch()
+    }
+
     /// A single slippy tile covering the given center (z6 regional), or a CONUS overview (z4) with no center.
     nonisolated static func representativeTile(center: (lat: Double, lon: Double)?) -> (z: Int, x: Int, y: Int) {
         let z = center == nil ? 4 : 6
         let lat = center?.lat ?? 39.5, lon = center?.lon ?? -98.35     // geographic center of CONUS
+        return tile(lat: lat, lon: lon, z: z)
+    }
+
+    /// Slippy-tile address of a coordinate, clamped to the pyramid. Web-Mercator, so latitude is clamped
+    /// to ±85.05° — `tan` blows up at the poles and RainViewer has no data there anyway.
+    nonisolated static func tile(lat: Double, lon: Double, z: Int) -> (z: Int, x: Int, y: Int) {
         let n = Double(1 << z)
+        let clampedLat = min(max(lat, -85.05), 85.05)
         let x = Int(floor((lon + 180.0) / 360.0 * n))
-        let latRad = lat * .pi / 180
+        let latRad = clampedLat * .pi / 180
         let y = Int(floor((1 - log(tan(latRad) + 1 / cos(latRad)) / .pi) / 2 * n))
         let cap = (1 << z) - 1
         return (z, min(max(x, 0), cap), min(max(y, 0), cap))
+    }
+
+    /// RainViewer's free tier serves a "Zoom Level Not Supported" placeholder past z7 (the raster layer
+    /// caps there too and overzooms), so tiles are never requested deeper than this.
+    static let maxRadarZoom = 7
+
+    /// The tiles covering `region`, **nearest-to-center first** and bounded — the tiles the pilot is
+    /// actually looking at, in the order they matter. Zoom is chosen so the cover stays small: start at
+    /// the deepest allowed level and back off until the cover fits in `maxTiles`, so a tight view gets
+    /// sharp regional tiles and a continental view gets a couple of coarse ones instead of hundreds.
+    ///
+    /// Pure + nonisolated so it is unit-tested without a map or a network.
+    nonisolated static func viewportTiles(_ region: RadarRegion, maxTiles: Int = 9) -> [RadarRegion.Tile] {
+        assert(maxTiles > 0, "viewportTiles: maxTiles must be positive")
+        guard region.latSpan > 0, region.lonSpan > 0, maxTiles > 0 else {
+            let t = tile(lat: region.centerLat, lon: region.centerLon, z: 4)
+            return [RadarRegion.Tile(z: t.z, x: t.x, y: t.y)]
+        }
+        let minLat = region.centerLat - region.latSpan / 2, maxLat = region.centerLat + region.latSpan / 2
+        let minLon = region.centerLon - region.lonSpan / 2, maxLon = region.centerLon + region.lonSpan / 2
+        var z = maxRadarZoom
+        while z > 0 {                                                  // bounded: z is strictly decreasing
+            assert(z <= maxRadarZoom, "viewportTiles: zoom out of range")
+            // y grows southward, so the NORTH edge gives the low y.
+            let tl = tile(lat: maxLat, lon: minLon, z: z), br = tile(lat: minLat, lon: maxLon, z: z)
+            let wide = br.x >= tl.x ? (br.x - tl.x + 1) : (1 << z)      // antimeridian span → whole row
+            let tall = br.y - tl.y + 1
+            if wide * tall <= maxTiles { return ordered(tl: tl, br: br, wide: wide, region: region, z: z) }
+            z -= 1
+        }
+        let t = tile(lat: region.centerLat, lon: region.centerLon, z: 0)
+        return [RadarRegion.Tile(z: t.z, x: t.x, y: t.y)]
+    }
+
+    /// The cover rectangle, sorted by distance from the region's center tile so the middle of the screen
+    /// fills first (a pilot reads the weather under the aircraft before the corners).
+    private nonisolated static func ordered(tl: (z: Int, x: Int, y: Int), br: (z: Int, x: Int, y: Int),
+                                            wide: Int, region: RadarRegion, z: Int) -> [RadarRegion.Tile] {
+        let c = tile(lat: region.centerLat, lon: region.centerLon, z: z)
+        let cap = 1 << z
+        var out: [RadarRegion.Tile] = []
+        var dy = 0
+        while tl.y + dy <= br.y {                                      // bounded by the cover height
+            assert(out.count <= 4096, "viewportTiles: cover unbounded")
+            var dx = 0
+            while dx < wide {                                          // bounded by the cover width
+                out.append(RadarRegion.Tile(z: z, x: (tl.x + dx) % cap, y: tl.y + dy))
+                dx += 1
+            }
+            dy += 1
+        }
+        return out.sorted { a, b in
+            // Compare on the x-wrap-aware ring distance so a cover straddling the antimeridian still
+            // orders outward from the center rather than treating x=0 and x=cap-1 as far apart.
+            func d(_ t: RadarRegion.Tile) -> Int {
+                let raw = abs(t.x - c.x)
+                return min(raw, cap - raw) + abs(t.y - c.y)
+            }
+            return d(a) < d(b)
+        }
     }
 
     // MARK: parsing (pure / testable)
