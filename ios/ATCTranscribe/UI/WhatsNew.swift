@@ -32,6 +32,26 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 99, version: "1.0", headline: "Radar loads on its own, and the controls sit where they belong",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "cloud.rain",
+                    title: "Fixed: weather radar never started after a restart",
+                    detail: "If you left the radar layer switched on, a fresh launch never actually started fetching it — the map sat on \"Loading radar…\" for the whole session, and the only way out was to toggle the layer off and back on. Every other live layer was being restarted at launch; radar was the one that was missed."),
+                WhatsNewHighlight(
+                    icon: "rectangle.bottomthird.inset.filled",
+                    title: "The radar play/scrub bar is flush with the bottom bar",
+                    detail: "It used to float in the middle of the lower map, and it could overlap the data-expiry notice. It now sits directly on the GPS bar — or on the tab bar when the GPS bar is hidden."),
+                WhatsNewHighlight(
+                    icon: "scope",
+                    title: "Radar loads the area you're looking at first",
+                    detail: "The loop used to warm a single tile near the aircraft, so panning ahead to read weather along the route left the screen filling in slowly. It now loads the tiles actually on screen, working outward from the middle."),
+                WhatsNewHighlight(
+                    icon: "airplane.circle",
+                    title: "The traffic indicator tells you the truth",
+                    detail: "The traffic pill showed a spinning \"Loading traffic…\" whenever no aircraft had arrived — including when the feed was not running at all. It now says what is actually happening and what to do: paused for Standby, paused in the background, idle, or genuinely unavailable."),
+            ]),
+        ReleaseNote(
             build: 98, version: "1.0", headline: "TFRs draw their real shapes — and tell you why they exist",
             highlights: [
                 WhatsNewHighlight(

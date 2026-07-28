@@ -1336,6 +1336,11 @@ final class AppModel: ObservableObject {
         syncTraffic()
         syncEONET()      // same launch edge for a restored hazards toggle
         syncTFRs()       // and a restored TFR toggle
+        // ⚠️ The radar needs the SAME launch edge and was the one poller missing it: with the layer
+        // persisted ON, nothing started RainViewer until the pilot toggled it off and on, so the map
+        // sat on "Loading radar…" for the whole session. Same class as the traffic-pill lie — a
+        // restored toggle is not an edge, so every poller must be reconciled explicitly here.
+        syncRadar()
         refreshTripStats()   // seed the flight-plan strip's stats row from the restored plan
         // Under thermal pressure the map flattens its terrain + pauses network layers (it is NEVER torn
         // down). `--thermal` (QA-only, non-persisting) forces the state so the graceful degradation is
