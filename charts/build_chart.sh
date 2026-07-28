@@ -86,6 +86,13 @@ if [ "$mode" = "warp" ]; then echo "  (warp-only; mosaic step will consume $warp
 rm -f "$mb"
 gdal_translate -q -of MBTILES -co "TILE_FORMAT=${TILE_FORMAT}" -co "QUALITY=${QUALITY}" "$warp" "$mb"
 gdaladdo -q -r average "$mb" $ZOOM_OVERVIEWS
+# GUARD: assert the pack really used the requested encoding. `charts.conf` sets TILE_FORMAT but this
+# script runs as a CHILD, so an unexported value silently fell through to the PNG default here and
+# produced ~5× oversized packs (428 MB Albuquerque vs ~85 MB WEBP) — shipped to HF and to every
+# pilot before anyone noticed. Fail loudly instead of uploading gigabytes of the wrong thing.
+got="$(sqlite3 "$mb" "select value from metadata where name='format';" 2>/dev/null)"
+want="$(echo "$TILE_FORMAT" | tr 'A-Z' 'a-z')"
+[ "$got" = "$want" ] || { echo "!! $mb: tile format is '$got', expected '$want' — is TILE_FORMAT exported?"; rm -f "$mb"; exit 1; }
 python3 - "$mb" <<'PY'
 import sqlite3, sys
 c = sqlite3.connect(sys.argv[1])
