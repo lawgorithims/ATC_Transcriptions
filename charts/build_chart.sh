@@ -28,6 +28,8 @@ WARPDIR="${WARPDIR:-/tmp/charts/warp}"
 CLIP_REPO="${CLIP_REPO:-/tmp/aviationCharts}"
 UA="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 mode="mbtiles"
 if [ "${1:-}" = "warp" ]; then mode="warp"; shift; fi
 type="${1:?usage: build_chart.sh [warp] <sectional|enroute> <ChartName>}"
@@ -80,11 +82,21 @@ esac
 # (and previously forced the Caribbean set to be built uncut). Build uncut instead of not at all, and
 # say so, because an uncut chart keeps its collar and will overlap its neighbours.
 [ -f "$src" ]  || { echo "missing source raster: $src" >&2; exit 3; }
+srcwin=""
 if [ ! -f "$clip" ]; then
   if [ "${REQUIRE_CLIP:-0}" = "1" ]; then
     echo "missing clip shape: $clip (REQUIRE_CLIP=1)" >&2; exit 3
   fi
-  echo "  ⚠ no clip shape ($(basename "$clip")) — building UNCUT (collar retained, may overlap neighbours)"
+  # No published shape (the ENR_H set has none). Rather than keep the collar — whose legend panel is
+  # painted straight over the neighbouring chart's airways in a mosaic — find the map panel's neatline
+  # in the image itself. detect_neatline.py fails CLOSED: if it is not confident, it exits non-zero and
+  # we build uncut, because keeping a collar is recoverable and cropping map data is not.
+  if srcwin="$(python3 "$HERE/detect_neatline.py" "$src" 2>/dev/null)" && [ -n "$srcwin" ]; then
+    echo "  ✂ no clip shape — auto-detected map panel (srcWin $srcwin)"
+  else
+    srcwin=""
+    echo "  ⚠ no clip shape ($(basename "$clip")) and no confident neatline — building UNCUT (collar retained)"
+  fi
 fi
 
 echo "▸ $name : $(basename "$src")  clip=$([ -f "$clip" ] && basename "$clip" || echo "(none)")"
@@ -96,6 +108,15 @@ if gdalinfo "$src" 2>/dev/null | grep -q "Color Table"; then
   gdal_translate -q -of vrt -expand rgba "$src" "$warpsrc"
 else
   warpsrc="$src"; dstalpha="-dstalpha"
+fi
+
+# Auto-detected panel: crop the SOURCE to it (a cheap VRT) so the alpha band, the reprojection, the
+# tiling and the reported bounds all see map data only — never the cover panel.
+if [ -n "$srcwin" ]; then
+  panelvrt="${WORK}/${name}.panel.vrt"
+  # shellcheck disable=SC2086
+  gdal_translate -q -of vrt -srcwin $srcwin "$warpsrc" "$panelvrt"
+  warpsrc="$panelvrt"
 fi
 
 # 2) Reproject to Web Mercator and crop to the chart neatline; outside-cutline pixels become
