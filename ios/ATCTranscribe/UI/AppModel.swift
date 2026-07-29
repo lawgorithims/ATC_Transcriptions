@@ -2318,6 +2318,18 @@ final class AppModel: ObservableObject {
               proc.airport, proc.ident, entry.label, fixes.count, missedFixes.count)
     }
 
+    /// Skip (or restore) a published course-reversal hold on the active approach.
+    ///
+    /// Records the pilot's CHOICE rather than deleting the hold: the pattern stays published and can be
+    /// put back, and only a routinely-skipped hold can be toggled (ActiveApproach.setHold refuses the
+    /// missed-approach hold, which is the published termination of the go-around).
+    func setApproachHold(_ id: String, skipped: Bool) {
+        guard var appr = activeApproach else { return }
+        appr.setHold(id, skipped: skipped)
+        activeApproach = appr
+        NSLog("CommSight: hold %@ %@", id, skipped ? "SKIPPED" : "restored")
+    }
+
     /// Cancel the active approach (does not unwind the route — the pilot may still be flying it).
     ///
     /// Disarming the missed is part of cancelling. Clearing only `activeApproach` left the staged

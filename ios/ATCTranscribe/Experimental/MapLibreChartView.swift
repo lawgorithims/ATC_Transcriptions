@@ -22,6 +22,9 @@ struct MapLibreChartView: UIViewRepresentable {
     var routeCoords: [CLLocationCoordinate2D]
     var breadcrumbCoords: [CLLocationCoordinate2D] = []   // flight-recorder trail (translucent orange)
     var radarTemplate: String? = nil                      // live precipitation-radar tile URL (nil = off)
+    /// Published holding patterns on the active approach, already filtered to the ones being FLOWN
+    /// (a skipped course reversal never reaches the map).
+    var holds: [ApproachHold] = []
     var ownship: CLLocationCoordinate2D? = nil
     var ownshipCourse: Double? = nil
     /// 1-sigma horizontal accuracy of the device fix in metres (nil for a Stratux fix / no fix) — drawn
@@ -84,7 +87,7 @@ struct MapLibreChartView: UIViewRepresentable {
         c.inTheme = theme
         c.inChartBrightness = chartBrightness
         c.cacheInputs(layer: layer, routeCoords: routeCoords, breadcrumbCoords: breadcrumbCoords,
-                      radarTemplate: radarTemplate, ownship: ownship, ownshipCourse: ownshipCourse,
+                      radarTemplate: radarTemplate, holds: holds, ownship: ownship, ownshipCourse: ownshipCourse,
                       ownshipAccuracyM: ownshipAccuracyM, ownshipIntegrity: ownshipIntegrity,
                       traffic: traffic, wxTrend: wxTrend, tfrs: showTFRs ? tfrs : [], showAirspace: showAirspace,
                       showNearby: showNearby, showAirways: showAirways, plateOverlay: plateOverlay,
@@ -182,6 +185,7 @@ struct MapLibreChartView: UIViewRepresentable {
         private var inOwnship: CLLocationCoordinate2D?
         private var inOwnCourse: Double?
         private var inTraffic: [Aircraft] = []
+        private var inHolds: [ApproachHold] = []
         private var inWxTrend: [WxTrendPin] = []
         private var appliedCategoryVersion = 0
         private var inTFRs: [TFR] = []
@@ -192,6 +196,7 @@ struct MapLibreChartView: UIViewRepresentable {
         /// Stash the latest inputs from updateUIView (called every body eval, even before the map exists).
         func cacheInputs(layer: ChartLayer, routeCoords: [CLLocationCoordinate2D],
                          breadcrumbCoords: [CLLocationCoordinate2D], radarTemplate: String?,
+                         holds: [ApproachHold],
                          ownship: CLLocationCoordinate2D?,
                          ownshipCourse: Double?, ownshipAccuracyM: Double?,
                          ownshipIntegrity: GPSIntegrityState,
@@ -202,6 +207,7 @@ struct MapLibreChartView: UIViewRepresentable {
                          onAnchors: @escaping ((CGPoint, CGPoint)?) -> Void,
                          searchHighlight: CLLocationCoordinate2D?) {
             inLayer = layer; inRoute = routeCoords; inBreadcrumb = breadcrumbCoords; inRadarTemplate = radarTemplate
+            inHolds = holds
             inOwnship = ownship; inOwnCourse = ownshipCourse
             inOwnAccuracy = ownshipAccuracyM; inOwnIntegrity = ownshipIntegrity
             inTraffic = traffic; inWxTrend = wxTrend; inTFRs = tfrs; inShowAirspace = showAirspace; inShowNearby = showNearby
@@ -242,6 +248,7 @@ struct MapLibreChartView: UIViewRepresentable {
             // @MainActor → hop, matching ensureVisiblePacks). Signature-gated, so a no-op when the set is unchanged.
             Task { @MainActor [weak self, weak map] in guard let self, let map else { return }; self.syncFAASource(on: map) }
             updateRoute(inRoute, on: map)
+            updateHolds(inHolds, on: map)
             updateTrack(inBreadcrumb, on: map)
             updateRadar(inRadarTemplate, on: map)
             emitSearchPoint(map)               // keep the pulsing search marker glued to its spot
@@ -480,6 +487,7 @@ struct MapLibreChartView: UIViewRepresentable {
             setupOverlayLayers(style)            // airspace/airways/nav + TFR/route/traffic/ownship (empty)
             applyMapThemeIfNeeded(on: mapView)   // recolor the fresh layers for the active theme
             updateRoute(routeCoords, on: mapView)
+            updateHolds(inHolds, on: mapView)
             updateTrack(trackCoords, on: mapView)
             updateRadar(inRadarTemplate, on: mapView)
             ensureVisiblePacks(mapView)
@@ -576,14 +584,14 @@ struct MapLibreChartView: UIViewRepresentable {
         /// cache that restored our runtime layers (leaving dangling ids). "faa" is intentionally excluded — it
         /// lives in the base style JSON and is re-managed by ensureVisiblePacks. Bounded loops, >=2 asserts.
         private func clearManagedStyle(_ style: MLNStyle) {
-            let layers = ["plate-raster", "ownship-sym", "accuracy-fill", "accuracy-line", "traffic-sym", "route-line", "track-line",
+            let layers = ["plate-raster", "ownship-sym", "accuracy-fill", "accuracy-line", "traffic-sym", "hold-line", "route-line", "track-line",
                           "wxradar-layer", "tfr-label", "tfr-outline", "tfr-fill", "nav-sym",
                           "airspace-label", "airways-label", "airspace-outline", "airspace-fill",
                           "airways-line", "night-veil-fill", "coastline", "land-fill"]
             for id in layers where style.layer(withIdentifier: id) != nil {          // bounded (rule 2)
                 if let l = style.layer(withIdentifier: id) { style.removeLayer(l) }
             }
-            let sources = ["plate", "ownship", "accuracy", "traffic", "route", "track", "wxradar", "tfr-labels", "tfr",
+            let sources = ["plate", "ownship", "accuracy", "traffic", "holds", "route", "track", "wxradar", "tfr-labels", "tfr",
                            "nav", "airspace-labels", "airspace", "airways", "night-veil", "land"]
             for id in sources where style.source(withIdentifier: id) != nil {        // bounded (rule 2)
                 if let s = style.source(withIdentifier: id) { style.removeSource(s) }
@@ -815,6 +823,17 @@ struct MapLibreChartView: UIViewRepresentable {
             route.lineWidth = NSExpression(forConstantValue: 3.0)
             route.lineCap = NSExpression(forConstantValue: "round"); route.lineJoin = NSExpression(forConstantValue: "round")
             style.addLayer(route)
+
+            // Holding patterns on the active approach. Same magenta family as the route (it IS part of
+            // the procedure) but DASHED, so a racetrack the pilot may or may not fly is never mistaken
+            // for the course line they are tracking.
+            let holdSrc = MLNShapeSource(identifier: "holds", shape: nil, options: nil); style.addSource(holdSrc)
+            let holdLine = MLNLineStyleLayer(identifier: "hold-line", source: holdSrc)
+            holdLine.lineColor = NSExpression(forConstantValue: UIColor(red: 0.95, green: 0.24, blue: 0.62, alpha: 0.95))
+            holdLine.lineWidth = NSExpression(forConstantValue: 2.5)
+            holdLine.lineDashPattern = NSExpression(forConstantValue: [2, 1.5])
+            holdLine.lineCap = NSExpression(forConstantValue: "round"); holdLine.lineJoin = NSExpression(forConstantValue: "round")
+            style.addLayer(holdLine)
 
             style.setImage(ChartMapView.Coordinator.traffic, forName: "own-traffic")
             // Three ownship symbols, selected per-feature by integrity, so a degraded fix can never be
@@ -1367,6 +1386,27 @@ struct MapLibreChartView: UIViewRepresentable {
             src.shape = MLNPolylineFeature(coordinates: &c, count: UInt(c.count))
         }
 
+        /// The active approach's holding patterns, drawn as racetracks. Signature-gated like the route so
+        /// an unchanged set costs nothing per tick. nonisolated-safe geometry: the racetrack is pure math
+        /// on the pattern, no map state.
+        func updateHolds(_ holds: [ApproachHold], on mapView: MLNMapView) {
+            guard let src = mapView.style?.source(withIdentifier: "holds") as? MLNShapeSource else { return }
+            let sig = holds.map(\.id).joined(separator: "|")
+            guard sig != appliedHoldSig else { return }
+            appliedHoldSig = sig
+            guard !holds.isEmpty else { src.shape = nil; return }
+            var shapes: [MLNShape] = []
+            for h in holds.prefix(8) {                                   // bounded (rule 2)
+                var pts = h.pattern.racetrack().map {
+                    CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon)
+                }
+                guard pts.count >= 2 else { continue }
+                shapes.append(MLNPolylineFeature(coordinates: &pts, count: UInt(pts.count)))
+            }
+            assert(shapes.count <= 8, "updateHolds: cap exceeded")
+            src.shape = shapes.isEmpty ? nil : MLNShapeCollectionFeature(shapes: shapes)
+        }
+
         /// Live precipitation-radar raster (RainViewer). A remote raster source added ABOVE the FAA chart but
         /// BELOW the vector overlays. The tile URL rolls over ~every 10 min → remove/re-add the source when the
         /// template changes (or is cleared). Signature-gated so an unchanged template is a no-op per tick.
@@ -1420,6 +1460,7 @@ struct MapLibreChartView: UIViewRepresentable {
         // These are the map inputs' identity, distinct from the last-INPUT caches above (which exist so
         // didFinishLoading can re-apply). Set ONLY after a real apply, so the first post-style apply still runs.
         private var appliedRouteSig: String?
+        private var appliedHoldSig: String?
         private var appliedOwnSig: String?
         private var appliedTrafficSig: String?
         private var appliedTFRSig: String?

@@ -166,7 +166,11 @@ struct ConsoleView: View {
                 // as a toggleable strip under the top bar. Everything else is now a floating widget.
                 if model.showInputBar { InputBar().transition(Self.barTransition) }
                 if model.showFlightPlanBar { FlightPlanBar().transition(Self.barTransition) }
-                if let appr = model.activeApproach { activeApproachStrip(appr) }
+                if let appr = model.activeApproach {
+                    activeApproachStrip(appr)
+                    // Published holds ride directly under the approach strip, in flight order.
+                    ForEach(appr.holds) { holdRow($0, appr: appr) }
+                }
                 if let plate = model.plateOverlay { plateStrip(plate) }
                 if let proc = model.previewedProcedure { procedureStrip(proc) }
                 if let sug = model.efbSuggestion { efbSuggestionBanner(sug) }
@@ -235,6 +239,60 @@ struct ConsoleView: View {
     /// "Missed" does NOT mutate the plan directly: it raises the same one-tap confirmation an ATC
     /// instruction does, so the go-around is reviewed and accepted through wiring the pilot already
     /// knows, and lands in the same reversible audit trail.
+    /// One published hold on the active approach: which entry to fly for the direction the aircraft is
+    /// arriving from, and — for a course reversal — a switch to skip it.
+    ///
+    /// The entry is stated in full ("Teardrop entry — cross the fix, turn to about 300°…") rather than
+    /// just named, because the sector name alone is the part a pilot can most easily invert under load.
+    /// The skip is offered ONLY for the course reversal: a NoPT arrival, a straight-in clearance or
+    /// radar vectors all omit it legally, whereas the missed-approach hold is the published end of the
+    /// go-around and is shown read-only.
+    @ViewBuilder private func holdRow(_ hold: ApproachHold, appr: ActiveApproach) -> some View {
+        let p = model.palette
+        let skipped = appr.skippedHoldIDs.contains(hold.id)
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: hold.isSkippable ? "arrow.triangle.2.circlepath" : "arrow.uturn.up")
+                .font(.dsLabelS)
+                .foregroundStyle(skipped ? p.textDim : p.accent)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(hold.isSkippable ? "Hold in lieu of procedure turn · \(hold.pattern.fix)"
+                                      : "Missed approach hold · \(hold.pattern.fix)")
+                    .font(.dsLabelBold)
+                    .foregroundStyle(skipped ? p.textDim : p.text)
+                    .strikethrough(skipped)
+                if let entry = hold.entry {
+                    Text(entry.label).font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(skipped ? p.textDim : p.accent)
+                    Text(entry.detail(inbound: hold.pattern.inboundCourseMag,
+                                      outbound: hold.pattern.outboundCourseMag,
+                                      turn: hold.pattern.turn))
+                        .font(.system(size: 10)).foregroundStyle(p.textDim)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    // No arrival direction known — say so rather than name a sector we cannot justify.
+                    Text("Entry depends on your arrival direction")
+                        .font(.system(size: 10)).foregroundStyle(p.textDim)
+                }
+            }
+            Spacer(minLength: 4)
+            if hold.isSkippable {
+                Button {
+                    Haptics.impact(.light)
+                    model.setApproachHold(hold.id, skipped: !skipped)
+                } label: {
+                    Text(skipped ? "FLY" : "SKIP").font(.dsLabelSBold)
+                        .padding(.horizontal, 9).padding(.vertical, 4)
+                        .background(Capsule().fill((skipped ? p.accent : p.textDim).opacity(0.20)))
+                        .foregroundStyle(skipped ? p.accent : p.textDim)
+                }
+                .buttonStyle(.plainHaptic)
+                .accessibilityIdentifier("hold-skip-\(hold.pattern.fix)")
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 5)
+        .background(p.surface)
+    }
+
     private func activeApproachStrip(_ appr: ActiveApproach) -> some View {
         let p = model.palette
         return HStack(spacing: 8) {
