@@ -28,7 +28,7 @@ up(){ [ "${UPLOAD:-1}" = "1" ] || return 0; "$HF" upload "$HF_DATASET" "$1" "$2"
 [ -d "$CLIP_REPO/clippingShapes" ] || git clone --depth 1 -q https://github.com/jlmcgraw/aviationCharts.git "$CLIP_REPO"
 
 echo "== IFR-high enroute (${#IFR_HIGH_CONUS[@]} charts, cycle $CYCLE) =="
-built=()
+built=(); nbuilt=0
 for n in "${IFR_HIGH_CONUS[@]}"; do
   mb="$OUT/${n}.mbtiles"
   if [ ! -s "$mb" ]; then
@@ -42,14 +42,14 @@ for n in "${IFR_HIGH_CONUS[@]}"; do
     FROM_TIF="$nx/${n}.tif" bash "$HERE/build_chart.sh" enroute "$n" || { echo "!! $n failed"; rm -rf "$nx"; continue; }
     rm -rf "$nx"
   fi
-  [ -s "$mb" ] && { up "$mb" "ifrhigh/${n}.mbtiles"; built+=("$mb"); }
+  [ -s "$mb" ] && { up "$mb" "ifrhigh/${n}.mbtiles"; built+=("$mb"); nbuilt=$((nbuilt + 1)); }
 done
 
-# `set -u` makes ${#built[@]} on an EMPTY array a fatal "unbound variable" — which is exactly what
+# `set -u` makes ${#built[@]} on an EMPTY array a fatal "unbound variable" (bash 3.2, which is
+# what macOS ships) — which is exactly what
 # happened when all 12 charts failed: the real error scrolled past and the script died on its own
 # bookkeeping. Guard the count, and refuse to rewrite the hosted manifest with zero packs (that would
 # publish an empty ifrHigh array and take the layer away from every pilot).
-nbuilt=${#built[@]+${#built[@]}}; nbuilt=${nbuilt:-0}
 if [ "$nbuilt" -eq 0 ]; then
   echo "!! no IFR-high packs built — leaving the hosted index.json untouched" >&2
   exit 1
