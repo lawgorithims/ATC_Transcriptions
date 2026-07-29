@@ -486,6 +486,11 @@ struct MapLibreChartView: UIViewRepresentable {
             appliedHoldSig = nil                 // holds sit unchanged for a whole approach — exactly the
                                                  // TFR case above, so without this the racetrack is built
                                                  // into the throwaway style and never drawn on the real one
+            appliedRouteSig = nil                // same class (pre-existing): an unchanged ROUTE applied to
+                                                 // the throwaway style never re-uploads to the real one
+            appliedOwnSig = nil                  // and a PARKED aircraft's ownship (inside the ~12 m/3°
+                                                 // dead band) could stay invisible; motion self-heals,
+                                                 // sitting still must not
             appliedMapTheme = nil                // freshly-built layers carry setup colors → force a theme pass
             setupOverlayLayers(style)            // airspace/airways/nav + TFR/route/traffic/ownship (empty)
             applyMapThemeIfNeeded(on: mapView)   // recolor the fresh layers for the active theme
