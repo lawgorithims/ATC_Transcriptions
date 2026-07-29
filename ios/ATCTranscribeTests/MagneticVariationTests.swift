@@ -82,4 +82,36 @@ final class MagneticVariationTests: XCTestCase {
         let delta = HoldingPattern.normalize(centroidBearing(rotated) - centroidBearing(flat))
         XCTAssertEqual(delta, 30, accuracy: 3.0, "an east variation rotates the drawn pattern clockwise")
     }
+
+    // MARK: the poisoned-station defence
+
+    /// The confirming audit found the original single-nearest design defective: the variation table is
+    /// keyed by BARE IDENT over worldwide data, so ~445 CONUS stations can carry a FOREIGN twin's value
+    /// (up to ~37° wrong, inside the ±40 clamp). The median defence must hold even when the poisoned
+    /// station is the NEAREST one.
+    func testPoisonedNearestStationIsOutvoted() {
+        // Boston-like neighbourhood: four honest stations ≈ −15, and the nearest carries a foreign
+        // twin's +22 (a real observed collision magnitude).
+        let poisonedNearest: [(nm: Double, mv: Double)] = [
+            (5, 22.0), (12, -15.2), (18, -14.8), (25, -15.6), (40, -14.9),
+        ]
+        let v = MagneticVariation.consensus(of: poisonedNearest)
+        XCTAssertEqual(v ?? 0, -15.0, accuracy: 1.0, "one poisoned ident must not steer the result")
+        XCTAssertLessThan(v ?? 1, 0, "the SIGN must come from the honest majority")
+    }
+
+    func testTooFewStationsIsUnknownNotAGuess() {
+        XCTAssertNil(MagneticVariation.consensus(of: []))
+        XCTAssertNil(MagneticVariation.consensus(of: [(5, -15)]))
+        XCTAssertNil(MagneticVariation.consensus(of: [(5, -15), (9, -14)]),
+                     "below minStations even agreeing values are not enough to claim knowledge")
+        XCTAssertNotNil(MagneticVariation.consensus(of: [(5, -15), (9, -14), (20, -15)]))
+    }
+
+    /// Only the NEAREST five vote: a far-away poisoned value beyond the voting set changes nothing.
+    func testVotingIsLimitedToTheNearestStations() {
+        var cands: [(nm: Double, mv: Double)] = [(5, -15), (10, -15), (15, -15), (20, -15), (25, -15)]
+        cands.append((149, 35))                       // in range, but sixth-nearest — never votes
+        XCTAssertEqual(MagneticVariation.consensus(of: cands) ?? 0, -15, accuracy: 1e-9)
+    }
 }

@@ -195,7 +195,7 @@ enum TFRParser {
                 areas.append(TFRArea(ring: ring, floorFt: floor, ceilingFt: ceil))
             }
         }
-        assert(areas.count <= 64 * 8, "TFR area count bounded")
+        assert(areas.count <= 64 * 9, "TFR area count bounded")   // 64 groups × (1 path ring + 8 circles)
         guard !areas.isEmpty else { return nil }
         let eff = tag("dateEffective", xml).flatMap { aixmDate.date(from: $0) }
         let exp = tag("dateExpire", xml).flatMap { aixmDate.date(from: $0) }

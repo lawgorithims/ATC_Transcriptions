@@ -242,7 +242,7 @@ struct ConsoleView: View {
     /// One published hold on the active approach: which entry to fly for the direction the aircraft is
     /// arriving from, and — for a course reversal — a switch to skip it.
     ///
-    /// The entry is stated in full ("Teardrop entry — cross the fix, turn to about 300°…") rather than
+    /// The entry is stated in full ("Teardrop entry — cross the fix, turn to about 240°…") rather than
     /// just named, because the sector name alone is the part a pilot can most easily invert under load.
     /// The skip is offered ONLY for the course reversal: a NoPT arrival, a straight-in clearance or
     /// radar vectors all omit it legally, whereas the missed-approach hold is the published end of the

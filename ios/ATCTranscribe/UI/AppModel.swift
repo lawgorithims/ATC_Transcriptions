@@ -1107,7 +1107,10 @@ final class AppModel: ObservableObject {
             onStatus: { [weak self] status in
                 Task { @MainActor in
                     self?.adsbStatus = status
-                    if status != .idle { self?.adsbHasPolledOnce = true }
+                    // .idle is published ONLY by the service's stop(), so it marks the START of a
+                    // fresh run — reset the flag there, or the restarted poller's first healthy fetch
+                    // briefly read as "feed idle — toggle to retry" after every stop/start cycle.
+                    self?.adsbHasPolledOnce = (status != .idle)
                 }
             })
         // Stratux receiver: traffic feeds the SAME `applyTraffic` pipeline as airplanes.live; GPS +
