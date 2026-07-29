@@ -11,17 +11,31 @@ final class TrafficFeedStateTests: XCTestCase {
     /// aircraft in range — so each test overrides only the one input it is about.
     private func state(enabled: Bool = true, stratux: Bool = false, standby: Bool = false,
                        foreground: Bool = true, status: ADSBStatus = .ok, hasCenter: Bool = true,
-                       updatedAt: Date? = Date(), aircraftCount: Int = 3) -> TrafficFeedState {
+                       updatedAt: Date? = Date(), aircraftCount: Int = 3,
+                       hasPolledOnce: Bool = true) -> TrafficFeedState {
         AppModel.trafficFeed(enabled: enabled, stratuxEnabled: stratux, standby: standby,
                              foreground: foreground, status: status, hasCenter: hasCenter,
-                             updatedAt: updatedAt, aircraftCount: aircraftCount)
+                             updatedAt: updatedAt, aircraftCount: aircraftCount,
+                             hasPolledOnce: hasPolledOnce)
     }
 
     // MARK: THE REGRESSION — a stopped poller must never claim to be loading
 
-    func testIdlePollerIsNotReportedAsLoading() {
-        // Enabled, centered, no error, but the service never reported in → it is NOT fetching.
-        let s = state(status: .idle, updatedAt: nil)
+    /// `.idle` means two OPPOSITE things and they must not share a pill:
+    ///   * before the first poll returns, it is the ordinary starting status of a healthy fetch;
+    ///   * after a poll has reported, it means the poller stopped.
+    /// The first version of this conflated them and told a pilot to "toggle the layer to retry" while a
+    /// perfectly good first fetch was in flight.
+    func testIdleBeforeTheFirstPollIsLoadingNotAStuckFeed() {
+        let firstPoll = state(status: .idle, updatedAt: nil, hasPolledOnce: false)
+        XCTAssertEqual(firstPoll, .loading, "the opening fetch is loading, not a dead feed")
+        XCTAssertTrue(firstPoll.pillSpins, "a real fetch in flight is the one thing that may spin")
+        XCTAssertNotEqual(firstPoll.pillText, "Traffic feed idle — toggle the layer to retry")
+    }
+
+    func testIdleAfterAPollHasReportedIsAStuckFeed() {
+        // The service has spoken at least once, yet there is still no snapshot → genuinely not running.
+        let s = state(status: .idle, updatedAt: nil, hasPolledOnce: true)
         XCTAssertEqual(s, .idleUnexpected)
         XCTAssertFalse(s.pillSpins, "an idle feed must not spin — that implies progress that isn't happening")
         XCTAssertNotEqual(s.pillText, "Loading traffic…")
@@ -98,16 +112,19 @@ final class TrafficFeedStateTests: XCTestCase {
                     for hasCenter in [true, false] {
                         for status: ADSBStatus in [.idle, .ok, .error("x")] {
                             for updated in [nil, Date()] as [Date?] {
+                              for polled in [false, true] {
                                 let s = AppModel.trafficFeed(enabled: enabled, stratuxEnabled: false,
                                                              standby: standby, foreground: foreground,
                                                              status: status, hasCenter: hasCenter,
-                                                             updatedAt: updated, aircraftCount: 0)
+                                                             updatedAt: updated, aircraftCount: 0,
+                                                             hasPolledOnce: polled)
                                 if s.pillSpins {
                                     XCTAssertEqual(s, .loading, "only .loading may spin, got \(s)")
                                     XCTAssertNil(updated, "a spinner implies no snapshot yet")
                                     XCTAssertTrue(enabled && !standby && foreground && hasCenter,
                                                   "a spinner implies the poller can actually run")
                                 }
+                              }
                             }
                         }
                     }

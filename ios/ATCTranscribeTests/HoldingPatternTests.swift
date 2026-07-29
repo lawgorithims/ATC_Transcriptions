@@ -195,6 +195,45 @@ final class HoldingPatternTests: XCTestCase {
 
     // MARK: the pilot-facing text names the right turn direction
 
+    /// THE TEARDROP-SIDE REGRESSION. The 30° offset must go toward the HOLDING side. Inbound 090 with
+    /// right turns holds SOUTH of the inbound track, so the teardrop is 240° — not 300°, which points
+    /// north into the unprotected non-holding side. Asserted as a SIDE, not just a number, because the
+    /// original bug was a sign that still produced a plausible-looking heading.
+    func testTeardropHeadingIsOnTheHoldingSide() {
+        // Right-hand, inbound 090 → outbound 270, holding side south.
+        XCTAssertEqual(HoldingPattern.teardropHeading(outbound: 270, turn: .right), 240, accuracy: 1e-9)
+        // Left-hand mirrors: holding side north → 300.
+        XCTAssertEqual(HoldingPattern.teardropHeading(outbound: 270, turn: .left), 300, accuracy: 1e-9)
+        // Wraps correctly.
+        XCTAssertEqual(HoldingPattern.teardropHeading(outbound: 10, turn: .right), 340, accuracy: 1e-9)
+        XCTAssertEqual(HoldingPattern.teardropHeading(outbound: 350, turn: .left), 20, accuracy: 1e-9)
+
+        // Independent geometric check: the teardrop heading must point to the SAME side of the inbound
+        // course as the racetrack itself, for every inbound course and both turn directions.
+        for inbound in stride(from: 0.0, to: 360.0, by: 15) {
+            for turn in [HoldingPattern.Turn.right, .left] {
+                let outbound = HoldingPattern.normalize(inbound + 180)
+                let td = HoldingPattern.teardropHeading(outbound: outbound, turn: turn)
+                // Angle from the INBOUND course to the teardrop heading, signed into ±180.
+                var rel = HoldingPattern.normalize(td - inbound)
+                if rel > 180 { rel -= 360 }
+                // Right-hand holds lie to the right of the inbound course → positive relative angle.
+                if turn == .right {
+                    XCTAssertGreaterThan(rel, 0, "right-hand teardrop must lie right of inbound \(inbound)")
+                } else {
+                    XCTAssertLessThan(rel, 0, "left-hand teardrop must lie left of inbound \(inbound)")
+                }
+            }
+        }
+    }
+
+    /// The pilot-facing sentence must carry the corrected heading, not just the helper.
+    func testTeardropDetailTextQuotesTheHoldingSideHeading() {
+        let text = HoldingPattern.Entry.teardrop.detail(inbound: 90, outbound: 270, turn: .right)
+        XCTAssertTrue(text.contains("240"), "teardrop detail should say 240°, got: \(text)")
+        XCTAssertFalse(text.contains("300"), "300° is the non-holding side: \(text)")
+    }
+
     func testEntryDetailNamesTheCorrectTurns() {
         let h = hold(inbound: 90, turn: .right)
         XCTAssertTrue(HoldingPattern.Entry.direct
