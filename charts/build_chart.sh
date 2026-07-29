@@ -74,10 +74,20 @@ case "$type" in
   *) echo "unknown chart type: $type" >&2; exit 2 ;;
 esac
 
-[ -f "$clip" ] || { echo "missing clip shape: $clip (clone jlmcgraw/aviationCharts to $CLIP_REPO)" >&2; exit 3; }
+# The clip shape is OPTIONAL. It trims the chart to its neatline so adjacent charts mosaic without
+# their collars overlapping — desirable, but not required to reproject and tile. jlmcgraw ships
+# sectional and ENR_L shapes but NO ENR_H ones, so demanding a cutline failed all 12 IFR-HIGH charts
+# (and previously forced the Caribbean set to be built uncut). Build uncut instead of not at all, and
+# say so, because an uncut chart keeps its collar and will overlap its neighbours.
 [ -f "$src" ]  || { echo "missing source raster: $src" >&2; exit 3; }
+if [ ! -f "$clip" ]; then
+  if [ "${REQUIRE_CLIP:-0}" = "1" ]; then
+    echo "missing clip shape: $clip (REQUIRE_CLIP=1)" >&2; exit 3
+  fi
+  echo "  ⚠ no clip shape ($(basename "$clip")) — building UNCUT (collar retained, may overlap neighbours)"
+fi
 
-echo "▸ $name : $(basename "$src")  clip=$(basename "$clip")"
+echo "▸ $name : $(basename "$src")  clip=$([ -f "$clip" ] && basename "$clip" || echo "(none)")"
 
 # 1) Paletted charts (VFR sectionals) expand to RGBA so tiles come out full-colour + alpha; RGB charts
 #    (IFR enroute) have no colour table, so they instead get an alpha band added during the warp.
@@ -90,8 +100,10 @@ fi
 
 # 2) Reproject to Web Mercator and crop to the chart neatline; outside-cutline pixels become
 #    transparent (alpha 0) so adjacent charts show through — the seamless-mosaic trick.
+cutargs=()
+[ -f "$clip" ] && cutargs=(-cutline "$clip" -crop_to_cutline -wo CUTLINE_ALL_TOUCHED=TRUE)
 gdalwarp -q -t_srs EPSG:3857 -r bilinear -co TILED=YES -co COMPRESS=DEFLATE $dstalpha \
-  -cutline "$clip" -crop_to_cutline -wo CUTLINE_ALL_TOUCHED=TRUE -multi -overwrite \
+  "${cutargs[@]+"${cutargs[@]}"}" -multi -overwrite \
   "$warpsrc" "$warp"
 echo "  warped → $warp ($(du -h "$warp" | cut -f1))"
 

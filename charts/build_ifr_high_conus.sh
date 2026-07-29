@@ -45,7 +45,16 @@ for n in "${IFR_HIGH_CONUS[@]}"; do
   [ -s "$mb" ] && { up "$mb" "ifrhigh/${n}.mbtiles"; built+=("$mb"); }
 done
 
-echo "== merge ifrHigh into hosted index.json (${#built[@]} packs) =="
+# `set -u` makes ${#built[@]} on an EMPTY array a fatal "unbound variable" — which is exactly what
+# happened when all 12 charts failed: the real error scrolled past and the script died on its own
+# bookkeeping. Guard the count, and refuse to rewrite the hosted manifest with zero packs (that would
+# publish an empty ifrHigh array and take the layer away from every pilot).
+nbuilt=${#built[@]+${#built[@]}}; nbuilt=${nbuilt:-0}
+if [ "$nbuilt" -eq 0 ]; then
+  echo "!! no IFR-high packs built — leaving the hosted index.json untouched" >&2
+  exit 1
+fi
+echo "== merge ifrHigh into hosted index.json ($nbuilt packs) =="
 curl -fsSL --max-time 60 "${DATASET_BASE}/index.json" -o "$WORK/index_hosted.json" \
   || { echo "!! could not fetch hosted index.json"; exit 1; }
 
