@@ -92,14 +92,14 @@ final class HoldingPatternTests: XCTestCase {
         // Fix due north of the origin → arrival track 000. Inbound course 000 → direct.
         let h = HoldingPattern(id: "F-10", fix: "F", coord: Coord(lat: 43, lon: -71),
                                inboundCourseMag: 0, turn: .right, kind: .missedApproach)
-        XCTAssertEqual(h.entry(arrivingFrom: Coord(lat: 42, lon: -71)), .direct)
+        XCTAssertEqual(h.entry(arrivingFrom: Coord(lat: 42, lon: -71), magneticVariation: 0), .direct)
         // Arriving from the north (track 180) → Δ=180 → parallel.
-        XCTAssertEqual(h.entry(arrivingFrom: Coord(lat: 44, lon: -71)), .parallel)
+        XCTAssertEqual(h.entry(arrivingFrom: Coord(lat: 44, lon: -71), magneticVariation: 0), .parallel)
     }
 
     func testEntryFromACoincidentPointIsNil() {
         let h = hold(inbound: 90)
-        XCTAssertNil(h.entry(arrivingFrom: h.coord), "no course exists from the fix to itself")
+        XCTAssertNil(h.entry(arrivingFrom: h.coord, magneticVariation: 0), "no course exists from the fix to itself")
     }
 
     // MARK: outbound course + racetrack geometry
@@ -112,7 +112,7 @@ final class HoldingPatternTests: XCTestCase {
 
     func testRacetrackClosesAtTheFixAndSitsOnTheHoldingSide() {
         let h = hold(inbound: 90, turn: .right)          // right turns → pattern SOUTH of the fix
-        let pts = h.racetrack(groundSpeedKt: 150)
+        let pts = h.racetrack(magneticVariation: 0, groundSpeedKt: 150)
         XCTAssertGreaterThan(pts.count, 8, "racetrack should be a real polyline, not a stub")
         XCTAssertEqual(pts.first!.lat, h.coord.lat, accuracy: 1e-9, "must start at the fix")
         XCTAssertEqual(pts.last!.lat, h.coord.lat, accuracy: 1e-9, "must close at the fix")
@@ -125,7 +125,7 @@ final class HoldingPatternTests: XCTestCase {
     }
 
     func testLeftHandRacetrackMirrorsToTheOtherSide() {
-        let l = hold(inbound: 90, turn: .left).racetrack(groundSpeedKt: 150)
+        let l = hold(inbound: 90, turn: .left).racetrack(magneticVariation: 0, groundSpeedKt: 150)
         let fixLat = 42.0
         XCTAssertEqual(l.filter { $0.lat < fixLat - 1e-3 }.count, 0,
                        "a left-hand 090 pattern belongs north of the fix")
@@ -133,13 +133,13 @@ final class HoldingPatternTests: XCTestCase {
 
     func testRacetrackScalesWithSpeedAndLegTime() {
         var h = hold(inbound: 90)
-        let slow = h.racetrack(groundSpeedKt: 100)
-        let fast = h.racetrack(groundSpeedKt: 250)
+        let slow = h.racetrack(magneticVariation: 0, groundSpeedKt: 100)
+        let fast = h.racetrack(magneticVariation: 0, groundSpeedKt: 250)
         func span(_ p: [Coord]) -> Double { (p.map(\.lon).max()! - p.map(\.lon).min()!) }
         XCTAssertGreaterThan(span(fast), span(slow), "a faster hold is a bigger racetrack")
         h.legMinutes = 1.5
-        XCTAssertGreaterThan(span(h.racetrack(groundSpeedKt: 150)),
-                             span(hold(inbound: 90).racetrack(groundSpeedKt: 150)),
+        XCTAssertGreaterThan(span(h.racetrack(magneticVariation: 0, groundSpeedKt: 150)),
+                             span(hold(inbound: 90).racetrack(magneticVariation: 0, groundSpeedKt: 150)),
                              "1½-minute legs are longer than 1-minute legs")
     }
 

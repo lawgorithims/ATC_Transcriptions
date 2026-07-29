@@ -77,7 +77,7 @@ final class HoldingPatternDataTests: XCTestCase {
         let legs = CIFP.legs(procedureID: procs[0].id)
         let split = ApproachActivation.splitMissed(
             legs.map { (seq: $0.seq, fix: $0.fix, legType: $0.legType) }, roles: legs.map(\.role))
-        let holds = ApproachHolds.resolve(legs: legs, missedSeqs: Set(split.missed), arrivingFrom: nil)
+        let holds = ApproachHolds.resolve(legs: legs, missedSeqs: Set(split.missed), arrivingFrom: nil, variation: { _ in 0 })
         try XCTSkipIf(holds.isEmpty, "no resolvable holds in this cycle")
 
         for h in holds {
@@ -90,7 +90,7 @@ final class HoldingPatternDataTests: XCTestCase {
         }
         // Every resolved pattern draws a closed racetrack that starts and ends at its fix.
         for h in holds {
-            let track = h.pattern.racetrack()
+            let track = h.pattern.racetrack(magneticVariation: 0)
             XCTAssertGreaterThan(track.count, 8, "\(h.pattern.fix) racetrack is degenerate")
             XCTAssertEqual(track.first!.lat, h.pattern.coord.lat, accuracy: 1e-9)
             XCTAssertEqual(track.last!.lat, h.pattern.coord.lat, accuracy: 1e-9)

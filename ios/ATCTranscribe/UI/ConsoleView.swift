@@ -268,6 +268,11 @@ struct ConsoleView: View {
                                       turn: hold.pattern.turn))
                         .font(.system(size: 10)).foregroundStyle(p.textDim)
                         .fixedSize(horizontal: false, vertical: true)
+                } else if hold.magneticVariation == nil {
+                    // Without the LOCAL variation, a true-track vs magnetic-course comparison can
+                    // cross a sector boundary — so no entry is named, and the reason is stated.
+                    Text("Entry unavailable — local magnetic variation unknown here")
+                        .font(.system(size: 10)).foregroundStyle(p.textDim)
                 } else {
                     // No arrival direction known — say so rather than name a sector we cannot justify.
                     Text("Entry depends on your arrival direction")

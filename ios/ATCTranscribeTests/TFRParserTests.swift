@@ -333,7 +333,23 @@ final class TFRParserTests: XCTestCase {
         OF 2024 FOR PROTECTION OF LARGE PUBLIC GATHERINGS. UAS FLT OPS ARE PROHIBITED.
         """)
         let tfr = TFRParser.detail(xml, stub: .init(id: "6/8932", type: "UAS PUBLIC GATHERING", title: "STL"))
-        XCTAssertEqual(tfr?.reason, "Protection of large public gatherings")
+        // The 44812 statute outranks the free-text phrase: statutes are checked before the generic
+        // phrases so an EXEMPTION clause ("…IN SUPPORT OF EVENT OPS ARE AUTHORIZED") can never
+        // masquerade as the reason. The statute text carries the same meaning here.
+        XCTAssertEqual(tfr?.reason, "UAS restriction — protection of a large public gathering")
+    }
+
+    /// THE EXEMPTION-HARVEST REGRESSION: a security NOTAM whose exemption clause says flights
+    /// "IN SUPPORT OF EVENT OPS" are authorized must be labelled by its STATUTE, not its exemption.
+    func testSecurityExemptionClauseIsNotHarvestedAsTheReason() {
+        let xml = xmlWithBody("""
+        PURSUANT TO 49 USC 40103(B)(3), THE FAA CLASSIFIES THE AIRSPACE DEFINED IN THIS NOTAM AS \
+        'NTL DEFENSE AIRSPACE'. ONLY APPROVED AIRCRAFT IN SUPPORT OF EVENT OPS ARE AUTHORIZED.
+        """)
+        let tfr = TFRParser.detail(xml, stub: .init(id: "6/8923", type: "SECURITY", title: "PA"))
+        XCTAssertEqual(tfr?.reason, "National defense airspace — security restriction (49 USC 40103(b)(3))")
+        XCTAssertFalse(tfr?.reason?.hasPrefix("In support") ?? true,
+                       "the exemption clause must never become the reason")
     }
 
     func testReasonHazardStatuteWhenNoPurposePhrase() {

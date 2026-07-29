@@ -115,7 +115,13 @@ struct HoldingPattern: Equatable, Identifiable {
     /// The entry for an aircraft coming FROM `origin` (the previous fix, or the aircraft's present
     /// position) — the common case, where the arrival track is simply the great-circle course from
     /// there to the holding fix. Returns nil when the two points coincide and no course exists.
-    func entry(arrivingFrom origin: Coord, magneticVariation: Double = 0) -> Entry? {
+    ///
+    /// `magneticVariation` is REQUIRED, deliberately: the great-circle track is TRUE and the published
+    /// inbound course is MAGNETIC, and a silently-defaulted 0 was wrong by the full local declination
+    /// (up to ~17° in CONUS) — enough to cross an entry-sector boundary. Callers that do not know the
+    /// local variation must not call this; they show "entry unknown" instead of a guess.
+    /// Convention: east positive, west negative (BOS ≈ −15, SFO ≈ +14), so magnetic = true − variation.
+    func entry(arrivingFrom origin: Coord, magneticVariation: Double) -> Entry? {
         guard let trueTrack = HoldingPattern.course(from: origin, to: coord) else { return nil }
         // The published inbound course is MAGNETIC, so the arrival track has to be magnetic too.
         return entry(arrivingOn: HoldingPattern.normalize(trueTrack - magneticVariation))
@@ -129,21 +135,27 @@ struct HoldingPattern: Equatable, Identifiable {
     /// Standard-rate (3°/s) turns at `groundSpeedKt` give the turn radius; the straight legs are
     /// `legMinutes` long at the same speed. Bounded and allocation-light — this is drawn per frame's
     /// worth of route rebuilds, not per frame.
-    func racetrack(groundSpeedKt: Double = 150, arcSteps: Int = 12) -> [Coord] {
+    /// `magneticVariation` (east positive) converts the published MAGNETIC courses onto the map's
+    /// TRUE-north canvas — without it the drawn pattern is rotated by the local declination. Pass 0
+    /// only when the local variation is genuinely unknown; the depiction then keeps the right fix,
+    /// turn direction and size but may be rotated, which is documented degradation rather than a bug.
+    func racetrack(magneticVariation: Double, groundSpeedKt: Double = 150, arcSteps: Int = 12) -> [Coord] {
         assert(arcSteps >= 2 && arcSteps <= 180, "racetrack: absurd arc resolution")
         assert(groundSpeedKt > 0, "racetrack: non-positive ground speed")
+        assert(abs(magneticVariation) <= 45, "racetrack: implausible variation")
         let legNm = groundSpeedKt * (legMinutes / 60)
         // Standard rate: 360° in 2 min → radius = v / (π · 2) NM with v in kt... derived from
         // circumference = speed × time: 2πr = gs × (2/60) h → r = gs / (60π).
         let radiusNm = groundSpeedKt / (60 * .pi)
         let sign: Double = turn == .right ? 1 : -1
-        let inbound = inboundCourseMag
+        // TRUE = MAGNETIC + variation (east positive): magnetic 090 at BOS (var −15) is true 075.
+        let inbound = HoldingPattern.normalize(inboundCourseMag + magneticVariation)
         // Centre of the inbound-end turn: abeam the fix, on the holding side.
         let toHoldingSide = HoldingPattern.normalize(inbound + 90 * sign)
         let c1 = HoldingPattern.offset(coord, courseDeg: toHoldingSide, distanceNm: radiusNm)
         // The outbound leg starts at the far side of that turn and runs back along the outbound course.
         let outboundStart = HoldingPattern.offset(c1, courseDeg: toHoldingSide, distanceNm: radiusNm)
-        let outboundEnd = HoldingPattern.offset(outboundStart, courseDeg: outboundCourseMag, distanceNm: legNm)
+        let outboundEnd = HoldingPattern.offset(outboundStart, courseDeg: HoldingPattern.normalize(inbound + 180), distanceNm: legNm)
         let c2 = HoldingPattern.offset(outboundEnd, courseDeg: HoldingPattern.normalize(toHoldingSide + 180),
                                        distanceNm: radiusNm)
         let inboundStart = HoldingPattern.offset(c2, courseDeg: HoldingPattern.normalize(toHoldingSide + 180),

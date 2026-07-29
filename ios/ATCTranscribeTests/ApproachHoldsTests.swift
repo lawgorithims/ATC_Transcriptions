@@ -30,7 +30,7 @@ final class ApproachHoldsTests: XCTestCase {
 
     func testFindsBothHoldsAndClassifiesThemBySegment() {
         let holds = ApproachHolds.resolve(legs: pabaLegs(), missedSeqs: missedSeqs,
-                                          arrivingFrom: Coord(lat: 59.5, lon: -155.5))
+                                          arrivingFrom: Coord(lat: 59.5, lon: -155.5), variation: { _ in 0 })
         XCTAssertEqual(holds.count, 2)
         XCTAssertEqual(holds[0].pattern.fix, "HULKS")
         XCTAssertEqual(holds[0].pattern.kind, .holdInLieuOfProcedureTurn, "an HF opening the row is a HILPT")
@@ -43,7 +43,7 @@ final class ApproachHoldsTests: XCTestCase {
     func testAnHFInsideTheMissedSegmentIsNotACourseReversal() {
         var legs = pabaLegs()
         legs[4] = leg(60, "DEVKE", "HF", lat: 60.40, lon: -153.80, course: 252.5)
-        let holds = ApproachHolds.resolve(legs: legs, missedSeqs: missedSeqs, arrivingFrom: nil)
+        let holds = ApproachHolds.resolve(legs: legs, missedSeqs: missedSeqs, arrivingFrom: nil, variation: { _ in 0 })
         XCTAssertEqual(holds.last?.pattern.kind, .missedApproach)
         XCTAssertNil(ApproachHolds.courseReversal(in: [holds.last!], joinIsVectors: false))
     }
@@ -54,12 +54,12 @@ final class ApproachHoldsTests: XCTestCase {
     /// from the PRECEDING MISSED FIX — not from where the aircraft happened to be before the approach.
     func testMissedHoldEntryUsesItsPredecessorNotThePreApproachPosition() {
         let farAway = Coord(lat: 20, lon: -100)          // nowhere near the missed approach
-        let holds = ApproachHolds.resolve(legs: pabaLegs(), missedSeqs: missedSeqs, arrivingFrom: farAway)
+        let holds = ApproachHolds.resolve(legs: pabaLegs(), missedSeqs: missedSeqs, arrivingFrom: farAway, variation: { _ in 0 })
         let missed = ApproachHolds.missedApproachHold(in: holds)
         XCTAssertNotNil(missed)
         XCTAssertEqual(missed?.arrivingFrom, "MOTUV", "must be entered from the preceding missed fix")
         // And that entry is the one the geometry gives from MOTUV → DEVKE.
-        let expected = missed!.pattern.entry(arrivingFrom: Coord(lat: 60.30, lon: -154.00))
+        let expected = missed!.pattern.entry(arrivingFrom: Coord(lat: 60.30, lon: -154.00), magneticVariation: 0)
         XCTAssertEqual(missed?.entry, expected)
     }
 
@@ -68,7 +68,7 @@ final class ApproachHoldsTests: XCTestCase {
     /// coming from" requirement, asserted rather than assumed.
     func testCourseReversalEntryChangesWithArrivalDirection() {
         func entryArriving(from c: Coord) -> HoldingPattern.Entry? {
-            ApproachHolds.resolve(legs: pabaLegs(), missedSeqs: missedSeqs, arrivingFrom: c).first?.entry
+            ApproachHolds.resolve(legs: pabaLegs(), missedSeqs: missedSeqs, arrivingFrom: c, variation: { _ in 0 }).first?.entry
         }
         // HULKS inbound course is 071°, right turns.
         let fromSouthWest = entryArriving(from: Coord(lat: 59.5, lon: -155.6))   // tracking ~NE, near inbound
@@ -80,7 +80,7 @@ final class ApproachHoldsTests: XCTestCase {
     }
 
     func testNoArrivalPositionMeansNoInventedEntry() {
-        let holds = ApproachHolds.resolve(legs: pabaLegs(), missedSeqs: missedSeqs, arrivingFrom: nil)
+        let holds = ApproachHolds.resolve(legs: pabaLegs(), missedSeqs: missedSeqs, arrivingFrom: nil, variation: { _ in 0 })
         // The first hold has no predecessor AND no origin → the app must not guess an entry.
         XCTAssertNil(holds.first?.entry)
         XCTAssertTrue(holds.first!.summary.contains("depends on arrival direction"))
@@ -92,7 +92,7 @@ final class ApproachHoldsTests: XCTestCase {
 
     func testVectorsJoinDoesNotOfferACourseReversal() {
         let holds = ApproachHolds.resolve(legs: pabaLegs(), missedSeqs: missedSeqs,
-                                          arrivingFrom: Coord(lat: 59.5, lon: -155.5))
+                                          arrivingFrom: Coord(lat: 59.5, lon: -155.5), variation: { _ in 0 })
         XCTAssertNotNil(ApproachHolds.courseReversal(in: holds, joinIsVectors: false))
         XCTAssertNil(ApproachHolds.courseReversal(in: holds, joinIsVectors: true),
                      "radar vectors fly straight to final — never offer a reversal ATC didn't clear")
@@ -102,7 +102,7 @@ final class ApproachHoldsTests: XCTestCase {
 
     func testOnlyTheCourseReversalCanBeSkipped() {
         let holds = ApproachHolds.resolve(legs: pabaLegs(), missedSeqs: missedSeqs,
-                                          arrivingFrom: Coord(lat: 59.5, lon: -155.5))
+                                          arrivingFrom: Coord(lat: 59.5, lon: -155.5), variation: { _ in 0 })
         var active = ActiveApproach(airport: "PABA", ident: "R07", name: "RNAV (GPS) RWY 07",
                                     runway: "07", entry: .vectors, missedFixes: ["MOTUV", "DEVKE"],
                                     holds: holds)
@@ -131,7 +131,7 @@ final class ApproachHoldsTests: XCTestCase {
 
     func testSummaryNamesTheFixTurnDirectionAndEntry() {
         let holds = ApproachHolds.resolve(legs: pabaLegs(), missedSeqs: missedSeqs,
-                                          arrivingFrom: Coord(lat: 59.5, lon: -155.6))
+                                          arrivingFrom: Coord(lat: 59.5, lon: -155.6), variation: { _ in 0 })
         let s = holds[0].summary
         XCTAssertTrue(s.contains("HULKS"))
         XCTAssertTrue(s.contains("right turns"))
@@ -142,6 +142,53 @@ final class ApproachHoldsTests: XCTestCase {
     func testApproachWithNoPublishedHoldsResolvesEmpty() {
         let plain = [leg(10, "ABCDE", "IF", lat: 42, lon: -71),
                      leg(20, "FGHIJ", "TF", lat: 42.1, lon: -71.1)]
-        XCTAssertTrue(ApproachHolds.resolve(legs: plain, missedSeqs: [], arrivingFrom: nil).isEmpty)
+        XCTAssertTrue(ApproachHolds.resolve(legs: plain, missedSeqs: [], arrivingFrom: nil, variation: { _ in 0 }).isEmpty)
+    }
+
+    // MARK: magnetic variation
+
+    /// Variation is not decoration: near a sector boundary the same TRUE arrival track lands in
+    /// DIFFERENT sectors as the local declination changes, so a defaulted 0 was a wrong answer, not a
+    /// simplification. Two realistic CONUS values on either side of a boundary prove it.
+    func testVariationCanFlipTheEntrySector() {
+        // Hold at HULKS: inbound MAGNETIC 071.4, right turns. Choose an origin whose TRUE track to the
+        // fix sits near the teardrop/direct boundary (Δ = 110).
+        let origin = Coord(lat: 60.4, lon: -155.6)   // true track to (60, -155) ≈ 143°
+        let hold = HoldingPattern(id: "HULKS-10", fix: "HULKS", coord: Coord(lat: 60, lon: -155),
+                                  inboundCourseMag: 71.4, turn: .right, kind: .holdInLieuOfProcedureTurn)
+        // East variation +14 (SFO-like): magnetic track ≈ 129 → Δ ≈ 58 → DIRECT.
+        // West variation −15 (BOS-like): magnetic track ≈ 158 → Δ ≈ 87 → still direct… push further:
+        let e = hold.entry(arrivingFrom: origin, magneticVariation: 14)
+        // True track ≈ 143.3°; Δ(var) = 143.3 − var − 71.4. At var −38 that is 109.9 — a tenth of a
+        // degree SHORT of the teardrop boundary (a first draft of this test learned that the hard
+        // way). −42 puts Δ at ≈113.9, safely inside the teardrop sector.
+        let w = hold.entry(arrivingFrom: origin, magneticVariation: -42)
+        XCTAssertEqual(e, .direct)
+        XCTAssertEqual(w, .teardrop, "declination shifted the magnetic track across the sector boundary")
+        XCTAssertNotEqual(e, w, "variation must be able to change the named entry")
+    }
+
+    /// No published variation near the fix → NO entry is named, and the hold records why.
+    func testUnknownVariationYieldsNoEntry() {
+        let holds = ApproachHolds.resolve(legs: pabaLegs(), missedSeqs: missedSeqs,
+                                          arrivingFrom: Coord(lat: 59.5, lon: -155.5),
+                                          variation: { _ in nil })
+        XCTAssertFalse(holds.isEmpty)
+        for h in holds {
+            XCTAssertNil(h.entry, "no local variation → no claimed entry for \(h.pattern.fix)")
+            XCTAssertNil(h.magneticVariation)
+        }
+    }
+
+    /// The provider is called with the HOLD FIX coordinate — not the origin — because the sector
+    /// comparison happens at the fix.
+    func testVariationIsLookedUpAtTheFix() {
+        var asked: [Coord] = []
+        _ = ApproachHolds.resolve(legs: pabaLegs(), missedSeqs: missedSeqs,
+                                  arrivingFrom: Coord(lat: 0, lon: 0),
+                                  variation: { c in asked.append(c); return 0 })
+        XCTAssertEqual(asked.count, 2, "one lookup per hold")
+        XCTAssertEqual(asked[0].lat, 60.00, accuracy: 1e-9, "HULKS fix, not the origin")
+        XCTAssertEqual(asked[1].lat, 60.40, accuracy: 1e-9, "DEVKE fix, not the origin")
     }
 }

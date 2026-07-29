@@ -199,12 +199,15 @@ struct RadarRegion: Equatable {
     /// set changed OR the map moved meaningfully, and shows the % only on the first pass, so the corner
     /// pill never re-flashes over already-live radar.
     private func prefetch() {
-        prefetchTask?.cancel()
         let list = frames
-        guard let newest = list.last?.time else { bufferProgress = nil; return }
+        guard let newest = list.last?.time else { prefetchTask?.cancel(); bufferProgress = nil; return }
         let region = prefetchRegion
         let movedEnough = region != nil && (lastPrefetchRegion.map { region!.differsMeaningfully(from: $0) } ?? true)
+        // ⚠️ Decide BEFORE cancelling. The first version cancelled the in-flight warm and THEN hit
+        // this no-op guard, killing a healthy prefetch and stranding bufferProgress at a partial %
+        // forever (the pill's "Radar loop 43%" with nothing happening behind it).
         guard newest != lastPrefetchNewest || movedEnough else { return }   // same frames, same view → done
+        prefetchTask?.cancel()
         lastPrefetchNewest = newest
         lastPrefetchRegion = region
         let showPct = !didFirstBuffer
