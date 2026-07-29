@@ -2275,11 +2275,17 @@ final class AppModel: ObservableObject {
                 if !f.isEmpty, !CIFP.isRunwayPseudoFix(f), seen.insert(f).inserted { fixes.append(f) }
             }
         }
+        var holds: [ApproachHold] = []
         if let proper = CIFP.approachProper(airport: proc.airport, ident: proc.ident) {
             let legs = CIFP.legs(procedureID: proper.id).prefix(256)
             let split = ApproachActivation.splitMissed(
                 legs.map { (seq: $0.seq, fix: $0.fix, legType: $0.legType) }, roles: legs.map(\.role))
             let missedSeqs = Set(split.missed)
+            // Published holds, each entered from the direction the aircraft is actually arriving from.
+            // The same missed-approach split is reused (not re-derived) so a hold can never be
+            // classified into a different segment than the legs around it.
+            holds = ApproachHolds.resolve(legs: Array(legs), missedSeqs: missedSeqs,
+                                          arrivingFrom: presentPosition)
             for leg in legs where !missedSeqs.contains(leg.seq) {
                 let f = leg.fix.uppercased()
                 guard !f.isEmpty, !CIFP.isRunwayPseudoFix(f) else { continue }
@@ -2296,8 +2302,16 @@ final class AppModel: ObservableObject {
             plan.joinApproach(at: entry.iafFix, airport: proc.airport, from: presentPosition)
             plan.loadProcedure(loaded)
         }
+        // A VECTORS join is flown straight to final, so the course reversal is not offered at all —
+        // presenting one would invite a reversal ATC never cleared. The missed-approach hold still
+        // applies either way (a go-around from a vectored approach ends in the same published hold).
+        let joinIsVectors = entry.iafFix == nil
+        let applicable = joinIsVectors
+            ? holds.filter { $0.pattern.kind != .holdInLieuOfProcedureTurn }
+            : holds
         activeApproach = ActiveApproach(airport: proc.airport, ident: proc.ident, name: proc.name,
-                                        runway: proc.runway, entry: entry, missedFixes: missedFixes)
+                                        runway: proc.runway, entry: entry, missedFixes: missedFixes,
+                                        holds: applicable)
         previewedProcedure = nil
         Haptics.impact(.medium)
         NSLog("CommSight: approach ACTIVATED %@ %@ entry=%@ legs=%d missed=%d",
