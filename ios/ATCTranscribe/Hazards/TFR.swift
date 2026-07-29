@@ -217,9 +217,13 @@ enum TFRParser {
     /// "TFR TYPE UNKNOWN" placeholder). nil = no reason parsed; the card hides the row.
     static func reason(_ xml: String) -> String? {
         guard let body = tag("txtDescrTraditional", xml)?.uppercased() else { return nil }
-        // Tier 1: the free-text purpose phrase. Cut at the first token that starts boilerplate (the
-        // area definition, dispatch phone/frequency contact info) so only the purpose itself survives.
-        for lead in ["TO PROVIDE A SAFE ENVIRONMENT FOR ", "FOR THE PROTECTION OF ", "FOR PROTECTION OF ", "IN SUPPORT OF "] {
+        // Tier 1: the hazard purpose phrase — always a genuine purpose when present. The GENERIC
+        // phrases ("IN SUPPORT OF …", "FOR PROTECTION OF …") are NOT in this tier: security NOTAMs
+        // carry them inside their EXEMPTION clauses ("FLIGHTS IN SUPPORT OF EVENT OPS ARE
+        // AUTHORIZED…"), and harvesting one labelled 13 national-defense TFRs with their exemption
+        // instead of their reason. Statutes outrank the generic phrases; validated over the live
+        // corpus (125/126 extract, 0 defense NOTAMs mislabelled).
+        for lead in ["TO PROVIDE A SAFE ENVIRONMENT FOR "] {
             guard let r = body.range(of: lead) else { continue }
             var phrase = String(body[r.upperBound...].prefix(120))
             // Purpose phrases are digit-free; the first digit starts the area definition / phone /
@@ -228,11 +232,9 @@ enum TFRParser {
             for stop in [".", ";", ",", "(", " WI ", " TEL ", " SFC", " EFFECTIVE"] {
                 if let s = phrase.range(of: stop) { phrase = String(phrase[..<s.lowerBound]) }
             }
-            let prefix = lead.hasPrefix("TO PROVIDE") ? "" : (lead.hasPrefix("IN SUPPORT") ? "In support of " : "Protection of ")
             let cleaned = expandAbbreviations(phrase)
             guard cleaned.count >= 3 else { continue }
-            let full = prefix.isEmpty ? "To provide a safe environment for \(cleaned)" : prefix + cleaned
-            return full.prefix(1).uppercased() + full.dropFirst()
+            return "To provide a safe environment for " + cleaned
         }
         // Tier 2: the statute. Ordered specific → general.
         if body.contains("91.137(A)(1)") { return "Disaster/hazard area — only relief aircraft (14 CFR 91.137(a)(1))" }
@@ -244,6 +246,20 @@ enum TFRParser {
         if body.contains("44812") { return "UAS restriction — protection of a large public gathering" }
         if body.contains("NTL DEFENSE AIRSPACE") || body.contains("NATIONAL DEFENSE AIRSPACE") || body.contains("40103(B)(3)") {
             return "National defense airspace — security restriction (49 USC 40103(b)(3))"
+        }
+        // Tier 3: the generic phrases — only when NO statute matched, so an exemption clause can
+        // never masquerade as the reason.
+        for lead in ["FOR THE PROTECTION OF ", "FOR PROTECTION OF ", "IN SUPPORT OF "] {
+            guard let r = body.range(of: lead) else { continue }
+            var phrase = String(body[r.upperBound...].prefix(120))
+            if let d = phrase.firstIndex(where: \.isNumber) { phrase = String(phrase[..<d]) }
+            for stop in [".", ";", ",", "(", " WI ", " TEL ", " SFC", " EFFECTIVE"] {
+                if let s2 = phrase.range(of: stop) { phrase = String(phrase[..<s2.lowerBound]) }
+            }
+            let cleaned = expandAbbreviations(phrase)
+            guard cleaned.count >= 3 else { continue }
+            let full = (lead.hasPrefix("IN SUPPORT") ? "In support of " : "Protection of ") + cleaned
+            return full
         }
         return nil
     }

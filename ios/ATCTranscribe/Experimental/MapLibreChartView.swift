@@ -1394,13 +1394,21 @@ struct MapLibreChartView: UIViewRepresentable {
         /// on the pattern, no map state.
         func updateHolds(_ holds: [ApproachHold], on mapView: MLNMapView) {
             guard let src = mapView.style?.source(withIdentifier: "holds") as? MLNShapeSource else { return }
-            let sig = holds.map(\.id).joined(separator: "|")
+            // The signature must cover everything that changes the DRAWN shape, not just identity:
+            // two approaches can publish a hold at the same fix+seq with a different course or turn,
+            // and the local variation rotates the depiction. An id-only signature kept the old
+            // racetrack on screen across such a change.
+            let sig = holds.map { h in
+                String(format: "%@:%.1f:%@:%.5f:%.5f:%.1f", h.id, h.pattern.inboundCourseMag,
+                       h.pattern.turn.rawValue, h.pattern.coord.lat, h.pattern.coord.lon,
+                       h.magneticVariation ?? 999)
+            }.joined(separator: "|")
             guard sig != appliedHoldSig else { return }
             appliedHoldSig = sig
             guard !holds.isEmpty else { src.shape = nil; return }
             var shapes: [MLNShape] = []
             for h in holds.prefix(8) {                                   // bounded (rule 2)
-                var pts = h.pattern.racetrack().map {
+                var pts = h.pattern.racetrack(magneticVariation: h.magneticVariation ?? 0).map {
                     CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon)
                 }
                 guard pts.count >= 2 else { continue }
@@ -1573,8 +1581,17 @@ struct MapLibreChartView: UIViewRepresentable {
             cachedTFRs = tfrs
             tfrByID = Dictionary(tfrs.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
             guard let style = map.style else { return }                  // style not up yet → didFinishLoading re-applies
+            // The signature must see MOVED geometry, not just counts: a re-issued NOTAM keeps its id
+            // and often its ring count while the boundary shifts, and a count-only signature left the
+            // old shape drawn at the old place. Each ring contributes its first vertex (rounded) as a
+            // cheap digest — any real amendment moves it.
             let sig = tfrs.map { t in
-                "\(t.id):\(t.areas.map { "\($0.ring.count).\($0.ceilingFt ?? -1).\($0.floorFt ?? -1)" }.joined(separator: "+"))"
+                let areas = t.areas.map { a -> String in
+                    let p0 = a.ring.first ?? Coord(lat: 0, lon: 0)
+                    return String(format: "%d.%d.%d.%.4f.%.4f", a.ring.count,
+                                  a.ceilingFt ?? -1, a.floorFt ?? -1, p0.lat, p0.lon)
+                }.joined(separator: "+")
+                return "\(t.id):\(areas)"
             }.sorted().joined(separator: "|")
             guard sig != appliedTFRSig else { return }                   // unchanged TFR set → skip rebuild
             appliedTFRSig = sig

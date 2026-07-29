@@ -4,12 +4,16 @@ import Foundation
 /// direction the aircraft is actually arriving from.
 struct ApproachHold: Equatable, Identifiable {
     let pattern: HoldingPattern
-    /// The published entry procedure for this arrival, or nil when the arrival direction is unknown
-    /// (no previous fix and no present position) — in which case the app shows the pattern but does
-    /// NOT invent an entry.
+    /// The published entry procedure for this arrival, or nil when it CANNOT be honestly computed —
+    /// either the arrival direction is unknown (no previous fix and no present position) or the local
+    /// magnetic variation is unknown (great-circle tracks are TRUE, published courses MAGNETIC;
+    /// comparing them without the local variation can cross a sector boundary). Never invented.
     let entry: HoldingPattern.Entry?
     /// Where the arrival course was measured FROM, so the card can say why the entry is what it is.
     let arrivingFrom: String
+    /// The local magnetic variation used (east positive), or nil when no published value was available
+    /// near the fix — the card then says the entry is unavailable rather than guessing.
+    let magneticVariation: Double?
 
     var id: String { pattern.id }
     var isSkippable: Bool { pattern.kind.isRoutinelySkipped }
@@ -46,9 +50,12 @@ enum ApproachHolds {
     ///
     /// `missedSeqs` marks which legs belong to the missed-approach segment — the same split the rest
     /// of the activation path uses, passed in rather than re-derived so the two can never disagree.
+    /// `variation` supplies the LOCAL magnetic variation at a coordinate (east positive), or nil when
+    /// unknown. It is a parameter — not a lookup baked in here — so the resolver stays pure and tests
+    /// exercise both the known and unknown cases explicitly. Production passes `MagneticVariation.at`.
     static func resolve(legs: [CIFPLeg], missedSeqs: Set<Int>,
                         arrivingFrom: Coord?, arrivingFromLabel: String = "present position",
-                        magneticVariation: Double = 0) -> [ApproachHold] {
+                        variation: (Coord) -> Double?) -> [ApproachHold] {
         var out: [ApproachHold] = []
         for (i, leg) in legs.enumerated() {
             assert(i <= 4096, "resolve: leg bound")
@@ -65,8 +72,14 @@ enum ApproachHolds {
                 origin = prev.coord
                 label = prev.fix
             }
-            let entry = origin.flatMap { pattern.entry(arrivingFrom: $0, magneticVariation: magneticVariation) }
-            out.append(ApproachHold(pattern: pattern, entry: entry, arrivingFrom: label))
+            // Entry needs BOTH an origin and the local variation; missing either yields nil, never 0.
+            let localVar = variation(pattern.coord)
+            var entry: HoldingPattern.Entry?
+            if let origin, let localVar {
+                entry = pattern.entry(arrivingFrom: origin, magneticVariation: localVar)
+            }
+            out.append(ApproachHold(pattern: pattern, entry: entry, arrivingFrom: label,
+                                    magneticVariation: localVar))
         }
         return out
     }

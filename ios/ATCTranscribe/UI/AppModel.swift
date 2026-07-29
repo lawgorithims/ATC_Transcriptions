@@ -2284,7 +2284,8 @@ final class AppModel: ObservableObject {
             // the row with transition="". Resolving holds only from the approach proper therefore found
             // the missed-approach hold and never once found the course reversal — the skip control could
             // not appear. Transition legs are never part of the missed approach, so no missed sequences.
-            holds += ApproachHolds.resolve(legs: tLegs, missedSeqs: [], arrivingFrom: presentPosition)
+            holds += ApproachHolds.resolve(legs: tLegs, missedSeqs: [], arrivingFrom: presentPosition,
+                                           variation: MagneticVariation.at)
         }
         if let proper = CIFP.approachProper(airport: proc.airport, ident: proc.ident) {
             let legs = CIFP.legs(procedureID: proper.id).prefix(256)
@@ -2295,7 +2296,8 @@ final class AppModel: ObservableObject {
             // The same missed-approach split is reused (not re-derived) so a hold can never be
             // classified into a different segment than the legs around it.
             holds += ApproachHolds.resolve(legs: Array(legs), missedSeqs: missedSeqs,
-                                           arrivingFrom: presentPosition)
+                                           arrivingFrom: presentPosition,
+                                           variation: MagneticVariation.at)
             for leg in legs where !missedSeqs.contains(leg.seq) {
                 let f = leg.fix.uppercased()
                 guard !f.isEmpty, !CIFP.isRunwayPseudoFix(f) else { continue }
