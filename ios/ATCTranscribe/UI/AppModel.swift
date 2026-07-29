@@ -2272,13 +2272,20 @@ final class AppModel: ObservableObject {
         var fixes: [String] = []
         var seen = Set<String>()
         var missedFixes: [String] = []
+        var holds: [ApproachHold] = []
         if case .transition(let t) = entry {
-            for leg in CIFP.legs(airport: proc.airport, ident: proc.ident, transition: t).prefix(256) {
+            let tLegs = Array(CIFP.legs(airport: proc.airport, ident: proc.ident, transition: t).prefix(256))
+            for leg in tLegs {
                 let f = leg.fix.uppercased()
                 if !f.isEmpty, !CIFP.isRunwayPseudoFix(f), seen.insert(f).inserted { fixes.append(f) }
             }
+            // ⚠️ THE HOLD IN LIEU OF PROCEDURE TURN LIVES HERE, NOT IN THE APPROACH-PROPER ROW.
+            // Measured over cycle 2607: all 6,689 HF legs sit in TRANSITION rows and exactly ZERO in
+            // the row with transition="". Resolving holds only from the approach proper therefore found
+            // the missed-approach hold and never once found the course reversal — the skip control could
+            // not appear. Transition legs are never part of the missed approach, so no missed sequences.
+            holds += ApproachHolds.resolve(legs: tLegs, missedSeqs: [], arrivingFrom: presentPosition)
         }
-        var holds: [ApproachHold] = []
         if let proper = CIFP.approachProper(airport: proc.airport, ident: proc.ident) {
             let legs = CIFP.legs(procedureID: proper.id).prefix(256)
             let split = ApproachActivation.splitMissed(
@@ -2287,8 +2294,8 @@ final class AppModel: ObservableObject {
             // Published holds, each entered from the direction the aircraft is actually arriving from.
             // The same missed-approach split is reused (not re-derived) so a hold can never be
             // classified into a different segment than the legs around it.
-            holds = ApproachHolds.resolve(legs: Array(legs), missedSeqs: missedSeqs,
-                                          arrivingFrom: presentPosition)
+            holds += ApproachHolds.resolve(legs: Array(legs), missedSeqs: missedSeqs,
+                                           arrivingFrom: presentPosition)
             for leg in legs where !missedSeqs.contains(leg.seq) {
                 let f = leg.fix.uppercased()
                 guard !f.isEmpty, !CIFP.isRunwayPseudoFix(f) else { continue }
