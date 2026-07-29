@@ -77,9 +77,14 @@ struct HoldingPattern: Equatable, Identifiable {
                               + "non-holding side, then turn %@ to intercept inbound (%03.0f°).",
                               opposite, outbound, t, inbound)
             case .teardrop:
+                // ⚠️ The 30° offset goes TOWARD the holding side, which for a RIGHT-hand pattern means
+                // SUBTRACTING from the outbound course. Inbound 090 + right turns puts the racetrack
+                // south of the inbound track, so the teardrop is flown on 240° — NOT 300°, which points
+                // north into the unprotected non-holding side. The sign was inverted here, and a pilot
+                // following it would have left protected airspace.
                 return String(format: "Cross the fix, turn to about %03.0f° (30° off the outbound) on the "
                               + "holding side, then turn %@ to intercept inbound (%03.0f°).",
-                              HoldingPattern.normalize(outbound + (turn == .right ? 30 : -30)), t, inbound)
+                              HoldingPattern.teardropHeading(outbound: outbound, turn: turn), t, inbound)
             }
         }
     }
@@ -170,6 +175,13 @@ struct HoldingPattern: Equatable, Identifiable {
     }
 
     // MARK: small geodesy (kept local so the type is testable without the map stack)
+
+    /// The teardrop's outbound heading: 30° off the outbound course, TOWARD the holding side. Split out
+    /// so the side is asserted by a test rather than buried in a format string (it was inverted there).
+    /// Right-hand patterns hold to the right of the inbound course, so their teardrop is outbound − 30.
+    static func teardropHeading(outbound: Double, turn: Turn) -> Double {
+        normalize(outbound + (turn == .right ? -30 : 30))
+    }
 
     static func normalize(_ deg: Double) -> Double {
         let d = deg.truncatingRemainder(dividingBy: 360)

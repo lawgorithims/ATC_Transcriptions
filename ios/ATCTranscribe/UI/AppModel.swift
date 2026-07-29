@@ -1105,7 +1105,10 @@ final class AppModel: ObservableObject {
                 Task { @MainActor in self?.applyTraffic(list, snapshotAt: snapshotAt) }
             },
             onStatus: { [weak self] status in
-                Task { @MainActor in self?.adsbStatus = status }
+                Task { @MainActor in
+                    self?.adsbStatus = status
+                    if status != .idle { self?.adsbHasPolledOnce = true }
+                }
             })
         // Stratux receiver: traffic feeds the SAME `applyTraffic` pipeline as airplanes.live; GPS +
         // link health drive UI status only. Active whenever the Stratux link is enabled + the app is
@@ -2894,7 +2897,7 @@ final class AppModel: ObservableObject {
         Self.trafficFeed(enabled: adsbStreamingEnabled, stratuxEnabled: stratuxEnabled,
                          standby: standby, foreground: scenePhaseActive, status: adsbStatus,
                          hasCenter: lastADSBCenter != nil, updatedAt: aircraftUpdatedAt,
-                         aircraftCount: aircraft.count)
+                         aircraftCount: aircraft.count, hasPolledOnce: adsbHasPolledOnce)
     }
 
     /// Pure decision table behind `trafficFeed`, so every branch is unit-tested without a live model.
@@ -2902,7 +2905,7 @@ final class AppModel: ObservableObject {
     /// `nonisolated` because it touches no model state — only its arguments.
     nonisolated static func trafficFeed(enabled: Bool, stratuxEnabled: Bool, standby: Bool, foreground: Bool,
                             status: ADSBStatus, hasCenter: Bool, updatedAt: Date?,
-                            aircraftCount: Int) -> TrafficFeedState {
+                            aircraftCount: Int, hasPolledOnce: Bool = false) -> TrafficFeedState {
         guard enabled else { return .off }
         if stratuxEnabled { return .stratux }
         if standby { return .paused("Traffic paused — Standby is on") }
@@ -2911,8 +2914,12 @@ final class AppModel: ObservableObject {
         // Running, but nothing to poll around: no fix, no typed airport, no settled map camera.
         if !hasCenter { return .waitingForCenter }
         if updatedAt == nil {
-            // Enabled + centered + no error + no snapshot: if the service never even reported .ok the
-            // poller is idle rather than slow — surface that instead of an eternal spinner.
+            // ⚠️ `.idle` is ALSO the status during the very first poll — the service only reports `.ok`
+            // once bytes have arrived — so treating idle as "not running" told the pilot to toggle the
+            // layer while a perfectly healthy first fetch was in flight. Only a feed that has been
+            // given a real chance and still never reported counts as idle, which the caller signals
+            // with `hasPolledOnce`. Until then this is ordinary loading.
+            if case .idle = status, !hasPolledOnce { return .loading }
             if case .idle = status { return .idleUnexpected }
             return .loading
         }
@@ -2941,6 +2948,10 @@ final class AppModel: ObservableObject {
     }
 
     private var lastADSBCenter: Coord?
+    /// True once the ADS-B service has reported ANY status back (ok or error) — i.e. a poll has been
+    /// attempted. Distinguishes "the first fetch is in flight" from "the poller is not running", which
+    /// share `ADSBStatus.idle` and must NOT share a pill.
+    private var adsbHasPolledOnce = false
     /// Re-center the ADS-B poll once the aircraft has flown far enough that traffic ahead would leave the
     /// ~30 NM radius — throttled to ~10 NM so a moving fix doesn't thrash the poller's contact list.
     func recenterADSBIfMoved() {
