@@ -45,6 +45,14 @@ struct MapLayersPanel: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 11) {
                     header("Overlays", p)
+                    // The toggles below stay live in Dark mode — they still control airports, traffic,
+                    // weather and TFRs — but the mode overrides three of them downward. Saying so beats
+                    // disabling the rows, which would look like the pilot's saved preferences were lost.
+                    if model.chartLayer == .smartDark {
+                        Text("Dark (minimal) hides airways, airspace and off-route navaids. TFRs, traffic, weather and your route stay on.")
+                            .font(.dsLabelS).foregroundStyle(p.textDim)
+                            .accessibilityIdentifier("layers-smartdark-note")
+                    }
                     layerToggle($model.showAirspace, "Airspace & special use", "hexagon", p, id: "layer-airspace")
                     layerToggle($model.showNearby, "Nearby navaids & airports", "mappin.and.ellipse", p, id: "layer-nearby")
                     layerToggle($model.showAirways, "Airways (V / J routes)", "point.topleft.down.to.point.bottomright.curvepath", p, id: "layer-airways")
@@ -126,6 +134,7 @@ struct MapLayersPanel: View {
         case .ifrLow:    return "arrow.down.right.circle"
         case .ifrHigh:   return "arrow.up.right.circle"
         case .satellite: return "globe.americas.fill"
+        case .smartDark: return "moon.stars.fill"
         }
     }
 }

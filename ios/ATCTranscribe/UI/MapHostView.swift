@@ -362,6 +362,7 @@ struct MapHostView: View {
             northLocked: model.northLocked,
             plateOverlay: model.plateOverlay,
             routeIdents: Set(route.map { $0.ident }),
+            routeLegs: route,                       // idents + crossing restrictions for the dark base
             initialCenter: model.stratuxGPS?.coordinate ?? deviceCoord,
             focus: model.mapFocus,
             restoreCamera: model.lastMapCamera,

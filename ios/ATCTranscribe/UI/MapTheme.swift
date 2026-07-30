@@ -31,6 +31,17 @@ struct MapTheme: Equatable {
     let route: UIColor
     let track: UIColor
     let procedure: UIColor      // previewed coded procedure (classic engine's dashed preview line)
+    /// Holding-pattern racetrack on the active approach. Part of the procedure, so it tracks the route's
+    /// color family rather than the chart furniture.
+    let hold: UIColor
+    /// Route-waypoint ident text (the `.smartDark` route-fix labels). Night trims label EMISSION only —
+    /// the base, terrain and route line are identical in every theme — so the mode keeps the app's
+    /// "red-only emission where practical" dark-adaptation stance without changing its look by day.
+    let routeWptText: UIColor
+    /// Published crossing-restriction sublabels: altitude and speed, colored apart so a glance
+    /// separates "how high" from "how fast" (chart convention, and what SmartCharts does).
+    let routeWptAlt: UIColor
+    let routeWptSpeed: UIColor
     // FAA raster paint (identity = 1.0 / 0 / 0)
     let rasterBrightnessMax: Double
     let rasterSaturation: Double
@@ -40,6 +51,12 @@ struct MapTheme: Equatable {
 
     /// The veil's red — chosen so the dimmed chart reads warm without crushing magenta symbology.
     static let nightVeilColor = rgb(0xFF2E14)
+
+    /// The hold racetrack's long-standing magenta, spelled as component floats (not a hex triple) so
+    /// moving it out of `setupDynamicLayers` and into the theme is bit-identical to what shipped.
+    /// NOTE: alpha < 1 — apply via `NSExpression(forConstantValue:)`, never `hexString` (which asserts
+    /// opacity, since style-JSON colors must be opaque).
+    private static let legacyHold = UIColor(red: 0.95, green: 0.24, blue: 0.62, alpha: 0.95)
 
     /// Class color for a "cls" attribute value, defaulting to Class B chart blue.
     func airspaceColor(_ cls: String) -> UIColor {
@@ -91,16 +108,68 @@ struct MapTheme: Equatable {
         let scale = min(max(chartBrightness, 0.3), 1.0)
         let base = baseTheme(t)
         if scale >= 1.0 { return base }
+        return base.dimmingRasters(by: scale)
+    }
+
+    /// THE palette entry point for both engines: the selected base layer can override the app theme.
+    /// `.smartDark` is a purpose-built night base, so it ignores cockpit/day and takes only the night
+    /// theme's label trim — every other layer resolves the app theme as before.
+    static func forLayer(_ layer: ChartLayer, theme: AppTheme, chartBrightness: Double = 1.0) -> MapTheme {
+        layer == .smartDark
+            ? smartDark(appTheme: theme, chartBrightness: chartBrightness)
+            : forTheme(theme, chartBrightness: chartBrightness)
+    }
+
+    /// The pilot's chart-brightness slider scales FAA/terrain raster imagery only — vector overlays and
+    /// safety marks keep full strength. Field-by-field copy so adding a field can't silently skip it.
+    private func dimmingRasters(by scale: Double) -> MapTheme {
+        assert(scale > 0 && scale <= 1.0, "raster dim scale out of range")
         return MapTheme(
-            id: base.id, sea: base.sea, globeSea: base.globeSea,
-            space: base.space, starColor: base.starColor, starAlphaScale: base.starAlphaScale,
-            land: base.land, coastline: base.coastline,
-            airway: base.airway, airwayLabelText: base.airwayLabelText, airwayLabelHalo: base.airwayLabelHalo,
-            navLabelText: base.navLabelText, navLabelHalo: base.navLabelHalo,
-            airspace: base.airspace, route: base.route, track: base.track, procedure: base.procedure,
-            rasterBrightnessMax: base.rasterBrightnessMax * scale,
-            rasterSaturation: base.rasterSaturation, rasterContrast: base.rasterContrast,
-            nightVeilOpacity: base.nightVeilOpacity)
+            id: id, sea: sea, globeSea: globeSea,
+            space: space, starColor: starColor, starAlphaScale: starAlphaScale,
+            land: land, coastline: coastline,
+            airway: airway, airwayLabelText: airwayLabelText, airwayLabelHalo: airwayLabelHalo,
+            navLabelText: navLabelText, navLabelHalo: navLabelHalo,
+            airspace: airspace, route: route, track: track, procedure: procedure,
+            hold: hold, routeWptText: routeWptText, routeWptAlt: routeWptAlt, routeWptSpeed: routeWptSpeed,
+            rasterBrightnessMax: rasterBrightnessMax * scale,
+            rasterSaturation: rasterSaturation, rasterContrast: rasterContrast,
+            nightVeilOpacity: nightVeilOpacity)
+    }
+
+    /// The decluttered night base (`ChartLayer.smartDark`): near-black ground, dark terrain relief, land
+    /// silhouettes, and an AMBER route so the flown path is the brightest thing on the map. Fixed across
+    /// cockpit/day — only the night theme trims label emission (see `routeWptText`). Airspace keeps the
+    /// chart tints even though the fills are suppressed, because TFR color is read from this table and a
+    /// live NOTAM must stay the most alarming mark on any base.
+    static func smartDark(appTheme: AppTheme, chartBrightness: Double = 1.0) -> MapTheme {
+        assert(chartBrightness > 0, "chart brightness must be positive")
+        let night = (appTheme == .night)
+        let base = MapTheme(
+            id: appTheme,
+            sea: rgb(0x0A0C10), globeSea: rgb(0x0D1420),
+            space: rgb(0x020407), starColor: night ? rgb(0xFF6B5A) : .white,
+            starAlphaScale: night ? 0.5 : 1.0,
+            land: rgb(0x12161C), coastline: rgb(0x2A3340, 0.55),
+            // Enroute furniture is suppressed in this mode (see refreshOverlays), so these values only
+            // matter if a future toggle brings a layer back — keep them dim rather than absent.
+            airway: rgb(0x2A3A4A, 0.6),
+            airwayLabelText: rgb(0x9FB0BE), airwayLabelHalo: UIColor.black.withAlphaComponent(0.85),
+            navLabelText: night ? rgb(0xF2B0A0) : .white,
+            navLabelHalo: UIColor.black.withAlphaComponent(0.85),
+            airspace: chartAirspace,
+            route: rgb(0xFF9F1C),                       // amber — the flown path owns the map
+            track: rgb(0xFF9F1C, 0.45),                 // breadcrumb, deliberately quieter than the route
+            procedure: rgb(0x29C7F0),                   // classic engine's dashed preview only
+            hold: rgb(0xFF9F1C, 0.95),                  // part of the procedure → route's color family
+            routeWptText: night ? rgb(0xF2B0A0) : .white,
+            routeWptAlt: night ? rgb(0xC08A94) : rgb(0x4FC3F7),
+            routeWptSpeed: night ? rgb(0xC77FB0) : rgb(0xE040FB),
+            // The terrain pack ships pre-dimmed, so identity paint — the slider still scales it below.
+            rasterBrightnessMax: 1.0, rasterSaturation: 0, rasterContrast: 0,
+            nightVeilOpacity: 0)                        // the mode IS the dark adaptation
+        let scale = min(max(chartBrightness, 0.3), 1.0)
+        return scale >= 1.0 ? base : base.dimmingRasters(by: scale)
     }
 
     private static func baseTheme(_ t: AppTheme) -> MapTheme {
@@ -116,6 +185,8 @@ struct MapTheme: Equatable {
                 navLabelText: .white, navLabelHalo: UIColor.black.withAlphaComponent(0.85),
                 airspace: chartAirspace,
                 route: rgb(0xF23D9E), track: rgb(0xFF9E33, 0.85), procedure: rgb(0x29C7F0),
+                hold: legacyHold,
+                routeWptText: .white, routeWptAlt: rgb(0x4FC3F7), routeWptSpeed: rgb(0xE040FB),
                 rasterBrightnessMax: 0.95, rasterSaturation: 0, rasterContrast: 0,
                 nightVeilOpacity: 0)
         case .day:
@@ -130,6 +201,8 @@ struct MapTheme: Equatable {
                 navLabelText: rgb(0x17242E), navLabelHalo: UIColor.white.withAlphaComponent(0.9),
                 airspace: chartAirspace,
                 route: rgb(0xF23D9E), track: rgb(0xFF9E33, 0.85), procedure: rgb(0x29C7F0),
+                hold: legacyHold,
+                routeWptText: rgb(0x17242E), routeWptAlt: rgb(0x0B6C93), routeWptSpeed: rgb(0x8E1FA0),
                 rasterBrightnessMax: 1.0, rasterSaturation: 0, rasterContrast: 0,
                 nightVeilOpacity: 0)
         case .night:
@@ -146,6 +219,8 @@ struct MapTheme: Equatable {
                 navLabelText: rgb(0xF2B0A0), navLabelHalo: UIColor.black.withAlphaComponent(0.85),
                 airspace: nightAirspace,
                 route: rgb(0xFF5A3C), track: rgb(0xB0521E, 0.85), procedure: rgb(0xE07A5A),
+                hold: legacyHold,
+                routeWptText: rgb(0xF2B0A0), routeWptAlt: rgb(0xC08A94), routeWptSpeed: rgb(0xC77FB0),
                 rasterBrightnessMax: 0.55, rasterSaturation: -0.65, rasterContrast: 0.10,
                 nightVeilOpacity: 0.10)
         }

@@ -43,6 +43,10 @@ struct MapLibreChartView: UIViewRepresentable {
     var northLocked: Bool = true
     var plateOverlay: PlateOverlayState? = nil
     var routeIdents: Set<String> = []
+    /// The flown route as RESOLVED LEGS — the same ordered, procedure-expanded list the route line is drawn
+    /// from, but carrying each waypoint's ident and published crossing restrictions. Drives the route-
+    /// waypoint symbols on the decluttered night base (`routeCoords` is only geometry).
+    var routeLegs: [ResolvedLeg] = []
     var initialCenter: Coord? = nil                   // frame here on first load (pilot's GPS) if no route
     var focus: Coord? = nil                           // recenter here when it changes (search-result pick)
     var restoreCamera: SavedMapCamera? = nil          // restore the pilot's last pan/zoom across remounts (M7)
@@ -74,6 +78,10 @@ struct MapLibreChartView: UIViewRepresentable {
         context.coordinator.globeProjection = globeProjection   // read once at style install (createMap)
         context.coordinator.inTheme = theme                     // style JSON is written with this palette
         context.coordinator.inChartBrightness = chartBrightness
+        // Seed the base layer too: mount() can create the map (and write the style JSON) before the first
+        // updateUIView caches inputs, and the style's background color comes from the layer-aware palette.
+        // Unseeded, a cold launch straight into Dark paints one frame of the default blue sea.
+        context.coordinator.seedLayer(layer)
         context.coordinator.mount(in: container, initialCenter: initialCenter, routeFirst: routeCoords.first)
         return container
     }
@@ -91,7 +99,7 @@ struct MapLibreChartView: UIViewRepresentable {
                       ownshipAccuracyM: ownshipAccuracyM, ownshipIntegrity: ownshipIntegrity,
                       traffic: traffic, wxTrend: wxTrend, tfrs: showTFRs ? tfrs : [], showAirspace: showAirspace,
                       showNearby: showNearby, showAirways: showAirways, plateOverlay: plateOverlay,
-                      routeIdents: routeIdents, focus: focus, restoreCamera: restoreCamera,
+                      routeIdents: routeIdents, routeLegs: routeLegs, focus: focus, restoreCamera: restoreCamera,
                       onTap: onTapObjects, onAnchors: onPlateAnchors, searchHighlight: searchHighlight)
         guard c.map != nil else { return }      // map not built yet (scene still activating) → apply on createMap
         c.applyLatest()
@@ -124,10 +132,16 @@ struct MapLibreChartView: UIViewRepresentable {
         var inChartBrightness: Double = 1.0   // mirrors model.chartBrightness (layers-panel slider)
         private var appliedMapTheme: AppTheme?   // last palette actually applied (nil → force apply)
         private var appliedBrightness: Double?   // last raster-brightness scale applied
+        private var appliedSmartMode: Bool?      // last-applied "is this the smartDark palette?" (nil → force)
         private weak var starfield: StarfieldView?   // globe space backdrop; retinted on theme change
 
-        /// The palette for the CURRENT theme + pilot brightness — the single source every apply path uses.
-        var currentMapTheme: MapTheme { MapTheme.forTheme(inTheme, chartBrightness: inChartBrightness) }
+        /// The palette for the CURRENT theme + selected base + pilot brightness — the single source every
+        /// apply path uses. Reads `inLayer` (the latest input) and NOT `layer` (only synced inside
+        /// applyLayer, which runs AFTER the theme pass in applyLatest — so `layer` is one frame stale on
+        /// the switch, which would paint the new base with the old palette).
+        var currentMapTheme: MapTheme {
+            MapTheme.forLayer(inLayer, theme: inTheme, chartBrightness: inChartBrightness)
+        }
         private var serverPort: UInt16 = 0         // bound loopback port, delivered async by the tile server
         private var servedReadersSig: String?      // (layer + sorted mounted packIDs) last handed to the tile server
         // Bundled always-present RASTER bases for the globe (loaded once): a global Blue Marble satellite backstop
@@ -146,8 +160,17 @@ struct MapLibreChartView: UIViewRepresentable {
         private lazy var bundledIFRHighBase: MBTilesReader? =
             Bundle.main.url(forResource: "ifrhigh_base", withExtension: "mbtiles", subdirectory: "basemap")
                 .flatMap { MBTilesReader(path: $0.path) }
+        /// The decluttered night base's terrain relief: pre-baked dark shaded relief with a TRANSPARENT
+        /// ocean (CONUS, z0–z7; ios/Tools/build_terrain_relief.py). Pre-baked rather than a live
+        /// hillshade/raster-DEM layer because the globe fork never ported those render paths — they would
+        /// draw as unsubdivided Mercator quads on the sphere, while the raster path is globe-correct.
+        /// A missing pack is not fatal: `.smartDark` then shows the dark base + land silhouettes.
+        private lazy var bundledTerrainBase: MBTilesReader? =
+            Bundle.main.url(forResource: "terrain_base", withExtension: "mbtiles", subdirectory: "basemap")
+                .flatMap { MBTilesReader(path: $0.path) }
         /// Server path segment per chart layer for the bundled bases (see setupChartBaseLayers).
-        private static let baseNames: [ChartLayer: String] = [.sectional: "vfr", .ifrLow: "ifrlow", .ifrHigh: "ifrhigh"]
+        private static let baseNames: [ChartLayer: String] = [.sectional: "vfr", .ifrLow: "ifrlow",
+                                                             .ifrHigh: "ifrhigh", .smartDark: "terrain"]
 
         /// Web-Mercator latitude limit. Anything beyond this is not representable and makes mbgl::LatLng throw.
         private static let maxMercatorLat = 85.05112878
@@ -192,6 +215,12 @@ struct MapLibreChartView: UIViewRepresentable {
         private var inShowAirspace = true, inShowNearby = true, inShowAirways = true
         private var inPlate: PlateOverlayState?
         private var inFocus: Coord?
+        private var inRouteLegs: [ResolvedLeg] = []          // flown route WITH idents + constraints
+        private var appliedRouteWptSig: String?              // last-applied waypoint set (ident+pos+labels)
+
+        /// Pre-mount seed for the base layer, so the FIRST style JSON is written with the right palette
+        /// (see makeUIView). `cacheInputs` overwrites this on the first real update.
+        func seedLayer(_ l: ChartLayer) { inLayer = l }
 
         /// Stash the latest inputs from updateUIView (called every body eval, even before the map exists).
         func cacheInputs(layer: ChartLayer, routeCoords: [CLLocationCoordinate2D],
@@ -202,7 +231,8 @@ struct MapLibreChartView: UIViewRepresentable {
                          ownshipIntegrity: GPSIntegrityState,
                          traffic: [Aircraft], wxTrend: [WxTrendPin], tfrs: [TFR], showAirspace: Bool,
                          showNearby: Bool, showAirways: Bool, plateOverlay: PlateOverlayState?,
-                         routeIdents: Set<String>, focus: Coord?, restoreCamera: SavedMapCamera?,
+                         routeIdents: Set<String>, routeLegs: [ResolvedLeg],
+                         focus: Coord?, restoreCamera: SavedMapCamera?,
                          onTap: @escaping ([IdentifiedObject]) -> Void,
                          onAnchors: @escaping ((CGPoint, CGPoint)?) -> Void,
                          searchHighlight: CLLocationCoordinate2D?) {
@@ -212,7 +242,8 @@ struct MapLibreChartView: UIViewRepresentable {
             inOwnAccuracy = ownshipAccuracyM; inOwnIntegrity = ownshipIntegrity
             inTraffic = traffic; inWxTrend = wxTrend; inTFRs = tfrs; inShowAirspace = showAirspace; inShowNearby = showNearby
             inShowAirways = showAirways; inPlate = plateOverlay; inFocus = focus; self.restoreCamera = restoreCamera
-            self.routeIdents = routeIdents; self.onTapObjects = onTap; self.onPlateAnchors = onAnchors
+            self.routeIdents = routeIdents; inRouteLegs = routeLegs
+            self.onTapObjects = onTap; self.onPlateAnchors = onAnchors
             inSearchHighlight = searchHighlight
         }
         var inSearchHighlight: CLLocationCoordinate2D?
@@ -248,6 +279,7 @@ struct MapLibreChartView: UIViewRepresentable {
             // @MainActor → hop, matching ensureVisiblePacks). Signature-gated, so a no-op when the set is unchanged.
             Task { @MainActor [weak self, weak map] in guard let self, let map else { return }; self.syncFAASource(on: map) }
             updateRoute(inRoute, on: map)
+            updateRouteWaypoints(inRouteLegs, on: map)
             updateHolds(inHolds, on: map)
             updateTrack(inBreadcrumb, on: map)
             updateRadar(inRadarTemplate, on: map)
@@ -491,10 +523,16 @@ struct MapLibreChartView: UIViewRepresentable {
             appliedOwnSig = nil                  // and a PARKED aircraft's ownship (inside the ~12 m/3°
                                                  // dead band) could stay invisible; motion self-heals,
                                                  // sitting still must not
+            appliedRouteWptSig = nil             // same trap: a filed route can sit unchanged for the whole
+                                                 // flight, so without this reset the waypoints would exist
+                                                 // only in the discarded style and never draw
             appliedMapTheme = nil                // freshly-built layers carry setup colors → force a theme pass
+            appliedSmartMode = nil               // …and the palette also depends on the selected base layer
             setupOverlayLayers(style)            // airspace/airways/nav + TFR/route/traffic/ownship (empty)
             applyMapThemeIfNeeded(on: mapView)   // recolor the fresh layers for the active theme
             updateRoute(routeCoords, on: mapView)
+            updateRouteWaypoints(inRouteLegs, on: mapView)
+            applyRouteWptVisibility(on: mapView) // fresh layers default to visible → hide off the dark base
             updateHolds(inHolds, on: mapView)
             updateTrack(trackCoords, on: mapView)
             updateRadar(inRadarTemplate, on: mapView)
@@ -592,14 +630,17 @@ struct MapLibreChartView: UIViewRepresentable {
         /// cache that restored our runtime layers (leaving dangling ids). "faa" is intentionally excluded — it
         /// lives in the base style JSON and is re-managed by ensureVisiblePacks. Bounded loops, >=2 asserts.
         private func clearManagedStyle(_ style: MLNStyle) {
-            let layers = ["plate-raster", "ownship-sym", "accuracy-fill", "accuracy-line", "traffic-sym", "hold-line", "route-line", "track-line",
+            let layers = ["plate-raster", "ownship-sym", "accuracy-fill", "accuracy-line", "traffic-sym",
+                          "route-wpt-spd", "route-wpt-alt", "route-wpt-sym",
+                          "hold-line", "route-line", "track-line",
                           "wxradar-layer", "tfr-label", "tfr-outline", "tfr-fill", "nav-sym",
                           "airspace-label", "airways-label", "airspace-outline", "airspace-fill",
                           "airways-line", "night-veil-fill", "coastline", "land-fill"]
             for id in layers where style.layer(withIdentifier: id) != nil {          // bounded (rule 2)
                 if let l = style.layer(withIdentifier: id) { style.removeLayer(l) }
             }
-            let sources = ["plate", "ownship", "accuracy", "traffic", "holds", "route", "track", "wxradar", "tfr-labels", "tfr",
+            let sources = ["plate", "ownship", "accuracy", "traffic", "route-wpt", "holds", "route", "track",
+                           "wxradar", "tfr-labels", "tfr",
                            "nav", "airspace-labels", "airspace", "airways", "night-veil", "land"]
             for id in sources where style.source(withIdentifier: id) != nil {        // bounded (rule 2)
                 if let s = style.source(withIdentifier: id) { style.removeSource(s) }
@@ -843,6 +884,8 @@ struct MapLibreChartView: UIViewRepresentable {
             holdLine.lineCap = NSExpression(forConstantValue: "round"); holdLine.lineJoin = NSExpression(forConstantValue: "round")
             style.addLayer(holdLine)
 
+            setupRouteWptLayers(style)   // above the route/hold lines, below accuracy/traffic/ownship
+
             style.setImage(ChartMapView.Coordinator.traffic, forName: "own-traffic")
             // Three ownship symbols, selected per-feature by integrity, so a degraded fix can never be
             // drawn in the same confident blue as a good one. (An unreliable/suspect fix is normally not
@@ -892,6 +935,154 @@ struct MapLibreChartView: UIViewRepresentable {
             own.iconAllowsOverlap = NSExpression(forConstantValue: true)
             own.iconIgnoresPlacement = NSExpression(forConstantValue: true)
             style.addLayer(own)
+        }
+
+        /// The route-waypoint layer ids, top-of-stack order irrelevant (they share one source).
+        static let routeWptLayers = ["route-wpt-sym", "route-wpt-alt", "route-wpt-spd"]
+
+        /// Text offsets (in ems, the units MLNSymbolStyleLayer wants) for the constraint sublabels. The
+        /// speed line sits directly under the ident when there is no altitude, and under the altitude when
+        /// there is — a fixed slot would leave an empty gap on the (common) speed-only leg.
+        private static let spdOffsetSolo = NSValue(cgVector: CGVector(dx: 0, dy: 1.9))
+        private static let spdOffsetStacked = NSValue(cgVector: CGVector(dx: 0, dy: 2.75))
+
+        /// The waypoints of the FLOWN route — ident, plus the published crossing restrictions — as three
+        /// symbol layers over one shared source.
+        ///
+        /// Three layers rather than one, because a single leg can carry BOTH an altitude and a speed limit
+        /// and they must read apart at a glance (cyan vs magenta): one `textColor` per layer is the only
+        /// way MapLibre expresses that, and per-feature attributed text is untested on the globe fork.
+        ///
+        /// They sit above the route/hold lines and below accuracy/traffic/ownship — the route's own labels
+        /// must never cover traffic or the aircraft. Created hidden-or-shown by `applyRouteWptVisibility`.
+        private func setupRouteWptLayers(_ style: MLNStyle) {
+            guard style.source(withIdentifier: "route-wpt") == nil else { return }   // per-id idempotency
+            style.setImage(NearbyMarkerView.routeFixGlyphImage, forName: "rw-fix")
+            let src = MLNShapeSource(identifier: "route-wpt", shape: nil, options: nil)
+            style.addSource(src)
+            let t = currentMapTheme
+
+            let sym = MLNSymbolStyleLayer(identifier: "route-wpt-sym", source: src)
+            sym.iconImageName = NSExpression(forKeyPath: "glyph")        // "rw-fix" or an "apt-…" signature
+            // The route's marks always draw: they are the point of this mode. But they DO claim placement,
+            // so the generic nav-sym airport symbol at the same field collides away instead of printing a
+            // second ident on top of this one.
+            sym.iconAllowsOverlap = NSExpression(forConstantValue: true)
+            sym.iconIgnoresPlacement = NSExpression(forConstantValue: false)
+            // Same reason as ownship/traffic: pitch-alignment defaults to "auto" → inherits
+            // rotation-alignment → pitch-with-map, which makes the globe fork place the anchor through the
+            // flat Mercator label plane instead of on the sphere.
+            sym.iconPitchAlignment = NSExpression(forConstantValue: "viewport")
+            sym.text = NSExpression(forKeyPath: "ident")
+            sym.textFontNames = NSExpression(forConstantValue: ["Arial Bold"])   // the only bundled fontstack
+            sym.textFontSize = NSExpression(forConstantValue: 9.5)
+            sym.textColor = NSExpression(forConstantValue: t.routeWptText)
+            sym.textHaloColor = NSExpression(forConstantValue: t.navLabelHalo)
+            sym.textHaloWidth = NSExpression(forConstantValue: 1.2)
+            sym.textAnchor = NSExpression(forConstantValue: "top")
+            sym.textOffset = NSExpression(forConstantValue: NSValue(cgVector: CGVector(dx: 0, dy: 0.9)))
+            sym.textOptional = NSExpression(forConstantValue: true)      // drop the ident before the mark
+            style.addLayer(sym)                                          // NO minzoom: the route is the mode
+
+            // Constraint sublabels are detail, not orientation: they'd be unreadable mush at continental
+            // zoom, so they appear once the pilot is zoomed into the procedure.
+            let alt = MLNSymbolStyleLayer(identifier: "route-wpt-alt", source: src)
+            alt.text = NSExpression(forKeyPath: "alt")
+            alt.textFontNames = NSExpression(forConstantValue: ["Arial Bold"])
+            alt.textFontSize = NSExpression(forConstantValue: 8.5)
+            alt.textColor = NSExpression(forConstantValue: t.routeWptAlt)
+            alt.textHaloColor = NSExpression(forConstantValue: t.navLabelHalo)
+            alt.textHaloWidth = NSExpression(forConstantValue: 1.2)
+            alt.textAnchor = NSExpression(forConstantValue: "top")
+            alt.textOffset = NSExpression(forConstantValue: NSValue(cgVector: CGVector(dx: 0, dy: 1.9)))
+            alt.textOptional = NSExpression(forConstantValue: true)
+            alt.textIgnoresPlacement = NSExpression(forConstantValue: true)
+            alt.minimumZoomLevel = 7
+            style.addLayer(alt)
+
+            let spd = MLNSymbolStyleLayer(identifier: "route-wpt-spd", source: src)
+            spd.text = NSExpression(forKeyPath: "spd")
+            spd.textFontNames = NSExpression(forConstantValue: ["Arial Bold"])
+            spd.textFontSize = NSExpression(forConstantValue: 8.5)
+            spd.textColor = NSExpression(forConstantValue: t.routeWptSpeed)
+            spd.textHaloColor = NSExpression(forConstantValue: t.navLabelHalo)
+            spd.textHaloWidth = NSExpression(forConstantValue: 1.2)
+            spd.textAnchor = NSExpression(forConstantValue: "top")
+            // Offsets are NSValue-wrapped vectors, which a feature attribute can't carry — so switch
+            // between two CONSTANT vectors on a per-feature boolean instead of interpolating one.
+            spd.textOffset = NSExpression(format: "TERNARY(stacked == YES, %@, %@)",
+                                          Self.spdOffsetStacked, Self.spdOffsetSolo)
+            spd.textOptional = NSExpression(forConstantValue: true)
+            spd.textIgnoresPlacement = NSExpression(forConstantValue: true)
+            spd.minimumZoomLevel = 7
+            style.addLayer(spd)
+            assert(style.layer(withIdentifier: "route-wpt-sym") != nil, "setupRouteWptLayers: sym layer missing")
+            assert(style.source(withIdentifier: "route-wpt") != nil, "setupRouteWptLayers: source missing")
+        }
+
+        /// One point per flown waypoint, carrying its glyph, ident and constraint text.
+        ///
+        /// Deduped on ident+position, NOT ident alone: a procedure turn or a hold that revisits the same fix
+        /// must not stack two identical labels, but two different fixes that share an ident (they exist) are
+        /// both real points on the route. `static` and pure so it is unit-testable without a map.
+        static func routeWptFeatures(_ legs: [ResolvedLeg]) -> [MLNPointFeature] {
+            var out: [MLNPointFeature] = []
+            var seen = Set<String>()
+            for leg in legs.prefix(maxRouteWpts) {                       // bounded (rule 2)
+                let key = "\(leg.ident)@\(q(leg.coord.lat)),\(q(leg.coord.lon))"
+                guard seen.insert(key).inserted else { continue }
+                let f = MLNPointFeature()
+                f.coordinate = CLLocationCoordinate2D(latitude: leg.coord.lat, longitude: leg.coord.lon)
+                let altText = SmartRouteLabel.altText(leg.constraint)
+                let spdText = SmartRouteLabel.speedText(leg.constraint)
+                // Empty strings render nothing, so absent constraints need no per-feature layer filtering.
+                f.attributes = ["glyph": routeWptGlyph(leg),
+                                "ident": leg.ident,
+                                "alt": altText ?? "",
+                                "spd": spdText ?? "",
+                                "stacked": altText != nil]
+                out.append(f)
+            }
+            assert(out.count <= maxRouteWpts, "routeWptFeatures: exceeded the leg cap")
+            assert(out.count == seen.count, "routeWptFeatures: dedupe key set out of step with output")
+            return out
+        }
+
+        /// Airports keep their real FAA symbol (towered/fuel/runway-axis detail is exactly the "minimal
+        /// airport data" this mode wants); everything else on the route gets the white route-fix star.
+        private static func routeWptGlyph(_ leg: ResolvedLeg) -> String {
+            guard leg.kind == .airport else { return "rw-fix" }
+            return "apt-" + AirportSymbolData.spec(leg.ident, category: cachedCategory(leg.ident)).signature
+        }
+
+        /// The route cap mirrors ProcedureRoute's own leg cap — beyond it the map is not the problem.
+        static let maxRouteWpts = 600
+
+        /// Push the flown route's waypoints onto the map. Signature-gated like `updateRoute`: the label text
+        /// is part of the signature, so an ATC-amended crossing restriction on an unchanged geometry still
+        /// redraws. Built on the main actor (≤600 features, same as traffic).
+        func updateRouteWaypoints(_ legs: [ResolvedLeg], on map: MLNMapView) {
+            inRouteLegs = legs
+            guard let style = map.style,
+                  let src = style.source(withIdentifier: "route-wpt") as? MLNShapeSource else { return }
+            let sig = legs.prefix(Self.maxRouteWpts).map {
+                "\($0.ident):\(Self.q($0.coord.lat)),\(Self.q($0.coord.lon))"
+                    + ":\(SmartRouteLabel.altText($0.constraint) ?? "")"
+                    + ":\(SmartRouteLabel.speedText($0.constraint) ?? "")"
+            }.joined(separator: "|")
+            guard sig != appliedRouteWptSig else { return }              // unchanged → skip the rebuild
+            appliedRouteWptSig = sig
+            let feats = Self.routeWptFeatures(legs)
+            // Every caller is a main-thread path (updateUIView's applyLatest, and the MLNMapViewDelegate's
+            // didFinishLoading), so this is an isolation annotation catching up with reality rather than a
+            // hop — and the alternative, deferring into a Task, would let the map draw one frame of
+            // unglyphed waypoints. Asserted rather than assumed.
+            assert(Thread.isMainThread, "updateRouteWaypoints must run on the main thread")
+            MainActor.assumeIsolated {
+                Self.registerAirportGlyphs(in: feats, style: style)      // airport signatures this set uses
+            }
+            src.shape = MLNShapeCollectionFeature(shapes: feats)
+            assert(feats.count <= Self.maxRouteWpts, "updateRouteWaypoints: over the cap")
         }
 
         /// Register the FAA nav glyphs (reusing the app's exact NearbyMarkerView drawings) under the names
@@ -982,11 +1173,17 @@ struct MapLibreChartView: UIViewRepresentable {
             let bb = BBox(minLat: b.sw.latitude - latD * m, minLon: b.sw.longitude - lonD * m,
                           maxLat: b.ne.latitude + latD * m, maxLon: b.ne.longitude + lonD * m)
             if scale < 2.2 { wantFixes = true } else if scale > 2.7 { wantFixes = false }   // hysteresis dead band
-            // Gate on the MapLayersMenu toggles AND the zoom scale — a toggle OFF makes the builder return []
-            // so the source clears (parity with ChartMapView's showAirspace/showNearby/showAirways).
-            let wantAir = showAirspace && scale < 14, wantLbl = showAirspace && scale < 7
-            let wantAwy = showAirways && scale < 9, wantNear = showNearby && scale < 5.5
-            let showFixes = wantNear && wantFixes
+            // THE DECLUTTER. `.smartDark` suppresses the enroute furniture outright — airways, airspace and
+            // the off-route navaids/fixes — so the only fixes on the map are the ones being flown (they get
+            // their own route-wpt layers, fed from the resolved flight plan rather than a region query).
+            // Airports survive: "which field is that" stays a question the dark base should answer. The
+            // pilot's overlay toggles are still honored (a toggle OFF hides airports here too); this only
+            // adds suppression, never re-enables anything they turned off. TFRs/traffic/weather/ownship are
+            // untouched — decluttering must never hide a hazard.
+            let smart = (layer == .smartDark)
+            let wantAir = showAirspace && scale < 14 && !smart, wantLbl = showAirspace && scale < 7 && !smart
+            let wantAwy = showAirways && scale < 9 && !smart, wantNear = showNearby && scale < 5.5
+            let showFixes = wantNear && wantFixes && !smart
             overlayGen += 1
             let gen = overlayGen
             Task { @MainActor in
@@ -994,7 +1191,8 @@ struct MapLibreChartView: UIViewRepresentable {
                     () -> (asp: [MLNPolygonFeature], lbl: [MLNPointFeature], awy: [MLNPolylineFeature], nav: [MLNPointFeature]) in
                     let a = Coordinator.airspaceFeatures(bb, want: wantAir, labels: wantLbl)
                     return (a.polys, a.labels, Coordinator.airwayFeatures(bb, want: wantAwy),
-                            Coordinator.navFeatures(bb, near: wantNear, fixes: showFixes))
+                            Coordinator.navFeatures(bb, near: wantNear, fixes: showFixes,
+                                                    airportsOnly: smart))
                 }.value
                 guard gen == self.overlayGen, let style = mapView.style else { return }
                 (style.source(withIdentifier: "airspace") as? MLNShapeSource)?.shape = MLNShapeCollectionFeature(shapes: f.asp)
@@ -1081,12 +1279,19 @@ struct MapLibreChartView: UIViewRepresentable {
 
         /// Nearby airports/navaids (+ terminal/approach fixes when zoomed in), one point each carrying its
         /// FAA-glyph name + ident. Deduped by ident. nonisolated. Bounded by the query limits (rule 2).
-        static func navFeatures(_ bb: BBox, near: Bool, fixes: Bool) -> [MLNPointFeature] {
+        /// `airportsOnly` is the decluttered night base's filter: type 0 is airports, 1 navaids, 2 fixes
+        /// (ios/Tools/build_nav_db.py), so dropping to `[0]` leaves the fields and removes the navaid
+        /// clutter. Passed in rather than read from the coordinator because this is nonisolated and runs in
+        /// the detached overlay task — same as `near`/`fixes`.
+        static func navFeatures(_ bb: BBox, near: Bool, fixes: Bool,
+                                airportsOnly: Bool = false) -> [MLNPointFeature] {
             assert(bb.minLat <= bb.maxLat, "navFeatures: degenerate box")
+            assert(!(airportsOnly && fixes), "navFeatures: airports-only contradicts drawing fixes")
             guard near else { return [] }
             var out: [MLNPointFeature] = []
             var seen = Set<String>()
-            for np in NavDatabase.nearby(bb, types: [0, 1], limit: 160) where seen.insert(np.ident).inserted {
+            let types: Set<Int> = airportsOnly ? [0] : [0, 1]
+            for np in NavDatabase.nearby(bb, types: types, limit: 160) where seen.insert(np.ident).inserted {
                 out.append(navFeature(np))
             }
             if fixes {
@@ -1161,14 +1366,21 @@ struct MapLibreChartView: UIViewRepresentable {
         /// remounted for a theme change (ARCHITECTURE.md: the map is never torn down; remount would
         /// refetch + re-upload ~40 MB of raster for what a dozen GPU uniform updates accomplish).
         func applyMapThemeIfNeeded(on map: MLNMapView) {
+            // The BASE LAYER is part of the palette identity, not just the theme: `.smartDark` overrides
+            // the app theme entirely (MapTheme.forLayer). Without `smart` in this guard a layer-only
+            // switch — the common case, theme and brightness unchanged — early-returns and leaves the
+            // sea, land, vectors and every raster painted in the OTHER mode's palette.
+            let smart = (inLayer == .smartDark)
             guard let style = map.style, styleGate.isConfigured(style),
-                  inTheme != appliedMapTheme || inChartBrightness != appliedBrightness else { return }
+                  inTheme != appliedMapTheme || inChartBrightness != appliedBrightness
+                      || smart != appliedSmartMode else { return }
             let t = currentMapTheme
             applyBaseMapTheme(style, t)
             applyVectorMapTheme(style, t)
             applyRasterMapTheme(style, t)
             appliedMapTheme = inTheme
             appliedBrightness = inChartBrightness
+            appliedSmartMode = smart
         }
 
         private func applyBaseMapTheme(_ style: MLNStyle, _ t: MapTheme) {
@@ -1208,6 +1420,18 @@ struct MapLibreChartView: UIViewRepresentable {
                 NSExpression(forConstantValue: t.track)
             (style.layer(withIdentifier: "route-line") as? MLNLineStyleLayer)?.lineColor =
                 NSExpression(forConstantValue: t.route)
+            // Alpha < 1 (0.95): set as a UIColor through NSExpression, never through MapTheme.hexString,
+            // which asserts opacity because style-JSON colors must be opaque.
+            (style.layer(withIdentifier: "hold-line") as? MLNLineStyleLayer)?.lineColor =
+                NSExpression(forConstantValue: t.hold)
+            if let l = style.layer(withIdentifier: "route-wpt-sym") as? MLNSymbolStyleLayer {
+                l.textColor = NSExpression(forConstantValue: t.routeWptText)
+                l.textHaloColor = NSExpression(forConstantValue: t.navLabelHalo)
+            }
+            (style.layer(withIdentifier: "route-wpt-alt") as? MLNSymbolStyleLayer)?.textColor =
+                NSExpression(forConstantValue: t.routeWptAlt)
+            (style.layer(withIdentifier: "route-wpt-spd") as? MLNSymbolStyleLayer)?.textColor =
+                NSExpression(forConstantValue: t.routeWptSpeed)
         }
 
         /// Raster paint on every chart raster (faa + bundled bases + satellite). The radar keeps its
@@ -1265,10 +1489,17 @@ struct MapLibreChartView: UIViewRepresentable {
         /// GLOBE only (the flat map keeps its existing vector-land + downloaded-pack behaviour).
         private func setupChartBaseLayers(_ style: MLNStyle) {
             guard globeProjection, serverPort > 0 else { server.setBaseReaders([:]); return }
+            assert(Self.baseNames.count <= 8, "setupChartBaseLayers: unexpectedly many bundled bases")
             var mounted: [String: MBTilesReader] = [:]
-            for (lyr, name) in Self.baseNames {
-                let reader: MBTilesReader? = (lyr == .sectional) ? bundledVFRBase
-                                           : (lyr == .ifrLow)   ? bundledIFRLowBase : bundledIFRHighBase
+            for (lyr, name) in Self.baseNames {                          // bounded by baseNames (rule 2)
+                let reader: MBTilesReader?
+                switch lyr {
+                case .sectional: reader = bundledVFRBase
+                case .ifrLow:    reader = bundledIFRLowBase
+                case .ifrHigh:   reader = bundledIFRHighBase
+                case .smartDark: reader = bundledTerrainBase
+                case .satellite: reader = nil       // its own opaque bottom layer (setupSatelliteLayer)
+                }
                 guard let reader else { continue }
                 mounted[name] = reader
                 let ident = "base-\(name)"
@@ -1286,7 +1517,15 @@ struct MapLibreChartView: UIViewRepresentable {
                     style.addSource(src)
                     let rl = MLNRasterStyleLayer(identifier: ident, source: src)
                     Self.applyRasterPaint(to: rl, currentMapTheme)   // created after the theme pass
-                    if let sat = style.layer(withIdentifier: "satellite") { style.insertLayer(rl, above: sat) }
+                    // The terrain relief goes ABOVE the vector land, every other base BELOW it. The chart
+                    // bases are opaque and world-covering, so land under them is invisible anyway and is
+                    // hidden outright on the globe; the relief instead needs to READ AS the land it shades,
+                    // with the silhouette showing through its transparent ocean and beyond its CONUS box.
+                    // (setupLandBase always re-inserts land directly above "bg", i.e. below this layer, so
+                    // the order survives a style rebuild.)
+                    if lyr == .smartDark, let coast = style.layer(withIdentifier: "coastline") {
+                        style.insertLayer(rl, above: coast)
+                    } else if let sat = style.layer(withIdentifier: "satellite") { style.insertLayer(rl, above: sat) }
                     else if let bg = style.layer(withIdentifier: "bg") { style.insertLayer(rl, above: bg) }
                     else { style.addLayer(rl) }
                 }
@@ -1294,8 +1533,15 @@ struct MapLibreChartView: UIViewRepresentable {
                     rl.rasterOpacity = NSExpression(forConstantValue: (lyr == layer) ? 1.0 : 0.0)
                 }
             }
+            // Blue Marble is the opaque world backstop for every OTHER layer, and it would show straight
+            // through the terrain relief's transparent ocean (and outside its CONUS box) — the one thing
+            // that would break the near-black base. Opacity, not visibility: the tiles stay resident so
+            // switching back out of Dark is instant, same rule as the chart bases above.
+            (style.layer(withIdentifier: "satellite") as? MLNRasterStyleLayer)?.rasterOpacity =
+                NSExpression(forConstantValue: (layer == .smartDark) ? 0.0 : 1.0)
             server.setBaseReaders(mounted)
             applyLandBaseVisibility(style)
+            assert(mounted.count <= Self.baseNames.count, "setupChartBaseLayers: mounted more bases than named")
         }
 
         /// The vector land base is hidden exactly when an opaque raster chart base is drawing under the globe
@@ -1309,11 +1555,17 @@ struct MapLibreChartView: UIViewRepresentable {
         /// above "bg" later, i.e. BELOW land). The result: Satellite and the old Standard map rendered
         /// byte-identically and neither ever showed Blue Marble. The satellite raster is opaque and
         /// world-covering, so the land fallback is redundant for EVERY layer once it exists.
+        /// `.smartDark` is the exception: its terrain relief is CONUS-only and its ocean is transparent, so
+        /// the vector land polygon is the only geography outside coverage (Canada, Mexico, Alaska, Hawaii)
+        /// and the only thing separating land from water anywhere. It draws BELOW the terrain raster
+        /// (setupChartBaseLayers anchors terrain above "coastline"), so it never fights the relief.
         private func applyLandBaseVisibility(_ style: MLNStyle) {
-            let hide = globeProjection && bundledSatelliteBase != nil
-            for id in ["land-fill", "coastline"] {
+            assert(Thread.isMainThread, "style mutation must run on the main thread")
+            let hide = globeProjection && bundledSatelliteBase != nil && layer != .smartDark
+            for id in ["land-fill", "coastline"] {                       // bounded (rule 2)
                 style.layer(withIdentifier: id)?.isVisible = !hide
             }
+            assert(style.layer(withIdentifier: "bg") != nil, "applyLandBaseVisibility: base style missing")
         }
 
         /// The satellite base as a SEPARATE opaque bottom raster layer (served on the server's "/sat/" path), so
@@ -1721,6 +1973,25 @@ struct MapLibreChartView: UIViewRepresentable {
             defer { appliedLayer = new }
             guard let prev = appliedLayer, prev != new, map.style != nil else { return }
             ensureVisiblePacks(map)
+            // Entering or leaving `.smartDark` changes WHICH features belong on the map (the declutter) and
+            // whether the route-waypoint layers draw at all — neither follows from the pack reload above,
+            // and a layer switch is user-rate, so rebuilding the overlays here is free.
+            guard prev == .smartDark || new == .smartDark else { return }
+            refreshOverlays(map)
+            applyRouteWptVisibility(on: map)
+        }
+
+        /// The route-waypoint layers exist in every mode but draw only on the decluttered night base: on an
+        /// FAA raster every fix is already printed on the chart, so a second set of idents would be the
+        /// clutter this mode exists to remove. Keeping the layers mounted (populated, just hidden) makes a
+        /// future "show route waypoints everywhere" toggle a one-line change.
+        private func applyRouteWptVisibility(on map: MLNMapView) {
+            guard let style = map.style else { return }
+            let show = (layer == .smartDark)
+            for id in Self.routeWptLayers {                               // bounded (rule 2)
+                style.layer(withIdentifier: id)?.isVisible = show
+            }
+            assert(Self.routeWptLayers.count == 3, "applyRouteWptVisibility: layer set changed")
         }
 
         /// Apply the MapLayersMenu overlay toggles; a real change re-runs refreshOverlays so a toggled-off
@@ -1872,6 +2143,7 @@ struct MapLibreChartScreen: View {
                               traffic: model.aircraft, tfrs: model.tfrs, showTFRs: model.showTFRs,
                               plateOverlay: model.plateOverlay,
                               routeIdents: Set(legs.map { $0.ident }),
+                              routeLegs: legs,
                               onTapObjects: { objs in
                                   guard !objs.isEmpty else { return }
                                   Haptics.impact(.light)
