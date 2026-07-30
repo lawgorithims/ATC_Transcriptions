@@ -168,6 +168,66 @@ the iPad overheats, so MapKit never starves on-device Whisper.
 
 ---
 
+## 9. NRST — the engine-out nearest-airport ranking
+
+The map's `NRST` button answers one question: **if the engine quit right now, where should this
+airplane go?** `Core/NearestAirports.swift` is pure math over injected data (the `PlateSimilarity`
+split), so every branch is unit-testable; `AppModel.refreshNRST` gathers the inputs off-main and
+`NRSTPanelView` owns the refresh cadence, so a closed panel costs nothing and there is no new
+reconciler to wire into every state transition.
+
+The ranking is the pilot's hierarchy, and the top two tiers are **not** tradeable:
+
+1. **In glide, terrain-swept.** Still-air range from the merged GPS altitude at the profile's glide
+   ratio, arriving no lower than `arrivalReserveFt` (1,000 ft) over the field. A three-track
+   corridor (course ±0.75 NM) is sampled every 0.5 NM along the *descent profile* and must clear
+   each station by `enrouteBufferFt` **plus the grid's own optimism margin** (GPS vertical sigma +
+   `TerrainElevation.peakUnderReadM`) — the margin is compensation for one-sided measurement error
+   and is never discounted anywhere along the path. Verdicts: CLEAR / CAUTION (thin margin, or
+   terrain unverified) / BLOCKED / OUT OF GLIDE. Anything the sweep cannot verify is CAUTION, never
+   CLEAR. Proven against real terrain, not just synthetic ridges:
+   `testRealTerrainBlocksAGlideIntoTellurideOverTheRidge` puts the aircraft 8 NM northeast of KTEX
+   with the field inside range by distance and the San Juan ridge 1,939 ft above the profile — it
+   must come back BLOCKED, and must be reachable from 20,000 ft over the same course.
+
+   **ALTITUDE.** The live merged GPS altitude, else the last reported one **carried forward** at the
+   faster of the observed descent and this aircraft's best-glide sink (`glideSinkFpm`), refused past
+   `maxAltitudeAgeS` (60 s). It only ever descends, so a dropout shortens the list rather than
+   inflating it, and the same descent allowance is added to the vertical sigma — which widens the
+   terrain margin above. The panel says so in words whenever the altitude is carried.
+
+   **AGL vs MSL.** Range is height above each FIELD's elevation; `ownshipAglFt` (height over the grid
+   under the aircraft) is reported alongside it because that is what tells the pilot how much time
+   they have. They are not interchangeable: a glide can sit thousands of feet above a valley floor
+   and still be below the ridge in the way, which is what the per-row verdict is for.
+
+   **What is NOT checked:** the field's own ~1 NM cell is exempt from the hard block (it holds the
+   high ground *around* the field; blocking on it rejected every mountain airport), so terminal
+   terrain is advisory — surfaced per row, and worded "ARRIVES BELOW surrounding terrain" when the
+   vicinity rise exceeds the arrival height. And there is **no obstacle database**: the grid is a
+   max-aggregated *surface* model, so canopy and buildings are in it but thin towers are not
+   reliably. Bundling the FAA Digital Obstacle File is the open item.
+2. **Weather, lexicographically.** VFR > MVFR > unknown > IFR > LIFR. A better category cannot be
+   outbid by any runway or facility advantage ("both in glide, one visual → the visual one").
+   Unknown sits between MVFR and IFR because most glide-relevant fields never report at all.
+3. **Terrain around the field**, 4. **runways**, 5. **facilities** (Part-139/ARFF first) then combine
+   as descending weights, with still-air arrival margin as a tiebreak.
+
+`DIRECT` is the one destructive route edit in the app with **no confirm alert** — by design, and the
+substitute is reversibility: it snapshots the filed plan into a **persisted** `NRSTEngagement` so the
+undo survives a process death, and it clears loaded procedures the way every other
+present-position re-anchor does. The engagement is reconciled in the `flightPlan` didSet, so the red
+strip can never assert a course the aircraft is no longer flying.
+
+**Offline-first:** everything except the weather tier comes from bundled data (`apt.sqlite`,
+`terrain_conus.bin`). Weather is live METAR, fails soft, and a stale observation ranks as unknown
+rather than as fact.
+
+**Key types:** `NearestAirports`, `GlideSituation`, `NRSTCandidate`, `NRSTReachability`,
+`NRSTEngagement`, `TerrainSampling`, `AirportData.Airport`, `NRSTPanelView`.
+
+---
+
 ## Appendix — Fragile Regions (where the bodies are buried)
 
 A skeptical review (2026-07) flagged these. **All 23 audit findings were remediated in 2026-07** —
@@ -191,6 +251,20 @@ history + the guard-rail each fix now relies on; **read it before changing the r
 | `Audio/AudioMonitor.swift` / `StreamAudioSource.swift` | ~~Monitor silent / stream wedged after a drop~~ → **FIXED (L1/L2, f8af58e).** play() self-heal; stream no-decode watchdog + bounded give-up. |
 | `UI/ChartMapView.swift` | ~~Tiles re-transcoded per pan; traffic blinks; catalog `URL!` crash~~ → **FIXED (L10/L11/L12/L13, ea42e3c).** NSCache PNG cache; in-place hex-keyed traffic diff; off-main tap probe; optional `remote` URL. |
 | `UI/AppModel.swift` / `TranscriptView.swift` | ~~EFB/proc CIFP on main; transcript re-derives on every tick~~ → **FIXED (L4/L8/L9, ea42e3c).** Off-main grounding + legs caches; Equatable `TranscriptListSection`. |
+| `Experimental/MapLibreChartView.swift` (`createMap`) | `MLNMapView(frame:)` installs `MLNStyle.defaultStyleURL` — MapLibre's DEMO basemap at **demotiles.maplibre.org** — until the loopback style is ready. Two bugs from one line: an offline-first EFB fetched a third-party basemap on every launch (measured: 22 requests incl. `style.json` + `tiles.json`), and its VECTOR tiles were still being parsed on `org.maplibre.mbgl.Worker` threads when `m.styleURL` swapped them out, so a worker looked up a layer factory for a layer that no longer existed, got `nullptr`, and `mbgl::LayerManager::createLayout` dereferenced it → SIGSEGV at 0x0 on a background thread (the release framework guards it with only a debug `assert(factory)`, so nothing in the app can catch it). **Always construct the map with a local, SOURCE-LESS bootstrap style** (`writeBootstrapStyle`): no fetch, and no geometry-tile parse in flight for the swap to invalidate. Pinned by `BootstrapStyleTests`. |
+| `Core/NearestAirports.swift` (the terrain sweep) | The grid margin (GPS vertical sigma + `peakUnderReadM`) must stay **constant at every station**. An earlier version ramped the whole buffer to zero near the ownship, making the clearance requirement smaller than the known measurement error for the first ~0.8 NM — a 1-sigma-high fix over an under-read summit then ranked CLEAR with the true glide path through rock. Only the discretionary `enrouteBufferFt` may ever be relaxed. Pinned by `testMeasurementMarginIsNeverDiscountedNearTheOwnship`. |
+| `Core/NearestAirports.swift` (endpoint cells) | Cells are ~1 NM and hold the cell MAXIMUM, so the ownship's own cell routinely reads ABOVE the aircraft. Comparing that against the profile marked **every** candidate blocked at 0.0 NM whenever the pilot was low near terrain. The rule: within `endpointCellNm`, terrain no higher than that endpoint's own reading is not an obstruction — anything higher still is. Don't replace this with a blanket distance skip. Pinned by `testOwnshipCellReadingAboveTheAircraftDoesNotBlankTheList`. |
+| `UI/AppModel.swift` (`engageNRST`) | The only destructive route edit with no confirm alert; reversibility is the substitute, so **the snapshot must stay persisted** and `reconcileNRSTEngagement` must stay wired into the `flightPlan` didSet. Also: snapshot selection must branch on `nrstEngagement != nil`, never `?? flightPlan` (optional-chaining collapse made Restore file a plan the pilot never created), and the engage must clear procedures like every other present-position re-anchor. |
+| `Core/NearestAirports.swift` (`wxIdent`) | Never fabricate an ICAO from an FAA ident. A "prepend K" fallback fired only on the 54 Alaska/Pacific rows where K is the WRONG prefix, requesting weather that does not exist and ranking a reporting field as no-report. |
+
+**Running the tests:** use `Tools/test_sim.sh`, which puts each checkout on its own simulator. Two
+worktrees testing against ONE simulator fight over a single bundle id — installing or launching the
+second build terminates the first, and the dead test host is reported as *"Restarting after unexpected
+exit, crash, or test timeout"* blamed on whichever test was running. It cost hours chasing a "flaky"
+`FusionShadowLogTests`; the giveaway was a result bundle containing `WindViewportTransformTests`, a
+suite that did not exist in that checkout at all. Crash reports interleave too (every process is
+"ATCTranscribe") — tell them apart by the embedded MapLibre UUID, which differs per `Vendor` build:
+`dwarfdump --uuid ios/Vendor/MapLibre.xcframework/*/MapLibre.framework/MapLibre`.
 
 **The systemic theme** the audit named (silent failures) is now addressed: interruption recovery,
 the decode-failure counter, the runaway-noise nudge, and the transient `onNotice`/`onTrouble` detail

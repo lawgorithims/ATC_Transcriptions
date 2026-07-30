@@ -13,6 +13,7 @@ import MapKit
 /// `thermalSerious`, and the network map layers pause) while the map itself stays up.
 struct MapHostView: View {
     @EnvironmentObject var model: AppModel
+    @Environment(\.horizontalSizeClass) private var hSize
     /// Plain reference (NOT observed): the map only WRITES the tapped-object probe here — it must not
     /// re-render / re-reconcile just because a widget's layout changed.
     let widgets: WidgetStore
@@ -256,6 +257,10 @@ struct MapHostView: View {
             }
         }
         .overlay(alignment: .trailing) { if live, showZoomControls { mapSideControls } }
+        // NRST — the engine-out button. Deliberately OUTSIDE the zoom-controls toggle gate: the
+        // plate strip's own rule applies ("a guarantee-level control must not be toggleable"), and
+        // an emergency control that a settings switch can remove is not a guarantee.
+        .overlay(alignment: .trailing) { if live { nrstButton } }
         .task { await buildRoute() }
         .onChange(of: model.flightPlan) { _, _ in Task { await buildRoute() } }      // edits redraw the route
         .onChange(of: model.chartLayer) { _, new in
@@ -466,6 +471,35 @@ struct MapHostView: View {
         .overlay(RoundedRectangle(cornerRadius: DS.Radius.r4).stroke(model.palette.border, lineWidth: DS.Stroke.control))
         .padding(.trailing, 12)
         .offset(y: 80)                                    // bias below center → lower-right, clear of the corners
+    }
+
+    /// The engine-out NRST button — same chrome as the side controls, its own ungated overlay. Text
+    /// rather than a glyph because NRST is the label every GPS in every panel has used for decades.
+    /// Regular width shows the panel (or lifts it, if it is already up or docked in a pane); compact
+    /// rides a sheet. The panel closes by its own ✕, never by a second tap here.
+    ///
+    /// SHOW, never toggle, and no active tint: `widgets` is held as a plain reference (deliberately
+    /// unobserved, so the several-per-second live-data storm cannot re-render the map chrome), so any
+    /// open/closed state read here would be stale — a tint that lies, and worse a toggle that closes
+    /// the panel when the pilot meant to open it. Show is idempotent and cannot mislead.
+    private var nrstButton: some View {
+        Button {
+            Haptics.impact(.medium)
+            if hSize == .compact { model.showNRSTSheet = true } else { widgets.reveal(.nrst) }
+        } label: {
+            Text("NRST")
+                .font(.dsLabelSBold)
+                .foregroundStyle(model.palette.text)
+                .frame(width: 46, height: 40)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plainHaptic)
+        .background(model.palette.overlay, in: RoundedRectangle(cornerRadius: DS.Radius.r4))
+        .overlay(RoundedRectangle(cornerRadius: DS.Radius.r4).stroke(model.palette.bad.opacity(0.7), lineWidth: DS.Stroke.control))
+        .padding(.trailing, 12)
+        .offset(y: -58)                                   // just above the zoom stack's top edge
+        .accessibilityIdentifier("map-nrst")
+        .accessibilityLabel("Nearest airports — engine-out glide ranking")
     }
 
     /// `active` tints the glyph for a control that has an ON state (the north lock); the plain

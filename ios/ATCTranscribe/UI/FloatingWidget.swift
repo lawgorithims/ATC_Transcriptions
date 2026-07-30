@@ -5,7 +5,7 @@ import SwiftUI
 /// Every panel that can float over the home map. Superset of `SidebarWidget` (the diagnostic/info
 /// cards) plus the operational panels that used to be top bars or the always-on transcript.
 enum FloatingWidgetKind: String, Codable, CaseIterable, Identifiable {
-    case transcript, flightPlan, objectInfo, proofOfLife, stratux, host, latency, diagnostics, gps
+    case transcript, flightPlan, objectInfo, proofOfLife, stratux, host, latency, diagnostics, gps, nrst
     var id: String { rawValue }
 
     var title: String {
@@ -19,6 +19,7 @@ enum FloatingWidgetKind: String, Codable, CaseIterable, Identifiable {
         case .latency:     return "Latency"
         case .diagnostics: return "Diagnostics"
         case .gps:         return "GPS"
+        case .nrst:        return "Nearest airports"
         }
     }
 
@@ -33,15 +34,17 @@ enum FloatingWidgetKind: String, Codable, CaseIterable, Identifiable {
         case .latency:     return "speedometer"
         case .diagnostics: return "gauge.with.dots.needle.bottom.50percent"
         case .gps:         return "location.north.line.fill"
+        case .nrst:        return "cross.circle"
         }
     }
 
     /// Performance/device-load panels — never shown by default.
     var isDiagnostic: Bool { self == .latency || self == .diagnostics }
 
-    /// `objectInfo` isn't user-addable — it appears only when a map object is tapped. Retired
+    /// `objectInfo` isn't user-addable — it appears only when a map object is tapped; `nrst` is
+    /// opened by the map's NRST button (an emergency control must not depend on a menu). Retired
     /// kinds are hidden from the Widgets menu too.
-    var userManageable: Bool { self != .objectInfo && !retired }
+    var userManageable: Bool { self != .objectInfo && self != .nrst && !retired }
 
     /// Kinds that no longer exist as widgets. `.flightPlan` moved to the flight-plan STRIP under
     /// the top bar (the briefcase toggle). The enum case must STAY — `WidgetLayout` decodes its
@@ -136,6 +139,9 @@ struct WidgetLayout: Codable, Equatable {
             WidgetFrame(kind: .latency,     anchor: .center,        offset: .zero, size: CGSize(width: 300, height: 180), opacity: 0.90, visible: false, pinned: false, z: 7),
             WidgetFrame(kind: .diagnostics, anchor: .center,        offset: CGSize(width: 0, height: 0.2), size: CGSize(width: 280, height: 170), opacity: 0.90, visible: false, pinned: false, z: 8),
             WidgetFrame(kind: .gps,         anchor: .topLeading,    offset: CGSize(width: 0, height: 0.28), size: CGSize(width: 250, height: 156), opacity: 0.90, visible: false, pinned: false, z: 2),
+            // Offset off the trailing centre so it does not land exactly on top of the object card
+            // (which shares that anchor) — belt to the z-lift's braces.
+            WidgetFrame(kind: .nrst,        anchor: .topTrailing,   offset: CGSize(width: 0, height: 0.12), size: CGSize(width: 400, height: 520), opacity: 0.95, visible: false, pinned: false, z: 9),
         ])
     }
 
@@ -213,6 +219,11 @@ struct WidgetLayout: Codable, Equatable {
             if leftPane == .objectInfo { leftPane = nil }
             if rightPane == .objectInfo { rightPane = nil }
             update(.objectInfo) { $0.visible = true }
+            // Lift it too, not just show it. Until the NRST panel arrived, no default-layout card at
+            // the trailing anchor could out-z the object card, so making it visible was enough; the
+            // NRST panel is bigger, shares that anchor, and is z-topped when opened, so a tapped
+            // airport mounted entirely UNDERNEATH it — the tap looked dead.
+            bringToFront(.objectInfo)
             return
         }
         let other: PaneSide = wanted == .left ? .right : .left
@@ -321,6 +332,16 @@ struct WidgetLayout: Codable, Equatable {
         layout.update(kind) { $0.visible = true }; layout.bringToFront(kind)
     }
     func isVisible(_ kind: FloatingWidgetKind) -> Bool { layout.frame(kind)?.visible ?? false }
+    /// Make a widget VISIBLE and frontmost wherever it already lives — as a floating card, or lifted
+    /// in the side pane it is docked into. Unlike `show` it does not undock, and unlike `toggle` it
+    /// never hides: for a guarantee-level control (the map's NRST button) the outcome of a tap has to
+    /// be "the panel is in front of you", every time, with no dependence on state the caller may be
+    /// reading from an unobserved store.
+    func reveal(_ kind: FloatingWidgetKind) {
+        if leftPane == kind || rightPane == kind { return }   // already full-height on an edge
+        layout.update(kind) { $0.visible = true }
+        layout.bringToFront(kind)
+    }
     /// Flip a widget's visibility — show+front if hidden, hide if shown (top-bar quick toggles).
     func toggle(_ kind: FloatingWidgetKind) {
         if isVisible(kind) { update(kind) { $0.visible = false } } else { show(kind) }

@@ -931,6 +931,20 @@ ownship/traffic onto the PDF page:
 `NotesStore` is a small PencilKit-agnostic library (raw `Data` in/out) persisting a note
 metadata index + per-note drawing/thumbnail files under `Documents/Notes/`.
 
+**NRST — engine-out nearest airports** (`Core/NearestAirports.swift`, `UI/NRSTPanel.swift`) ranks
+where the airplane can actually glide, on the pilot's hierarchy: in-glide-and-terrain-swept first,
+then weather *lexicographically* (VFR beats IFR no matter how good the runway), then terrain around
+the field, runways, and facilities. Following the `PlateSimilarity` precedent it is **pure math over
+injected data** — a `TerrainSampling` seam, a runway lookup closure, and a pre-resolved weather
+dictionary — so the glide profile, the three-track terrain corridor and the whole ranking are
+unit-tested against synthetic grids *and* against the shipped `apt.sqlite` + bundled terrain grid.
+It is the first reader of `apt.sqlite`'s airport table (19,436 NASR facilities: lat/lon, elevation,
+tower, fuel, use/status, plus the `site_type` and `far139`/ARFF columns added for it), and
+`AirportData.isQueryable` exists so a broken data cycle can never be presented as "nothing is
+reachable". Engaging is the app's one no-confirm route edit; a **persisted** `NRSTEngagement`
+snapshot is what makes that acceptable. See `ios/PIPELINES.md` §9 for the tier weights, the
+never-discounted grid margin, and the endpoint-cell rule.
+
 ---
 
 ### 6.7 The moving map — two engines & the overlay stack

@@ -280,6 +280,10 @@ final class AppModel: ObservableObject {
             }
             if flightPlan != oldValue { refreshTripStats() }   // strip's DIST/ETE/ETA/FUEL row
             reconcileActiveApproach()
+            // Same invariant one level up: the ENGINE OUT strip must not outlive the course it claims.
+            // Skipped in the sandbox for the same reason as the approach reconcile (the bench swaps
+            // plans and restores them without snapshotting this).
+            if didFinishInit, !diagnosticActive, flightPlan != oldValue { reconcileNRSTEngagement() }
         }
     }
 
@@ -449,6 +453,39 @@ final class AppModel: ObservableObject {
     /// Drives the map search sheet (top-bar magnifying glass). Transient.
     @Published var showMapSearch = false
     @Published var showDownloads = false
+    /// Compact-width NRST presentation (iPhone): the panel rides a sheet there — there is no floating
+    /// canvas on compact. Transient, mirrors `showMapSearch`.
+    @Published var showNRSTSheet = false
+
+    // NRST (engine-out nearest airports). The assessment is TRANSIENT and recomputed while the panel
+    // is open (view-driven .task loop) — never persisted, never shown stale: no trusted position or
+    // altitude wipes it rather than letting an old ranking linger (freshness is re-checked at the
+    // read site, same doctrine as traffic). `nrstEngagement` holds the pre-engage plan snapshot so
+    // the one destructive route edit in the app that skips a confirm alert is the one that can be
+    // un-done with a single tap — and it PERSISTS, because that undo is the thing standing in for the
+    // confirm alert (see NRSTEngagement).
+    @Published private(set) var nrstAssessment: NRSTAssessment?
+    @Published private(set) var nrstEngagement: NRSTEngagement? {
+        didSet {
+            guard didFinishInit else { return }
+            if let e = nrstEngagement { e.save() } else { NRSTEngagement.clear() }
+        }
+    }
+    /// False when the airport database could not be queried at all (missing / corrupt cycle). Kept
+    /// separate from "no candidates" so the panel can never present a data failure as the fact that
+    /// nothing is reachable.
+    @Published private(set) var nrstDatabaseAvailable = true
+    /// Why there is no ranking, when the reason is the ownship state rather than the search. Modelled
+    /// explicitly (mirroring `AGLUnavailable`) because these need different words: one clears itself in
+    /// seconds, the other may never clear on this receiver.
+    enum NRSTBlocked: String, Equatable { case noPosition, noAltitude }
+    @Published private(set) var nrstBlocked: NRSTBlocked?
+    /// Serializes refreshes: one detached compute at a time, so the background terrain instance is
+    /// never faulted from two threads (see `nrstTerrain`).
+    private var nrstRefreshInFlight = false
+    /// Last altitude the merged GPS actually reported, for the carry-forward in `resolveNRSTAltitude`.
+    /// Deliberately NOT persisted: an altitude from a previous session is not a fallback, it is fiction.
+    private var lastKnownAltitude: (ftMSL: Double, at: Date)?
 
     // Electronic Flight Bag automation (Phase 4, suggest-and-confirm). A finished CONTROLLER transmission
     // addressed to the pilot's own aircraft is parsed into at most one pending suggestion; NOTHING changes
@@ -1324,6 +1361,14 @@ final class AppModel: ObservableObject {
             needsOnboarding = explicitModel == nil && !Self.onboardingDismissed
         }
         didFinishInit = true   // from here, a showDebug toggle may add the debug widgets
+        // Bring back an engine-out engagement the app died holding, so the undo the no-confirm engage
+        // is justified by survives a jettison. Reconciled immediately: if the plan on disk no longer
+        // flies to the engaged field (the pilot re-filed in another session), the banner would be
+        // asserting a course that isn't loaded, so it drops instead.
+        if let restored = NRSTEngagement.load() {
+            nrstEngagement = restored
+            reconcileNRSTEngagement()
+        }
         // Feed the flight recorder the merged GPS (it never opens its own CoreLocation session). Surface a
         // flight that was awaiting its save prompt at a crash so it isn't lost.
         flightRecorder.fixProvider = { [weak self] in self?.currentBreadcrumbFix() }
@@ -2593,6 +2638,181 @@ final class AppModel: ObservableObject {
     /// Direct-to originates at PRESENT POSITION (ForeFlight parity), falling back to the filed departure if
     /// there's no GPS fix. Both callers (map "Direct-To" + voice "cleared direct") route through here.
     func directTo(_ ident: String) { editPlan { $0.directTo(ident, from: presentPosition) } }
+
+    // MARK: - NRST (engine-out nearest airports)
+
+    /// Terrain instance for the NRST compute, OFF the main actor. `TerrainElevation.shared` is
+    /// main-actor-only by convention; this second mapping is cheap (mmap, no resident copy) and is
+    /// only ever touched inside the single in-flight detached compute (`nrstRefreshInFlight`), so
+    /// the one-thread-at-a-time discipline the type demands holds.
+    private static let nrstTerrain = TerrainElevation()
+
+    /// Weather snapshot for the NRST ranker, keyed the way `NearestAirports.wxIdent` looks it up
+    /// (the store's own ICAO keys). Ages are computed here so the engine stays clock-free.
+    func nrstWeather(from store: MetarStore, now: Date = Date()) -> [String: NRSTWeather] {
+        var out: [String: NRSTWeather] = [:]
+        for (ident, metar) in store.metars {
+            let age = metar.obsEpoch.map { max(0, Int(now.timeIntervalSince1970 - Double($0)) / 60) }
+            out[ident.uppercased()] = NRSTWeather(category: metar.category, ageMinutes: age)
+        }
+        return out
+    }
+
+    /// Recompute the NRST ranking from the CURRENT trusted position/altitude. View-driven (the panel's
+    /// refresh loop); no position or no altitude clears the assessment — an emergency list computed
+    /// from a fix the map itself would suppress is worse than none.
+    ///
+    /// The airport database being unavailable is reported as its OWN state, never as an empty list:
+    /// `AirportData` degrades to `[]` on a missing or corrupt (possibly downloaded) cycle, and
+    /// rendering that as "no landable airports within 87 NM" would be a confident falsehood on the
+    /// emergency path.
+    func refreshNRST(weather: [String: NRSTWeather]) async {
+        guard !nrstRefreshInFlight else { return }
+        guard let coord = presentPosition else {
+            nrstAssessment = nil; nrstBlocked = .noPosition; return
+        }
+        let readout = GPSReadout.merge(stratux: freshStratuxGPS, device: deviceLocation.fix)
+        let ratio = selectedAircraft?.glideRatio
+        let glideRatio = ratio ?? NearestAirports.defaultGlideRatio
+        // Pair the vertical sigma with the altitude it actually describes. `GPSReadout.merge` prefers
+        // the STRATUX altitude when its fix is fresh, and the Stratux protocol carries no vertical
+        // accuracy — so handing the DEVICE's (often tight, WAAS-class) sigma along with a Stratux
+        // altitude would shrink the terrain-sweep margin using an error bar for a different
+        // instrument. Only the device's own altitude gets the device's own sigma.
+        let liveSigmaM = (readout.source == .device) ? deviceLocation.fix?.verticalAccuracyM : nil
+        guard let altitude = resolveNRSTAltitude(readout: readout, glideRatio: glideRatio,
+                                                 liveSigmaM: liveSigmaM) else {
+            nrstAssessment = nil; nrstBlocked = .noAltitude; return
+        }
+        nrstBlocked = nil
+        let situation = GlideSituation(coord: coord, altitudeFtMSL: altitude.ftMSL,
+                                       glideRatio: glideRatio,
+                                       isDefaultGlideRatio: ratio == nil,
+                                       verticalAccuracyM: altitude.sigmaM,
+                                       altitudeAgeS: altitude.ageS)
+        nrstRefreshInFlight = true
+        let result = await Task.detached(priority: .userInitiated) { () -> (NRSTAssessment, Bool) in
+            let radius = NearestAirports.searchRadiusNm(for: situation)
+            let airports = AirportData.airportsNear(coord, radiusNm: radius, limit: 256)
+            let assessment = NearestAirports.assess(situation: situation, airports: airports,
+                                                    runwaysFor: { AirportData.runways(airport: $0) },
+                                                    weather: weather, terrain: Self.nrstTerrain,
+                                                    now: Date())
+            return (assessment, AirportData.isQueryable)
+        }.value
+        nrstRefreshInFlight = false
+        nrstAssessment = result.0
+        nrstDatabaseAvailable = result.1
+    }
+
+    /// The altitude the glide is computed from: the live GPS altitude, else the last known one carried
+    /// forward. nil = neither is usable, and the ranking refuses rather than guessing.
+    ///
+    /// WHY A FALLBACK AT ALL. A receiver that drops to a 2D fix, a Stratux that blips off Wi-Fi, or a
+    /// device fix that arrives without altitude all zero out the one number the whole feature scales
+    /// off — and they do it transiently, in exactly the seconds after an engine failure when the pilot
+    /// is looking at this list. Refusing outright threw the list away for a dropout the airplane
+    /// easily outlives.
+    ///
+    /// WHY IT IS SAFE. The carried altitude only ever goes DOWN, at the still-air sink for this
+    /// aircraft's glide ratio (`NearestAirports.glideSinkFpm`) or at the observed descent rate,
+    /// whichever is losing height faster — so the estimate errs toward LESS range, never more. The
+    /// same descent allowance is added to the vertical sigma, because a number we inferred rather than
+    /// measured deserves a wider error bar, and that sigma is what widens the terrain-sweep margin.
+    /// Past `NearestAirports.maxAltitudeAgeS` it refuses.
+    private func resolveNRSTAltitude(readout: GPSReadout, glideRatio: Double,
+                                     liveSigmaM: Double?) -> (ftMSL: Double, sigmaM: Double?, ageS: Double)? {
+        let now = Date()
+        if let live = readout.altitudeFtMSL, live.isFinite {
+            lastKnownAltitude = (ftMSL: live, at: now)
+            return (live, liveSigmaM, 0)
+        }
+        guard let last = lastKnownAltitude else { return nil }
+        let ageS = now.timeIntervalSince(last.at)
+        guard ageS >= 0, ageS <= NearestAirports.maxAltitudeAgeS else { return nil }
+        // Descend it at the FASTER of "what it was observed doing" and "what a glide costs". A climb is
+        // never credited — `verticalSpeedFpm` is negated and floored at zero.
+        let observedSinkFpm = max(0, -(gpsIntegrity.verticalSpeedFpm ?? 0))
+        let glideSinkFpm = NearestAirports.glideSinkFpm(
+            glideRatio: glideRatio, bestGlideKts: selectedAircraft?.bestGlideKts.map(Double.init))
+        let sinkFpm = max(observedSinkFpm, glideSinkFpm)
+        let carried = NearestAirports.carriedAltitudeFt(lastFtMSL: last.ftMSL, ageS: ageS, sinkFpm: sinkFpm)
+        let allowanceM = (last.ftMSL - carried) / GPSReadout.mToFt
+        return (carried, (liveSigmaM ?? NearestAirports.defaultVerticalAccuracyM) + allowanceM, ageS)
+    }
+
+    /// What `engageNRST` did — the UI must not play success cues for a no-op (the emergency control
+    /// is exactly where a silent failure is least forgivable).
+    enum NRSTEngageResult: Equatable {
+        case engaged
+        case noTrustedPosition
+    }
+
+    /// Engage: snapshot the filed plan, then fly direct to the chosen field from present position.
+    ///
+    /// Deliberately NO confirm alert — this is the emergency path, and reversibility replaces the
+    /// alert: the snapshot restores the exact pre-engage plan with one tap on the banner, and it is
+    /// PERSISTED (see `NRSTEngagement.save`) so an app the OS jettisons mid-emergency still comes
+    /// back offering the undo rather than stranding the pilot with an unrecoverable filed plan.
+    /// Re-engaging while engaged retargets and keeps the ORIGINAL snapshot.
+    @discardableResult
+    func engageNRST(_ candidate: NRSTCandidate) -> NRSTEngageResult {
+        // Gate matches directTo's anchor: with no trusted fix, FlightPlan.directTo would silently
+        // anchor at the FILED DEPARTURE, drawing an emergency course from an airport hours behind.
+        guard presentPosition != nil else { return .noTrustedPosition }
+        // NOT `nrstEngagement?.priorPlan ?? flightPlan`: `priorPlan` is itself optional, so optional
+        // chaining flattens "engaged with a nil snapshot" (the pilot had no filed plan) into the same
+        // nil as "not engaged", and the fallback would then snapshot the ALREADY-MUTATED direct-to
+        // plan — making Restore file a plan the pilot never created.
+        let prior: FlightPlan? = nrstEngagement != nil ? nrstEngagement?.priorPlan : flightPlan
+        let airport = candidate.airport
+        let target = NearestAirports.routeTarget(for: airport) {
+            NavDatabase.resolve($0, near: airport.coord)
+        }
+        editPlan { plan in
+            plan.directTo(target, from: presentPosition)
+            // A present-position re-anchor MUST drop the loaded procedures, exactly as `joinApproach`
+            // and `flyMissedApproach` do. `directTo` alone keeps them by design, which on an IFR
+            // arrival drew the emergency course as ownship → the old SID → the old STAR → the
+            // abandoned airport's approach → the NRST field, put tens of miles into DIST/ETE, and —
+            // worst — left `activeApproach` reconciled ON, so the ARMED "fly the missed approach"
+            // control for the airport just abandoned stayed one tap from replacing the glide.
+            plan.clearProcedure(kind: "")
+        }
+        nrstEngagement = NRSTEngagement(ident: airport.ident,
+                                        displayIdent: airport.icao.isEmpty ? airport.ident : airport.icao,
+                                        name: airport.name, coord: airport.coord,
+                                        routeTarget: target,
+                                        engagedAt: Date(), priorPlan: prior,
+                                        frequencyLine: NearestAirports.frequencyLine(
+                                            from: AirportData.frequencies(airport: airport.ident)))
+        return .engaged
+    }
+
+    /// Un-engage and put the pre-engage plan back exactly as filed (nil restores "no plan").
+    func restoreNRSTPlan() {
+        guard let engagement = nrstEngagement else { return }
+        flightPlan = engagement.priorPlan
+        nrstEngagement = nil
+    }
+
+    /// Retire the banner but KEEP flying the direct-to — the pilot has committed to the field. This
+    /// gives up the undo, which is why the control says so.
+    func endNRST() { nrstEngagement = nil }
+
+    /// Drop the engagement when the plan is no longer flying to the engaged field.
+    ///
+    /// Called from the `flightPlan` didSet, because a route can be redirected by paths that know
+    /// nothing about NRST — the map's own Direct-To, a voice "cleared direct" the pilot accepts, an
+    /// approach load, a typed route edit. Without this the red ENGINE OUT — DIRECT <field> banner
+    /// kept asserting a course the aircraft was no longer flying, with a live Restore that would
+    /// overwrite whatever the pilot had since chosen. Also drops it once the field is reached
+    /// (destination cleared), so the strip does not outlive the emergency.
+    private func reconcileNRSTEngagement() {
+        guard let engagement = nrstEngagement else { return }
+        let destination = (flightPlan?.destination ?? "").uppercased()
+        if destination != engagement.routeTarget.uppercased() { nrstEngagement = nil }
+    }
     func setDeparture(_ ident: String) { editPlan { $0.setDeparture(ident) } }
     func setDestination(_ ident: String) { editPlan { $0.setDestination(ident) } }
     func removeFromRoute(_ ident: String) { editPlan { $0.removeWaypoint(ident) } }

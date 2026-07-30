@@ -87,7 +87,8 @@ def main():
         ident TEXT, icao TEXT, name TEXT, city TEXT, state TEXT,
         lat REAL, lon REAL, elev_ft REAL, mag_var TEXT, artcc TEXT,
         ownership TEXT, use TEXT, status TEXT, tower TEXT, beacon TEXT,
-        fuel TEXT, tpa_ft REAL, sectional TEXT);
+        fuel TEXT, tpa_ft REAL, sectional TEXT,
+        site_type TEXT, far139 TEXT);
       CREATE TABLE runway(
         ident TEXT, designator TEXT, length_ft REAL, width_ft REAL,
         surface TEXT, condition TEXT, lights TEXT);
@@ -108,11 +109,18 @@ def main():
     counts = {}
 
     # ---- airports -------------------------------------------------------------------------------
+    # site_type: NASR SITE_TYPE_CODE — A airport, H heliport, C seaplane base, G gliderport,
+    #   U ultralight, B balloonport. Before this column the readers had to INFER a heliport from
+    #   all-H runway designators, which is a heuristic, not a record.
+    # far139: NASR FAR_139_TYPE_CODE, e.g. "I A" — the certification class (I–IV, roman) and the
+    #   ARFF (aircraft rescue & fire fighting) index (A–E). Blank = not a certificated airport.
+    #   This is the only on-field emergency-services signal NASR carries, and the NRST engine ranks
+    #   by it: a Part-139 field has fire/rescue equipment on the airport.
     n = 0
     for r in rows(zf, "APT_BASE.csv"):
         eff = eff or (r.get("EFF_DATE") or "").strip()      # from the DATA, never the filename
         lat, lon = latlon(r, "LAT")
-        con.execute("INSERT INTO airport VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
+        con.execute("INSERT INTO airport VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
             (r.get("ARPT_ID") or "").strip(), (r.get("ICAO_ID") or "").strip(),
             (r.get("ARPT_NAME") or "").strip(), (r.get("CITY") or "").strip(),
             (r.get("STATE_CODE") or "").strip(), lat, lon, num(r.get("ELEV")),
@@ -120,7 +128,8 @@ def main():
             (r.get("OWNERSHIP_TYPE_CODE") or "").strip(), (r.get("FACILITY_USE_CODE") or "").strip(),
             (r.get("ARPT_STATUS") or "").strip(), (r.get("TWR_TYPE_CODE") or "").strip(),
             (r.get("BCN_LENS_COLOR") or "").strip(), (r.get("FUEL_TYPES") or "").strip(),
-            num(r.get("TPA")), (r.get("CHART_NAME") or "").strip()))
+            num(r.get("TPA")), (r.get("CHART_NAME") or "").strip(),
+            (r.get("SITE_TYPE_CODE") or "").strip(), (r.get("FAR_139_TYPE_CODE") or "").strip()))
         n += 1
     counts["airport"] = n
 

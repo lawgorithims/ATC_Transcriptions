@@ -72,6 +72,7 @@ enum AirportData {
         let widthFt: Double?
         let surface: String         // NASR SURFACE_TYPE_CODE: "ASPH", "TURF", "ASPH-TURF", …
         let condition: String       // "GOOD" / "FAIR" / "POOR" / "FAILED" / ""
+        var lights: String = ""     // NASR RWY_LGT_CODE: "HIGH"/"MED"/"LOW"/"NSTD"/…; "" = unlit
 
         /// A hyphenated NASR surface names its components PRIMARY-first, so "ASPH-TURF" is a paved
         /// runway with a turf shoulder and "TURF-ASPH" is a grass strip with some paving. Reading only
@@ -103,11 +104,12 @@ enum AirportData {
     static func runways(airport: String) -> [Runway] {
         let (a, b) = keys(airport)
         return query("""
-            SELECT designator, length_ft, width_ft, COALESCE(surface,''), COALESCE(condition,'')
+            SELECT designator, length_ft, width_ft, COALESCE(surface,''), COALESCE(condition,''),
+                   COALESCE(lights,'')
             FROM runway WHERE ident=?1 OR ident=?2 ORDER BY designator
             """, a, b) { st in
             Runway(designator: text(st, 0), lengthFt: dbl(st, 1), widthFt: dbl(st, 2),
-                   surface: text(st, 3), condition: text(st, 4))
+                   surface: text(st, 3), condition: text(st, 4), lights: text(st, 5))
         }
     }
 
@@ -118,6 +120,109 @@ enum AirportData {
     /// the one runway a pilot would actually use — KTCS drew five, of which four are gravel.
     static func drawableRunways(airport: String) -> [Runway] {
         runways(airport: airport).filter { $0.isPaved && !$0.isHelipad && !$0.isFailed && $0.bearingDeg != nil }
+    }
+
+    /// One NASR facility record — the airport-level attributes (`airport` table). These columns sat
+    /// unread in the database until the NRST engine needed them; this is the first Swift accessor.
+    struct Airport: Equatable {
+        let ident: String           // FAA identifier, "DFW" — the primary key convention
+        let icao: String            // "KDFW", or "" (16,711 of 19,436 rows have no ICAO)
+        let name: String
+        let coord: Coord
+        let elevationFt: Double?
+        let ownership: String       // "PU" public / "PR" private / "MA","MN","MR" military / "CG"
+        let use: String             // FACILITY_USE_CODE: "PU" open to the public / "PR" private
+        let status: String          // "O" operational / "CI","CP" closed
+        let tower: String           // TWR_TYPE_CODE: "ATCT"* towered / "NON-ATCT"
+        let fuel: String            // comma list, "100LL,A"; "" = none published
+        let siteType: String        // SITE_TYPE_CODE: "A" airport, "H" heliport, "C" seaplane,
+                                    // "G" glider, "U" ultralight, "B" balloonport; "" on a DB cycle
+                                    // built before the column existed (see airportColumns fallback)
+        let far139: String          // FAR_139_TYPE_CODE "I E" = cert class + ARFF index; "" = none
+
+        var isOperational: Bool { status.uppercased() == "O" }
+        var isTowered: Bool { tower.uppercased().hasPrefix("ATCT") }
+        var isPublicUse: Bool { use.uppercased() == "PU" }
+        var hasFuel: Bool { !fuel.isEmpty }
+        /// Part-139 certificated — the only NASR signal that fire/rescue equipment is ON the field.
+        var isCertificated: Bool { !far139.isEmpty }
+        /// True when the record is known to be a non-airplane facility. An empty siteType (older DB
+        /// cycle) is UNKNOWN, not airplane — callers needing certainty must also inspect runways.
+        var isNonAirplaneFacility: Bool { ["H", "C", "B", "U"].contains(siteType.uppercased()) }
+    }
+
+    /// `site_type`/`far139` shipped with the 2026-07-09 rebuild, but `NavDataUpdate` can resolve to a
+    /// DOWNLOADED cycle installed before they existed. Selecting a missing column fails the whole
+    /// prepare, so probe once and fall back to empty-string literals — the reader then behaves as if
+    /// the columns were blank, which is exactly what "unknown" means here.
+    private static let hasSiteTypeColumns: Bool = {
+        guard let db else { return false }
+        var st: OpaquePointer?
+        let ok = sqlite3_prepare_v2(db, "SELECT site_type, far139 FROM airport LIMIT 1", -1, &st, nil) == SQLITE_OK
+        sqlite3_finalize(st)
+        return ok
+    }()
+
+    /// Whether the airport table can actually be read right now.
+    ///
+    /// Every accessor here degrades to an empty result, which is right for the cosmetic consumers it
+    /// was written for (a thin frequency list, a blank caption) but NOT for a caller that presents
+    /// the absence of rows as a fact. The NRST engine-out list is one: "no landable airports within
+    /// 87 NM" and "the airport database did not open" must not look identical to a pilot in a glide.
+    static var isQueryable: Bool {
+        guard let db else { return false }
+        var st: OpaquePointer?
+        let ok = sqlite3_prepare_v2(db, "SELECT ident FROM airport LIMIT 1", -1, &st, nil) == SQLITE_OK
+        defer { sqlite3_finalize(st) }
+        guard ok else { return false }
+        return sqlite3_step(st) == SQLITE_ROW    // an empty table is as unusable as a missing one
+    }
+
+    /// Operational-and-not filtering is the CALLER's job — this returns every facility in the box,
+    /// nearest first, because "closed" and "heliport" are ranking decisions, not lookup decisions.
+    ///
+    /// A bounded full-scan bbox query (19,436 rows, no spatial index) — a few milliseconds. Same cost
+    /// contract as `NavDatabase.nearby`: call once per need, off the hot path, never per frame.
+    static func airportsNear(_ center: Coord, radiusNm: Double, limit: Int = 64) -> [Airport] {
+        assert(radiusNm > 0 && radiusNm <= 500, "radius in NM, bounded")
+        assert(limit > 0 && limit <= 512, "limit bounded")
+        guard let db, radiusNm > 0, limit > 0 else { return [] }
+        let dLat = radiusNm / 60.0
+        // Longitude degrees shrink with latitude; the 0.2 cos floor keeps the box finite near the
+        // poles (house convention — see AirportContextStore.nearbyRanked).
+        let dLon = radiusNm / (60.0 * max(0.2, cos(center.lat * .pi / 180)))
+        let cols = hasSiteTypeColumns ? "COALESCE(site_type,''), COALESCE(far139,'')" : "'', ''"
+        let sql = """
+            SELECT ident, COALESCE(icao,''), COALESCE(name,''), lat, lon, elev_ft,
+                   COALESCE(ownership,''), COALESCE(use,''), COALESCE(status,''),
+                   COALESCE(tower,''), COALESCE(fuel,''), \(cols)
+            FROM airport WHERE lat BETWEEN ?1 AND ?2 AND lon BETWEEN ?3 AND ?4
+            """
+        var st: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK else { return [] }
+        defer { sqlite3_finalize(st) }
+        sqlite3_bind_double(st, 1, center.lat - dLat)
+        sqlite3_bind_double(st, 2, center.lat + dLat)
+        sqlite3_bind_double(st, 3, center.lon - dLon)
+        sqlite3_bind_double(st, 4, center.lon + dLon)
+        var out: [Airport] = []
+        while sqlite3_step(st) == SQLITE_ROW, out.count < 4096 {    // bounded (rule 2)
+            guard sqlite3_column_type(st, 3) != SQLITE_NULL,
+                  sqlite3_column_type(st, 4) != SQLITE_NULL else { continue }
+            out.append(Airport(ident: text(st, 0), icao: text(st, 1), name: text(st, 2),
+                               coord: Coord(lat: sqlite3_column_double(st, 3),
+                                            lon: sqlite3_column_double(st, 4)),
+                               elevationFt: dbl(st, 5), ownership: text(st, 6), use: text(st, 7),
+                               status: text(st, 8), tower: text(st, 9), fuel: text(st, 10),
+                               siteType: text(st, 11), far139: text(st, 12)))
+        }
+        // The box is square; rank by true great-circle distance and keep the nearest `limit`.
+        return out
+            .map { (a: $0, d: Geo.nmBetween(center, $0.coord)) }
+            .filter { $0.d <= radiusNm }
+            .sorted { $0.d < $1.d }
+            .prefix(limit)
+            .map(\.a)
     }
 
     struct Frequency: Equatable {

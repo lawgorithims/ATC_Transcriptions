@@ -11,6 +11,11 @@ struct AircraftProfile: Codable, Equatable, Identifiable {
     var type = ""            // e.g. "Piper Seneca"
     var cruiseKts: Int?      // planned cruise TAS — nil until the pilot fills it in
     var burnGPH: Double?     // planned fuel burn — nil until filled in
+    // Engine-out numbers for the NRST glide engine. Optional so profiles saved before these fields
+    // existed still decode (the established back-compat pattern for this UserDefaults JSON blob);
+    // nil falls back to `NearestAirports.defaultGlideRatio` — deliberately conservative.
+    var glideRatio: Double?  // best-glide L/D, e.g. 9.0 for a C172 (POH figure, still air)
+    var bestGlideKts: Int?   // best-glide speed — display only, the ratio does the math
 
     /// True when there's nothing worth keeping (drives add-sheet validation).
     var isEmpty: Bool { callsign.isEmpty && type.isEmpty }
