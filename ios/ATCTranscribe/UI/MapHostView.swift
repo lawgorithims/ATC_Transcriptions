@@ -300,9 +300,15 @@ struct MapHostView: View {
         // `.id`: flipping the hidden Developer Globe toggle remounts the map so writeStyle re-runs with or
         // without the projection:globe key (it is read once at style install in createMap). The remount
         // token joins it so a render stall can rebuild the coordinator without leaving MapLibre.
+        // The identifiers name WHICH engine is live. Several features are engine-specific (the wind particle
+        // layer is a sibling view of the MLNMapView and cannot exist on the classic map), so a UI test that
+        // finds a control missing needs to be able to say whether that is correct or a regression.
         if model.useMapLibreMap && !model.mapLibreRenderFailed {
             mapLibreMap.id("\(model.useGlobeProjection)-\(model.mapLibreRemountToken)")
-        } else { chartMapView }
+                .accessibilityIdentifier("map-engine-maplibre")
+        } else {
+            chartMapView.accessibilityIdentifier("map-engine-classic")
+        }
         #else
         chartMapView
         #endif

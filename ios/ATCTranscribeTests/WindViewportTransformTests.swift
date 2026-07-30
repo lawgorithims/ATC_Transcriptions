@@ -187,11 +187,15 @@ final class WindViewportTransformTests: XCTestCase {
         let high = WindParticleRenderer.renderSpeedScale(zoom: 13)
         XCTAssertLessThan(low, mid)
         XCTAssertLessThan(mid, high)
+        // Bounded at both ends: below the floor light air freezes (segments fall under the rasteriser's
+        // sample grid and vanish); above the ceiling particles cross the screen faster than the eye tracks.
         for z in [-5.0, 0, 3, 7, 13, 25, 100] {
             let s = WindParticleRenderer.renderSpeedScale(zoom: z)
-            XCTAssertGreaterThanOrEqual(s, 0.35, "zoom \(z)")
-            XCTAssertLessThanOrEqual(s, 1.9, "zoom \(z)")
+            XCTAssertGreaterThanOrEqual(s, 1.5, "zoom \(z)")
+            XCTAssertLessThanOrEqual(s, 5.0, "zoom \(z)")
         }
+        // The calibrated mid-scale: a 30 kt wind should cross roughly 70 points a second at zoom 6.
+        XCTAssertEqual(Double(WindParticleRenderer.renderSpeedScale(zoom: 6)) * 30, 72, accuracy: 6)
     }
 
     func testRampIsMonotonicallyWarmAndClamped() {

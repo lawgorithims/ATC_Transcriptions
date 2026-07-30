@@ -45,7 +45,9 @@ final class WindParticleRenderer: NSObject, MTKViewDelegate {
     /// Frames a particle lives before respawning. Long enough for a readable streak; short enough that the
     /// field keeps reseeding into areas the pilot pans into.
     static let baseLifeFrames: Float = 150
-    static let trailFade: Float = 0.955
+    /// Per-frame trail decay. At 30 fps this is a ~0.9 s half-life, which is what turns a one-frame step
+    /// into a streak long enough to read as a slipstream rather than a dash. Shorter looked like noise.
+    static let trailFade: Float = 0.975
     /// Trail textures are rendered at half the drawable's resolution. At full resolution the ping-pong pair
     /// costs ~90 MB on a 13" iPad, and a glow trail loses nothing visible to the halving.
     static let trailScale: CGFloat = 0.5
@@ -53,7 +55,12 @@ final class WindParticleRenderer: NSObject, MTKViewDelegate {
     /// the upper bound a single affine no longer approximates the globe across the screen.
     static let fullAlphaSpan = 30.0
     static let cutoffSpan = 45.0
-    static let segmentWidth: Float = 1.35
+    static let segmentWidth: Float = 2.0
+    /// Shortest streak drawn, in points. A frame's true displacement in light air is a fraction of a
+    /// point — a sliver that covers no sample point and rasterises to NOTHING, so calm regions rendered
+    /// as empty space rather than as slow air. Every particle now paints at least a short dash along its
+    /// direction of travel; fast air still stretches proportionally.
+    static let minSegmentLength: Float = 2.2
     static let inflightFrames = 3
 
     /// The decoded column. Set from the coordinator; changing it reseeds nothing — particles simply start
@@ -102,6 +109,7 @@ final class WindParticleRenderer: NSObject, MTKViewDelegate {
         vertices.reserveCapacity(Self.maxParticles * 6)
         buildBuffers()
     }
+
 
     // MARK: - setup
 
@@ -215,11 +223,17 @@ final class WindParticleRenderer: NSObject, MTKViewDelegate {
     /// terminal scales without becoming either a crawl or a blur.
     static func renderSpeedScale(zoom: Double) -> Float {
         assert(zoom.isFinite, "WindParticleRenderer: non-finite zoom")
+        assert(baseSpeedScale > 0, "WindParticleRenderer: non-positive base speed")
         let z = min(max(zoom, 2), 14)
         let factor = pow(2.0, (z - 6.0) * 0.16)
-        assert(factor > 0, "WindParticleRenderer: non-positive speed factor")
-        return Float(min(max(0.55 * factor, 0.35), 1.9))
+        return Float(min(max(baseSpeedScale * factor, 1.5), 5.0))
     }
+
+    /// Points per second per knot at zoom 6. Calibrated from what the eye can actually follow: a 30 kt wind
+    /// crosses about 70 points a second, which reads as a purposeful drift, while a 120 kt jet core rips
+    /// across the screen the way it should. An earlier value four times smaller moved light air a fifth of a
+    /// point per frame — mathematically in motion, visually frozen.
+    static let baseSpeedScale = 2.4
 
     /// One quad from the particle's previous point to its current one. The head is brighter than the tail,
     /// which is what makes a streak read as travelling in a direction rather than just sitting there.
@@ -228,17 +242,22 @@ final class WindParticleRenderer: NSObject, MTKViewDelegate {
         assert(p.speedKt >= 0, "WindParticleRenderer: negative particle speed")
         let dx = p.x - p.prevX, dy = p.y - p.prevY
         let len = (dx * dx + dy * dy).squareRoot()
-        guard len > 0.01 else { return }
+        guard len > 0.001 else { return }                     // genuinely calm: no direction to draw along
+        // Stretch the drawn streak back to the minimum dash length along the travel direction, so light air
+        // is visible as slow motion instead of vanishing below the rasteriser's sample grid.
+        let drawn = max(len, Self.minSegmentLength)
+        let ux = dx / len, uy = dy / len
+        let tailX = p.x - ux * drawn, tailY = p.y - uy * drawn
         let half = Self.segmentWidth / 2
-        let nx = -dy / len * half, ny = dx / len * half
+        let nx = -uy * half, ny = ux * half
         let rgb = ramp.rgb(kt: p.speedKt)
         // Fade in at birth and out at death so respawns do not pop.
         let lifeFade = min(min(p.age, 12) / 12, max(0, (p.life - p.age) / 24))
         let a = ramp.alpha(kt: p.speedKt) * min(1, max(0, lifeFade))
         let head = SIMD4<Float>(rgb, a)
         let tail = SIMD4<Float>(rgb, a * 0.45)
-        let t0 = SIMD2<Float>(p.prevX + nx, p.prevY + ny)
-        let t1 = SIMD2<Float>(p.prevX - nx, p.prevY - ny)
+        let t0 = SIMD2<Float>(tailX + nx, tailY + ny)
+        let t1 = SIMD2<Float>(tailX - nx, tailY - ny)
         let h0 = SIMD2<Float>(p.x + nx, p.y + ny)
         let h1 = SIMD2<Float>(p.x - nx, p.y - ny)
         vertices.append(WindSegVertex(position: t0, color: tail))
