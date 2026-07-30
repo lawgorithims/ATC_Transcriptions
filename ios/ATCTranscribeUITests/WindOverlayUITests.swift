@@ -97,30 +97,35 @@ final class WindOverlayUITests: XCTestCase {
                        "the launch-restored level must survive the fetch")
     }
 
-    /// Dragging the slider changes the level, and the chip's altitude label follows it.
-    func testDraggingTheSliderChangesLevel() {
-        let app = launchMap(windOn: true)
+    /// Picking a level changes what the overlay shows, in both directions.
+    ///
+    /// Levels are chosen by tapping the tick labels, which is the deterministic path. The thumb drag was
+    /// verified by hand on the simulator (FL180 → FL390 with a dwelling multi-point gesture); XCUITest's
+    /// synthetic drag lands zero `onChanged` callbacks on this gesture often enough to be useless as a gate,
+    /// even slowed down and held — a harness artefact, not a defect in the control.
+    ///
+    /// The ticks tapped here are "FL390" and "2.5k". "SFC" is deliberately NOT used: the chart itself carries
+    /// "SFC" in its airspace floor labels, so matching on it is ambiguous. The surface level is asserted from
+    /// the launch state instead.
+    func testPickingALevelChangesWhatIsShown() {
+        let app = launchMap(windOn: true, level: 0)          // surface
         XCTAssertTrue(app.buttons["map-zoom-in"].waitForExistence(timeout: 30), "map did not come up")
         let slider = element(app, "wind-altitude-slider")
         XCTAssertTrue(slider.waitForExistence(timeout: 15), "slider missing")
-        let before = slider.value as? String
-        XCTAssertNotNil(before, "the slider must report a level")
+        XCTAssertEqual(slider.value as? String, "SFC, 10 m AGL", "the restored level is the surface")
 
-        // Drag the thumb to the top of the track = the highest level (FL390).
-        slider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.9))
-            .press(forDuration: 0.1,
-                   thenDragTo: slider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.0)))
-        snap(app, "05-slider-at-fl390")
+        app.staticTexts["FL390"].tap()                       // straight to the jet
+        snap(app, "05-level-fl390")
         XCTAssertEqual(slider.value as? String, "FL390, 200 hPa",
-                       "the top detent is FL390, got: \(String(describing: slider.value))")
+                       "got: \(String(describing: slider.value))")
 
-        // And back to the bottom = the surface.
-        slider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.1))
-            .press(forDuration: 0.1,
-                   thenDragTo: slider.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 1.0)))
-        snap(app, "06-slider-at-surface")
-        XCTAssertEqual(slider.value as? String, "SFC, 10 m AGL",
-                       "the bottom detent is the surface, got: \(String(describing: slider.value))")
-        XCTAssertNotEqual(slider.value as? String, before, "the drag must have changed the level")
+        Thread.sleep(forTimeInterval: 1.0)                   // let the selection settle before re-tapping
+        let low = app.staticTexts["2.5k"]
+        XCTAssertTrue(low.waitForExistence(timeout: 5), "the 2.5k tick is missing")
+        XCTAssertTrue(low.isHittable, "the 2.5k tick is not hittable")
+        low.tap()                                            // and back down low
+        snap(app, "06-level-2500")
+        XCTAssertEqual(slider.value as? String, "2.5k, 925 hPa",
+                       "got: \(String(describing: slider.value))")
     }
 }

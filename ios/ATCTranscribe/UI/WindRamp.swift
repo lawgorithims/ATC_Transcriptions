@@ -64,11 +64,16 @@ struct WindRamp {
 
     /// Opacity for a particle: slow air is drawn fainter so the eye lands on the jet and the shear zones
     /// rather than on a uniform wash of calm.
+    ///
+    /// The ceiling matters as much as the ramp. This is an overlay on an aeronautical chart, and the chart has
+    /// to stay readable through it — at flight levels EVERY particle is fast, so a scale that saturated at
+    /// 45 kt painted the whole jet at maximum opacity and buried the airspace and airway labels underneath.
+    /// Referencing 85 kt and capping below full opacity keeps the jet legible as wind AND as chart.
     func alpha(kt: Float) -> Float {
         assert(kt.isFinite, "WindRamp: non-finite speed")
         assert(Self.topKt > 0, "WindRamp: invalid ramp ceiling")
-        let t = min(max(kt / 45, 0), 1)
-        return 0.42 + 0.48 * t
+        let t = min(max(kt / 85, 0), 1)
+        return 0.26 + 0.36 * t
     }
 
     /// CoreGraphics colours for the legend bar in the altitude slider's status chip.
