@@ -210,9 +210,10 @@ final class WindViewportTransformTests: XCTestCase {
                 XCTAssertGreaterThanOrEqual(ch, 0, "kt \(kt)")
                 XCTAssertLessThanOrEqual(ch, 1, "kt \(kt)")
             }
+            // Bounded well below full opacity: this overlay sits on a chart that must stay readable.
             let a = day.alpha(kt: kt)
-            XCTAssertGreaterThanOrEqual(a, 0.4)
-            XCTAssertLessThanOrEqual(a, 0.95)
+            XCTAssertGreaterThanOrEqual(a, 0.25)
+            XCTAssertLessThanOrEqual(a, 0.63)
         }
         XCTAssertEqual(day.rgb(kt: 200), day.rgb(kt: WindRamp.topKt), "above the ceiling is the top colour")
     }

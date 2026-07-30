@@ -272,7 +272,12 @@ struct MapHostView: View {
             }
         }
         .overlay(alignment: .trailing) { if live, showZoomControls { mapSideControls } }
-        .overlay(alignment: .leading) {
+        .overlay(alignment: .topLeading) {
+            // TOP-leading, not centre-leading. Two reasons: high altitude belongs at the top of the screen,
+            // and the default floating Transcript widget sits in the left-CENTRE of the map — a centred
+            // 300-point track put its low-altitude ticks underneath that widget, where taps went to the
+            // widget instead of the control.
+            //
             // MapLibre-only: the particle layer is a sibling of the MLNMapView, so a slider over the
             // classic fallback engine would be a dead control.
             if live, model.showWindAloft, model.useMapLibreMap, !model.mapLibreRenderFailed {

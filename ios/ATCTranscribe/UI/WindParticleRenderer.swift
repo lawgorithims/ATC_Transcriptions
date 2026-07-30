@@ -41,13 +41,15 @@ private struct WindFadeUniforms {
 final class WindParticleRenderer: NSObject, MTKViewDelegate {
 
     // Caps and tuning (rule 2: every loop below is bounded by one of these).
-    static let maxParticles = 3500
+    /// Particle pool. Sized for a readable field rather than a dense one: the chart underneath is the
+    /// primary document, and 3500 tracers at flight levels closed into solid bands.
+    static let maxParticles = 2300
     /// Frames a particle lives before respawning. Long enough for a readable streak; short enough that the
     /// field keeps reseeding into areas the pilot pans into.
     static let baseLifeFrames: Float = 150
     /// Per-frame trail decay. At 30 fps this is a ~0.9 s half-life, which is what turns a one-frame step
     /// into a streak long enough to read as a slipstream rather than a dash. Shorter looked like noise.
-    static let trailFade: Float = 0.975
+    static let trailFade: Float = 0.968
     /// Trail textures are rendered at half the drawable's resolution. At full resolution the ping-pong pair
     /// costs ~90 MB on a 13" iPad, and a glow trail loses nothing visible to the halving.
     static let trailScale: CGFloat = 0.5
