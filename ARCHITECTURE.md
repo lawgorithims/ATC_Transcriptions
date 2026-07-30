@@ -1190,8 +1190,8 @@ Natural Earth) so it is App-Store-safe to bundle.
 | Bundled asset | Size | Purpose | Built by (`ios/Tools/`) |
 | --- | --- | --- | --- |
 | `nav/cifp.sqlite` | 17 MB | Coded procedures, ILS, runways, airways, terminal fixes (see §6.5) | `build_cifp.py` (from the FAA CIFP fixed-width file) |
-| `nav/nav_coords.json` | 2.9 MB | ident → candidate coordinates (route plotting) | `build_nav_db.py` (OurAirports + FAA `FIX.txt`) |
-| `nav/navaid_meta.json` | 322 KB | navaid type/name/frequency/mag-var (tap-to-identify) | `build_nav_meta.py` |
+| `nav/nav_coords.json` | 2.9 MB | ident → candidate coordinates (route plotting) | `build_nav_db.py` (OurAirports + FAA `FIX.txt`) — **paired with `navaid_meta.json`, see below** |
+| `nav/navaid_meta.json` | 322 KB | navaid type/name/frequency/mag-var (tap-to-identify) | `build_nav_meta.py` — **paired with `nav_coords.json`** |
 | `nav/airport_meta.json` | 633 KB | airport name + field elevation | `build_nav_meta.py` |
 | `nav/airport_ctx.json` | 1.1 MB | ~29k airports of runways + airband frequencies (snap grounding) | `build_airport_ctx.py` |
 | `nav/airspace.json` | 1.3 MB | Class B/C/D + special-use airspace outlines + alt blocks | `build_airspace_db.py` then `build_sua.py` |
@@ -1209,6 +1209,27 @@ Natural Earth) so it is App-Store-safe to bundle.
 **Cycle discipline.** CIFP/NASR/d-TPP data is on a 28-day AIRAC cycle; charts on a 56-day
 cycle. Each builder documents its source URL and cycle knob. Cache keys that could go stale
 (plate PDFs, POWER stats) include the cycle/year so a new cycle never serves old data.
+
+**`nav_coords.json` + `navaid_meta.json` are ONE ATOMIC UNIT.** `Core/MagneticVariation.swift`
+decides whether a station's published variation may be trusted by asking whether its ident is
+globally unique in `nav_coords.json`, then reads the value from `navaid_meta.json`. Regenerate one
+without the other and an ident that looks unique in the first can silently carry a *different*
+station's variation from the second — the ident-collision poisoning fixed in July 2026, which can
+rotate a magnetic-vs-true comparison far enough to name the wrong holding entry. Rebuild them
+together, in order, from a single OurAirports snapshot:
+
+```
+python3 ios/Tools/build_nav_db.py --pair --nasr-zip <cached.zip>   # nav_coords.json, check deferred
+python3 ios/Tools/build_nav_meta.py                                # re-checks the pair, then writes
+python3 ios/Tools/navdb.py verify-pairing                          # audit the tree at any time
+```
+
+Both builders refuse to write a mismatched pair (`navdb.check_nav_pairing`), `build_nav_meta.py`
+withholds `mv` entirely from any ident its snapshot saw more than once, and
+`NavDataPairingTests` asserts the invariant on the *shipped* tables — because a builder check only
+runs when someone runs the builder, and a hand edit or a one-file cherry-pick does not.
+`airport_ctx.json` is deliberately NOT part of this pair: `build_airport_ctx.py` uses a wider filter
+(~29k airports worldwide), so it diverges by design.
 
 `ios/Tools/` also holds the app/model toolchain (`setup.sh`, `build_llama_xcframework.sh`,
 `convert_to_coreml.sh`, `fetch_llm_model.sh`, `probe.sh`, `preview.sh`, `screenshots.sh`)

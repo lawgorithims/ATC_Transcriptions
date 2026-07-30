@@ -93,10 +93,20 @@ actor LLMRefiner {
 
     /// Arm the timeout watchdog for the in-flight request. Fires once at the deadline unless the
     /// real result (or cancel) delivers first and cancels it.
+    ///
+    /// ⚠️ The priority is explicit and must stay that way. `drain()` runs inside
+    /// `Task(priority: .background)`, and an unstructured `Task {}` INHERITS the enclosing
+    /// priority — which put this deadline on a background-QoS timer, the class the OS defers most
+    /// aggressively under CPU pressure. That is exactly the condition the watchdog exists to
+    /// report, so the deadline stretched precisely when it mattered: measured on the iPad
+    /// simulator under load, a 100 ms background sleep landed up to 482 ms late and one 0.1 s
+    /// deadline was not reported for 1.08 s, versus ≤177 ms at `.utility`. The watchdog only
+    /// sleeps and makes a single actor hop — it runs no generation — so raising it costs the
+    /// transcription hot path nothing.
     private func armWatchdog(_ id: UUID) {
         watchdog?.cancel()
         let ns = UInt64(timeout * 1_000_000_000)
-        watchdog = Task { [weak self] in
+        watchdog = Task(priority: .utility) { [weak self] in
             try? await Task.sleep(nanoseconds: ns)
             if Task.isCancelled { return }
             await self?.fireTimeout(id)

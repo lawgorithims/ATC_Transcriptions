@@ -32,6 +32,26 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 100, version: "1.0", headline: "See the wind — at any altitude",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "wind",
+                    title: "Animated winds aloft on the map",
+                    detail: "Switch on \"Winds aloft\" in the layers menu and the chart fills with drifting wind streaks, coloured by speed — blue in calm air through to violet in a jet core. It is the same read as a Windy-style wind map: you see where the flow is going, where it shears, and where the jet sits, without reading a single number. Data is NOAA's GFS model, fetched for whatever area you are looking at."),
+                WhatsNewHighlight(
+                    icon: "slider.vertical.3",
+                    title: "An altitude slider down the left edge",
+                    detail: "Ten levels, surface to FL390, labelled the way you would file them. Moving it is instant — the whole column downloads at once, so switching from 5,000 ft to FL340 never waits on the network. Handy for the actual question: would climbing get you out of the headwind?"),
+                WhatsNewHighlight(
+                    icon: "clock.badge.checkmark",
+                    title: "The model run is always on screen",
+                    detail: "The chip under the slider names the GFS cycle and forecast hour it is showing and how long ago it was fetched, so you can see at a glance whether you are looking at fresh data. It is a model forecast, not an official briefing."),
+                WhatsNewHighlight(
+                    icon: "moon.stars",
+                    title: "Night theme keeps its night vision",
+                    detail: "Under the night theme the wind colours switch to red-only intensity instead of the full spectrum, so the overlay never floods the cockpit with the blue light your dark adaptation is most sensitive to."),
+            ]),
+        ReleaseNote(
             build: 99, version: "1.0", headline: "Radar loads on its own, and the controls sit where they belong",
             highlights: [
                 WhatsNewHighlight(

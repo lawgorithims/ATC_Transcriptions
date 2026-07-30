@@ -128,6 +128,18 @@ enum NavDatabase {
 
     /// Test seam / lazy-load probe: bundled ident count (0 when the resource is missing).
     static var count: Int { table.count }
+
+    /// Test seam: the bundled idents carrying at least one entry of `kind` (0=airport, 1=navaid,
+    /// 2=fix). Partitioned by kind because some idents carry both an airport and a navaid entry —
+    /// `NavDataPairingTests` compares these against the metadata tables, and comparing whole-file
+    /// ident sets would compare the wrong things.
+    static func idents(ofKind kind: Int) -> Set<String> {
+        var out = Set<String>()
+        for (ident, entries) in table where entries.contains(where: { $0.count >= 3 && Int($0[2]) == kind }) {
+            out.insert(ident)
+        }
+        return out
+    }
     /// Test seam: bundled airspace-feature count (0 when the resource is missing).
     static var airspaceCount: Int { airspaceTable.count }
 

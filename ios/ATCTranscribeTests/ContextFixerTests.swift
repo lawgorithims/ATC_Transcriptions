@@ -260,11 +260,26 @@ final class ContextFixerTests: XCTestCase {
         await refiner.setOutcomeHandler { id, outcome in sink.record(id, outcome) }
         let id = UUID()
         await refiner.enqueue(RefinementRequest(id: id, text: "slow one", history: [], retrieved: ctx()))
-        // Wait past BOTH the deadline and the real completion so a double-delivery would show.
-        try? await Task.sleep(nanoseconds: 1_000_000_000)
-        let outs = sink.outcomes(id)
-        XCTAssertEqual(outs.count, 1, "a timed-out request must be reported exactly once")
+
+        // Wait for the report as an EVENT, never on the clock. This test used to sleep a fixed 1 s
+        // and read the sink, which made it flaky: the refiner chain runs at background QoS, whose
+        // timer wake-ups the OS defers under CPU load, and the 0.1 s deadline was measured taking
+        // 1.08 s to report on a loaded host — so the sleep expired first and the test read zero
+        // outcomes. The deadline below is a liveness bound, not a tuned delay.
+        let outs = await sink.awaitOutcome(id, timeout: 20)
+        XCTAssertEqual(outs.count, 1, "the watchdog must report the timed-out request")
         if case .skipped = outs.first { } else { XCTFail("expected .skipped, got \(String(describing: outs.first))") }
+
+        // A SECOND report could only come from the real result landing after the watchdog. Rather
+        // than sleeping past it and hoping, use the serial drain as a happens-after barrier: a
+        // following request cannot produce any outcome until the first generation returned and
+        // `deliver` ran. Seeing the barrier's outcome therefore proves the double delivery would
+        // already have been recorded.
+        let barrierID = UUID()
+        await refiner.enqueue(RefinementRequest(id: barrierID, text: "barrier", history: [], retrieved: ctx()))
+        let barrier = await sink.awaitOutcome(barrierID, timeout: 20)
+        XCTAssertFalse(barrier.isEmpty, "the barrier request never completed — the refiner stalled")
+        XCTAssertEqual(sink.outcomes(id).count, 1, "a timed-out request must be reported exactly once")
     }
 
     func testRefinerFastRequestIsNotTimedOut() async {
@@ -283,13 +298,14 @@ final class ContextFixerTests: XCTestCase {
     /// generation times out, no two correctors ever run concurrently (the llama.cpp KV-cache rule).
     private actor ConcurrencyProbeCorrector: LLMCorrector {
         private(set) var maxActive = 0
+        private(set) var completed = 0
         private var active = 0
         let delayMs: UInt64
         init(delayMs: UInt64) { self.delayMs = delayMs }
         func correct(text: String, history: [String], retrieved: RetrievedContext) async -> Correction {
             active += 1; maxActive = max(maxActive, active)
             try? await Task.sleep(nanoseconds: delayMs * 1_000_000)
-            active -= 1
+            active -= 1; completed += 1
             return .unchanged(text, backend: "probe")
         }
     }
@@ -303,7 +319,16 @@ final class ContextFixerTests: XCTestCase {
         for i in 0..<5 {
             await refiner.enqueue(RefinementRequest(id: UUID(), text: "m\(i)", history: [], retrieved: ctx()))
         }
-        try? await Task.sleep(nanoseconds: 1_200_000_000)   // let the chain drain
+        // Wait for the chain to DRAIN rather than sleeping a fixed span. The old fixed 1.2 s sleep
+        // shared the flaw that made the timeout test flaky: under load the background-QoS chain can
+        // still be starting, and `maxActive == 0` would then read as "no overlap" — a green result
+        // asserting nothing. Requiring all five to finish makes the invariant meaningful.
+        let deadline = Date().addingTimeInterval(30)
+        while await probe.completed < 5, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        let completed = await probe.completed
+        XCTAssertEqual(completed, 5, "all five generations must have run — the drain stalled")
         let maxActive = await probe.maxActive
         XCTAssertEqual(maxActive, 1, "the watchdog must not let a second generation start")
     }

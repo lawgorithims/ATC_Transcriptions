@@ -428,6 +428,7 @@ final class AppModel: ObservableObject {
     let flightRecorder = FlightRecorder()
     let logbook = Logbook()
     let rainViewer = RainViewerService()      // live precipitation-radar tiles for the weather-radar layer
+    let windAloft = WindAloftService()        // GFS winds aloft for the animated wind-particle overlay
     /// A just-finished flight awaiting the save-to-logbook prompt (drives the SaveFlightSheet). Transient.
     @Published var pendingLoggedFlight: LoggedFlight?
     private var deviceGPSPausedForBackground = false   // GPS was running when we backgrounded → resume on foreground
@@ -752,6 +753,23 @@ final class AppModel: ObservableObject {
     @Published var showWxRadar = UserDefaults.standard.bool(forKey: "atc.map.wxRadar") {
         didSet { UserDefaults.standard.set(showWxRadar, forKey: "atc.map.wxRadar"); syncRadar() }
     }
+    /// Animated winds-aloft overlay (GFS via NOMADS, internet). Persisted, default off; `WindAloftService`
+    /// fetches while it's on + foregrounded + not thermally throttled, and the particle layer only draws on
+    /// the MapLibre engine.
+    @Published var showWindAloft = UserDefaults.standard.bool(forKey: "atc.map.wind") {
+        didSet { UserDefaults.standard.set(showWindAloft, forKey: "atc.map.wind"); syncWind() }
+    }
+    /// Which altitude the wind overlay shows — an index into `WindLevel.allCases` (0 = surface,
+    /// 9 = FL390), driven by the map's left-edge altitude slider. Persisted. Clamped on write so a value
+    /// from a future build with more levels degrades instead of trapping; switching levels costs no
+    /// network, because one download carries the whole column.
+    @Published var windLevelIndex = UserDefaults.standard.integer(forKey: "atc.map.windLevel") {
+        didSet {
+            let clamped = min(max(windLevelIndex, 0), WindLevel.allCases.count - 1)
+            if clamped != windLevelIndex { windLevelIndex = clamped; return }   // re-fires didSet, then persists
+            UserDefaults.standard.set(windLevelIndex, forKey: "atc.map.windLevel")
+        }
+    }
     /// NASA GIBS satellite smoke/true-colour overlay (a separate layer from the radar stub above). A
     /// translucent, prior-day satellite image over the chart — situational context, NOT current weather.
     /// Pure remote tiles (no poller), opt-in, default off; persisted. Reconciled in `ChartMapView`.
@@ -793,7 +811,7 @@ final class AppModel: ObservableObject {
     /// Updated (with exit hysteresis) from `ProcessInfo.thermalStateDidChangeNotification` via
     /// `applyThermal` — see there for why the exit is delayed.
     @Published var thermalSerious = ProcessInfo.processInfo.thermalState.rawValue >= ProcessInfo.ThermalState.serious.rawValue {
-        didSet { if didFinishInit, thermalSerious != oldValue { syncEONET(); syncTFRs(); syncRadar() } }   // hot → pause the pollers too
+        didSet { if didFinishInit, thermalSerious != oldValue { syncEONET(); syncTFRs(); syncRadar(); syncWind() } }   // hot → pause the pollers too
     }
     /// The single pending "clear thermalSerious" timer (M7). A device hovering at the threshold used
     /// to flip thermalSerious repeatedly, and each flip destroys + rebuilds the whole ChartMapView
@@ -1393,6 +1411,7 @@ final class AppModel: ObservableObject {
         // sat on "Loading radar…" for the whole session. Same class as the traffic-pill lie — a
         // restored toggle is not an edge, so every poller must be reconciled explicitly here.
         syncRadar()
+        syncWind()       // and the wind overlay, for exactly the same reason
         refreshTripStats()   // seed the flight-plan strip's stats row from the restored plan
         // Under thermal pressure the map flattens its terrain + pauses network layers (it is NEVER torn
         // down). `--thermal` (QA-only, non-persisting) forces the state so the graceful degradation is
@@ -1807,6 +1826,14 @@ final class AppModel: ObservableObject {
                                                    addressee: identity.addressee(airlineStarts: efbAirlineStarts())) else { return }
         assert(!command.target.isEmpty, "parser returned an empty target")
         efbSuggestion = EFBSuggestion.make(id: latest.id.uuidString, command: command, source: latest.display)
+        // Accepting an approach clearance now resolves published holds, which walks the nav table for
+        // the local magnetic variation — and the first touch of `NavDatabase` decodes a ~3 MB JSON.
+        // On the accept tap that decode would land on the MainActor. Warm it off-main while the
+        // banner is on screen instead: the pilot reads it for seconds before tapping, so by then the
+        // table is resident and accept stays cheap.
+        if command.kind == .clearedApproach {
+            Task.detached(priority: .userInitiated) { _ = NavDatabase.count }
+        }
     }
 
     /// The airport ident EFB grounding resolves against — the live context's, else the picker's.
@@ -2250,27 +2277,52 @@ final class AppModel: ObservableObject {
         // published missed. A "cleared for the approach" with no named transition is a vectors-to-final
         // join. (loadProcedure's flightPlan mutation already cleared the stale activeApproach via the
         // approachProcedure invariant; this sets the correct one.)
+        // The published missed AND the published holds come from the one shared read, so a
+        // clearance heard over the radio arms exactly what hand-activating the same approach would.
+        // Until this was wired, an ATC-cleared approach carried no holds at all — the racetrack was
+        // never drawn and the entry was never stated, on the path a pilot is most likely to use.
+        let proper = approachProperContent(airport: pick.airport, ident: pick.ident)
+        // "Cleared for the approach" with no named transition is a VECTORS join, filtered through the
+        // same rule activateApproach uses. In practice the course reversal is published on TRANSITION
+        // rows only, so this row yields the missed-approach hold; the filter keeps the two paths
+        // structurally identical rather than relying on that.
         activeApproach = ActiveApproach(airport: pick.airport, ident: pick.ident, name: pick.name,
                                         runway: pick.runway, entry: .vectors,
-                                        missedFixes: publishedMissedFixes(airport: pick.airport, ident: pick.ident))
-        NSLog("CommSight: approach CLEARED-loaded %@ %@ missed=%d", pick.airport, pick.ident,
-              activeApproach?.missedFixes.count ?? 0)
+                                        missedFixes: proper.missedFixes,
+                                        holds: ApproachHolds.applicable(proper.holds, joinIsVectors: true))
+        NSLog("CommSight: approach CLEARED-loaded %@ %@ missed=%d holds=%d", pick.airport, pick.ident,
+              activeApproach?.missedFixes.count ?? 0, activeApproach?.holds.count ?? 0)
     }
 
-    /// The published missed-approach fix sequence for an approach, or [] when none is coded. The SINGLE
-    /// source of truth for the go-around, shared by activateApproach (hand-activate) and
-    /// loadApproachForRunway (ATC cleared) so both arm the identical missed. Reads the approach-proper
-    /// row, splits at the published MAP marker, and normalizes the tail (collapsing consecutive repeats,
-    /// dropping runway pseudo-fixes) exactly as the drawn route does.
-    private func publishedMissedFixes(airport: String, ident: String) -> [String] {
-        guard let proper = CIFP.approachProper(airport: airport, ident: ident) else { return [] }
-        let legs = CIFP.legs(procedureID: proper.id).prefix(256)
+    /// Everything the approach-proper row contributes to an `ActiveApproach`: its legs, which of them
+    /// are the missed approach, the published go-around sequence, and the published holds.
+    ///
+    /// THE SINGLE SOURCE OF TRUTH for both paths that can activate an approach — `activateApproach`
+    /// (the pilot hand-activates) and `loadApproachForRunway` (ATC clears one over the air). The row is
+    /// read ONCE and `splitMissed` runs ONCE here, and the holds are resolved from that same split,
+    /// because a hold classified into a different segment than the legs around it would be presented as
+    /// the wrong kind of hold — a course reversal offered as skippable when it is really the published
+    /// end of a go-around, or vice versa. Two call sites deriving it separately is exactly how those
+    /// disagree, and the ATC-cleared path previously resolved no holds at all.
+    ///
+    /// `arrivingFrom` is the aircraft's present position, and `MagneticVariation.at` supplies the local
+    /// declination: published hold courses are MAGNETIC while a great-circle arrival track is TRUE, so
+    /// the entry cannot be named without it (the resolver yields a nil entry rather than guessing).
+    private func approachProperContent(airport: String, ident: String)
+        -> (legs: [CIFPLeg], missedSeqs: Set<Int>, missedFixes: [String], holds: [ApproachHold]) {
+        guard let proper = CIFP.approachProper(airport: airport, ident: ident) else {
+            return ([], [], [], [])
+        }
+        let legs = Array(CIFP.legs(procedureID: proper.id).prefix(256))      // statically bounded
         let split = ApproachActivation.splitMissed(
             legs.map { (seq: $0.seq, fix: $0.fix, legType: $0.legType) }, roles: legs.map(\.role))
         let missedSeqs = Set(split.missed)
         var missedRaw: [String] = []
         for leg in legs where missedSeqs.contains(leg.seq) { missedRaw.append(leg.fix) }
-        return ApproachActivation.missedSequence(missedRaw)
+        let holds = ApproachHolds.resolve(legs: legs, missedSeqs: missedSeqs,
+                                          arrivingFrom: presentPosition,
+                                          variation: MagneticVariation.at)
+        return (legs, missedSeqs, ApproachActivation.missedSequence(missedRaw), holds)
     }
 
     // MARK: Loaded procedures (Phase 5 — SID / STAR / approach into the active flight plan)
@@ -2336,25 +2388,18 @@ final class AppModel: ObservableObject {
             holds += ApproachHolds.resolve(legs: tLegs, missedSeqs: [], arrivingFrom: presentPosition,
                                            variation: MagneticVariation.at)
         }
-        if let proper = CIFP.approachProper(airport: proc.airport, ident: proc.ident) {
-            let legs = CIFP.legs(procedureID: proper.id).prefix(256)
-            let split = ApproachActivation.splitMissed(
-                legs.map { (seq: $0.seq, fix: $0.fix, legType: $0.legType) }, roles: legs.map(\.role))
-            let missedSeqs = Set(split.missed)
-            // Published holds, each entered from the direction the aircraft is actually arriving from.
-            // The same missed-approach split is reused (not re-derived) so a hold can never be
-            // classified into a different segment than the legs around it.
-            holds += ApproachHolds.resolve(legs: Array(legs), missedSeqs: missedSeqs,
-                                           arrivingFrom: presentPosition,
-                                           variation: MagneticVariation.at)
-            for leg in legs where !missedSeqs.contains(leg.seq) {
-                let f = leg.fix.uppercased()
-                guard !f.isEmpty, !CIFP.isRunwayPseudoFix(f) else { continue }
-                if seen.insert(f).inserted { fixes.append(f) }
-            }
+        // ONE read of the approach-proper row, shared with the ATC-cleared path: its legs, its missed
+        // split, the go-around sequence and the published holds all come from the same call, so the
+        // two paths cannot classify the same leg differently. (This row was previously read twice —
+        // once here and again inside the missed-fixes helper — and split twice with it.)
+        let proper = approachProperContent(airport: proc.airport, ident: proc.ident)
+        holds += proper.holds
+        for leg in proper.legs where !proper.missedSeqs.contains(leg.seq) {
+            let f = leg.fix.uppercased()
+            guard !f.isEmpty, !CIFP.isRunwayPseudoFix(f) else { continue }
+            if seen.insert(f).inserted { fixes.append(f) }
         }
-        // The go-around comes from the shared helper — one source of truth with the ATC-cleared path.
-        missedFixes = publishedMissedFixes(airport: proc.airport, ident: proc.ident)
+        missedFixes = proper.missedFixes
 
         let loaded = LoadedProcedure(airport: proc.airport, kind: proc.kind, ident: proc.ident,
                                      name: proc.name, runway: proc.runway,
@@ -2363,13 +2408,10 @@ final class AppModel: ObservableObject {
             plan.joinApproach(at: entry.iafFix, airport: proc.airport, from: presentPosition)
             plan.loadProcedure(loaded)
         }
-        // A VECTORS join is flown straight to final, so the course reversal is not offered at all —
-        // presenting one would invite a reversal ATC never cleared. The missed-approach hold still
-        // applies either way (a go-around from a vectored approach ends in the same published hold).
+        // Which holds apply is decided by the shared filter, not re-expressed here — the ATC-cleared
+        // path applies the identical rule.
         let joinIsVectors = entry.iafFix == nil
-        let applicable = joinIsVectors
-            ? holds.filter { $0.pattern.kind != .holdInLieuOfProcedureTurn }
-            : holds
+        let applicable = ApproachHolds.applicable(holds, joinIsVectors: joinIsVectors)
         activeApproach = ActiveApproach(airport: proc.airport, ident: proc.ident, name: proc.name,
                                         runway: proc.runway, entry: entry, missedFixes: missedFixes,
                                         holds: applicable)
@@ -3205,6 +3247,9 @@ final class AppModel: ObservableObject {
     /// Reconcile the precipitation-radar fetcher: refresh while the layer is on, foregrounded, and not
     /// thermally throttled (a network + GPU tile layer — pause it when hot, like the other net overlays).
     func syncRadar() { rainViewer.setEnabled(showWxRadar && scenePhaseActive && !thermalSerious) }
+    /// Same three-condition reconcile as the radar. The wind fetch is event-driven rather than polled, but
+    /// it still must not run in the background or while the device is hot.
+    func syncWind() { windAloft.setEnabled(showWindAloft && scenePhaseActive && !thermalSerious) }
 
     /// Reconcile the Stratux link (traffic WebSocket + GPS poll). Streams whenever the link is
     /// enabled and the app is foregrounded (standby off) — no session or source selection required.
@@ -3469,6 +3514,7 @@ final class AppModel: ObservableObject {
             if deviceGPSPausedForBackground { deviceGPSPausedForBackground = false; deviceLocation.start() }
             flightRecorder.setForegrounded(true)   // resume breadcrumb sampling
             syncRadar()                            // resume the weather-radar fetch
+            syncWind()                             // and re-evaluate the wind field's staleness
             // Give MapLibre another chance after a render-stall fallback (bounded): clearing the flag republishes
             // → MapHostView re-swaps to the MapLibre map → a fresh createMap re-arms the staggered watchdog.
             // Also REFRESH the retry budget: a new foreground is a fresh chance for cold-launch stalls to heal.
@@ -3495,6 +3541,7 @@ final class AppModel: ObservableObject {
             scenePhaseActive = false
             flightRecorder.setForegrounded(false)   // flush the trail to disk before GPS pauses (below)
             syncRadar()                             // stop the weather-radar fetch in the background
+            syncWind()                              // and the wind fetch
             clearTraffic()
             // Stop capture so the feed isn't streamed/played in the background, and release the audio
             // session so the `audio` background mode can't keep the app awake (the battery drain + the

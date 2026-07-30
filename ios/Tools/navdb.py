@@ -8,9 +8,13 @@ which is precisely the situation an inspection tool exists to prevent: one decod
     navdb.py show KBOS --proc H33LX [--transition BBOGG] [--json]
     navdb.py airport KBOS
     navdb.py verify [--source /path/FAACIFP18]
+    navdb.py verify-pairing [--nav-dir …]
     navdb.py diff old.sqlite new.sqlite
 
 Read-only. Never writes to a database.
+
+It is also the home of the nav-table PAIRING predicate (`check_nav_pairing`), imported by
+`build_nav_db.py` and `build_nav_meta.py` — same reason as above: one decoder, used by everyone.
 """
 import argparse, collections, json, os, sqlite3, sys
 
@@ -254,6 +258,122 @@ def cmd_verify(args):
     return 1 if bad else 0
 
 
+# ---------------------------------------------------------------------------
+# nav-table pairing: nav_coords.json vs navaid_meta.json / airport_meta.json
+# ---------------------------------------------------------------------------
+# WHY THIS EXISTS. Core/MagneticVariation.swift only lets a station's published variation vote when
+# its ident is GLOBALLY UNIQUE in nav_coords.json (`NavDatabase.candidates(ident).count == 1`), and
+# then reads the value from navaid_meta.json. That defence — added after ~445 CONUS stations were
+# found carrying a FOREIGN twin's variation — is sound only while the two files come from the SAME
+# OurAirports snapshot. Regenerate one without the other and an ident that is unique in nav_coords
+# can silently carry a different station's variation from a stale navaid_meta, which is the exact
+# poisoning the uniqueness gate was written to stop. Nothing enforced the pairing until this check.
+#
+# ⚠️ KEY-SET EQUALITY IS NECESSARY BUT NOT SUFFICIENT, and the numbers say so. Measured against a
+# live OurAirports pull on 2026-07-29: the bundled nav_coords and that snapshot have EXACTLY equal
+# navaid key sets (6,022 = 6,022) while 32 idents' candidate structure differs and 11 idents
+# (CLO, EDR, ERN, KNY, LIP, MRD, NCZ, TPS, TZK, URF, VGE) are unique in nav_coords yet duplicated
+# upstream — i.e. trusted by the app and eligible to carry a twin's value. So this check is the
+# tripwire for hand edits, partial writes and half-rebuilds; the STRUCTURAL guarantee is
+# build_nav_meta.py withholding `mv` from any ident it saw more than once.
+
+NAV_DIR = os.path.join(HERE, "..", "ATCTranscribe", "Resources", "nav")
+KIND_NAVAID = 1
+KIND_AIRPORT = 0
+
+
+def kind_idents(nav_coords, kind):
+    """Idents in a nav_coords table carrying at least one entry of `kind` (0=airport, 1=navaid).
+
+    Partitioned by kind on purpose: 20 idents carry BOTH an airport and a navaid entry, so comparing
+    whole-file ident sets would compare the wrong things.
+    """
+    out = set()
+    for ident, entries in nav_coords.items():
+        for e in entries:
+            if len(e) >= 3 and int(e[2]) == kind:
+                out.add(ident)
+                break
+    return out
+
+
+def check_nav_pairing(nav_coords, navaid_meta, airport_meta=None, samples=20):
+    """Pairing failures between the nav tables, as a list of human-readable strings ([] = paired).
+
+    Pure: reads nothing, writes nothing, never exits — the builders own the refusal so it stays
+    visible at the write site (the `build_cifp.py` / `build_apt.py` contract). One implementation,
+    used by both builders and by `navdb.py verify-pairing`, because a cross-file invariant checked
+    two different ways can disagree with itself — which is the failure it exists to prevent.
+
+    NAVAIDS are why this exists (they back magnetic variation), but AIRPORTS are checked just as
+    hard when `airport_meta` is supplied. An earlier draft of this function downgraded the airport
+    side to a warning on the theory that `build_nav_meta.py` legitimately drops airports having
+    neither a name nor an elevation — the data says otherwise. Re-running both scripts' keep-filters
+    over one OurAirports pull gives 14,077 vs 14,077 with an EMPTY symmetric difference, and the
+    `if meta:` guard drops exactly zero airports; the 11-ident residue in the shipped tree is 8 fields
+    since marked `closed` plus 3 demoted from `large_airport`, i.e. straight evidence that
+    `airport_meta.json` was built from a NEWER snapshot than `nav_coords.json`. That is drift, not an
+    artifact, so it fails. A correct paired rebuild produces no residue and passes.
+    """
+    problems = []
+    coords_nav = kind_idents(nav_coords, KIND_NAVAID)
+    meta_nav = set(navaid_meta)
+    missing_meta = coords_nav - meta_nav          # plotted navaid with no metadata → cannot vote
+    extra_meta = meta_nav - coords_nav            # metadata for a navaid we do not plot
+    if missing_meta or extra_meta:
+        problems.append(
+            "navaid ident sets diverge: nav_coords kind-1 has %d, navaid_meta has %d; "
+            "%d only in nav_coords %s; %d only in navaid_meta %s"
+            % (len(coords_nav), len(meta_nav), len(missing_meta), sorted(missing_meta)[:samples],
+               len(extra_meta), sorted(extra_meta)[:samples]))
+    if airport_meta is not None:
+        coords_apt = kind_idents(nav_coords, KIND_AIRPORT)
+        meta_apt = set(airport_meta)
+        only_coords, only_meta = coords_apt - meta_apt, meta_apt - coords_apt
+        if only_coords or only_meta:
+            problems.append(
+                "airport ident sets diverge: nav_coords kind-0 has %d, airport_meta has %d; "
+                "%d only in nav_coords %s; %d only in airport_meta %s"
+                % (len(coords_apt), len(meta_apt), len(only_coords), sorted(only_coords)[:samples],
+                   len(only_meta), sorted(only_meta)[:samples]))
+    return problems
+
+
+def load_json(path):
+    with open(path) as f:
+        return json.load(f)
+
+
+def cmd_verify_pairing(args):
+    nav_dir = os.path.abspath(args.nav_dir)
+    paths = {n: os.path.join(nav_dir, n)
+             for n in ("nav_coords.json", "navaid_meta.json", "airport_meta.json")}
+    for name, p in paths.items():
+        if not os.path.exists(p):
+            print("MISSING %s" % p)
+            return 2
+    coords = load_json(paths["nav_coords.json"])
+    navaid = load_json(paths["navaid_meta.json"])
+    airport = load_json(paths["airport_meta.json"])
+
+    problems = check_nav_pairing(coords, navaid, airport)
+    print("navaid idents : nav_coords kind-1 %d | navaid_meta %d"
+          % (len(kind_idents(coords, KIND_NAVAID)), len(navaid)))
+    print("airport idents: nav_coords kind-0 %d | airport_meta %d"
+          % (len(kind_idents(coords, KIND_AIRPORT)), len(airport)))
+    with_mv = sum(1 for v in navaid.values() if "mv" in v)
+    print("navaids carrying a magnetic variation: %d" % with_mv)
+    for p in problems:
+        print("FAIL: " + p)
+    if problems:
+        print("\nThese tables are NOT from one OurAirports snapshot. Rebuild them from a single source:")
+        print("  python3 build_nav_db.py --pair --nasr-zip <cached.zip>   # writes nav_coords.json")
+        print("  python3 build_nav_meta.py                                # re-checks, then writes")
+        return 1
+    print("pairing OK")
+    return 0
+
+
 def cmd_diff(args):
     a, b = connect(args.old), connect(args.new)
     print(f"old: {cycle_line(a)}\nnew: {cycle_line(b)}\n")
@@ -310,6 +430,11 @@ def main():
     s = sub.add_parser("verify", help="source-vs-database counts + corpus invariants, without rebuilding")
     s.add_argument("--source", help="raw FAACIFP18 to check the database against")
     s.set_defaults(fn=cmd_verify)
+
+    s = sub.add_parser("verify-pairing",
+                       help="nav_coords.json vs navaid_meta.json/airport_meta.json (same-snapshot check)")
+    s.add_argument("--nav-dir", default=NAV_DIR)
+    s.set_defaults(fn=cmd_verify_pairing)
 
     s = sub.add_parser("diff", help="what changed between two builds")
     s.add_argument("old"); s.add_argument("new")

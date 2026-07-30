@@ -33,7 +33,10 @@ final class EONETServiceTests: XCTestCase {
         let fetcher = FakeEONETFetcher { cat, _ in cat == .wildfires ? [Self.fire()] : [] }
         let svc = EONETService(config: config(), fetcher: fetcher, onUpdate: { box.add($0, $1) })
         await svc.sync(enabled: true)
-        try? await Task.sleep(nanoseconds: 150_000_000)
+        // Wait for the publish itself, not a tuned span (see AsyncTestSupport). The service publishes
+        // only on a successful sweep, so "a snapshot arrived" is the event; what is IN it is the
+        // assertion.
+        await waitUntil("the first published snapshot") { !box.all().isEmpty }
         await svc.sync(enabled: false)
         XCTAssertTrue(box.all().contains { $0.events.map(\.id) == ["F1"] },
                       "got \(box.all().map { $0.events.map(\.id) })")
@@ -45,7 +48,12 @@ final class EONETServiceTests: XCTestCase {
         let fetcher = FakeEONETFetcher { _, _ in [Self.fire()] }
         let svc = EONETService(config: config(), fetcher: fetcher, onUpdate: { box.add($0, $1) })
         await svc.sync(enabled: false)
-        try? await Task.sleep(nanoseconds: 80_000_000)
+        // A SLEEP IS CORRECT HERE, unlike everywhere else in this file. This asserts an ABSENCE — that
+        // nothing polled — so there is no event to wait for, and the sleep is the window in which a
+        // wrongly-started poll loop would betray itself. That inverts the usual hazard: a longer wait
+        // makes this assertion STRONGER, never flaky, so it is sized off the refresh interval
+        // (0.05 s) rather than tuned. If the loop ever did start, its first sweep lands well inside.
+        try? await Task.sleep(nanoseconds: 200_000_000)   // 4× refreshInterval
         XCTAssertEqual(fetcher.calls(), 0)
         XCTAssertTrue(box.all().isEmpty)
     }
@@ -58,7 +66,7 @@ final class EONETServiceTests: XCTestCase {
         }
         let svc = EONETService(config: config(), fetcher: fetcher, onUpdate: { box.add($0, $1) })
         await svc.sync(enabled: true)
-        try? await Task.sleep(nanoseconds: 120_000_000)
+        await waitUntil("the partial sweep to publish") { !box.all().isEmpty }
         await svc.sync(enabled: false)
         XCTAssertTrue(box.all().contains { $0.events.map(\.id) == ["F1"] },
                       "a partial success must still publish the categories that worked")
@@ -74,7 +82,10 @@ final class EONETServiceTests: XCTestCase {
         let svc = EONETService(config: config(refresh: 0.03), fetcher: fetcher,
                                onUpdate: { box.add($0, $1) }, onStatus: { statuses.add($0) })
         await svc.sync(enabled: true)
-        try? await Task.sleep(nanoseconds: 200_000_000)            // round 0 ok + several failed rounds
+        // The test needs round 0 to succeed AND later rounds to fail, so the event that proves both
+        // have happened is the failure STATUS — a status only reachable after a good round published.
+        // The old fixed 200 ms had to be long enough for several sweeps on an idle machine.
+        await waitUntil("a failed round to report .error") { statuses.all().contains(.error("offline")) }
         await svc.sync(enabled: false)
         let snaps = box.all()
         XCTAssertFalse(snaps.isEmpty)
@@ -91,7 +102,7 @@ final class EONETServiceTests: XCTestCase {
                                 fetcher: FakeEONETFetcher { cat, _ in cat == .wildfires ? [Self.fire()] : [] },
                                 onUpdate: { boxA.add($0, $1) })
         await svcA.sync(enabled: true)
-        try? await Task.sleep(nanoseconds: 120_000_000)
+        await waitUntil("A to publish its fetched snapshot") { boxA.all().contains { !$0.events.isEmpty } }
         await svcA.sync(enabled: false)
         XCTAssertTrue(boxA.all().contains { !$0.events.isEmpty }, "precondition: A must have fetched")
 
@@ -102,7 +113,10 @@ final class EONETServiceTests: XCTestCase {
                                 fetcher: FakeEONETFetcher { _, _ in throw URLError(.notConnectedToInternet) },
                                 onUpdate: { boxB.add($0, $1) })
         await svcB.sync(enabled: true)
-        try? await Task.sleep(nanoseconds: 120_000_000)
+        // B's network is dead, so the ONLY publish it can make is the cached one — which is exactly
+        // what this test is about. Waiting for it also removes the race where a slow disk read made
+        // the old 120 ms expire before the cache was loaded.
+        await waitUntil("B to publish the cached snapshot") { !boxB.all().isEmpty }
         await svcB.sync(enabled: false)
         let first = boxB.all().first
         XCTAssertEqual(first?.events.map(\.id), ["F1"])
@@ -121,12 +135,17 @@ final class EONETServiceTests: XCTestCase {
         try Data(json.utf8).write(to: cacheDir.appendingPathComponent("events.json"))
 
         let box = HazardBox()
-        let svc = EONETService(config: config(),
-                               fetcher: FakeEONETFetcher { _, _ in throw URLError(.notConnectedToInternet) },
-                               onUpdate: { box.add($0, $1) })
+        let fetcher = FakeEONETFetcher { _, _ in throw URLError(.notConnectedToInternet) }
+        let svc = EONETService(config: config(), fetcher: fetcher, onUpdate: { box.add($0, $1) })
         await svc.sync(enabled: true)
-        try? await Task.sleep(nanoseconds: 100_000_000)
+        // ⚠️ The assertion below is over what did NOT happen, and the service publishes nothing at all
+        // here (the fetch fails and a stale cache is never published) — so `box` stays empty and
+        // `allSatisfy` is vacuously true. A fixed sleep therefore proved nothing: the test passed
+        // whether or not the service ever ran. Wait for the FETCH instead, which is the moment the
+        // startup path has actually had its chance to publish the stale cache, and assert it ran.
+        await waitUntil("the service to attempt its first fetch") { fetcher.calls() > 0 }
         await svc.sync(enabled: false)
+        XCTAssertGreaterThan(fetcher.calls(), 0, "the service never started — nothing was tested")
         XCTAssertTrue(box.all().allSatisfy { $0.events.isEmpty },
                       "a stale cache must never surface events: \(box.all().map { $0.events.map(\.id) })")
     }
