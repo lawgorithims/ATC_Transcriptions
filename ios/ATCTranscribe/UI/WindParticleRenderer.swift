@@ -153,9 +153,19 @@ final class WindParticleRenderer: NSObject, MTKViewDelegate {
         }
     }
 
+    /// Allocate (or resize) the half-res trail pair for a drawable of this size.
+    ///
+    /// A ZERO drawable is a normal transient, NOT a programming error — this asserted on it and took
+    /// the app down. `MTKView` reports its drawable size the moment UIKit installs the view, which in
+    /// SwiftUI is *before* the first layout pass gives it a frame, so `drawableSizeWillChange` fires
+    /// with `.zero`; the same happens when the host view is detached, when a Split View column
+    /// collapses, and when the map tab goes off screen. Allocate nothing and wait: `encode` already
+    /// bails on nil textures, and the size comparison below rebuilds them the moment a real size
+    /// arrives. (Flooring at 16 instead would cache a 16x16 pair that no pass can usefully draw into.)
     private func makeTrailTextures(drawable: CGSize) {
-        assert(drawable.width > 0 && drawable.height > 0, "WindParticleRenderer: empty drawable")
         assert(Self.trailScale > 0, "WindParticleRenderer: invalid trail scale")
+        assert(drawable.width.isFinite && drawable.height.isFinite, "WindParticleRenderer: non-finite drawable")
+        guard drawable.width > 0, drawable.height > 0 else { return }
         let w = max(Int(drawable.width * Self.trailScale), 16)
         let h = max(Int(drawable.height * Self.trailScale), 16)
         if let t = trailFront, t.width == w, t.height == h { return }
@@ -285,7 +295,10 @@ final class WindParticleRenderer: NSObject, MTKViewDelegate {
         guard alpha > 0.01 else { return }
         if viewSize != view.bounds.size {
             viewSize = view.bounds.size
-            seedParticles()
+            // Reseed only into a size the pool can be spread across. `seedParticles` requires a real
+            // width, and a zero bounds reaches here for the same reasons it reaches makeTrailTextures
+            // (detach, Split View collapse, off-screen tab) — same guard as the delegate path.
+            if viewSize.width > 1 { seedParticles() }
         }
         guard viewSize.width > 1, !particles.isEmpty else { return }
         makeTrailTextures(drawable: view.drawableSize)

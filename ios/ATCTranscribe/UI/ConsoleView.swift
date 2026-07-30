@@ -57,6 +57,15 @@ struct ConsoleView: View {
                     }
                 homeArea
             }
+            // Map chrome that must out-rank the pilot's floating cards — the NRST button and the
+            // winds-aloft altitude slider. It lives HERE, above `homeArea`, because a control with no
+            // second route in must not be coverable by a card (see `MapChrome`). Suppressed in standby,
+            // where `homeArea`'s Resume banner owns the screen and nothing is meant to be live.
+            if !model.standby {
+                MapChrome(widgets: widgets, topInset: max(topChromeHeight, 96),
+                          live: scenePhase != .background && !model.showRouteMap && model.selectedTab == .map)
+                    .environmentObject(model)
+            }
         }
         .tint(p.accent)
         .preferredColorScheme(model.theme.colorScheme)
