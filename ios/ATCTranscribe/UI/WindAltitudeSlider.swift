@@ -40,7 +40,6 @@ struct WindAltitudeSlider: View {
         }
         .padding(.leading, Self.edgeInset + leftPaneInset)
         .padding(.top, topInset)
-        .accessibilityIdentifier("wind-altitude-control")
     }
 
     // MARK: track
@@ -61,8 +60,11 @@ struct WindAltitudeSlider: View {
             .frame(width: Self.thumbSize, height: Self.trackHeight)
             .contentShape(Rectangle())
             .gesture(drag)
-            .accessibilityIdentifier("wind-altitude-slider")
+            // ORDER MATTERS: promote to a single element, THEN name it. An identifier applied before the
+            // promotion attaches to the children — it ended up on the thumb's glyph, whose auto-generated
+            // label ("Breezy") is what a UI test then found under the slider's name.
             .accessibilityElement()
+            .accessibilityIdentifier("wind-altitude-slider")
             .accessibilityLabel("Wind altitude")
             .accessibilityValue("\(level.shortLabel), \(level.pressureLabel)")
             .accessibilityAdjustableAction { direction in
@@ -83,6 +85,7 @@ struct WindAltitudeSlider: View {
             Circle().fill(palette.surface)
             Circle().stroke(palette.accent, lineWidth: dragging ? 2.5 : 1.5)
             Image(systemName: "wind").font(.system(size: 10, weight: .bold)).foregroundStyle(palette.accent)
+                .accessibilityHidden(true)                      // decoration; the slider carries the value
         }
         .frame(width: Self.thumbSize, height: Self.thumbSize)
         .offset(y: offset(for: levelIndex) - Self.thumbSize / 2)
@@ -151,7 +154,13 @@ struct WindAltitudeSlider: View {
         .background(palette.overlay, in: RoundedRectangle(cornerRadius: DS.Radius.r4))
         .overlay(RoundedRectangle(cornerRadius: DS.Radius.r4)
             .stroke(palette.border, lineWidth: DS.Stroke.hairline))
+        // ONE element with an explicit label, so VoiceOver reads "FL180, 500 hPa. GFS 12z +3h · 8 min ago"
+        // as a single fact rather than four unrelated fragments. Written out rather than using
+        // `children: .combine`, which merges the children's own identifiers and drops this one — leaving the
+        // chip unreachable by name from a UI test.
+        .accessibilityElement()
         .accessibilityIdentifier("wind-status-chip")
+        .accessibilityLabel("\(level.shortLabel), \(level.pressureLabel). \(statusText)")
     }
 
     private var statusText: String {
@@ -159,8 +168,15 @@ struct WindAltitudeSlider: View {
             if windAloft.failed { return "Winds unavailable — retrying" }
             return windAloft.fetching ? "Loading winds…" : "Winds off"
         }
-        let age = Self.relative.localizedString(for: set.fetchedAt, relativeTo: Date())
-        return "\(set.cycleLabel) · \(age)"
+        return "\(set.cycleLabel) · \(Self.age(of: set.fetchedAt))"
+    }
+
+    /// A just-completed fetch is "now", not "in 0 seconds" — `RelativeDateTimeFormatter` rounds a
+    /// sub-second age into the FUTURE tense, which reads as though the data has not arrived yet.
+    private static func age(of when: Date, now: Date = Date()) -> String {
+        let seconds = now.timeIntervalSince(when)
+        guard seconds >= 45 else { return "now" }
+        return relative.localizedString(for: when, relativeTo: now)
     }
 
     /// The speed key. Labelled in knots because that is the unit in the clearance and on the strip.
