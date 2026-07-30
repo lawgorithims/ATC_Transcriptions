@@ -103,7 +103,12 @@ final class ADSBServiceTests: XCTestCase {
                               fetcher: FakeFetcher(scripted: [.success([fresh, stale])]),
                               onUpdate: { list, _ in box.add(list) })
         await svc.sync(center: Coord(lat: 42.36, lon: -71.0), enabled: true)
-        try? await Task.sleep(nanoseconds: 120_000_000)
+        // Wait for the poll to PUBLISH CONTACTS, rather than sleeping a span tuned on an idle machine
+        // (see AsyncTestSupport). ⚠️ "a snapshot arrived" is NOT the event: `sync` publishes an empty
+        // list synchronously to clear the old facility's contacts, so that condition is already true
+        // before the first poll and waiting on it tests nothing. The first snapshot carrying any
+        // contact is the poll result; which contacts survived is then the actual assertion.
+        await waitUntil("a poll to publish contacts") { box.all().contains { !$0.isEmpty } }
         let snapshots = box.all()                              // capture before stop (stop clears)
         await svc.sync(center: nil, enabled: false)
         XCTAssertTrue(snapshots.contains { $0.map(\.hex) == ["f"] },   // stale "s" pruned by contactWindow
@@ -112,14 +117,23 @@ final class ADSBServiceTests: XCTestCase {
 
     func testServiceFailurePublishesEmptyNotFrozen() async {
         let box = Box()
+        let statuses = StatusBox()
         let svc = ADSBService(config: .init(pollInterval: 0.02, contactWindow: 30),
                               fetcher: FakeFetcher(scripted: [.failure(ADSBFeedError.rateLimited)]),
-                              onUpdate: { list, _ in box.add(list) })
+                              onUpdate: { list, _ in box.add(list) },
+                              onStatus: { statuses.add($0) })
         await svc.sync(center: Coord(lat: 42.36, lon: -71.0), enabled: true)
-        try? await Task.sleep(nanoseconds: 80_000_000)
+        // ⚠️ A FAILED poll publishes ([], .distantPast) — byte-identical to the empty list `sync`
+        // publishes synchronously to clear the previous facility. So neither "a snapshot arrived" nor
+        // the old fixed sleep could distinguish "it polled and failed" from "it never polled at all",
+        // and the `it did poll` assertion below was satisfiable without a single poll. The STATUS
+        // callback is the unambiguous signal, so wait for that and assert on it.
+        await waitUntil("a poll to report failure") { statuses.all().contains { if case .error = $0 { return true }; return false } }
         let snapshots = box.all()
         await svc.sync(center: nil, enabled: false)
-        XCTAssertFalse(snapshots.isEmpty)                      // it did poll
+        XCTAssertTrue(statuses.all().contains { if case .error = $0 { return true }; return false },
+                      "it did poll, and the poll failed")
+        XCTAssertFalse(snapshots.isEmpty)
         XCTAssertTrue(snapshots.allSatisfy { $0.isEmpty })    // a failed poll never surfaces contacts
     }
 }
@@ -149,4 +163,10 @@ private final class Box: @unchecked Sendable {
     private let lock = NSLock(); private var lists: [[Aircraft]] = []
     func add(_ l: [Aircraft]) { lock.lock(); lists.append(l); lock.unlock() }
     func all() -> [[Aircraft]] { lock.lock(); defer { lock.unlock() }; return lists }
+}
+
+private final class StatusBox: @unchecked Sendable {
+    private let lock = NSLock(); private var statuses: [ADSBStatus] = []
+    func add(_ s: ADSBStatus) { lock.lock(); statuses.append(s); lock.unlock() }
+    func all() -> [ADSBStatus] { lock.lock(); defer { lock.unlock() }; return statuses }
 }
