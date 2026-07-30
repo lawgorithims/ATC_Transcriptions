@@ -18,10 +18,22 @@ Sources — all public-domain / CC0, safe to bundle in the App Store build:
     `nfdc.faa.gov/webContent/28DaySub/28DaySubscription_Effective_<YYYY-MM-DD>.zip`
     (~250 MB). NOTE: that server 503s HEAD requests but serves GET fine.
 
+⚠️ PAIRED WITH `navaid_meta.json` (built by `build_nav_meta.py`) — the navaid halves of the two must
+come from ONE OurAirports snapshot, because `Core/MagneticVariation.swift` decides whether to trust a
+station's variation by asking whether its ident is unique HERE and then reads the value THERE. This
+script refuses to write when the two ident sets disagree; pass `--pair` only as the first half of a
+paired rebuild, in this order:
+
+  python3 build_nav_db.py --pair --nasr-zip <cached.zip>   # writes nav_coords.json, check deferred
+  python3 build_nav_meta.py                                # re-checks the pair, THEN writes
+
 Run on a box with internet (regenerate when you bump the NASR cycle):
   python3 build_nav_db.py [--nasr-zip nasr.zip] [--nasr-date 2026-06-11] [--out path.json]
 """
-import argparse, csv, io, json, os, re, urllib.request, zipfile
+import argparse, csv, io, json, os, re, sys, urllib.request, zipfile
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import navdb   # noqa: E402 — the shared nav-table pairing predicate (one decoder, used by everyone)
 
 OURAIRPORTS = "https://davidmegginson.github.io/ourairports-data"
 UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
@@ -69,6 +81,10 @@ def main():
     ap.add_argument("--nasr-date", default="2026-06-11")
     ap.add_argument("--out", default=os.path.join(
         os.path.dirname(__file__), "..", "ATCTranscribe", "Resources", "nav", "nav_coords.json"))
+    ap.add_argument("--pair", action="store_true",
+                    help="first half of a PAIRED rebuild: defer the navaid_meta.json pairing check "
+                         "because the sibling is about to be regenerated from the same snapshot. "
+                         "Run build_nav_meta.py immediately afterwards — it enforces the pair.")
     args = ap.parse_args()
 
     table = {}
@@ -118,6 +134,30 @@ def main():
 
     out = os.path.abspath(args.out)
     os.makedirs(os.path.dirname(out), exist_ok=True)
+
+    # PAIRING GATE — refuse to write a nav_coords.json that does not match its navaid_meta.json
+    # sibling. See navdb.check_nav_pairing for why: Core/MagneticVariation.swift trusts a station's
+    # variation only when its ident is globally unique HERE, then reads the value from THERE, so a
+    # half-rebuild lets an ident that looks unique carry a foreign twin's variation. An explicit
+    # raise, not an assert — `python -O` strips asserts (same contract as build_cifp.py).
+    sibling = os.path.join(os.path.dirname(out), "navaid_meta.json")
+    if not os.path.exists(sibling):
+        print("note: no navaid_meta.json beside the output — nothing to pair against")
+    elif args.pair:
+        print("--pair: deferring the pairing check; run build_nav_meta.py NEXT (without --pair) "
+              "from the SAME snapshot — it re-checks and is what actually validates the pair.")
+    else:
+        with open(sibling) as f:
+            problems = navdb.check_nav_pairing(table, json.load(f))
+        if problems:
+            raise SystemExit(
+                "REFUSING TO WRITE: " + "; ".join(problems)
+                + "\nnav_coords.json and navaid_meta.json must come from ONE OurAirports snapshot "
+                  "(magnetic variation depends on it). Rebuild the pair:\n"
+                  "  python3 build_nav_db.py --pair --nasr-zip <cached.zip>\n"
+                  "  python3 build_nav_meta.py")
+        print("pairing OK against navaid_meta.json")
+
     with open(out, "w") as f:
         json.dump(table, f, separators=(",", ":"), sort_keys=True)
     print(f"airports={n_apt} navaids={n_nav} fixes={n_fix} idents={len(table)} "

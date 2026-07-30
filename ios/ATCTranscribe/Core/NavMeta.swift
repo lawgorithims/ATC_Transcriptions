@@ -71,6 +71,12 @@ enum NavMeta {
     /// Test seams / lazy-load probes (0 when the resource is missing).
     static var navaidCount: Int { navaids.count }
     static var airportCount: Int { airports.count }
+    /// Test seam: every ident in the bundled tables (see `NavDataPairingTests`, which asserts these
+    /// agree with `NavDatabase` — magnetic variation is only safe while the two are one snapshot).
+    static var navaidIdents: Set<String> { Set(navaids.keys) }
+    static var airportIdents: Set<String> { Set(airports.keys) }
+    /// Test seam: idents whose record carries a published magnetic variation.
+    static var identsWithMagVar: Set<String> { Set(navaids.filter { $0.value.mv != nil }.keys) }
 
     private static func key(_ ident: String) -> String {
         ident.trimmingCharacters(in: .whitespaces).uppercased()

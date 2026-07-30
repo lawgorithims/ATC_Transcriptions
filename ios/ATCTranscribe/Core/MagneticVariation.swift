@@ -10,8 +10,14 @@ import Foundation
 /// boundary and name the wrong entry, which is why `HoldingPattern.entry(arrivingFrom:)` refuses to
 /// guess and this type supplies the number.
 ///
-/// Source: `navaid_meta.json` (6,018 navaids with a published signed variation, east positive / west
-/// negative — BOS −15.2, SFO +14.4, DEN +9.3). The MEDIAN of the nearest few stations stands in for
+/// Source: `navaid_meta.json` (published signed variation, east positive / west negative — BOS −15.2,
+/// SFO +14.4, DEN +9.3). ⚠️ That file and `nav_coords.json` MUST come from one OurAirports snapshot:
+/// the uniqueness gate below asks whether an ident is unique in `nav_coords` and then reads the value
+/// from `navaid_meta`, so a half-rebuild lets an apparently-unique ident carry a foreign twin's
+/// number. Enforced at build time by `Tools/navdb.py check_nav_pairing` (both builders refuse to
+/// write a mismatched pair), on the shipped tables by `NavDataPairingTests`, and structurally by
+/// `build_nav_meta.py` withholding `mv` from any ident its snapshot saw more than once.
+/// The MEDIAN of the nearest few stations stands in for
 /// the point of interest (see `minStations`/`votingStations` for why a single station is never
 /// trusted); stations are dense enough over the procedure-bearing US that the nearest handful sit
 /// within a few tens of NM, where variation differs by well under the ±5° slack the AIM itself allows

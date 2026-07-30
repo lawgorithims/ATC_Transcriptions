@@ -1781,6 +1781,14 @@ final class AppModel: ObservableObject {
                                                    addressee: identity.addressee(airlineStarts: efbAirlineStarts())) else { return }
         assert(!command.target.isEmpty, "parser returned an empty target")
         efbSuggestion = EFBSuggestion.make(id: latest.id.uuidString, command: command, source: latest.display)
+        // Accepting an approach clearance now resolves published holds, which walks the nav table for
+        // the local magnetic variation — and the first touch of `NavDatabase` decodes a ~3 MB JSON.
+        // On the accept tap that decode would land on the MainActor. Warm it off-main while the
+        // banner is on screen instead: the pilot reads it for seconds before tapping, so by then the
+        // table is resident and accept stays cheap.
+        if command.kind == .clearedApproach {
+            Task.detached(priority: .userInitiated) { _ = NavDatabase.count }
+        }
     }
 
     /// The airport ident EFB grounding resolves against — the live context's, else the picker's.
@@ -2224,27 +2232,52 @@ final class AppModel: ObservableObject {
         // published missed. A "cleared for the approach" with no named transition is a vectors-to-final
         // join. (loadProcedure's flightPlan mutation already cleared the stale activeApproach via the
         // approachProcedure invariant; this sets the correct one.)
+        // The published missed AND the published holds come from the one shared read, so a
+        // clearance heard over the radio arms exactly what hand-activating the same approach would.
+        // Until this was wired, an ATC-cleared approach carried no holds at all — the racetrack was
+        // never drawn and the entry was never stated, on the path a pilot is most likely to use.
+        let proper = approachProperContent(airport: pick.airport, ident: pick.ident)
+        // "Cleared for the approach" with no named transition is a VECTORS join, filtered through the
+        // same rule activateApproach uses. In practice the course reversal is published on TRANSITION
+        // rows only, so this row yields the missed-approach hold; the filter keeps the two paths
+        // structurally identical rather than relying on that.
         activeApproach = ActiveApproach(airport: pick.airport, ident: pick.ident, name: pick.name,
                                         runway: pick.runway, entry: .vectors,
-                                        missedFixes: publishedMissedFixes(airport: pick.airport, ident: pick.ident))
-        NSLog("CommSight: approach CLEARED-loaded %@ %@ missed=%d", pick.airport, pick.ident,
-              activeApproach?.missedFixes.count ?? 0)
+                                        missedFixes: proper.missedFixes,
+                                        holds: ApproachHolds.applicable(proper.holds, joinIsVectors: true))
+        NSLog("CommSight: approach CLEARED-loaded %@ %@ missed=%d holds=%d", pick.airport, pick.ident,
+              activeApproach?.missedFixes.count ?? 0, activeApproach?.holds.count ?? 0)
     }
 
-    /// The published missed-approach fix sequence for an approach, or [] when none is coded. The SINGLE
-    /// source of truth for the go-around, shared by activateApproach (hand-activate) and
-    /// loadApproachForRunway (ATC cleared) so both arm the identical missed. Reads the approach-proper
-    /// row, splits at the published MAP marker, and normalizes the tail (collapsing consecutive repeats,
-    /// dropping runway pseudo-fixes) exactly as the drawn route does.
-    private func publishedMissedFixes(airport: String, ident: String) -> [String] {
-        guard let proper = CIFP.approachProper(airport: airport, ident: ident) else { return [] }
-        let legs = CIFP.legs(procedureID: proper.id).prefix(256)
+    /// Everything the approach-proper row contributes to an `ActiveApproach`: its legs, which of them
+    /// are the missed approach, the published go-around sequence, and the published holds.
+    ///
+    /// THE SINGLE SOURCE OF TRUTH for both paths that can activate an approach — `activateApproach`
+    /// (the pilot hand-activates) and `loadApproachForRunway` (ATC clears one over the air). The row is
+    /// read ONCE and `splitMissed` runs ONCE here, and the holds are resolved from that same split,
+    /// because a hold classified into a different segment than the legs around it would be presented as
+    /// the wrong kind of hold — a course reversal offered as skippable when it is really the published
+    /// end of a go-around, or vice versa. Two call sites deriving it separately is exactly how those
+    /// disagree, and the ATC-cleared path previously resolved no holds at all.
+    ///
+    /// `arrivingFrom` is the aircraft's present position, and `MagneticVariation.at` supplies the local
+    /// declination: published hold courses are MAGNETIC while a great-circle arrival track is TRUE, so
+    /// the entry cannot be named without it (the resolver yields a nil entry rather than guessing).
+    private func approachProperContent(airport: String, ident: String)
+        -> (legs: [CIFPLeg], missedSeqs: Set<Int>, missedFixes: [String], holds: [ApproachHold]) {
+        guard let proper = CIFP.approachProper(airport: airport, ident: ident) else {
+            return ([], [], [], [])
+        }
+        let legs = Array(CIFP.legs(procedureID: proper.id).prefix(256))      // statically bounded
         let split = ApproachActivation.splitMissed(
             legs.map { (seq: $0.seq, fix: $0.fix, legType: $0.legType) }, roles: legs.map(\.role))
         let missedSeqs = Set(split.missed)
         var missedRaw: [String] = []
         for leg in legs where missedSeqs.contains(leg.seq) { missedRaw.append(leg.fix) }
-        return ApproachActivation.missedSequence(missedRaw)
+        let holds = ApproachHolds.resolve(legs: legs, missedSeqs: missedSeqs,
+                                          arrivingFrom: presentPosition,
+                                          variation: MagneticVariation.at)
+        return (legs, missedSeqs, ApproachActivation.missedSequence(missedRaw), holds)
     }
 
     // MARK: Loaded procedures (Phase 5 — SID / STAR / approach into the active flight plan)
@@ -2310,25 +2343,18 @@ final class AppModel: ObservableObject {
             holds += ApproachHolds.resolve(legs: tLegs, missedSeqs: [], arrivingFrom: presentPosition,
                                            variation: MagneticVariation.at)
         }
-        if let proper = CIFP.approachProper(airport: proc.airport, ident: proc.ident) {
-            let legs = CIFP.legs(procedureID: proper.id).prefix(256)
-            let split = ApproachActivation.splitMissed(
-                legs.map { (seq: $0.seq, fix: $0.fix, legType: $0.legType) }, roles: legs.map(\.role))
-            let missedSeqs = Set(split.missed)
-            // Published holds, each entered from the direction the aircraft is actually arriving from.
-            // The same missed-approach split is reused (not re-derived) so a hold can never be
-            // classified into a different segment than the legs around it.
-            holds += ApproachHolds.resolve(legs: Array(legs), missedSeqs: missedSeqs,
-                                           arrivingFrom: presentPosition,
-                                           variation: MagneticVariation.at)
-            for leg in legs where !missedSeqs.contains(leg.seq) {
-                let f = leg.fix.uppercased()
-                guard !f.isEmpty, !CIFP.isRunwayPseudoFix(f) else { continue }
-                if seen.insert(f).inserted { fixes.append(f) }
-            }
+        // ONE read of the approach-proper row, shared with the ATC-cleared path: its legs, its missed
+        // split, the go-around sequence and the published holds all come from the same call, so the
+        // two paths cannot classify the same leg differently. (This row was previously read twice —
+        // once here and again inside the missed-fixes helper — and split twice with it.)
+        let proper = approachProperContent(airport: proc.airport, ident: proc.ident)
+        holds += proper.holds
+        for leg in proper.legs where !proper.missedSeqs.contains(leg.seq) {
+            let f = leg.fix.uppercased()
+            guard !f.isEmpty, !CIFP.isRunwayPseudoFix(f) else { continue }
+            if seen.insert(f).inserted { fixes.append(f) }
         }
-        // The go-around comes from the shared helper — one source of truth with the ATC-cleared path.
-        missedFixes = publishedMissedFixes(airport: proc.airport, ident: proc.ident)
+        missedFixes = proper.missedFixes
 
         let loaded = LoadedProcedure(airport: proc.airport, kind: proc.kind, ident: proc.ident,
                                      name: proc.name, runway: proc.runway,
@@ -2337,13 +2363,10 @@ final class AppModel: ObservableObject {
             plan.joinApproach(at: entry.iafFix, airport: proc.airport, from: presentPosition)
             plan.loadProcedure(loaded)
         }
-        // A VECTORS join is flown straight to final, so the course reversal is not offered at all —
-        // presenting one would invite a reversal ATC never cleared. The missed-approach hold still
-        // applies either way (a go-around from a vectored approach ends in the same published hold).
+        // Which holds apply is decided by the shared filter, not re-expressed here — the ATC-cleared
+        // path applies the identical rule.
         let joinIsVectors = entry.iafFix == nil
-        let applicable = joinIsVectors
-            ? holds.filter { $0.pattern.kind != .holdInLieuOfProcedureTurn }
-            : holds
+        let applicable = ApproachHolds.applicable(holds, joinIsVectors: joinIsVectors)
         activeApproach = ActiveApproach(airport: proc.airport, ident: proc.ident, name: proc.name,
                                         runway: proc.runway, entry: entry, missedFixes: missedFixes,
                                         holds: applicable)
