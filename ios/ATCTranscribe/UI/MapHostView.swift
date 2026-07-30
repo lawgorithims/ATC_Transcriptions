@@ -418,6 +418,14 @@ struct MapHostView: View {
                 model.recenterADSBForMap()   // GPS-less: poll traffic around what's on screen
                 ensureVisibleWeather(rect)   // conditions for the fields on screen → category rings + trend markers
                 aimRadarPrefetch(MKCoordinateRegion(rect))   // warm the radar the pilot is looking at
+                // …and the winds. This line was on the CLASSIC engine's identical callback but not here —
+                // on the shipping engine the wind service therefore only ever learned the viewport twice,
+                // at onAppear and at the first fix on a fresh install. `needsFetch` keys on "does the held
+                // box still contain the VISIBLE box", and the visible box is exactly what this supplies, so
+                // without it the 900 s heartbeat re-downloaded the launch area forever: fly a few hundred
+                // miles and the wind layer silently runs out of grid under you while the chip goes on
+                // reporting a fresh model run.
+                aimWindFetch(MKCoordinateRegion(rect))
             },
             renderMeter: model.renderMeter,   // battery diagnostics: per-frame counter → map fps
             globeProjection: model.useGlobeProjection,   // DEV harness: flat vs globe (inert on stock 6.27.0)
@@ -744,31 +752,34 @@ struct MapChrome: View {
     let live: Bool
     @Environment(\.horizontalSizeClass) private var hSize
 
+    /// NOTHING IN THIS LAYER MAY BE DRAWN CONTENT. It sits above the whole console, so any filled view
+    /// spanning it — a `Color.clear` spacer, a `Rectangle`, a background — would be hit-testable and would
+    /// swallow every tap meant for the map underneath: pan, pinch, tap-to-identify, the top bar. The two
+    /// controls are therefore positioned by `.frame(maxWidth:maxHeight:alignment:)`, which is pure layout
+    /// and adds no hittable surface, rather than by overlaying a spacer view. An empty `ZStack` (nothing
+    /// live) collapses to zero size and cannot intercept anything.
     var body: some View {
         ZStack {
-            Color.clear
             if live { chrome }
         }
-        // The layer itself must never eat a map tap — only the controls inside it are hit-testable.
-        .allowsHitTesting(live)
     }
 
     @ViewBuilder private var chrome: some View {
-        Color.clear
-            .overlay(alignment: .trailing) { if !nrstPanelShowing { nrstButton } }
-            .overlay(alignment: .topLeading) {
-                // TOP-leading: high altitude belongs at the top of the screen, and the track then grows
-                // downward from measured chrome rather than from a guessed centre.
-                //
-                // MapLibre-only: the particle layer is a sibling of the MLNMapView, so a slider over the
-                // classic fallback engine would be a dead control.
-                if model.showWindAloft, model.useMapLibreMap, !model.mapLibreRenderFailed {
-                    WindAltitudeSlider(windAloft: model.windAloft, widgets: widgets,
-                                       levelIndex: $model.windLevelIndex, palette: model.palette,
-                                       topInset: topInset, theme: model.theme,
-                                       layer: model.chartLayer, thermalWarm: model.thermalSerious)
-                }
-            }
+        if !nrstPanelShowing {
+            nrstButton.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+        }
+        // TOP-leading: high altitude belongs at the top of the screen, and the track then grows downward
+        // from measured chrome rather than from a guessed centre.
+        //
+        // MapLibre-only: the particle layer is a sibling of the MLNMapView, so a slider over the classic
+        // fallback engine would be a dead control.
+        if model.showWindAloft, model.useMapLibreMap, !model.mapLibreRenderFailed {
+            WindAltitudeSlider(windAloft: model.windAloft, widgets: widgets,
+                               levelIndex: $model.windLevelIndex, palette: model.palette,
+                               topInset: topInset, theme: model.theme,
+                               layer: model.chartLayer, thermalWarm: model.thermalSerious)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
     }
 
     /// The panel is already in front of the pilot — floating or docked — so the button has nothing left
