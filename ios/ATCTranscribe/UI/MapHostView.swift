@@ -13,7 +13,6 @@ import MapKit
 /// `thermalSerious`, and the network map layers pause) while the map itself stays up.
 struct MapHostView: View {
     @EnvironmentObject var model: AppModel
-    @Environment(\.horizontalSizeClass) private var hSize
     /// Plain reference (NOT observed): the map only WRITES the tapped-object probe here — it must not
     /// re-render / re-reconcile just because a widget's layout changed.
     let widgets: WidgetStore
@@ -273,24 +272,11 @@ struct MapHostView: View {
             }
         }
         .overlay(alignment: .trailing) { if live, showZoomControls { mapSideControls } }
-        // NRST — the engine-out button. Deliberately OUTSIDE the zoom-controls toggle gate: the
-        // plate strip's own rule applies ("a guarantee-level control must not be toggleable"), and
-        // an emergency control that a settings switch can remove is not a guarantee.
-        .overlay(alignment: .trailing) { if live { nrstButton } }
-        .overlay(alignment: .topLeading) {
-            // TOP-leading, not centre-leading. Two reasons: high altitude belongs at the top of the screen,
-            // and the default floating Transcript widget sits in the left-CENTRE of the map — a centred
-            // 300-point track put its low-altitude ticks underneath that widget, where taps went to the
-            // widget instead of the control.
-            //
-            // MapLibre-only: the particle layer is a sibling of the MLNMapView, so a slider over the
-            // classic fallback engine would be a dead control.
-            if live, model.showWindAloft, model.useMapLibreMap, !model.mapLibreRenderFailed {
-                WindAltitudeSlider(windAloft: model.windAloft, widgets: widgets,
-                                   levelIndex: $model.windLevelIndex, palette: model.palette,
-                                   topInset: mapTopInset, theme: model.theme)
-            }
-        }
+        // NOTE: the NRST button and the winds-aloft altitude slider used to hang here too. They now
+        // render in `MapChrome`, which ConsoleView layers ABOVE the floating-widget canvas — see that
+        // type for why. Everything still here is either decorative, self-relocating (the plate gear),
+        // or has a second route in (pinch/double-tap for zoom), so being covered by a card the pilot
+        // themselves placed is a tolerable outcome for it.
         .task { await buildRoute() }
         .onChange(of: model.flightPlan) { _, _ in Task { await buildRoute() } }      // edits redraw the route
         .onChange(of: model.chartLayer) { _, new in
@@ -516,35 +502,6 @@ struct MapHostView: View {
         .offset(y: 80)                                    // bias below center → lower-right, clear of the corners
     }
 
-    /// The engine-out NRST button — same chrome as the side controls, its own ungated overlay. Text
-    /// rather than a glyph because NRST is the label every GPS in every panel has used for decades.
-    /// Regular width shows the panel (or lifts it, if it is already up or docked in a pane); compact
-    /// rides a sheet. The panel closes by its own ✕, never by a second tap here.
-    ///
-    /// SHOW, never toggle, and no active tint: `widgets` is held as a plain reference (deliberately
-    /// unobserved, so the several-per-second live-data storm cannot re-render the map chrome), so any
-    /// open/closed state read here would be stale — a tint that lies, and worse a toggle that closes
-    /// the panel when the pilot meant to open it. Show is idempotent and cannot mislead.
-    private var nrstButton: some View {
-        Button {
-            Haptics.impact(.medium)
-            if hSize == .compact { model.showNRSTSheet = true } else { widgets.reveal(.nrst) }
-        } label: {
-            Text("NRST")
-                .font(.dsLabelSBold)
-                .foregroundStyle(model.palette.text)
-                .frame(width: 46, height: 40)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plainHaptic)
-        .background(model.palette.overlay, in: RoundedRectangle(cornerRadius: DS.Radius.r4))
-        .overlay(RoundedRectangle(cornerRadius: DS.Radius.r4).stroke(model.palette.bad.opacity(0.7), lineWidth: DS.Stroke.control))
-        .padding(.trailing, 12)
-        .offset(y: -58)                                   // just above the zoom stack's top edge
-        .accessibilityIdentifier("map-nrst")
-        .accessibilityLabel("Nearest airports — engine-out glide ranking")
-    }
-
     /// `active` tints the glyph for a control that has an ON state (the north lock); the plain
     /// zoom/center buttons are momentary and leave it false.
     private func sideButton(_ icon: String, id: String, label: String, active: Bool = false,
@@ -745,4 +702,103 @@ private struct RadarLoopBar: View {
     }
 
     private func paneWidth(_ stored: CGFloat) -> CGFloat { stored > 0 ? stored : 320 }
+}
+
+// MARK: - Map chrome that must out-rank the floating widgets
+
+/// The two map controls that render ABOVE the floating-widget canvas instead of underneath it.
+///
+/// `ConsoleView`'s ZStack is `MapHostView` → `topChrome + homeArea`, and `homeArea` is where the pilot's
+/// floating cards live — so every control `MapHostView` overlays on the map sits UNDER any card that
+/// happens to be there. For most of that chrome that is fine: the plate gear relocates itself out of
+/// occupied bands, the status pills are read-only, and zoom has pinch and double-tap as second routes.
+/// These two have no second route, and both were measurably unreachable:
+///
+///   * **NRST** is the only way into the engine-out list at regular width, and the tapped-object card
+///     shares its side of the screen (`.trailing`, 340x440) — so tapping any airport on the map buried
+///     the emergency control behind the card that tap produced.
+///   * **The winds-aloft altitude slider** runs 333 pt of detents down from the top of the map, and the
+///     DEFAULT Transcript card (`.bottomLeading`, 460 tall) reaches up into the last two of them on an
+///     11-inch iPad: measured, the `2.5k` tick centre sits at y≈571 pt and the card's top edge at
+///     y≈569. Both bottom levels were invisible AND their taps went to the card. It clears on a 13-inch
+///     screen, which is exactly why the feature's own UI test passed on that sim and failed on the
+///     smaller one — the defect was in the geometry, not in the control.
+///
+/// The rule this encodes: a card the pilot placed may cover map DECORATION, but never a fixed control
+/// they have no other way to reach. The cost is a 64 pt column on the left and a 46 pt button on the
+/// right, and only while those layers are actually on.
+///
+/// Standby is the caller's gate, not this view's — `homeArea` dims and disables itself and floats the
+/// Resume banner over the lot, and chrome drawn above that would stay tappable in a mode whose whole
+/// promise is that nothing is running.
+struct MapChrome: View {
+    @EnvironmentObject var model: AppModel
+    /// OBSERVED here, unlike in `MapHostView`. The reason `MapHostView` holds the store as a plain
+    /// reference is the several-per-second live-data storm mirrored into `AppModel`; `WidgetStore` is
+    /// deliberately isolated from that storm (see its type comment), so a view that observes only the
+    /// store re-renders on layout changes alone — which is precisely what this needs.
+    @ObservedObject var widgets: WidgetStore
+    /// `MapHostView.mapTopInset` — the measured console chrome, floored.
+    let topInset: CGFloat
+    /// `MapHostView.live`: front tab, foregrounded, not behind the full-screen route map.
+    let live: Bool
+    @Environment(\.horizontalSizeClass) private var hSize
+
+    var body: some View {
+        ZStack {
+            Color.clear
+            if live { chrome }
+        }
+        // The layer itself must never eat a map tap — only the controls inside it are hit-testable.
+        .allowsHitTesting(live)
+    }
+
+    @ViewBuilder private var chrome: some View {
+        Color.clear
+            .overlay(alignment: .trailing) { if !nrstPanelShowing { nrstButton } }
+            .overlay(alignment: .topLeading) {
+                // TOP-leading: high altitude belongs at the top of the screen, and the track then grows
+                // downward from measured chrome rather than from a guessed centre.
+                //
+                // MapLibre-only: the particle layer is a sibling of the MLNMapView, so a slider over the
+                // classic fallback engine would be a dead control.
+                if model.showWindAloft, model.useMapLibreMap, !model.mapLibreRenderFailed {
+                    WindAltitudeSlider(windAloft: model.windAloft, widgets: widgets,
+                                       levelIndex: $model.windLevelIndex, palette: model.palette,
+                                       topInset: topInset, theme: model.theme)
+                }
+            }
+    }
+
+    /// The panel is already in front of the pilot — floating or docked — so the button has nothing left
+    /// to do and would only sit on top of the thing it opens. Safe to read now that the store is
+    /// observed: this recomputes the moment the panel opens or closes.
+    private var nrstPanelShowing: Bool {
+        hSize != .compact
+            && (widgets.isVisible(.nrst) || widgets.leftPane == .nrst || widgets.rightPane == .nrst)
+    }
+
+    /// The engine-out NRST button. Text rather than a glyph because NRST is the label every GPS in every
+    /// panel has used for decades. Regular width shows the panel (or lifts it, if it is already up or
+    /// docked in a pane); compact rides a sheet. The panel closes by its own ✕, never by a second tap
+    /// here — SHOW, never toggle, so the outcome of a tap in an emergency is never "it went away".
+    private var nrstButton: some View {
+        Button {
+            Haptics.impact(.medium)
+            if hSize == .compact { model.showNRSTSheet = true } else { widgets.reveal(.nrst) }
+        } label: {
+            Text("NRST")
+                .font(.dsLabelSBold)
+                .foregroundStyle(model.palette.text)
+                .frame(width: 46, height: 40)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plainHaptic)
+        .background(model.palette.overlay, in: RoundedRectangle(cornerRadius: DS.Radius.r4))
+        .overlay(RoundedRectangle(cornerRadius: DS.Radius.r4).stroke(model.palette.bad.opacity(0.7), lineWidth: DS.Stroke.control))
+        .padding(.trailing, 12)
+        .offset(y: -58)                                   // just above the zoom stack's top edge
+        .accessibilityIdentifier("map-nrst")
+        .accessibilityLabel("Nearest airports — engine-out glide ranking")
+    }
 }

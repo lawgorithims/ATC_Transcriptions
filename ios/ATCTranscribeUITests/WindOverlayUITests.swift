@@ -128,4 +128,39 @@ final class WindOverlayUITests: XCTestCase {
         XCTAssertEqual(slider.value as? String, "2.5k, 925 hPa",
                        "got: \(String(describing: slider.value))")
     }
+
+    /// EVERY detent is reachable — the one this test exists for is the BOTTOM of the track.
+    ///
+    /// The two lowest ticks used to be dead on an 11-inch iPad: the track runs 333 pt down from the
+    /// measured console chrome, and the default Transcript card (bottomLeading, 460 tall) reached up
+    /// into the last two rows, so `2.5k` and `SFC` were both invisible and un-tappable — their taps went
+    /// to the card in front of them. Nothing failed loudly; the slider simply did not respond, and the
+    /// levels a pilot most wants on approach were the ones they could not pick. It CLEARED on a 13-inch
+    /// screen, which is why a per-device test is the only honest gate: this walks the whole track on
+    /// whatever device the suite is running, so the next layout change cannot quietly bury a row again.
+    ///
+    /// Deliberately NOT `isHittable` — that reported true for the buried ticks. The oracle is the
+    /// slider's own accessibility value actually changing.
+    func testEveryAltitudeDetentIsReachable() {
+        let app = launchMap(windOn: true, level: 0)
+        XCTAssertTrue(app.buttons["map-zoom-in"].waitForExistence(timeout: 30), "map did not come up")
+        let slider = element(app, "wind-altitude-slider")
+        XCTAssertTrue(slider.waitForExistence(timeout: 15), "slider missing")
+
+        // Bottom-up, so a failure names the lowest row that broke. "SFC" is skipped as a TAP target
+        // (the chart's own airspace-floor labels also read "SFC", so the query is ambiguous) — it is the
+        // launch state instead, asserted first.
+        XCTAssertEqual(slider.value as? String, "SFC, 10 m AGL", "the restored level is the surface")
+        let rows = [("2.5k", "2.5k, 925 hPa"), ("5k", "5k, 850 hPa"), ("10k", "10k, 700 hPa"),
+                    ("14k", "14k, 600 hPa"), ("FL180", "FL180, 500 hPa"), ("FL240", "FL240, 400 hPa"),
+                    ("FL300", "FL300, 300 hPa"), ("FL340", "FL340, 250 hPa"), ("FL390", "FL390, 200 hPa")]
+        for (tick, expected) in rows {                      // bounded by the level table
+            let label = app.staticTexts[tick]
+            XCTAssertTrue(label.waitForExistence(timeout: 5), "the \(tick) tick is missing")
+            label.tap()
+            XCTAssertEqual(slider.value as? String, expected,
+                           "tapping \(tick) did not select it — is something drawn over that row?")
+        }
+        snap(app, "07-every-detent")
+    }
 }
