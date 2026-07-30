@@ -2769,6 +2769,16 @@ final class AppModel: ObservableObject {
         nrstDatabaseAvailable = result.1
     }
 
+    /// Drop the ranking when nobody can see it.
+    ///
+    /// The panel's refresh loop deliberately skips the terrain sweeps while the pilot is on another tab
+    /// or in standby — but skipping the WORK left the last RESULT on screen, so coming back after ten
+    /// minutes on the Plates tab showed rows whose distances, bearings and reachability were computed
+    /// from a position ten minutes behind the aircraft, under live DIRECT buttons. A field listed as in
+    /// glide could be well out of it by then. Clearing costs one recompute on return (sub-second) and
+    /// replaces a confident wrong answer with "Computing glide ranking…", which is true.
+    func clearNRSTAssessment() { nrstAssessment = nil }
+
     /// The altitude the glide is computed from: the live GPS altitude, else the last known one carried
     /// forward. nil = neither is usable, and the ranking refuses rather than guessing.
     ///
