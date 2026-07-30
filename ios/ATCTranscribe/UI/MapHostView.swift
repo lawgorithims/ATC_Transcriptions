@@ -785,6 +785,18 @@ struct MapChrome: View {
     /// The panel is already in front of the pilot — floating or docked — so the button has nothing left
     /// to do and would only sit on top of the thing it opens. Safe to read now that the store is
     /// observed: this recomputes the moment the panel opens or closes.
+    /// Trailing inset that clears a docked right pane, the same formula every sibling control uses
+    /// (`RadarStatusPill.trailingInset`, `RadarLoopBar`, the wind slider's `leftPaneInset`). The NRST
+    /// button was the one piece of map chrome without it, and since MapChrome now renders ABOVE the
+    /// widget canvas the button landed ON a docked pane — transcript docked right is a common cockpit
+    /// layout — and ate the taps and swipes meant for it. `widgets` is observed here, and both
+    /// `rightPane` and `rightPaneWidth` are @Published, so this re-lays out live on dock, undock and
+    /// resize.
+    private var rightPaneInset: CGFloat {
+        guard widgets.rightPane != nil else { return 12 }
+        return (widgets.rightPaneWidth > 0 ? widgets.rightPaneWidth : 320) + 12
+    }
+
     private var nrstPanelShowing: Bool {
         hSize != .compact
             && (widgets.isVisible(.nrst) || widgets.leftPane == .nrst || widgets.rightPane == .nrst)
@@ -808,7 +820,7 @@ struct MapChrome: View {
         .buttonStyle(.plainHaptic)
         .background(model.palette.overlay, in: RoundedRectangle(cornerRadius: DS.Radius.r4))
         .overlay(RoundedRectangle(cornerRadius: DS.Radius.r4).stroke(model.palette.bad.opacity(0.7), lineWidth: DS.Stroke.control))
-        .padding(.trailing, 12)
+        .padding(.trailing, rightPaneInset)
         .offset(y: -58)                                   // just above the zoom stack's top edge
         .accessibilityIdentifier("map-nrst")
         .accessibilityLabel("Nearest airports — engine-out glide ranking")

@@ -2839,10 +2839,15 @@ final class AppModel: ObservableObject {
         // nil as "not engaged", and the fallback would then snapshot the ALREADY-MUTATED direct-to
         // plan — making Restore file a plan the pilot never created.
         let prior: FlightPlan? = nrstEngagement != nil ? nrstEngagement?.priorPlan : flightPlan
-        // Same rule as `prior`, for the same reason: re-engaging while engaged RETARGETS and must keep
-        // the ORIGINAL snapshot. Taking `activeApproach` again here would capture nil (the first engage
-        // already cleared it) and quietly turn the undo into a one-shot.
-        if nrstEngagement == nil { nrstPriorApproach = activeApproach }
+        // Same rule as `prior`, and — like `prior` — it must be held in a LOCAL across `editPlan`.
+        // Re-engaging while engaged RETARGETS: `editPlan` is synchronous, so the `flightPlan` didSet
+        // runs INSIDE it, reaches `reconcileNRSTEngagement`, sees the new destination differ from the
+        // engagement's routeTarget and clears BOTH the engagement and this snapshot. `prior` survives
+        // that because it was already captured; the approach snapshot was not, so a pilot who tapped
+        // DIRECT to one field and then to a better one as the list re-ranked came back from Restore
+        // with their route restored and the approach silently un-armed — no ARMED MISSED at minimums.
+        // Re-asserted after `editPlan` below for exactly that reason.
+        let priorApproach: ActiveApproach? = nrstEngagement != nil ? nrstPriorApproach : activeApproach
         let airport = candidate.airport
         let target = NearestAirports.routeTarget(for: airport) {
             NavDatabase.resolve($0, near: airport.coord)
@@ -2857,6 +2862,11 @@ final class AppModel: ObservableObject {
             // control for the airport just abandoned stayed one tap from replacing the glide.
             plan.clearProcedure(kind: "")
         }
+        // AFTER editPlan, because a RETARGET's own didSet just cleared it (see `priorApproach` above).
+        // Deliberately only here: hoisting this anywhere the reconcile also runs would hand a pilot who
+        // redirected by some UNRELATED route — an accepted "cleared direct", a typed edit — a stale
+        // approach on Restore, which is the case reconcileNRSTEngagement exists to defend against.
+        nrstPriorApproach = priorApproach
         nrstEngagement = NRSTEngagement(ident: airport.ident,
                                         displayIdent: airport.icao.isEmpty ? airport.ident : airport.icao,
                                         name: airport.name, coord: airport.coord,

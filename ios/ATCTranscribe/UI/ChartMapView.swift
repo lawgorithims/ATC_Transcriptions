@@ -472,6 +472,16 @@ private func inflated(_ r: MKMapRect, by f: Double) -> MKMapRect {
         todo.forEach { inFlight.insert($0.id) }
         phase = .downloading
         var anyFailed = false
+        // Did this pass actually consume any work? The self-drive at the bottom re-enters with a `todo`
+        // rebuilt from `loaded[e.id] == nil && !inFlight.contains(e.id)`, and a FAILED download leaves
+        // the entry in neither set — so the next pass's list is byte-identical and the recursion never
+        // terminates. Offline that is immediate (URLSession does not wait for connectivity here), and
+        // it is the ordinary airborne case: a gated free-pan under the span limit with more than six
+        // uncached packs in view, which an IFR-low or sectional view over the eastern US routinely has.
+        // The pill then spins "Loading charts…" for the rest of the flight instead of ever reaching the
+        // honest ".failed(tap to retry)" branch, nothing can cancel it (the caller is a detached
+        // fire-and-forget Task), and each async pass keeps its parent frame alive.
+        var anyLoaded = false
         for e in todo {
             if layer != activeLayer { return }                 // a layer switch superseded us — abort
             var reader = MBTilesReader(path: library.localURL(e).path)   // cached-on-disk hit (prefetched → instant)
@@ -481,6 +491,7 @@ private func inflated(_ r: MKMapRect, by f: Double) -> MKMapRect {
                 loaded[e.id] = (e, reader)
                 if pin { pinned.insert(e.id) }
                 publish()
+                anyLoaded = true          // set ONLY here: a looser test reinstates the loop
             } else if reader == nil {
                 anyFailed = true
             }
@@ -488,7 +499,10 @@ private func inflated(_ r: MKMapRect, by f: Double) -> MKMapRect {
         evict(near: rects)
         // A stationary map fires no more regionDidChange, so drive the next batch ourselves until the
         // region is fully served (dedup shrinks todo by 6 each pass → terminates).
-        if truncated, layer == activeLayer {
+        // Self-drive ONLY on progress, so every pass strictly shrinks a finite `todo` and this terminates.
+        // A pass that loaded nothing falls through to the phase branch below and reports the failure the
+        // pilot can act on, instead of grinding on invisibly.
+        if truncated, anyLoaded, layer == activeLayer {
             await load(rects: rects, gated: gated, pin: pin)
             return
         }

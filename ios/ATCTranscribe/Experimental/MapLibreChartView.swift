@@ -539,7 +539,11 @@ struct MapLibreChartView: UIViewRepresentable {
         /// Cancel the pending region-settle work and stop the loopback server (called from dismantleUIView).
         func teardown() {
             NotificationCenter.default.removeObserver(self, name: UIApplication.didBecomeActiveNotification, object: nil)
-            regionDebounce?.cancel(); regionDebounce = nil; server.stop()
+            regionDebounce?.cancel(); regionDebounce = nil
+            // Drop the host callback BEFORE stopping the server, so a torn-down coordinator can never
+            // drive the host's engine state whichever callback wins the race.
+            onRenderStalled = nil
+            server.stop()
             // Stop the particle display link before the view is released — an MTKView left unpaused keeps
             // drawing (and drawing from a dead camera provider) until it is deallocated.
             windView?.setCameraProvider(nil)
@@ -968,6 +972,23 @@ struct MapLibreChartView: UIViewRepresentable {
             holdLine.lineDashPattern = NSExpression(forConstantValue: [2, 1.5])
             holdLine.lineCap = NSExpression(forConstantValue: "round"); holdLine.lineJoin = NSExpression(forConstantValue: "round")
             style.addLayer(holdLine)
+            // …and the fix's NAME, on the same source. On an FAA raster the chart underneath already
+            // prints it, but `.smartDark` has no chart under the racetrack and its labels come from the
+            // route-fix stars — which are fed by the resolved plan, and `ProcedureRoute` deliberately
+            // strips the missed-approach segment. So after arming the missed on the dark base the pilot
+            // got a dashed racetrack floating over black terrain with no fix name to check it against.
+            // The line layer ignores point features and this layer ignores lines, so one source serves
+            // both and the existing signature gate already covers the fix.
+            let holdLabel = MLNSymbolStyleLayer(identifier: "hold-label", source: holdSrc)
+            holdLabel.text = NSExpression(forKeyPath: "ident")
+            holdLabel.textFontSize = NSExpression(forConstantValue: 10)
+            holdLabel.textColor = NSExpression(forConstantValue: UIColor(red: 0.95, green: 0.24, blue: 0.62, alpha: 1))
+            holdLabel.textHaloColor = NSExpression(forConstantValue: UIColor.black.withAlphaComponent(0.85))
+            holdLabel.textHaloWidth = NSExpression(forConstantValue: 1.2)
+            holdLabel.textTranslation = NSExpression(forConstantValue: NSValue(cgVector: CGVector(dx: 0, dy: -12)))
+            holdLabel.textOptional = NSExpression(forConstantValue: true)
+            holdLabel.textAllowsOverlap = NSExpression(forConstantValue: false)
+            style.addLayer(holdLabel)
 
             setupRouteWptLayers(style)   // above the route/hold lines, below accuracy/traffic/ownship
 
@@ -1509,6 +1530,10 @@ struct MapLibreChartView: UIViewRepresentable {
             // which asserts opacity because style-JSON colors must be opaque.
             (style.layer(withIdentifier: "hold-line") as? MLNLineStyleLayer)?.lineColor =
                 NSExpression(forConstantValue: t.hold)
+            if let l = style.layer(withIdentifier: "hold-label") as? MLNSymbolStyleLayer {
+                l.textColor = NSExpression(forConstantValue: t.hold)
+                l.textHaloColor = NSExpression(forConstantValue: t.navLabelHalo)
+            }
             if let l = style.layer(withIdentifier: "route-wpt-sym") as? MLNSymbolStyleLayer {
                 l.textColor = NSExpression(forConstantValue: t.routeWptText)
                 l.textHaloColor = NSExpression(forConstantValue: t.navLabelHalo)
@@ -1755,8 +1780,13 @@ struct MapLibreChartView: UIViewRepresentable {
                 }
                 guard pts.count >= 2 else { continue }
                 shapes.append(MLNPolylineFeature(coordinates: &pts, count: UInt(pts.count)))
+                let label = MLNPointFeature()
+                label.coordinate = CLLocationCoordinate2D(latitude: h.pattern.coord.lat,
+                                                          longitude: h.pattern.coord.lon)
+                label.attributes = ["ident": h.pattern.fix]
+                shapes.append(label)
             }
-            assert(shapes.count <= 8, "updateHolds: cap exceeded")
+            assert(shapes.count <= 16, "updateHolds: cap exceeded")   // a racetrack + its label per hold
             src.shape = shapes.isEmpty ? nil : MLNShapeCollectionFeature(shapes: shapes)
         }
 
