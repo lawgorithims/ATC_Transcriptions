@@ -65,6 +65,10 @@ struct MapHostView: View {
     /// ENGINES consume. The corner status pill + the loop scrubber observe the service directly (see
     /// `RadarStatusPill` / `RadarLoopBar`), so they don't need per-field @State bridges here.
     @State private var radarTemplate: String?
+    /// The decoded winds-aloft column, bridged from WindAloftService — the ONE wind value the map ENGINE
+    /// consumes. The altitude slider's chip observes the service directly (see `WindAltitudeSlider`), so
+    /// its fetching/age state needs no bridge here.
+    @State private var windFields: WindFieldSet?
     /// Screen-point of the search-result highlight (streamed from the active engine, like the plate anchors),
     /// so the SwiftUI pulsing marker rides the map. nil when there's no highlight or it's off-screen-computed.
     @State private var searchPoint: CGPoint?
@@ -127,6 +131,16 @@ struct MapHostView: View {
                                                      lonSpan: region.span.longitudeDelta))
     }
 
+    /// Tell the wind service what is on screen. It decides whether that needs a download — a pan inside the
+    /// covered box is free, so this can fire on every settle.
+    private func aimWindFetch(_ region: MKCoordinateRegion) {
+        guard region.span.latitudeDelta > 0, region.span.longitudeDelta > 0 else { return }
+        model.windAloft.viewportChanged(RadarRegion(centerLat: region.center.latitude,
+                                                    centerLon: region.center.longitude,
+                                                    latSpan: region.span.latitudeDelta,
+                                                    lonSpan: region.span.longitudeDelta))
+    }
+
     private func ensureVisibleWeather(_ region: MKCoordinateRegion) {
         let latD = region.span.latitudeDelta, lonD = region.span.longitudeDelta
         guard latD > 0, lonD > 0, latD < 5.5 else { return }        // matches the nav layer's own zoom gate
@@ -185,13 +199,14 @@ struct MapHostView: View {
         .onAppear {
             model.deviceLocation.start()
             // A restored camera moves nothing, so no region settle fires — seed the first fetch here.
-            if let region = launchRegion { ensureVisibleWeather(region) }
+            if let region = launchRegion { ensureVisibleWeather(region); aimWindFetch(region) }
         }
         .onReceive(model.deviceLocation.$coord) { c in
             let hadFix = deviceCoord != nil
             deviceCoord = c
             if !hadFix, c != nil, model.lastMapCamera == nil, let region = launchRegion {
                 ensureVisibleWeather(region)        // first fix on a fresh install: fetch around it
+                aimWindFetch(region)
             }
             if let c { model.rainViewer.prefetchCenter = (c.lat, c.lon) }   // aim the radar-loop prefetch nearby
         }
@@ -199,6 +214,7 @@ struct MapHostView: View {
         .onReceive(model.deviceLocation.$integrity) { gpsIntegrity = $0 }
         .onReceive(model.flightRecorder.$trail) { breadcrumb = $0.map { Coord(lat: $0.lat, lon: $0.lon) } }
         .onReceive(model.rainViewer.$tileTemplate) { radarTemplate = $0 }   // feed the map engines the current frame
+        .onReceive(model.windAloft.$fieldSet) { windFields = $0 }           // and the wind particles their grid
         // Publish reported flight categories to the symbol builder, so an airport's glyph carries the
         // conditions there. The builders run off the main actor and can't read the store directly.
         .onReceive(metars.$metars) { publishCategories($0) }
@@ -256,6 +272,15 @@ struct MapHostView: View {
             }
         }
         .overlay(alignment: .trailing) { if live, showZoomControls { mapSideControls } }
+        .overlay(alignment: .leading) {
+            // MapLibre-only: the particle layer is a sibling of the MLNMapView, so a slider over the
+            // classic fallback engine would be a dead control.
+            if live, model.showWindAloft, model.useMapLibreMap, !model.mapLibreRenderFailed {
+                WindAltitudeSlider(windAloft: model.windAloft, widgets: widgets,
+                                   levelIndex: $model.windLevelIndex, palette: model.palette,
+                                   topInset: mapTopInset, theme: model.theme)
+            }
+        }
         .task { await buildRoute() }
         .onChange(of: model.flightPlan) { _, _ in Task { await buildRoute() } }      // edits redraw the route
         .onChange(of: model.chartLayer) { _, new in
@@ -302,6 +327,7 @@ struct MapHostView: View {
                          model.recenterADSBForMap()   // GPS-less: poll traffic around what's on screen
                          ensureVisibleWeather(rect)
                          aimRadarPrefetch(MKCoordinateRegion(rect))   // warm the radar the pilot is looking at
+                aimWindFetch(MKCoordinateRegion(rect))       // and fetch winds covering it, if the box moved off
                          Task { await store.ensureVisible(rect, layer: model.chartLayer) }
                      },
                      onTapObjects: { objs in
@@ -393,7 +419,12 @@ struct MapHostView: View {
             renderMeter: model.renderMeter,   // battery diagnostics: per-frame counter → map fps
             globeProjection: model.useGlobeProjection,   // DEV harness: flat vs globe (inert on stock 6.27.0)
             theme: model.theme,               // live palette re-apply — never a remount
-            chartBrightness: model.chartBrightness)   // pilot's raster-brightness slider (layers panel)
+            chartBrightness: model.chartBrightness,   // pilot's raster-brightness slider (layers panel)
+            windFields: windFields,           // decoded GFS column (nil until the first fetch lands)
+            windLevel: model.windLevelIndex,  // the altitude slider's detent
+            // The particle layer is paused unless all of this holds. `live` already covers the tab/route-map/
+            // background cases by unmounting the whole engine, so only the toggle and thermal state remain.
+            windEnabled: model.showWindAloft && !model.thermalSerious)
     }
     #endif
 
