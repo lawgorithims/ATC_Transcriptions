@@ -25,6 +25,19 @@ struct WindRamp {
         theme == .night ? nightRamp : dayRamp
     }
 
+    /// THE ramp entry point, mirroring `MapTheme.forLayer`: the selected base layer can override the app
+    /// theme, and `.smartDark` does — it is a purpose-built night base, and `MapTheme.forLayer` already
+    /// paints its sea, land, vectors and rasters from the night palette whatever the pilot's theme is.
+    ///
+    /// The wind ramp was the one thing on that map still keyed on `AppTheme` alone, so a pilot on the day
+    /// or cockpit theme who selected the dark base got a near-black chart with a full-spectrum blue→violet
+    /// particle field laid over it — the exact short-wavelength flood the night ramp exists to avoid, and
+    /// a straight contradiction of the shipped release note ("night theme keeps its night vision"). The
+    /// spectrum-for-intensity trade is the same one the base map already makes on this layer.
+    static func forLayer(_ layer: ChartLayer, theme: AppTheme) -> WindRamp {
+        layer == .smartDark ? nightRamp : forTheme(theme)
+    }
+
     private static let dayRamp = WindRamp(stops: [
         (0,   SIMD3(0.30, 0.44, 0.72)),   // slate blue — calm
         (10,  SIMD3(0.24, 0.62, 0.82)),   // cyan

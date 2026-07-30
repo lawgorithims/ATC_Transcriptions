@@ -765,7 +765,8 @@ struct MapChrome: View {
                 if model.showWindAloft, model.useMapLibreMap, !model.mapLibreRenderFailed {
                     WindAltitudeSlider(windAloft: model.windAloft, widgets: widgets,
                                        levelIndex: $model.windLevelIndex, palette: model.palette,
-                                       topInset: topInset, theme: model.theme)
+                                       topInset: topInset, theme: model.theme,
+                                       layer: model.chartLayer, thermalWarm: model.thermalSerious)
                 }
             }
     }

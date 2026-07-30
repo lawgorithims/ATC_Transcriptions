@@ -487,6 +487,20 @@ final class AppModel: ObservableObject {
     /// Last altitude the merged GPS actually reported, for the carry-forward in `resolveNRSTAltitude`.
     /// Deliberately NOT persisted: an altitude from a previous session is not a fallback, it is fiction.
     private var lastKnownAltitude: (ftMSL: Double, at: Date)?
+    /// The approach that was ARMED when the pilot engaged NRST, held so Restore is a real undo.
+    ///
+    /// `engageNRST` re-anchors the plan at present position and drops the loaded procedures — which the
+    /// `flightPlan` didSet correctly reads as "no approach is loaded any more", so `reconcileActiveApproach`
+    /// clears `activeApproach` and disarms the missed. Restoring the PLAN did not undo that, because the
+    /// reconcile is one-way: it only ever clears. The pilot who tapped DIRECT and then Restore got their
+    /// filed route back with the approach silently un-armed — no published holds drawn, no ARMED MISSED —
+    /// and nothing on screen saying so. An engine that quits and catches again is exactly when that
+    /// matters, because the approach they are going back to is the one they are about to fly.
+    ///
+    /// In memory only, deliberately (unlike `NRSTEngagement`, which is persisted). Re-arming an approach
+    /// after a process death, from a snapshot the pilot never saw taken, asserts more than we know; the
+    /// plan still restores in that case and the approach is simply not re-armed, as today.
+    private var nrstPriorApproach: ActiveApproach?
 
     // Electronic Flight Bag automation (Phase 4, suggest-and-confirm). A finished CONTROLLER transmission
     // addressed to the pilot's own aircraft is parsed into at most one pending suggestion; NOTHING changes
@@ -2807,6 +2821,10 @@ final class AppModel: ObservableObject {
         // nil as "not engaged", and the fallback would then snapshot the ALREADY-MUTATED direct-to
         // plan — making Restore file a plan the pilot never created.
         let prior: FlightPlan? = nrstEngagement != nil ? nrstEngagement?.priorPlan : flightPlan
+        // Same rule as `prior`, for the same reason: re-engaging while engaged RETARGETS and must keep
+        // the ORIGINAL snapshot. Taking `activeApproach` again here would capture nil (the first engage
+        // already cleared it) and quietly turn the undo into a one-shot.
+        if nrstEngagement == nil { nrstPriorApproach = activeApproach }
         let airport = candidate.airport
         let target = NearestAirports.routeTarget(for: airport) {
             NavDatabase.resolve($0, near: airport.coord)
@@ -2831,16 +2849,29 @@ final class AppModel: ObservableObject {
         return .engaged
     }
 
-    /// Un-engage and put the pre-engage plan back exactly as filed (nil restores "no plan").
+    /// Un-engage and put the pre-engage plan back exactly as filed (nil restores "no plan"), and re-arm
+    /// the approach the engage dropped.
     func restoreNRSTPlan() {
         guard let engagement = nrstEngagement else { return }
-        flightPlan = engagement.priorPlan
+        let approach = nrstPriorApproach                     // read BEFORE the didSet chain clears it
+        flightPlan = engagement.priorPlan                    // didSet: reconciles the approach + engagement
         nrstEngagement = nil
+        // Re-arm ONLY if the restored plan actually holds that approach. The plan is the single source of
+        // truth for "an approach is loaded" (see `reconcileActiveApproach`), so restoring approach state
+        // the plan does not back would put a live ARMED MISSED — one tap from replacing the whole route
+        // with a go-around — on an approach that is no longer filed. The pilot's SKIPPED-hold choices ride
+        // along inside the snapshot, so a course reversal they had already declined does not come back.
+        if let approach, let loaded = flightPlan?.approachProcedure,
+           loaded.airport == approach.airport, loaded.ident == approach.ident {
+            activeApproach = approach
+        }
+        nrstPriorApproach = nil
     }
 
     /// Retire the banner but KEEP flying the direct-to — the pilot has committed to the field. This
-    /// gives up the undo, which is why the control says so.
-    func endNRST() { nrstEngagement = nil }
+    /// gives up the undo, which is why the control says so — including the approach snapshot, which
+    /// only exists to serve that undo.
+    func endNRST() { nrstEngagement = nil; nrstPriorApproach = nil }
 
     /// Drop the engagement when the plan is no longer flying to the engaged field.
     ///
@@ -2853,7 +2884,11 @@ final class AppModel: ObservableObject {
     private func reconcileNRSTEngagement() {
         guard let engagement = nrstEngagement else { return }
         let destination = (flightPlan?.destination ?? "").uppercased()
-        if destination != engagement.routeTarget.uppercased() { nrstEngagement = nil }
+        // The approach snapshot exists only to serve the banner's undo, so it dies with the banner —
+        // otherwise a pilot who redirected by some other route (a voice "cleared direct" they accepted,
+        // a typed edit) could later engage and restore NRST and be handed an approach snapshot taken
+        // before that unrelated redirect.
+        if destination != engagement.routeTarget.uppercased() { nrstEngagement = nil; nrstPriorApproach = nil }
     }
     func setDeparture(_ ident: String) { editPlan { $0.setDeparture(ident) } }
     func setDestination(_ ident: String) { editPlan { $0.setDestination(ident) } }
