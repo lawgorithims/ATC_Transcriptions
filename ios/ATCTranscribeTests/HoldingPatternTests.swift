@@ -102,6 +102,35 @@ final class HoldingPatternTests: XCTestCase {
         XCTAssertNil(h.entry(arrivingFrom: h.coord, magneticVariation: 0), "no course exists from the fix to itself")
     }
 
+    /// The entry sector is measured from the track AT THE FIX, not the course the aircraft left the
+    /// origin on. On a great circle those differ by the convergence of the meridians — several degrees
+    /// over a long, high-latitude, mostly-east/west leg — and the two courses straddle a sector boundary
+    /// often enough to matter. This pins a case where the OLD initial-course formulation and the correct
+    /// final-course one disagree, so the geodesy cannot quietly revert.
+    func testEntryUsesTheCourseAtTheFixNotAtTheOrigin() {
+        let fix = Coord(lat: 61.0, lon: -150.0)                 // Anchorage-ish: convergence is large here
+        let origin = Coord(lat: 61.0, lon: -153.0)              // ~87 NM due west along the parallel
+
+        let initial = try! XCTUnwrap(HoldingPattern.course(from: origin, to: fix))
+        let final = HoldingPattern.normalize(
+            try! XCTUnwrap(HoldingPattern.course(from: fix, to: origin)) + 180)
+        // Sanity: this fixture is only meaningful if the two courses genuinely differ.
+        XCTAssertGreaterThan(abs(final - initial), 1.0,
+                             "fixture must sit where meridian convergence is visible")
+
+        // Put the boundary BETWEEN them: with right turns the teardrop/parallel split is at
+        // inbound + 180, so an inbound course of (final - 180) lands the final track exactly on it and
+        // the initial track on the other side.
+        let inbound = HoldingPattern.normalize(final - 180)
+        let h = HoldingPattern(id: "T", fix: "TEST", coord: fix, inboundCourseMag: inbound,
+                               turn: .right, kind: .missedApproach)
+        let entry = h.entry(arrivingFrom: origin, magneticVariation: 0)
+        XCTAssertEqual(entry, h.entry(arrivingOn: final),
+                       "the entry must match the track measured AT the fix")
+        XCTAssertNotEqual(entry, h.entry(arrivingOn: initial),
+                          "…and this fixture is chosen so the origin-side course gives a DIFFERENT sector")
+    }
+
     // MARK: outbound course + racetrack geometry
 
     func testOutboundIsTheReciprocal() {
