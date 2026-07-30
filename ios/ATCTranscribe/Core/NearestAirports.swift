@@ -451,15 +451,18 @@ enum NearestAirports {
                       + TerrainElevation.peakUnderReadM) * GPSReadout.mToFt
         // The endpoints' own readings, taken through the same corridor so the comparison is like for
         // like. A nil here means the endpoint sits on a data hole — that is a hole, handled below.
-        let ownFloor = corridorMaxFt(center: situation.coord, toward: dest, terrain: terrain)
-        let fieldFloor = corridorMaxFt(center: dest, toward: situation.coord, terrain: terrain)
+        // ONE axis for every station on this sweep. See `corridorMaxFt` for why it is not recomputed
+        // per station: at the far end the two points coincide and the recomputed bearing is noise.
+        let axis = sweepAxisDeg(from: situation.coord, to: dest)
+        let ownFloor = corridorMaxFt(center: situation.coord, axisDeg: axis, terrain: terrain)
+        let fieldFloor = corridorMaxFt(center: dest, axisDeg: axis, terrain: terrain)
         var sawHole = (ownFloor == nil || fieldFloor == nil)
         for i in 0...stations {                              // bounded by maxPathSamples (rule 2)
             let f = Double(i) / Double(stations)
             let d = f * distanceNm
             let center = Geo.interpolate(situation.coord, dest, fraction: f)
             let profileFt = situation.altitudeFtMSL - d * ftPerNmDown
-            guard let sample = corridorMaxFt(center: center, toward: dest, terrain: terrain) else {
+            guard let sample = corridorMaxFt(center: center, axisDeg: axis, terrain: terrain) else {
                 sawHole = true
                 continue                                      // unverifiable ≠ blocked; noted below
             }
@@ -483,14 +486,41 @@ enum NearestAirports {
     /// whose corridor runs off the edge of the grid — a coastal or border glide — rank CLEAR on the
     /// strength of the two tracks that happened to be inside coverage. Unverified is CAUTION.
     /// Nil (not merely `sawHole`) only when the CENTER sample itself is unavailable.
-    private static func corridorMaxFt(center: Coord, toward dest: Coord,
+    /// The corridor's lateral axis for a whole sweep: the great-circle course from the ownship to the
+    /// field, taken ONCE.
+    ///
+    /// It used to be recomputed per station as `Geo.bearing(center, dest)`, which is undefined at the far
+    /// end: the last station is `interpolate(..., fraction: 1)`, i.e. `dest` up to floating-point noise,
+    /// so `atan2` there resolves that noise into an arbitrary heading and the two lateral tracks landed on
+    /// a RANDOM axis. That station is the one covering the field itself, and the endpoint-cell exemption
+    /// compares it against `fieldFloor` — which is read on a well-defined axis — so a hill 0.75 NM off in
+    /// whichever direction the noise chose could exceed the field's own reading, escape the exemption, and
+    /// report a perfectly reachable airport as BLOCKED. Nondeterministically, run to run, in the list a
+    /// pilot reads after the engine quits.
+    ///
+    /// A single axis is not an approximation worth worrying about: over the ≤100 NM this sweep spans the
+    /// great-circle course turns by a couple of degrees at most, which moves a 0.75 NM perpendicular
+    /// offset by ~0.03 NM — far inside one ~1 NM terrain cell. Coincident endpoints (the aircraft over the
+    /// field) have no meaningful axis at all, and 0 is as good as any: the two tracks then straddle the
+    /// field north/south, which is what a vicinity reading should do anyway.
+    static func sweepAxisDeg(from: Coord, to: Coord) -> Double {
+        assert(corridorOffsetNm > 0, "corridor has width")
+        assert(coincidentNm > 0, "coincidence threshold is a distance")
+        return Geo.nmBetween(from, to) > coincidentNm ? Geo.bearing(from, to) : 0
+    }
+
+    /// Below this the two coordinates are the same place and no bearing between them means anything
+    /// (1e-4 NM ≈ 0.6 ft — orders of magnitude under any GPS fix, and above great-circle round-off).
+    static let coincidentNm = 1e-4
+
+    private static func corridorMaxFt(center: Coord, axisDeg: Double,
                                       terrain: TerrainSampling) -> (maxFt: Double, sawHole: Bool)? {
         guard let mid = terrain.sampleElevationFt(at: center) else { return nil }
-        let course = Geo.bearing(center, dest)
+        assert(axisDeg.isFinite, "corridor axis is a real bearing")
         var worst = mid
         var hole = false
         for side in [-1.0, 1.0] {                            // bounded: exactly two lateral tracks
-            let p = Geo.destination(from: center, bearingDeg: course + side * 90, distanceNm: corridorOffsetNm)
+            let p = Geo.destination(from: center, bearingDeg: axisDeg + side * 90, distanceNm: corridorOffsetNm)
             if let e = terrain.sampleElevationFt(at: p) { worst = max(worst, e) } else { hole = true }
         }
         assert(worst >= mid, "corridor max can only raise the center sample")

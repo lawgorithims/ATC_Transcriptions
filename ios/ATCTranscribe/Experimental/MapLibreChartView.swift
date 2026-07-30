@@ -365,8 +365,15 @@ struct MapLibreChartView: UIViewRepresentable {
             // `inLayer` is in the stamp because the ramp now resolves through it (`.smartDark` forces the
             // night ramp — see WindRamp.forLayer); without it a VFR⇄Dark switch at an unchanged theme
             // would keep the old ramp on the particles for the life of the session.
+            //
+            // `fetchedAt` — not `validTime` — is what identifies the GRID. Panning off the covered box
+            // triggers a re-download for the new area, and that download almost always lands on the SAME
+            // model cycle and forecast hour as the one already held, so its `validTime` is identical: the
+            // signature never changed, and the freshly-decoded grid for where the pilot has actually flown
+            // to was dropped on the floor while the old one kept sampling nil. `fetchedAt` is distinct per
+            // download by construction, so a new box always reaches the renderer.
             let stamp = "\(inWindEnabled)|\(level.rawValue)|\(inTheme.rawValue)|\(inLayer.rawValue)|"
-                + "\(inWindFields?.validTime.timeIntervalSince1970 ?? -1)"
+                + "\(inWindFields?.fetchedAt.timeIntervalSince1970 ?? -1)"
             guard stamp != appliedWindStamp else { return }
             appliedWindStamp = stamp
             wind.apply(fieldSet: inWindEnabled ? inWindFields : nil, level: level,
