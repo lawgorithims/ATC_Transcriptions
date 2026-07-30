@@ -45,6 +45,12 @@ enum WindFetchPlan {
     /// A CONUS-wide default for the first fetch before the map has reported a region.
     static let conus = RadarRegion(centerLat: 39, centerLon: -96, latSpan: 20, lonSpan: 30)
 
+    /// The largest box the GRIB filter is asked for — and therefore also the largest VISIBLE box the
+    /// containment test may consider, so "is the held grid big enough" is always a question that can be
+    /// answered yes. ~950 KB at 70x35; past this the overlay is faded out entirely.
+    static let maxFetchLatSpan = 40.0
+    static let maxFetchLonSpan = 60.0
+
     /// Grid resolution of the GFS 0.25° product. Box edges snap to it so the returned grid lines up with
     /// what was asked for and a one-pixel pan cannot produce a different request.
     static let gridStep = 0.25
@@ -58,12 +64,19 @@ enum WindFetchPlan {
     static func fetchBBox(for region: RadarRegion) -> (fetch: WindBBox, visible: WindBBox) {
         assert(gridStep > 0, "WindFetchPlan: grid step must be positive")
         assert(region.latSpan.isFinite && region.lonSpan.isFinite, "WindFetchPlan: non-finite span")
-        let visLat = min(max(region.latSpan, 0.5), 80)
-        let visLon = min(max(region.lonSpan, 0.5), 160)
+        // The VISIBLE box is what `needsFetch` asks the held grid to contain, and the fetch box is capped
+        // at 40 x 60 degrees — so on a wide view the visible box is LARGER than anything we can fetch and
+        // the containment test can never be satisfied: every settle asks for ~1 MB again, forever. Cap the
+        // visible box at the same size so the question stays answerable. Nothing is lost by it: past
+        // `WindParticleRenderer.cutoffSpan` (45 degrees of longitude) the layer draws NOTHING anyway,
+        // because one affine no longer describes the screen — so the area beyond the cap is area the
+        // pilot cannot see wind in. Before, that was the exact zoom where it downloaded hardest.
+        let visLat = min(max(region.latSpan, 0.5), maxFetchLatSpan)
+        let visLon = min(max(region.lonSpan, 0.5), maxFetchLonSpan)
         let visible = clampBox(centerLat: region.centerLat, centerLon: region.centerLon,
                                latSpan: visLat, lonSpan: visLon)
-        let padLat = min(max(visLat * 1.6, 15), 40)
-        let padLon = min(max(visLon * 1.6, 20), 60)
+        let padLat = min(max(visLat * 1.6, 15), maxFetchLatSpan)
+        let padLon = min(max(visLon * 1.6, 20), maxFetchLonSpan)
         let fetch = clampBox(centerLat: region.centerLat, centerLon: region.centerLon,
                              latSpan: padLat, lonSpan: padLon)
         return (fetch, visible)
@@ -256,11 +269,19 @@ enum WindFetchPlan {
         let box = WindFetchPlan.fetchBBox(for: region ?? WindFetchPlan.conus).fetch
         lastAttemptAt = now()
         fetching = true
-        fetchTask = Task { [weak self] in
+        // Clear the handle ONLY if it is still this task's. A cancelled or superseded fetch that blindly
+        // nils `fetchTask` releases the single-flight lock held by the fetch that REPLACED it — after
+        // which `maybeFetch`'s `fetchTask == nil` guard admits a second concurrent download of the same
+        // box, and `fetching` flickers off while one is still running (the chip stops showing progress
+        // that is still happening).
+        var task: Task<Void, Never>?
+        task = Task { [weak self] in
             await self?.run(box: box)
-            self?.fetchTask = nil
-            self?.fetching = false
+            guard let self, self.fetchTask == task else { return }
+            self.fetchTask = nil
+            self.fetching = false
         }
+        fetchTask = task
     }
 
     /// Walk candidate cycles newest-first until one yields a decodable payload. A 404 is a miss (that
