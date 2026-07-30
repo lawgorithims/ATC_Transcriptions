@@ -96,6 +96,21 @@ enum ApproachHolds {
         return nil
     }
 
+    /// The holds that actually apply to a join, filtered by how the aircraft is getting onto the
+    /// approach.
+    ///
+    /// Radar vectors put the aircraft on final with no course reversal, so a HILPT is dropped for a
+    /// vectors join — offering one would invite a pilot to fly a reversal ATC never cleared. The
+    /// missed-approach hold survives either way: a go-around from a vectored approach ends in the
+    /// same published hold.
+    ///
+    /// Shared deliberately. BOTH paths that build an `ActiveApproach` — hand-activation and the
+    /// ATC-cleared clearance — filter through this one function, so "which holds apply" cannot be
+    /// decided two different ways.
+    static func applicable(_ holds: [ApproachHold], joinIsVectors: Bool) -> [ApproachHold] {
+        joinIsVectors ? holds.filter { $0.pattern.kind != .holdInLieuOfProcedureTurn } : holds
+    }
+
     /// The course-reversal hold to offer at activation, if the approach publishes one AND the chosen
     /// entry actually flies it.
     ///
