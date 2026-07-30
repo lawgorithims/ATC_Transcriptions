@@ -61,6 +61,9 @@ struct MapLibreChartView: UIViewRepresentable {
     var globeProjection: Bool = false                             // DEV: emit projection:globe (inert on stock 6.27.0)
     var theme: AppTheme = .cockpit                                // map palette; re-applied LIVE (no remount)
     var chartBrightness: Double = 1.0                             // pilot's raster-brightness scale (layers panel)
+    var windFields: WindFieldSet? = nil                           // decoded GFS winds aloft (nil = none yet)
+    var windLevel: Int = 0                                        // altitude-slider detent → WindLevel
+    var windEnabled: Bool = false                                 // layer toggle ∧ scene active ∧ !thermal
 
     func makeCoordinator() -> Coordinator { Coordinator(store: store, routeCoords: routeCoords) }
 
@@ -94,6 +97,9 @@ struct MapLibreChartView: UIViewRepresentable {
         c.northLocked = northLocked
         c.inTheme = theme
         c.inChartBrightness = chartBrightness
+        c.inWindFields = windFields
+        c.inWindLevel = windLevel
+        c.inWindEnabled = windEnabled
         c.cacheInputs(layer: layer, routeCoords: routeCoords, breadcrumbCoords: breadcrumbCoords,
                       radarTemplate: radarTemplate, holds: holds, ownship: ownship, ownshipCourse: ownshipCourse,
                       ownshipAccuracyM: ownshipAccuracyM, ownshipIntegrity: ownshipIntegrity,
@@ -134,6 +140,11 @@ struct MapLibreChartView: UIViewRepresentable {
         private var appliedBrightness: Double?   // last raster-brightness scale applied
         private var appliedSmartMode: Bool?      // last-applied "is this the smartDark palette?" (nil → force)
         private weak var starfield: StarfieldView?   // globe space backdrop; retinted on theme change
+        private weak var windView: WindParticleView?  // animated winds-aloft particles, floated OVER the map
+        var inWindFields: WindFieldSet?              // mirrors model.windAloft.fieldSet
+        var inWindLevel = 0                          // mirrors model.windLevelIndex
+        var inWindEnabled = false                    // mirrors the composed wind gate
+        private var appliedWindStamp: String?        // (validTime, level, enabled, theme) last pushed
 
         /// The palette for the CURRENT theme + selected base + pilot brightness — the single source every
         /// apply path uses. Reads `inLayer` (the latest input) and NOT `layer` (only synced inside
@@ -299,6 +310,65 @@ struct MapLibreChartView: UIViewRepresentable {
             updateTFRs(inTFRs, on: map)
             updatePlate(inPlate, on: map)
             applyFocus(inFocus, on: map)
+            updateWind(on: map)
+        }
+
+        // MARK: winds aloft (animated particle overlay)
+
+        /// Float the particle layer OVER the map, inside the same container. Created here rather than in
+        /// `mount` so it shares the map's lifetime exactly: a render-stall rebuild or a globe-toggle remount
+        /// destroys both and `createMap` builds both again. Nothing but the decoded field set (which lives
+        /// in the service) survives that, and the trails regrow in about two seconds.
+        private func mountWindLayer(in container: UIView, over map: MLNMapView) {
+            guard windView == nil else { return }
+            // A device with no Metal renderer gets no layer at all — better than an empty view over the chart.
+            guard let wind = WindParticleView.make(frame: container.bounds) else { return }
+            wind.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            container.addSubview(wind)                  // inserted AFTER the map → draws on top of it
+            wind.setCameraProvider { [weak map, weak wind] in
+                guard let map, let wind else { return nil }
+                return Coordinator.camera(from: map, in: wind)
+            }
+            windView = wind
+        }
+
+        /// Sample the live projection into the affine the particles live in.
+        ///
+        /// Three `convert` calls rather than mercator arithmetic, because this tree runs the forked globe
+        /// below zoom 12 and honours chart rotation — both of which a hand-rolled projection gets wrong.
+        /// The probe step scales with the visible span so it stays inside the linear region when zoomed in
+        /// and above pixel quantisation when zoomed out.
+        static func camera(from map: MLNMapView, in view: UIView) -> WindCamera? {
+            let bounds = map.visibleCoordinateBounds
+            let lonSpan = abs(bounds.ne.longitude - bounds.sw.longitude)
+            let center = map.centerCoordinate
+            guard center.latitude.isFinite, center.longitude.isFinite else { return nil }
+            let step = min(max(lonSpan / 40, 0.002), 1.0)
+            // Probe toward the equator near a pole so the offset coordinate stays representable.
+            let latStep = center.latitude > 0 ? -step : step
+            let north = CLLocationCoordinate2D(latitude: center.latitude + latStep, longitude: center.longitude)
+            let east = CLLocationCoordinate2D(latitude: center.latitude, longitude: center.longitude + step)
+            guard let t = WindViewportTransform.fit(center: center,
+                                                   centerPoint: map.convert(center, toPointTo: view),
+                                                   northPoint: map.convert(north, toPointTo: view),
+                                                   eastPoint: map.convert(east, toPointTo: view),
+                                                   northDelta: latStep, eastDelta: step) else { return nil }
+            return WindCamera(transform: t, zoom: map.zoomLevel,
+                              lonSpan: lonSpan > 0 ? lonSpan : 360)
+        }
+
+        /// Push the wind inputs, gated by a signature so an unchanged frame costs one string compare.
+        /// The particle layer itself is paused whenever it is off, so a disabled overlay has no frame cost.
+        private func updateWind(on map: MLNMapView) {
+            guard let wind = windView else { return }
+            let level = WindLevel.at(index: inWindLevel)
+            let stamp = "\(inWindEnabled)|\(level.rawValue)|\(inTheme.rawValue)|"
+                + "\(inWindFields?.validTime.timeIntervalSince1970 ?? -1)"
+            guard stamp != appliedWindStamp else { return }
+            appliedWindStamp = stamp
+            wind.apply(fieldSet: inWindEnabled ? inWindFields : nil, level: level,
+                       ramp: WindRamp.forTheme(inTheme))
+            wind.setActive(inWindEnabled && inWindFields != nil)
         }
 
         /// One-shot initial framing (mirrors ChartMapView's didFrame): at cold launch the route resolves
@@ -416,6 +486,7 @@ struct MapLibreChartView: UIViewRepresentable {
             }
             container.addSubview(m)
             self.map = m
+            mountWindLayer(in: container, over: m)
             // Start the loopback tile server WITHOUT blocking the main thread; install the style only once the
             // listener binds a port (the port is the sole thing writeStyle needs). A failed bind delivers 0.
             server.start { [weak self, weak m] port in
@@ -459,6 +530,10 @@ struct MapLibreChartView: UIViewRepresentable {
         func teardown() {
             NotificationCenter.default.removeObserver(self, name: UIApplication.didBecomeActiveNotification, object: nil)
             regionDebounce?.cancel(); regionDebounce = nil; server.stop()
+            // Stop the particle display link before the view is released — an MTKView left unpaused keeps
+            // drawing (and drawing from a dead camera provider) until it is deallocated.
+            windView?.setCameraProvider(nil)
+            windView?.setActive(false)
         }
 
         // MARK: style + layers
