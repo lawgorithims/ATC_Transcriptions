@@ -177,22 +177,60 @@ final class ChartLibrary: ObservableObject {
         let task = Task { [weak self] () -> Bool in
             do {
                 let (data, resp) = try await URLSession.shared.data(from: ChartCatalog.url)
-                guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return false }
+                guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return self?.adoptCachedCatalog() ?? false }
                 let cat = try JSONDecoder().decode(ChartCatalog.self, from: data)
                 guard let self else { return false }
-                self.catalog = cat
-                self.cycle = cat.cycle
-                self.pruneOldCycleFiles()
-                self.loadPinned()
-                self.refreshCachedBytes()
+                self.adopt(cat)
+                self.writeCachedCatalog(data)     // the copy an offline launch will fly on
                 return true
-            } catch { return false }
+            } catch {
+                return self?.adoptCachedCatalog() ?? false
+            }
         }
         warming = task
         let ok = await task.value
         warming = nil
         return ok
     }
+
+    /// Everything that must follow a catalog becoming current, from either source.
+    private func adopt(_ cat: ChartCatalog) {
+        catalog = cat
+        cycle = cat.cycle
+        pruneOldCycleFiles()
+        loadPinned()
+        refreshCachedBytes()
+    }
+
+    /// THE OFFLINE-KIT FIX. The catalog was fetched from the network on EVERY launch and cached nowhere,
+    /// while `ChartStore.load` opens with `guard let catalog = library.catalog else { return }` — so a
+    /// cold launch with no signal left `catalog == nil` for the whole session and not one downloaded pack
+    /// was ever opened. The .mbtiles files were sitting on disk the entire time; the app simply had no
+    /// list telling it which bounds they covered. That is backwards for an electronic flight bag: the
+    /// pilot downloads their charts at home precisely so they will be there when there is no signal, and
+    /// iOS jettisoning a backgrounded app mid-flight is enough to trigger it. They were left with the
+    /// bundled z0-7 base and none of their regional coverage.
+    ///
+    /// Deliberately caches the RAW BYTES rather than re-encoding: `ChartCatalog` is `Decodable` only, so
+    /// this needs no round-trip conformance and what is replayed is byte-identical to what the server
+    /// served. Provenance is unaffected and stays honest — the cached catalog carries its own cycle, so
+    /// the currency banner reports it as exactly as old as it is.
+    private func adoptCachedCatalog() -> Bool {
+        guard catalog == nil,
+              let data = try? Data(contentsOf: cachedCatalogURL),
+              let cat = try? JSONDecoder().decode(ChartCatalog.self, from: data) else { return false }
+        adopt(cat)
+        return true
+    }
+
+    private func writeCachedCatalog(_ data: Data) {
+        try? data.write(to: cachedCatalogURL, options: .atomic)
+    }
+
+    /// Beside the packs it describes, in the same durable Application Support dir — never `.caches`, for
+    /// the same reason the packs are not: iOS purges that under storage pressure, which would take the
+    /// index and the offline kit with it.
+    private var cachedCatalogURL: URL { dir.appendingPathComponent("catalog.json") }
 
     // MARK: On-disk cache
 

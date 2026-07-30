@@ -2701,7 +2701,15 @@ final class AppModel: ObservableObject {
     /// main-actor-only by convention; this second mapping is cheap (mmap, no resident copy) and is
     /// only ever touched inside the single in-flight detached compute (`nrstRefreshInFlight`), so
     /// the one-thread-at-a-time discipline the type demands holds.
-    private static let nrstTerrain = TerrainElevation()
+    ///
+    /// `nonisolated(unsafe)` states that discipline to the compiler instead of leaving it as a warning
+    /// that becomes a hard error under Swift 6. It is the accurate annotation, not a silencer: declared
+    /// inside a `@MainActor` type this constant was implicitly main-actor-isolated, and the detached
+    /// compute below reads it from another thread. What makes that sound is the serialization above —
+    /// `nrstRefreshInFlight` admits exactly one compute at a time — and NOT any property of
+    /// `TerrainElevation`, which is a plain mmap reader with no locking of its own. Anything that starts
+    /// a second concurrent NRST compute must give it its own instance.
+    private nonisolated(unsafe) static let nrstTerrain = TerrainElevation()
 
     /// Weather snapshot for the NRST ranker, keyed the way `NearestAirports.wxIdent` looks it up
     /// (the store's own ICAO keys). Ages are computed here so the engine stays clock-free.

@@ -192,7 +192,13 @@ enum Grib2Decoder {
         assert(p >= 0, "Grib2Decoder: negative section-3 offset")
         guard len >= 72, u16(b, p + 12) == 0 else { return nil }        // template 3.0 only
         let ni = u32(b, p + 30), nj = u32(b, p + 34)
-        guard ni > 1, nj > 1 else { return nil }
+        // Bound each axis BEFORE anything multiplies them. `u32` yields up to 4_294_967_295, so a section 3
+        // claiming that on both axes overflows `ni * nj` past Int.max — and Swift traps on overflow, which
+        // in a decoder fed by the network (or by a truncated disk snapshot from a previous run) is a crash
+        // on data we should simply be refusing. `assemble` still applies the real cap to the product;
+        // this only guarantees the product can be computed at all. 1e6 squared is 1e12, comfortably inside
+        // Int64, and the real GFS 0.25° grid is 1440 x 721.
+        guard ni > 1, nj > 1, ni <= maxGridPoints, nj <= maxGridPoints else { return nil }
         let scan = Int(b[p + 71])
         guard scan & 0x20 == 0, scan & 0x10 == 0 else { return nil }    // j-consecutive / alternating: unsupported
         let micro = 1e-6

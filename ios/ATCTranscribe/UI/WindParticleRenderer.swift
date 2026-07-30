@@ -90,6 +90,9 @@ final class WindParticleRenderer: NSObject, MTKViewDelegate {
     private var trailBack: MTLTexture?
     private var vertexBuffers: [MTLBuffer] = []
     private var bufferIndex = 0
+    /// True once a transparent frame has been presented for a state that draws nothing, so the clear
+    /// happens on the transition rather than on every frame of a continental view.
+    private var blanked = false
     private let inflight = DispatchSemaphore(value: WindParticleRenderer.inflightFrames)
 
     private var particles: [Particle] = []
@@ -175,6 +178,26 @@ final class WindParticleRenderer: NSObject, MTKViewDelegate {
         d.storageMode = .private
         trailFront = device.makeTexture(descriptor: d)
         trailBack = device.makeTexture(descriptor: d)
+        // A freshly allocated PRIVATE texture holds undefined bytes, and the very next frame's fade pass
+        // SAMPLES trailFront — so the first frame after every allocation and every resize (rotation,
+        // Split View drag) composited whatever was in that memory over the chart. Zero them once here.
+        zero(trailFront, trailBack)
+    }
+
+    /// Clear textures to transparent black. Cheap — an empty render pass per texture, run only on
+    /// allocation, not per frame.
+    private func zero(_ textures: MTLTexture?...) {
+        guard let command = queue.makeCommandBuffer() else { return }
+        for t in textures {                                  // bounded: the caller passes the pair
+            guard let t else { continue }
+            let pass = MTLRenderPassDescriptor()
+            pass.colorAttachments[0].texture = t
+            pass.colorAttachments[0].loadAction = .clear
+            pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+            pass.colorAttachments[0].storeAction = .store
+            command.makeRenderCommandEncoder(descriptor: pass)?.endEncoding()
+        }
+        command.commit()
     }
 
     // MARK: - particles
@@ -289,10 +312,17 @@ final class WindParticleRenderer: NSObject, MTKViewDelegate {
         if viewSize.width > 1 { seedParticles() }
     }
 
+    /// RETURNING FROM `draw` WITHOUT PRESENTING LEAVES THE LAST FRAME ON SCREEN. Metal does not clear a
+    /// layer you decline to draw into — the previously presented drawable simply stays. Every early
+    /// return below therefore used to FREEZE the particle field over the chart rather than remove it, and
+    /// the one that matters is the span gate: zooming out past the point where a single affine still
+    /// describes the screen is exactly how this layer switches itself off, so a pilot zooming out to look
+    /// at the whole route was left with the last frame of wind painted over it, motionless, looking for
+    /// all the world like live data. `presentEmpty` closes every one of those paths.
     func draw(in view: MTKView) {
-        guard let field = fieldSet?.field(level), let camera = cameraProvider?() else { return }
+        guard let field = fieldSet?.field(level), let camera = cameraProvider?() else { presentEmpty(view); return }
         let alpha = Self.spanAlpha(camera.lonSpan)
-        guard alpha > 0.01 else { return }
+        guard alpha > 0.01 else { presentEmpty(view); return }
         if viewSize != view.bounds.size {
             viewSize = view.bounds.size
             // Reseed only into a size the pool can be spread across. `seedParticles` requires a real
@@ -300,7 +330,8 @@ final class WindParticleRenderer: NSObject, MTKViewDelegate {
             // (detach, Split View collapse, off-screen tab) — same guard as the delegate path.
             if viewSize.width > 1 { seedParticles() }
         }
-        guard viewSize.width > 1, !particles.isEmpty else { return }
+        guard viewSize.width > 1, !particles.isEmpty else { presentEmpty(view); return }
+        blanked = false
         makeTrailTextures(drawable: view.drawableSize)
         let dt = frameDelta()
         step(dt: dt, camera: camera, field: field)
@@ -331,6 +362,25 @@ final class WindParticleRenderer: NSObject, MTKViewDelegate {
     }
 
     // MARK: - encoding
+
+    /// Present ONE transparent frame, then stop — so a layer that has nothing to say costs a single
+    /// clear rather than a clear every frame, and the chart underneath is left unobscured.
+    private func presentEmpty(_ view: MTKView) {
+        guard !blanked else { return }
+        guard let drawable = view.currentDrawable,
+              let pass = view.currentRenderPassDescriptor,
+              let command = queue.makeCommandBuffer() else { return }
+        pass.colorAttachments[0].loadAction = .clear
+        pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+        command.makeRenderCommandEncoder(descriptor: pass)?.endEncoding()
+        command.present(drawable)
+        command.commit()
+        blanked = true
+        // The trails describe a view the pilot has left. Keeping them would streak the old field back in
+        // the moment they zoom in again, before a single new step has run.
+        lastCamera = nil
+        zero(trailFront, trailBack)
+    }
 
     private func encode(view: MTKView, motion: CGAffineTransform, alpha: Float) {
         guard let drawable = view.currentDrawable,
