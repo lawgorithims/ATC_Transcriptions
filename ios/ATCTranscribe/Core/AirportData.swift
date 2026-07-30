@@ -24,7 +24,15 @@ enum AirportData {
         // A verified downloaded cycle when one is installed, else the bundled copy (see NavDataUpdate).
         guard let path = NavDataUpdate.activeURL(.apt)?.path else { return nil }
         var handle: OpaquePointer?
-        guard sqlite3_open_v2(path, &handle, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else { return nil }
+        // sqlite3_open_v2 ALLOCATES the handle even when it fails, and its contract says the caller must
+        // close it regardless — returning nil without closing leaked it (and the error string with it).
+        // Once per process on a failure path, so this is correctness rather than pressure: the failure
+        // path is a corrupt or half-written downloaded cycle, which is exactly when we do not want to be
+        // holding a handle to it.
+        guard sqlite3_open_v2(path, &handle, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
+            sqlite3_close(handle)
+            return nil
+        }
         return handle
     }
     private static var dbHandle: OpaquePointer? = open()
