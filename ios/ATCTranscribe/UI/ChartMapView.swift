@@ -320,19 +320,23 @@ struct MapCommandRequest: Equatable { let token: Int; let kind: MapCommandKind }
 /// made raster to avoid — it looked broken, and `.satellite` already covers "no aeronautical chart".
 /// A pilot whose saved layer was `standard` decodes to `.sectional` (the rawValue lookup nil-coalesces),
 /// so the upgrade can't strand them on a blank map.
+/// `.smartDark` is the decluttered night base: a bundled dark terrain-relief raster under land
+/// silhouettes, with the enroute furniture (airways, airspace, off-route navaids/fixes) suppressed so
+/// only the flown route, its waypoints and their published restrictions remain. Not an FAA chart —
+/// `isRaster` is false, so it downloads nothing and shows no chart-currency pill.
 enum ChartLayer: String, CaseIterable, Identifiable {
-    case sectional, ifrLow, ifrHigh, satellite
+    case sectional, ifrLow, ifrHigh, satellite, smartDark
     var id: String { rawValue }
     var short: String {
         switch self {
         case .sectional: return "VFR"; case .ifrLow: return "IFR-L"; case .ifrHigh: return "IFR-H"
-        case .satellite: return "Sat"
+        case .satellite: return "Sat"; case .smartDark: return "Dark"
         }
     }
     var title: String {
         switch self {
         case .sectional: return "VFR sectional"; case .ifrLow: return "IFR low"; case .ifrHigh: return "IFR high"
-        case .satellite: return "Satellite"
+        case .satellite: return "Satellite"; case .smartDark: return "Dark (minimal)"
         }
     }
     var isRaster: Bool { self == .sectional || self == .ifrLow || self == .ifrHigh }
@@ -344,12 +348,13 @@ enum ChartLayer: String, CaseIterable, Identifiable {
         default:         return []
         }
     }
-    /// Screenshot/demo: `--chart-layer vfr|ifr|ifrh|std|sat` opens the chart on that layer.
+    /// Screenshot/demo: `--chart-layer vfr|ifr|ifrh|std|sat|dark` opens the chart on that layer.
     static var launchOverride: ChartLayer? {
         let a = ProcessInfo.processInfo.arguments
         guard let i = a.firstIndex(of: "--chart-layer"), i + 1 < a.count else { return nil }
         switch a[i + 1] {
         case "ifr": return .ifrLow; case "ifrh": return .ifrHigh; case "sat": return .satellite
+        case "dark": return .smartDark
         // "std" kept as an alias so older screenshot scripts still run; the Standard base was
         // removed with the globe, so it resolves to the nearest survivor.
         case "std": return .satellite; case "vfr": return .sectional; default: return nil
@@ -575,9 +580,9 @@ struct ChartMapView: UIViewRepresentable {
         Self.configure(mv, for: layer, realistic: realistic)
         context.coordinator.appliedLayer = layer
         context.coordinator.appliedRealistic = realistic
-        // Theme the Apple base + the coordinator palette from first paint (day = light base).
-        mv.overrideUserInterfaceStyle = model.theme == .day ? .light : .dark
-        context.coordinator.mapTheme = MapTheme.forTheme(model.theme)
+        // Theme the Apple base + the coordinator palette from first paint (day = light base, Dark = dark).
+        mv.overrideUserInterfaceStyle = Self.interfaceStyle(layer: layer, theme: model.theme)
+        context.coordinator.mapTheme = MapTheme.forLayer(layer, theme: model.theme)
         context.coordinator.appliedTheme = model.theme
         let center = ChartLayer.launchCenter ?? CLLocationCoordinate2D(latitude: 39, longitude: -96)
         let s = ChartLayer.launchSpan ?? 42
@@ -599,11 +604,23 @@ struct ChartMapView: UIViewRepresentable {
         switch layer {
         case .satellite:
             mv.preferredConfiguration = MKHybridMapConfiguration(elevationStyle: elevation)
-        case .sectional, .ifrLow, .ifrHigh:
+        case .sectional, .ifrLow, .ifrHigh, .smartDark:
+            // `.smartDark` on the FALLBACK engine is a best-effort dark Apple base only: the muted
+            // standard config with POIs stripped. The declutter (suppressed airways/airspace/off-route
+            // navaids) and the terrain-relief base live in the MapLibre engine, which is the shipping
+            // one — this path exists so a pilot dropped onto the fallback still gets a dark, quiet map
+            // rather than a broken one.
             let c = MKStandardMapConfiguration(elevationStyle: .flat, emphasisStyle: .muted)
             c.pointOfInterestFilter = .excludingAll
             mv.preferredConfiguration = c
         }
+    }
+
+    /// The Apple base's light/dark appearance. `.smartDark` forces dark whatever the app theme, because
+    /// the mode IS a night base — a light Apple base under it would defeat the point.
+    static func interfaceStyle(layer: ChartLayer, theme: AppTheme) -> UIUserInterfaceStyle {
+        if layer == .smartDark { return .dark }
+        return theme == .day ? .light : .dark
     }
 
     /// Apply a side-bar camera command on the classic MKMapView: halve/double the region span (zoom), or
@@ -637,13 +654,16 @@ struct ChartMapView: UIViewRepresentable {
         c.routeLegs = route                               // hit-test source for filed waypoints
         c.routeIdents = Set(route.map { $0.ident })
         let realistic = model.terrain3DEnabled && !model.thermalSerious
+        // Entering or leaving `.smartDark` swaps the whole palette, not just the base config — so note it
+        // before reconfiguring and force the restyle below (the theme itself may not have changed).
+        let paletteLayerChanged = (c.appliedLayer == .smartDark) != (layer == .smartDark)
         if c.appliedLayer != layer || c.appliedRealistic != realistic {
             c.appliedLayer = layer; c.appliedRealistic = realistic
             Self.configure(mv, for: layer, realistic: realistic)
         }
         // One-shot fallback-engine restyle on an explicit theme change (before the route/procedure
         // reconciles below, so they rebuild in this same pass with the new palette).
-        if c.appliedTheme != model.theme {
+        if c.appliedTheme != model.theme || paletteLayerChanged {
             c.appliedTheme = model.theme
             c.noteThemeChanged(mv, theme: model.theme)
         }
@@ -1106,8 +1126,11 @@ struct ChartMapView: UIViewRepresentable {
         /// natural reconcile — their identity-keyed caches refresh with the live feeds.
         func noteThemeChanged(_ mv: MKMapView, theme: AppTheme) {
             assert(Thread.isMainThread, "overlay mutation must run on the main thread")
-            mapTheme = MapTheme.forTheme(theme)
-            mv.overrideUserInterfaceStyle = theme == .day ? .light : .dark
+            // The selected base can override the theme (`.smartDark` is a fixed night palette), so resolve
+            // through forLayer — appliedLayer is set by the layer-change block that runs just before this.
+            let lyr = appliedLayer ?? .sectional
+            mapTheme = MapTheme.forLayer(lyr, theme: theme)
+            mv.overrideUserInterfaceStyle = ChartMapView.interfaceStyle(layer: lyr, theme: theme)
             for (key, poly) in airspaceByKey {                       // bounded: on-screen ring cap is 260
                 mv.removeOverlay(poly); airspaceClass[ObjectIdentifier(poly)] = nil; airspaceByKey[key] = nil
             }
@@ -1801,6 +1824,31 @@ final class NearbyMarkerView: MKAnnotationView {
     // Accessors so the EXPERIMENTAL MapLibre migration reuses the exact FAA symbols (no duplication).
     static var airportGlyphImage: UIImage { airportImg }
     static var fixGlyphImage: UIImage { fixImg }
+    static var routeFixGlyphImage: UIImage { routeFixImg }
+
+    /// The waypoint mark for a fix ON THE FLOWN ROUTE, for the decluttered night base: a white four-point
+    /// star, the enroute-chart convention for a compulsory reporting point and what a pilot expects to see
+    /// marking their own path. Deliberately NOT the blue `fixImg` triangle — at that value against a
+    /// near-black terrain base it reads as a smudge, and the route's own marks must be the clearest thing
+    /// on the map. A thin dark rim keeps it legible where it lands on pale relief.
+    private static let routeFixImg: UIImage = {
+        let d = glyphSize
+        return UIGraphicsImageRenderer(size: CGSize(width: d, height: d)).image { _ in
+            let c = CGPoint(x: d / 2, y: d / 2)
+            let outer = d / 2 - 1.5, inner = outer * 0.34
+            let path = UIBezierPath()
+            for i in 0..<8 {                                                 // bounded (rule 2)
+                let a = CGFloat(i) * .pi / 4 - .pi / 2
+                let r = i.isMultiple(of: 2) ? outer : inner                  // alternate tip / waist
+                let p = CGPoint(x: c.x + cos(a) * r, y: c.y + sin(a) * r)
+                if i == 0 { path.move(to: p) } else { path.addLine(to: p) }
+            }
+            path.close()
+            UIColor.white.setFill(); path.fill()
+            UIColor.black.withAlphaComponent(0.75).setStroke()
+            path.lineWidth = 1.0; path.lineJoinStyle = .miter; path.stroke()
+        }
+    }()
 
     static func navaidGlyph(_ type: String) -> UIImage {
         // Order matters: a standalone TACAN or DME provides NO civil VOR azimuth, so it must NOT be drawn
