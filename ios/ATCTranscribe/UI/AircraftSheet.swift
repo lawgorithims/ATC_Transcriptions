@@ -13,6 +13,8 @@ struct AircraftSheet: View {
     @State private var type = ""
     @State private var cruiseText = ""
     @State private var burnText = ""
+    @State private var glideRatioText = ""
+    @State private var bestGlideText = ""
 
     private var hasInput: Bool {
         !callsign.trimmingCharacters(in: .whitespaces).isEmpty
@@ -36,6 +38,14 @@ struct AircraftSheet: View {
                             labeled("Cruise", "kts — e.g. 165", $cruiseText, keyboard: .numberPad)
                             labeled("Fuel burn", "gph — e.g. 16.5", $burnText, keyboard: .decimalPad)
                             Text("Planning numbers for the flight-plan strip's ETE, ETA, and fuel. Leave blank to show “–”.")
+                                .font(.dsLabelS).foregroundStyle(p.textDim)
+                        }
+                    }
+                    Card(title: "Glide") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            labeled("Glide ratio", "L/D — e.g. 9 (C172)", $glideRatioText, keyboard: .decimalPad)
+                            labeled("Best glide", "kts — e.g. 68", $bestGlideText, keyboard: .numberPad)
+                            Text("POH best-glide numbers for the NRST engine-out ranking. Blank uses a conservative \(String(format: "%g", NearestAirports.defaultGlideRatio)):1 default.")
                                 .font(.dsLabelS).foregroundStyle(p.textDim)
                         }
                     }
@@ -78,6 +88,8 @@ struct AircraftSheet: View {
         type = profile.type
         cruiseText = profile.cruiseKts.map(String.init) ?? ""
         burnText = profile.burnGPH.map { String(format: "%g", $0) } ?? ""
+        glideRatioText = profile.glideRatio.map { String(format: "%g", $0) } ?? ""
+        bestGlideText = profile.bestGlideKts.map(String.init) ?? ""
     }
 
     /// Persist through the model (add-or-update by id) and fly the aircraft.
@@ -87,6 +99,11 @@ struct AircraftSheet: View {
         updated.type = type.trimmingCharacters(in: .whitespaces)
         updated.cruiseKts = Int(cruiseText.filter(\.isNumber))
         updated.burnGPH = Double(burnText.replacingOccurrences(of: ",", with: "."))
+        // Clamp to the plausible band rather than trusting a typo: a fat-fingered 90:1 would inflate
+        // the NRST glide ring far past the airplane; 0/garbage falls back to nil (= the safe default).
+        let ratio = Double(glideRatioText.replacingOccurrences(of: ",", with: "."))
+        updated.glideRatio = ratio.flatMap { $0 >= 3 && $0 <= 60 ? $0 : nil }
+        updated.bestGlideKts = Int(bestGlideText.filter(\.isNumber)).flatMap { $0 >= 40 && $0 <= 250 ? $0 : nil }
         model.saveAircraft(updated)
         dismiss()
     }

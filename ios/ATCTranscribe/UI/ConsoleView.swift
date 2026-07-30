@@ -18,6 +18,7 @@ struct ConsoleView: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var downloads: ModelDownloadManager
     @EnvironmentObject var widgets: WidgetStore
+    @EnvironmentObject var metars: MetarStore     // re-passed into sheets (they don't inherit reliably)
     @Environment(\.horizontalSizeClass) private var hSize
     @Environment(\.scenePhase) private var scenePhase
 
@@ -93,6 +94,14 @@ struct ConsoleView: View {
         .sheet(item: compactProbe) { result in
             MapObjectSheet(result: result).environmentObject(model)
         }
+        // Compact-width NRST: the ranked glide list rides a sheet (no floating canvas on iPhone).
+        .sheet(isPresented: $model.showNRSTSheet) {
+            NRSTSheet().environmentObject(model).environmentObject(metars)
+        }
+        // A rotation or Split View change to REGULAR width brings up the floating canvas, which mounts
+        // the panel again behind the still-presented sheet — two live copies, two refresh loops. Drop
+        // the sheet; the panel the pilot came for is now on the canvas.
+        .onChange(of: hSize) { _, new in if new == .regular { model.showNRSTSheet = false } }
         .sheet(item: $model.pendingLoggedFlight) { flight in   // recording stopped → save-to-logbook prompt
             SaveFlightSheet(flight: flight).environmentObject(model)
         }
@@ -173,6 +182,9 @@ struct ConsoleView: View {
                 }
                 if let plate = model.plateOverlay { plateStrip(plate) }
                 if let proc = model.previewedProcedure { procedureStrip(proc) }
+                // The engine-out engagement strip outranks every advisory below it — it is the one
+                // "you are currently doing this" mode banner that must never be scrolled behind chatter.
+                if let eng = model.nrstEngagement { nrstEngagedStrip(eng) }
                 if let sug = model.efbSuggestion { efbSuggestionBanner(sug) }
                 if let hz = model.hazardAlert, !hz.isEmpty { hazardBanner(hz) }
                 // GPS integrity / interference advisory. It belongs HERE in the bar stack, not as an
@@ -376,6 +388,51 @@ struct ConsoleView: View {
         .padding(.horizontal, 12).padding(.vertical, 7)
         .background(p.surface)
         .transition(Self.barTransition)
+    }
+
+    /// The live engine-out engagement: which field the NRST DIRECT committed to, how far it is NOW,
+    /// and the frequency to call — with the one-tap undo that replaces the confirm alert the
+    /// emergency path deliberately skips. Restore puts back the EXACT pre-engage plan; End keeps the
+    /// direct-to and just retires the strip.
+    private func nrstEngagedStrip(_ eng: NRSTEngagement) -> some View {
+        let p = model.palette
+        let liveDistance = model.presentPosition.map { Geo.nmBetween($0, eng.coord) }
+        let liveBearing = model.presentPosition.map { Geo.bearing($0, eng.coord) }
+        let subtitle: String = {
+            var parts = [eng.name.capitalized]
+            if let d = liveDistance, let b = liveBearing {
+                parts.append(String(format: "%.1f NM · %03.0f°T", d, b))
+            }
+            if let f = eng.frequencyLine { parts.append(f) }
+            return parts.joined(separator: " · ")
+        }()
+        return HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill").font(.callout).foregroundStyle(p.bad)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("ENGINE OUT — DIRECT \(eng.displayIdent)").font(.dsHeadline).foregroundStyle(p.bad).lineLimit(1)
+                Text(subtitle).font(.dsLabelS).foregroundStyle(p.textDim).lineLimit(1)
+            }
+            Spacer(minLength: 4)
+            Button { Haptics.impact(.light); model.restoreNRSTPlan() } label: {
+                Text("Restore plan").font(.dsLabelBold).foregroundStyle(p.textDim)
+                    .padding(.horizontal, 10).padding(.vertical, 6).contentShape(Rectangle())
+            }
+            .buttonStyle(.plainHaptic).accessibilityIdentifier("nrst-restore")
+            // "Keep", not "End": this retires the strip and GIVES UP the undo, leaving the direct-to
+            // flown. Labelling that "End" read like ending the emergency mode and putting things back.
+            Button { Haptics.impact(.light); model.endNRST() } label: {
+                Text("Keep").font(.dsLabelBold).foregroundStyle(.white)
+                    .padding(.horizontal, 14).padding(.vertical, 6)
+                    .background(Capsule().fill(p.bad))
+            }
+            .buttonStyle(.plainHaptic).accessibilityIdentifier("nrst-end")
+            .accessibilityLabel("Keep flying direct to \(eng.displayIdent) and dismiss this strip")
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(p.surface)
+        .overlay(alignment: .bottom) { Rectangle().fill(p.bad.opacity(0.6)).frame(height: 1) }
+        .transition(Self.barTransition)
+        .accessibilityIdentifier("nrst-engaged")
     }
 
     /// One-tap EFB suggestion parsed from a controller clearance addressed to the pilot's aircraft
@@ -1728,6 +1785,7 @@ struct FloatingCanvas: View {
         case .latency:     SidebarWidget.latency.card
         case .diagnostics: SidebarWidget.diagnostics.card
         case .gps:         GPSReadoutCard()
+        case .nrst:        NRSTPanelView()
         }
     }
 }
