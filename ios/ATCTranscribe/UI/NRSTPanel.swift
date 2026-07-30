@@ -34,6 +34,15 @@ struct NRSTPanelView: View {
         }
         .task { await refreshLoop() }
         .onReceive(metars.$metars) { _ in Task { await refreshOnce() } }   // re-rank when METARs land
+        // Going out of sight drops the ranking; coming back recomputes it at once rather than waiting out
+        // the loop's sleep. Without this pair the panel showed a ranking as old as the excursion, with
+        // live DIRECT buttons on it — see `AppModel.clearNRSTAssessment`.
+        .onChange(of: model.selectedTab) { _, tab in
+            if tab == .map { Task { await refreshOnce() } } else { model.clearNRSTAssessment() }
+        }
+        .onChange(of: model.standby) { _, standby in
+            if standby { model.clearNRSTAssessment() } else { Task { await refreshOnce() } }
+        }
         .accessibilityIdentifier("nrst-panel")
     }
 
