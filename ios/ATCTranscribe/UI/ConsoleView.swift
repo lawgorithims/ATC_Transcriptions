@@ -276,8 +276,7 @@ struct ConsoleView: View {
                 .font(.dsLabelS)
                 .foregroundStyle(skipped ? p.textDim : p.accent)
             VStack(alignment: .leading, spacing: 1) {
-                Text(hold.isSkippable ? "Hold in lieu of procedure turn · \(hold.pattern.fix)"
-                                      : "Missed approach hold · \(hold.pattern.fix)")
+                Text("\(hold.pattern.kind.title) · \(hold.pattern.fix)")
                     .font(.dsLabelBold)
                     .foregroundStyle(skipped ? p.textDim : p.text)
                     .strikethrough(skipped)

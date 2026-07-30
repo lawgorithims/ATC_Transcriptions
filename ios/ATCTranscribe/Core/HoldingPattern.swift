@@ -27,6 +27,23 @@ struct HoldingPattern: Equatable, Identifiable {
         case holdToAltitude              // HA — climb in the hold
         case enroute                     // anything else
 
+        /// What the strip calls this hold.
+        ///
+        /// The UI used to derive this from `isRoutinelySkipped` alone — "hold in lieu of procedure turn"
+        /// if skippable, "missed approach hold" otherwise — which mislabels the two kinds that are
+        /// neither. An `HA` is a CLIMB IN HOLD: it is left on reaching an ALTITUDE, not on a clearance,
+        /// so calling it a missed-approach hold describes the wrong exit condition. And an `HM` the
+        /// source places outside the missed segment is not a missed-approach hold at all. Naming lives
+        /// on the kind so the two can never drift apart again.
+        var title: String {
+            switch self {
+            case .holdInLieuOfProcedureTurn: return "Hold in lieu of procedure turn"
+            case .missedApproach:            return "Missed approach hold"
+            case .holdToAltitude:            return "Climb in hold"
+            case .enroute:                   return "Published hold"
+            }
+        }
+
         /// Whether skipping is a normal, legal choice for the pilot.
         ///
         /// A HILPT is NOT required when ATC clears you straight in, when you arrive on a NoPT
@@ -113,8 +130,16 @@ struct HoldingPattern: Equatable, Identifiable {
     }
 
     /// The entry for an aircraft coming FROM `origin` (the previous fix, or the aircraft's present
-    /// position) — the common case, where the arrival track is simply the great-circle course from
-    /// there to the holding fix. Returns nil when the two points coincide and no course exists.
+    /// position). Returns nil when the two points coincide and no course exists.
+    ///
+    /// USES THE COURSE AT THE FIX, NOT AT THE ORIGIN. AIM 5-3-8 divides the fix by the aircraft's
+    /// inbound track *as it crosses the fix*, and on a great circle that is not the course you departed
+    /// the origin on — the two differ by the convergence of the meridians, which over a 100 NM leg at
+    /// mid-latitudes is several degrees and grows with latitude. This used the INITIAL course, so on a
+    /// long transition an arrival near a sector boundary could be named teardrop when it is parallel,
+    /// or the reverse. The final course from origin→fix is the reciprocal of the initial course
+    /// fix→origin, which is what is computed here; over short legs the two agree to well under a degree,
+    /// so this only ever moves the answer where it was actually in doubt.
     ///
     /// `magneticVariation` is REQUIRED, deliberately: the great-circle track is TRUE and the published
     /// inbound course is MAGNETIC, and a silently-defaulted 0 was wrong by the full local declination
@@ -122,7 +147,8 @@ struct HoldingPattern: Equatable, Identifiable {
     /// local variation must not call this; they show "entry unknown" instead of a guess.
     /// Convention: east positive, west negative (BOS ≈ −15, SFO ≈ +14), so magnetic = true − variation.
     func entry(arrivingFrom origin: Coord, magneticVariation: Double) -> Entry? {
-        guard let trueTrack = HoldingPattern.course(from: origin, to: coord) else { return nil }
+        guard let backCourse = HoldingPattern.course(from: coord, to: origin) else { return nil }
+        let trueTrack = HoldingPattern.normalize(backCourse + 180)
         // The published inbound course is MAGNETIC, so the arrival track has to be magnetic too.
         return entry(arrivingOn: HoldingPattern.normalize(trueTrack - magneticVariation))
     }
