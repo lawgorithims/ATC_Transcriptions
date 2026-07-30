@@ -53,7 +53,8 @@ LON_MIN, LON_MAX = -125.0, -66.0
 CELLS_PER_DEG = 60                      # 1 arc-minute output cells (~1.85 km)
 TILE_URL = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
 NO_DATA = -32768                        # int16 sentinel for "no coverage"
-SPIKE_M = 300                           # a cell this far above its 8-neighbour median is an artifact
+SPIKE_M = 300                           # a cell this far above its SECOND-highest neighbour is an artifact
+SPIKE_PASSES = 3                        # artifacts come in runs; each pass isolates the next survivor
 MAX_TILE_RETRIES = 3
 
 try:
@@ -206,15 +207,41 @@ def clean(grid):
     below = int(((grid < 0) & (grid != NO_DATA)).sum())
     np.maximum(grid, 0, out=grid, where=(grid != NO_DATA))
 
-    filled = np.where(grid == NO_DATA, 0, grid).astype(np.int32)   # sentinel must not skew the neighbourhood
-    pad = np.pad(filled, 1, mode="edge")
-    stack = np.stack([pad[dy:dy + grid.shape[0], dx:dx + grid.shape[1]]
-                      for dy in range(3) for dx in range(3)
-                      if not (dy == 1 and dx == 1)])          # the 8 neighbours, bounded and explicit
-    nmax = stack.max(axis=0)
-    spikes = (grid > (nmax + SPIKE_M)) & (grid != NO_DATA)
-    n_spikes = int(spikes.sum())
-    grid[spikes] = nmax[spikes].astype(np.int16)
+    # RANK AGAINST THE SECOND-HIGHEST NEIGHBOUR, NOT THE MAXIMUM, AND ITERATE.
+    #
+    # Source artifacts do not arrive alone — they come in adjacent runs — and against the 8-neighbour MAX
+    # each member of a pair is protected by its partner: `grid > nmax + SPIKE_M` is false for both, so
+    # neither is ever despiked. Measured on the shipped grid, 278 cells sat >=300 m above the 90th
+    # percentile of their ~11 NM neighbourhood while that neighbourhood was below 600 m — gross highs in
+    # flat country, worst 2,026 m in the mouth of the Columbia, with 21 operational airports inside
+    # 2.5 NM of one. The consequence is not cosmetic: NearestAirports sweeps this grid, so a phantom
+    # 1,558 ft cell south of KACK (true ground ~100 ft) turns the only airport on Nantucket into a hard
+    # `.blocked` verdict on an offshore engine failure, and TerrainElevation reports the same cells as
+    # AGL over open water.
+    #
+    # The second-highest neighbour is the right discriminator because it encodes the file's own doctrine
+    # — mountains come in ranges. A genuine summit has a CONE: several high neighbours, so its second-
+    # highest is high too and it survives. An artifact pair has exactly one high neighbour, so its
+    # second-highest is the true low ground around it. Iterating matters because the survivor of a pair
+    # only becomes isolated once its partner has been replaced.
+    #
+    # A median test was measured and rejected: real sharp peaks sit far above their neighbour median
+    # (Mt Hood +709 m, Grand Teton +630 m, Mt Shasta +515 m), so any threshold catching Nantucket
+    # (+454 m) also deletes real mountains. The safe discriminator is the shape of the neighbourhood,
+    # not the size of the excess.
+    n_spikes = 0
+    for _ in range(SPIKE_PASSES):                             # bounded (rule 2)
+        filled = np.where(grid == NO_DATA, 0, grid).astype(np.int32)   # sentinel must not skew the neighbourhood
+        pad = np.pad(filled, 1, mode="edge")
+        stack = np.stack([pad[dy:dy + grid.shape[0], dx:dx + grid.shape[1]]
+                          for dy in range(3) for dx in range(3)
+                          if not (dy == 1 and dx == 1)])      # the 8 neighbours, bounded and explicit
+        second = np.sort(stack, axis=0)[-2]                   # second-highest of the 8
+        spikes = (grid > (second + SPIKE_M)) & (grid != NO_DATA)
+        if not spikes.any():
+            break
+        n_spikes += int(spikes.sum())
+        grid[spikes] = second[spikes].astype(np.int16)
     return grid, {"clampedBelowSeaLevel": below, "despiked": n_spikes,
                   "noDataCells": int((grid == NO_DATA).sum())}
 
@@ -330,6 +357,14 @@ def main():
         here = os.path.dirname(os.path.abspath(__file__))
         outdir = args.out or os.path.join(here, "..", "ATCTranscribe", "Resources", "terrain")
         hdr = json.load(open(os.path.join(outdir, "terrain_conus.json")))
+        # ORDER IS LOAD-BEARING NOW. In the full pipeline clean() runs BEFORE refine_summits, while a real
+        # peak still has the smoothed cone that gives it a high SECOND-highest neighbour. Run on an
+        # ALREADY-REFINED grid the same test eats those summits — refinement raises the summit cell and
+        # leaves its neighbours smoothed, which is exactly the isolated-high shape this now removes. That
+        # would lower real terrain and raise reported AGL: the unsafe direction. Refuse instead.
+        if "summitRefinement" in hdr:
+            sys.exit("--clean-only on a refined grid would re-smooth the recovered summits; "
+                     "rebuild from --zoom instead")
         binpath = os.path.join(outdir, "terrain_conus.bin")
         grid = np.fromfile(binpath, dtype="<i2").reshape(hdr["rows"], hdr["cols"])
         grid, stats = clean(grid)

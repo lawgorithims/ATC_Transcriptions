@@ -99,12 +99,17 @@ struct NRSTPanelView: View {
             // Terrain sweeps are not free, and this panel stays MOUNTED behind another tab and under
             // the standby screen (the floating canvas is never torn down). Keep ticking so the list is
             // current the instant the pilot comes back, but skip the work while nobody can see it.
-            if model.selectedTab == .map, !model.standby { await refreshOnce() }
+            await refreshOnce()                 // gated inside, so both entry points obey one rule
             try? await Task.sleep(nanoseconds: Self.refreshSeconds * 1_000_000_000)
         }
     }
 
+    /// One ranking pass. The visibility gate lives HERE, not only in the loop, because METARs arrive on
+    /// their own schedule and `.onReceive(metars.$metars)` fired regardless — so a store update while the
+    /// pilot was on another tab, or in standby, ran a full terrain sweep over every candidate for a list
+    /// nobody could see. The loop's own gate was doing the right thing and this path walked around it.
     private func refreshOnce() async {
+        guard model.selectedTab == .map, !model.standby else { return }
         await model.refreshNRST(weather: model.nrstWeather(from: metars))
         // Warm live weather for the fields we just ranked; the NEXT pass ranks with it. Offline this
         // fails soft — the store keeps its terminal failed state and rows show no category.
