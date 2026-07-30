@@ -53,6 +53,7 @@ struct MapLayersPanel: View {
                     layerToggle($model.showHazards, "Natural hazards (NASA)", "flame", p, id: "layer-hazards")
                     layerToggle($model.showSmoke, "Smoke & satellite (NASA)", "smoke", p, id: "layer-smoke")
                     layerToggle($model.showWxRadar, "Weather radar (precip)", "cloud.rain", p, id: "layer-radar")
+                    layerToggle($model.showWindAloft, "Winds aloft (animated)", "wind", p, id: "layer-wind")
 
                     Divider().padding(.vertical, 2)
 

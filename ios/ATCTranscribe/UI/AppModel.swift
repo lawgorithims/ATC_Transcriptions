@@ -424,6 +424,7 @@ final class AppModel: ObservableObject {
     let flightRecorder = FlightRecorder()
     let logbook = Logbook()
     let rainViewer = RainViewerService()      // live precipitation-radar tiles for the weather-radar layer
+    let windAloft = WindAloftService()        // GFS winds aloft for the animated wind-particle overlay
     /// A just-finished flight awaiting the save-to-logbook prompt (drives the SaveFlightSheet). Transient.
     @Published var pendingLoggedFlight: LoggedFlight?
     private var deviceGPSPausedForBackground = false   // GPS was running when we backgrounded → resume on foreground
@@ -715,6 +716,23 @@ final class AppModel: ObservableObject {
     @Published var showWxRadar = UserDefaults.standard.bool(forKey: "atc.map.wxRadar") {
         didSet { UserDefaults.standard.set(showWxRadar, forKey: "atc.map.wxRadar"); syncRadar() }
     }
+    /// Animated winds-aloft overlay (GFS via NOMADS, internet). Persisted, default off; `WindAloftService`
+    /// fetches while it's on + foregrounded + not thermally throttled, and the particle layer only draws on
+    /// the MapLibre engine.
+    @Published var showWindAloft = UserDefaults.standard.bool(forKey: "atc.map.wind") {
+        didSet { UserDefaults.standard.set(showWindAloft, forKey: "atc.map.wind"); syncWind() }
+    }
+    /// Which altitude the wind overlay shows — an index into `WindLevel.allCases` (0 = surface,
+    /// 9 = FL390), driven by the map's left-edge altitude slider. Persisted. Clamped on write so a value
+    /// from a future build with more levels degrades instead of trapping; switching levels costs no
+    /// network, because one download carries the whole column.
+    @Published var windLevelIndex = UserDefaults.standard.integer(forKey: "atc.map.windLevel") {
+        didSet {
+            let clamped = min(max(windLevelIndex, 0), WindLevel.allCases.count - 1)
+            if clamped != windLevelIndex { windLevelIndex = clamped; return }   // re-fires didSet, then persists
+            UserDefaults.standard.set(windLevelIndex, forKey: "atc.map.windLevel")
+        }
+    }
     /// NASA GIBS satellite smoke/true-colour overlay (a separate layer from the radar stub above). A
     /// translucent, prior-day satellite image over the chart — situational context, NOT current weather.
     /// Pure remote tiles (no poller), opt-in, default off; persisted. Reconciled in `ChartMapView`.
@@ -756,7 +774,7 @@ final class AppModel: ObservableObject {
     /// Updated (with exit hysteresis) from `ProcessInfo.thermalStateDidChangeNotification` via
     /// `applyThermal` — see there for why the exit is delayed.
     @Published var thermalSerious = ProcessInfo.processInfo.thermalState.rawValue >= ProcessInfo.ThermalState.serious.rawValue {
-        didSet { if didFinishInit, thermalSerious != oldValue { syncEONET(); syncTFRs(); syncRadar() } }   // hot → pause the pollers too
+        didSet { if didFinishInit, thermalSerious != oldValue { syncEONET(); syncTFRs(); syncRadar(); syncWind() } }   // hot → pause the pollers too
     }
     /// The single pending "clear thermalSerious" timer (M7). A device hovering at the threshold used
     /// to flip thermalSerious repeatedly, and each flip destroys + rebuilds the whole ChartMapView
@@ -1348,6 +1366,7 @@ final class AppModel: ObservableObject {
         // sat on "Loading radar…" for the whole session. Same class as the traffic-pill lie — a
         // restored toggle is not an edge, so every poller must be reconciled explicitly here.
         syncRadar()
+        syncWind()       // and the wind overlay, for exactly the same reason
         refreshTripStats()   // seed the flight-plan strip's stats row from the restored plan
         // Under thermal pressure the map flattens its terrain + pauses network layers (it is NEVER torn
         // down). `--thermal` (QA-only, non-persisting) forces the state so the graceful degradation is
@@ -2985,6 +3004,9 @@ final class AppModel: ObservableObject {
     /// Reconcile the precipitation-radar fetcher: refresh while the layer is on, foregrounded, and not
     /// thermally throttled (a network + GPU tile layer — pause it when hot, like the other net overlays).
     func syncRadar() { rainViewer.setEnabled(showWxRadar && scenePhaseActive && !thermalSerious) }
+    /// Same three-condition reconcile as the radar. The wind fetch is event-driven rather than polled, but
+    /// it still must not run in the background or while the device is hot.
+    func syncWind() { windAloft.setEnabled(showWindAloft && scenePhaseActive && !thermalSerious) }
 
     /// Reconcile the Stratux link (traffic WebSocket + GPS poll). Streams whenever the link is
     /// enabled and the app is foregrounded (standby off) — no session or source selection required.
@@ -3249,6 +3271,7 @@ final class AppModel: ObservableObject {
             if deviceGPSPausedForBackground { deviceGPSPausedForBackground = false; deviceLocation.start() }
             flightRecorder.setForegrounded(true)   // resume breadcrumb sampling
             syncRadar()                            // resume the weather-radar fetch
+            syncWind()                             // and re-evaluate the wind field's staleness
             // Give MapLibre another chance after a render-stall fallback (bounded): clearing the flag republishes
             // → MapHostView re-swaps to the MapLibre map → a fresh createMap re-arms the staggered watchdog.
             // Also REFRESH the retry budget: a new foreground is a fresh chance for cold-launch stalls to heal.
@@ -3275,6 +3298,7 @@ final class AppModel: ObservableObject {
             scenePhaseActive = false
             flightRecorder.setForegrounded(false)   // flush the trail to disk before GPS pauses (below)
             syncRadar()                             // stop the weather-radar fetch in the background
+            syncWind()                              // and the wind fetch
             clearTraffic()
             // Stop capture so the feed isn't streamed/played in the background, and release the audio
             // session so the `audio` background mode can't keep the app awake (the battery drain + the
