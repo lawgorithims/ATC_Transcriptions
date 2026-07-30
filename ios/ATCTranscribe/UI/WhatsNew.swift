@@ -32,8 +32,20 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
-            build: 100, version: "1.0", headline: "See the wind — at any altitude",
+            build: 100, version: "1.0", headline: "Winds aloft, a night chart, and somewhere to put it down",
             highlights: [
+                WhatsNewHighlight(
+                    icon: "cross.circle",
+                    title: "NRST: where can you glide to, right now",
+                    detail: "A new NRST button on the map answers the engine-out question. It takes your altitude and your aircraft's best-glide ratio, works out every airport inside the glide cone, and then SWEEPS THE TERRAIN along each direct path against the bundled elevation grid — so a field that is inside your range but behind a ridge is shown as blocked rather than offered. What survives is ranked the way a pilot would: reachable and clear first, then weather (a field reporting VFR always outranks one reporting IFR, however long its runway), then terrain around the field, then runways, then fire/rescue and services. Tap DIRECT and the route goes there immediately — no confirm alert, because one tap on \"Restore plan\" puts your filed route AND your loaded approach back exactly as they were. Still air, and the arrival reserve keeps you over the field at pattern height."),
+                WhatsNewHighlight(
+                    icon: "moon.stars.fill",
+                    title: "A new \"Dark (minimal)\" chart",
+                    detail: "A fifth base layer for night and IMC: a near-black chart with soft terrain relief, your route in amber, and every waypoint on it marked with its ident and its published crossing restrictions. Everything you are NOT flying — airways, airspace, off-route navaids and fixes — is taken away. Airports stay. Nothing that warns you is ever decluttered: TFRs, traffic, weather radar, holds and your own aircraft are all still there."),
+                WhatsNewHighlight(
+                    icon: "arrow.triangle.turn.up.right.circle",
+                    title: "Published holds, with the right entry",
+                    detail: "Load an approach and any holding pattern it publishes — the hold in lieu of a procedure turn at the front, the hold that ends the missed approach — is drawn on the map as a real racetrack, on the correct side, with the entry (direct, parallel or teardrop) worked out for the direction you are actually arriving from. Left-hand patterns are drawn and entered left-hand. The course reversal can be skipped in one tap when you have been cleared straight in or vectored to final; the missed-approach hold stays, because it is where the go-around ends."),
                 WhatsNewHighlight(
                     icon: "wind",
                     title: "Animated winds aloft on the map",
@@ -49,7 +61,11 @@ enum WhatsNew {
                 WhatsNewHighlight(
                     icon: "moon.stars",
                     title: "Night theme keeps its night vision",
-                    detail: "Under the night theme the wind colours switch to red-only intensity instead of the full spectrum, so the overlay never floods the cockpit with the blue light your dark adaptation is most sensitive to."),
+                    detail: "Under the night theme — and on the new Dark chart, whatever theme you are in — the wind colours switch to red-only intensity instead of the full spectrum, so the overlay never floods the cockpit with the blue light your dark adaptation is most sensitive to."),
+                WhatsNewHighlight(
+                    icon: "checkmark.seal",
+                    title: "Fixes that came out of flying all of this together",
+                    detail: "The altitude slider's two lowest levels could sit underneath the Transcript card on an 11-inch iPad, where their taps went to the card — every level is now reachable on every device, and so is the NRST button when an airport card is open. The wind chip now says \"Paused — device warm\" instead of quietly showing a model run for a layer the heat protection has stopped. And \"Restore plan\" now puts your approach back armed, not just your route."),
             ]),
         ReleaseNote(
             build: 99, version: "1.0", headline: "Radar loads on its own, and the controls sit where they belong",
