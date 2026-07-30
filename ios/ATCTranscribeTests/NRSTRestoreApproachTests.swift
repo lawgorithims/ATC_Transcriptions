@@ -125,6 +125,38 @@ final class NRSTRestoreApproachTests: XCTestCase {
         XCTAssertNil(m.nrstEngagement, "the banner retires with the undo it offered")
     }
 
+    /// RETARGET then restore. This is the case a first pass at the fix missed: `editPlan` is
+    /// synchronous, so on a SECOND engage the `flightPlan` didSet runs inside it, reaches
+    /// `reconcileNRSTEngagement`, sees the new destination differ from the live engagement's target and
+    /// clears the approach snapshot along with the engagement. Re-ranking mid-emergency and tapping a
+    /// better field is the ordinary way to reach it — and it silently downgraded Restore to a
+    /// route-only undo again, with no ARMED MISSED at minimums.
+    func testRestoreAfterRetargetingStillReArmsTheApproach() throws {
+        let m = model()
+        try activateFixtureApproach(m)
+        let before = try XCTUnwrap(m.activeApproach)
+
+        injectFix(m, lat: 42.47, lon: -71.29)
+        try XCTSkipIf(m.presentPosition == nil, "the integrity monitor rejected the synthetic fix")
+        XCTAssertEqual(m.engageNRST(candidate()), .engaged)
+        // A DIFFERENT field, so the reconcile fires on the second engage.
+        let second = NRSTCandidate(
+            airport: AirportData.Airport(ident: "6B6", icao: "", name: "STOW",
+                                         coord: Coord(lat: 42.4600, lon: -71.5150), elevationFt: 269,
+                                         ownership: "PU", use: "PU", status: "O",
+                                         tower: "NON-ATCT", fuel: "", siteType: "A", far139: ""),
+            distanceNm: 11, bearingTrueDeg: 250, reachability: .clear, arrivalMarginFt: 1800,
+            category: .vfr, wxAgeMinutes: 3, longestRunwayFt: 2000, longestRunwayPaved: true,
+            longestRunwayLit: false, terrainRiseFt: 90, score: 0.6)
+        XCTAssertEqual(m.engageNRST(second), .engaged)
+
+        m.restoreNRSTPlan()
+        let after = try XCTUnwrap(m.activeApproach,
+                                  "retargeting must not cost the approach snapshot — the undo is what "
+                                  + "justifies engaging with no confirm alert")
+        XCTAssertEqual(after.ident, before.ident)
+    }
+
     /// A pilot's SKIP decision is part of the state being restored: a course reversal they already
     /// declined must not reappear on the map when the plan comes back.
     func testRestoreKeepsTheSkippedHoldDecision() throws {

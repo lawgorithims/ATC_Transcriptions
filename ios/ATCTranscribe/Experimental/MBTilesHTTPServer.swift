@@ -71,8 +71,16 @@ final class MBTilesHTTPServer {
                     let p = l.port?.rawValue ?? 0
                     self?.port = p
                     DispatchQueue.main.async { onReady(p) }
-                case .failed, .cancelled:
+                case .failed:
                     DispatchQueue.main.async { onReady(0) } // surface the failure instead of a silent 2s stall
+                case .cancelled:
+                    // An INTENTIONAL stop(), not a bind failure — and the only caller of stop() is the
+                    // coordinator's teardown, which runs on EVERY switch away from the Map tab. Reporting
+                    // it as port 0 sent the host down the render-stall path, and five of those exhaust the
+                    // MapLibre retry budget: a pilot who tabbed to Plates and back a few times silently
+                    // lost the shipping engine for the rest of the session — no hold racetracks, no wind
+                    // layer, no dark base — with nothing on screen saying why.
+                    break
                 default: break
                 }
             }
