@@ -19,6 +19,15 @@ struct WindAltitudeSlider: View {
     let palette: Palette
     let topInset: CGFloat
     let theme: AppTheme
+    /// The selected base layer — the ramp resolves through it (`.smartDark` forces the night ramp),
+    /// so the legend key matches the particles it describes.
+    let layer: ChartLayer
+    /// True while `thermalSerious` has the overlay paused. The control stays on screen (hiding it would
+    /// leave the layers menu showing "Winds aloft" ON with nothing to explain the empty chart) and says
+    /// so instead — the same doctrine as the radar pill, which was fixed once for lying about a stopped
+    /// feed. Without this the chip went on naming a GFS cycle and its age for a layer that had stopped
+    /// drawing, which reads as "the wind really is calm here".
+    let thermalWarm: Bool
 
     /// Track geometry. The track is tall enough for ten legible detents on an iPad and still fits an
     /// iPhone in landscape.
@@ -147,7 +156,7 @@ struct WindAltitudeSlider: View {
                 if windAloft.fetching { ProgressView().controlSize(.mini) }
                 Text(statusText).font(.dsLabelS).foregroundStyle(palette.textDim)
             }
-            if windAloft.fieldSet != nil { legend }
+            if windAloft.fieldSet != nil, !thermalWarm { legend }   // no key for a layer that is not drawing
         }
         .padding(.horizontal, 9).padding(.vertical, 7)
         .frame(maxWidth: 168, alignment: .leading)
@@ -164,6 +173,10 @@ struct WindAltitudeSlider: View {
     }
 
     private var statusText: String {
+        // Ordered by what the pilot most needs to know. The pause outranks the data: a chip reading
+        // "GFS 12z +3h · 4 min ago" over a chart with no streaks on it invites reading calm air where
+        // there is simply no layer.
+        if thermalWarm { return "Paused — device warm" }
         guard let set = windAloft.fieldSet else {
             if windAloft.failed { return "Winds unavailable — retrying" }
             return windAloft.fetching ? "Loading winds…" : "Winds off"
@@ -181,7 +194,7 @@ struct WindAltitudeSlider: View {
 
     /// The speed key. Labelled in knots because that is the unit in the clearance and on the strip.
     private var legend: some View {
-        let ramp = WindRamp.forTheme(theme)
+        let ramp = WindRamp.forLayer(layer, theme: theme)
         return VStack(alignment: .leading, spacing: 2) {
             LinearGradient(colors: ramp.cgColors(steps: 9).map { Color(cgColor: $0) },
                            startPoint: .leading, endPoint: .trailing)

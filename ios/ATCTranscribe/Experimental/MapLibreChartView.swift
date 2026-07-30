@@ -362,12 +362,15 @@ struct MapLibreChartView: UIViewRepresentable {
         private func updateWind(on map: MLNMapView) {
             guard let wind = windView else { return }
             let level = WindLevel.at(index: inWindLevel)
-            let stamp = "\(inWindEnabled)|\(level.rawValue)|\(inTheme.rawValue)|"
+            // `inLayer` is in the stamp because the ramp now resolves through it (`.smartDark` forces the
+            // night ramp — see WindRamp.forLayer); without it a VFR⇄Dark switch at an unchanged theme
+            // would keep the old ramp on the particles for the life of the session.
+            let stamp = "\(inWindEnabled)|\(level.rawValue)|\(inTheme.rawValue)|\(inLayer.rawValue)|"
                 + "\(inWindFields?.validTime.timeIntervalSince1970 ?? -1)"
             guard stamp != appliedWindStamp else { return }
             appliedWindStamp = stamp
             wind.apply(fieldSet: inWindEnabled ? inWindFields : nil, level: level,
-                       ramp: WindRamp.forTheme(inTheme))
+                       ramp: WindRamp.forLayer(inLayer, theme: inTheme))
             wind.setActive(inWindEnabled && inWindFields != nil)
         }
 
