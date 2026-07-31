@@ -113,6 +113,27 @@ struct WindFieldSet: Sendable {
         return String(format: "GFS %02dz +%dh", hour, forecastHours)
     }
 
+    /// What the pilot actually asked: WHEN IS THIS WIND FOR. `cycleLabel` names the model run, which is
+    /// provenance, not validity — "GFS 06z +9h" requires the reader to do the addition. This states the
+    /// valid time directly, in Zulu, which is the clock every other time on the chart is in.
+    var validLabel: String {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "UTC") ?? .gmt
+        let c = cal.dateComponents([.hour, .minute], from: validTime)
+        assert((c.hour ?? 0) >= 0 && (c.hour ?? 0) < 24, "WindFieldSet: valid hour out of range")
+        return String(format: "%02d%02dZ", c.hour ?? 0, c.minute ?? 0)
+    }
+
+    /// How far the forecast's valid time is from now, signed, for the honesty line on the chart stamp.
+    /// A forecast can legitimately be in the future — that is what a forecast is — so this must not be
+    /// reported as an "age" the way an observation would be.
+    func validOffsetLabel(now: Date = Date()) -> String {
+        let mins = Int((validTime.timeIntervalSince(now) / 60).rounded())
+        if abs(mins) < 30 { return "now" }
+        let h = Double(abs(mins)) / 60
+        return mins > 0 ? String(format: "+%.0fh", h) : String(format: "%.0fh old", h)
+    }
+
     /// Pair the decoded U/V messages by level into fields. nil when nothing usable survived, so the caller
     /// can treat a structurally-valid-but-empty download as a failure and keep the last good set.
     ///

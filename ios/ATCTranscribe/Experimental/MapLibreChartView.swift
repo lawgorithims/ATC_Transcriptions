@@ -63,6 +63,7 @@ struct MapLibreChartView: UIViewRepresentable {
     var chartBrightness: Double = 1.0                             // pilot's raster-brightness scale (layers panel)
     var windFields: WindFieldSet? = nil                           // decoded GFS winds aloft (nil = none yet)
     var windLevel: Int = 0                                        // altitude-slider detent → WindLevel
+    var windPalette: WindRamp.Palette = .auto                     // pilot's sprite-colour choice
     var windEnabled: Bool = false                                 // layer toggle ∧ scene active ∧ !thermal
 
     func makeCoordinator() -> Coordinator { Coordinator(store: store, routeCoords: routeCoords) }
@@ -99,6 +100,7 @@ struct MapLibreChartView: UIViewRepresentable {
         c.inChartBrightness = chartBrightness
         c.inWindFields = windFields
         c.inWindLevel = windLevel
+        c.inWindPalette = windPalette
         c.inWindEnabled = windEnabled
         c.cacheInputs(layer: layer, routeCoords: routeCoords, breadcrumbCoords: breadcrumbCoords,
                       radarTemplate: radarTemplate, holds: holds, ownship: ownship, ownshipCourse: ownshipCourse,
@@ -143,6 +145,7 @@ struct MapLibreChartView: UIViewRepresentable {
         private weak var windView: WindParticleView?  // animated winds-aloft particles, floated OVER the map
         var inWindFields: WindFieldSet?              // mirrors model.windAloft.fieldSet
         var inWindLevel = 0                          // mirrors model.windLevelIndex
+        var inWindPalette: WindRamp.Palette = .auto  // mirrors model.windPalette
         var inWindEnabled = false                    // mirrors the composed wind gate
         private var appliedWindStamp: String?        // (validTime, level, enabled, theme) last pushed
 
@@ -373,11 +376,12 @@ struct MapLibreChartView: UIViewRepresentable {
             // to was dropped on the floor while the old one kept sampling nil. `fetchedAt` is distinct per
             // download by construction, so a new box always reaches the renderer.
             let stamp = "\(inWindEnabled)|\(level.rawValue)|\(inTheme.rawValue)|\(inLayer.rawValue)|"
+                + "\(inWindPalette.rawValue)|"
                 + "\(inWindFields?.fetchedAt.timeIntervalSince1970 ?? -1)"
             guard stamp != appliedWindStamp else { return }
             appliedWindStamp = stamp
             wind.apply(fieldSet: inWindEnabled ? inWindFields : nil, level: level,
-                       ramp: WindRamp.forLayer(inLayer, theme: inTheme))
+                       ramp: WindRamp.resolve(palette: inWindPalette, layer: inLayer, theme: inTheme))
             wind.setActive(inWindEnabled && inWindFields != nil)
         }
 
@@ -1286,8 +1290,14 @@ struct MapLibreChartView: UIViewRepresentable {
             // pilot's overlay toggles are still honored (a toggle OFF hides airports here too); this only
             // adds suppression, never re-enables anything they turned off. TFRs/traffic/weather/ownship are
             // untouched — decluttering must never hide a hazard.
+            // AIRSPACE IS NOT CLUTTER. The first cut of this mode suppressed it along with the airways and
+            // the off-route navaids, which was wrong: a Class B shelf or a restricted area is a CONSTRAINT
+            // on where the aircraft may legally be, and a decluttered chart that omits it is not simpler,
+            // it is missing the part that can violate you. Airways and off-route fixes are genuinely
+            // enroute furniture and stay suppressed; airspace now follows the pilot's own toggle in every
+            // mode. (Its labels still drop at the wider scales, exactly as they do on the FAA bases.)
             let smart = (layer == .smartDark)
-            let wantAir = showAirspace && scale < 14 && !smart, wantLbl = showAirspace && scale < 7 && !smart
+            let wantAir = showAirspace && scale < 14, wantLbl = showAirspace && scale < 7
             let wantAwy = showAirways && scale < 9 && !smart, wantNear = showNearby && scale < 5.5
             let showFixes = wantNear && wantFixes && !smart
             overlayGen += 1
@@ -2070,6 +2080,13 @@ struct MapLibreChartView: UIViewRepresentable {
             map.setVisibleCoordinateBounds(MLNCoordinateBounds(sw: sw, ne: ne),
                                            edgePadding: UIEdgeInsets(top: 80, left: 60, bottom: 80, right: 60),
                                            animated: true, completionHandler: nil)
+            // CLAIM THE FRAMING. `frameIfNeeded` is a ONE-SHOT that keeps retrying until it finds a target
+            // (saved camera, else route, else ownship) — and it was never told the plate had already
+            // framed, so whichever ran last won. Loading a plate then framed on the filed ROUTE instead,
+            // leaving the plate a few pixels wide somewhere off screen: "the plate goes away". It showed up
+            // as a Dark-mode bug only because Dark loads no chart packs, so the generic framing got there
+            // second. Framing ON a plate the pilot just opened is the most specific intent there is.
+            didFrame = true
         }
 
         /// Project the plate's top-corner geo coords to SCREEN points and stream them to the host chrome

@@ -53,7 +53,11 @@ LON_MIN, LON_MAX = -125.0, -66.0
 CELLS_PER_DEG = 60                      # 1 arc-minute output cells (~1.85 km)
 TILE_URL = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
 NO_DATA = -32768                        # int16 sentinel for "no coverage"
-SPIKE_M = 300                           # a cell this far above its SECOND-highest neighbour is an artifact
+SPIKE_M = 600                           # a cell this far above its SECOND-highest neighbour is an artifact
+                                        # MEASURED, not guessed: at 300 the second-highest rule despikes the
+                                        # Grand Teton in the BASE grid (3362 -> 2981 m) — a real peak whose
+                                        # z8 cone is already smoothed away. 600 leaves all twelve surveyed
+                                        # peaks untouched and still removes genuine adjacent-pair artifacts.
 SPIKE_PASSES = 3                        # artifacts come in runs; each pass isolates the next survivor
 MAX_TILE_RETRIES = 3
 
@@ -294,6 +298,7 @@ def refine_summits(grid, workers):
     print(f"summit refinement: {len(rs)} summit cells -> {len(tiles)} zoom-{REFINE_ZOOM} tiles", flush=True)
 
     rows, cols = grid.shape
+    pre_refine = grid.copy()                                # to revert anything refinement invents
     flat = grid.reshape(-1)
     done = raised = 0
     with futures.ThreadPoolExecutor(max_workers=workers) as pool:
@@ -325,8 +330,53 @@ def refine_summits(grid, workers):
             raised += int((flat[idx] > before).sum())
             if done % 200 == 0:
                 print(f"  {done}/{len(tiles)}", flush=True)
+    reverted = _revert_implausible_refinements(grid, pre_refine)
     return grid, {"summitCellsFound": int(len(rs)), "refineTiles": len(tiles),
-                  "cellsRaised": raised, "refineZoom": REFINE_ZOOM}
+                  "cellsRaised": raised, "refineZoom": REFINE_ZOOM,
+                  "implausibleReverted": reverted}
+
+
+# A refined cell this far above the 90th percentile of its ~11 NM neighbourhood, while that
+# neighbourhood is itself low country, is not a summit — it is an injected artifact.
+ARTIFACT_EXCESS_M = 500
+ARTIFACT_CONTEXT_M = 600
+
+
+def _revert_implausible_refinements(grid, before):
+    """Undo refinements that INVENTED terrain instead of sharpening it.
+
+    THIS IS WHERE THE SHIPPED GRID'S ARTIFACTS CAME FROM. Measured on a raw zoom-8 capture with despiking
+    disabled, the mouth of the Columbia reads 193 m; in the shipped grid it reads 2,026 m. The base pass
+    was never the culprit — refinement was. It maxes a whole zoom-13 tile's pixels into the coarse cells
+    they fall in, so wherever a summit CANDIDATE sits in flat country (and in flat country a local maximum
+    is mostly noise) a tall feature elsewhere under that tile can be written into it.
+
+    The guard is the definition of the job: refinement exists to recover a peak that is ALREADY the local
+    maximum, blurred down by the pyramid's averaging. It is not entitled to create a mountain where the
+    surrounding country has none. A cell that ends up grossly above a LOW neighbourhood is reverted to its
+    pre-refinement value — never below it, so this can only give back what refinement added and can never
+    under-read the base.
+
+    NRST sweeps this grid, so an invented 1,558 ft cell beside a sea-level island field is a hard BLOCKED
+    verdict on the only airport within glide of an offshore engine failure.
+    """
+    changed = np.where(grid != before)
+    if len(changed[0]) == 0:
+        return 0
+    step = 3                                                # sample the neighbourhood, not every cell
+    sub = grid[::step, ::step]
+    pad = np.pad(sub, 5, mode="edge")
+    win = np.lib.stride_tricks.sliding_window_view(pad, (11, 11))
+    p90 = np.percentile(win, 90, axis=(2, 3))
+    rr = np.clip(changed[0] // step, 0, p90.shape[0] - 1)
+    cc = np.clip(changed[1] // step, 0, p90.shape[1] - 1)
+    context = p90[rr, cc]
+    bad = (grid[changed] >= context + ARTIFACT_EXCESS_M) & (context < ARTIFACT_CONTEXT_M)
+    n = int(bad.sum())
+    if n:
+        grid[changed[0][bad], changed[1][bad]] = before[changed[0][bad], changed[1][bad]]
+    print(f"  reverted {n} implausible refinements (gross highs in low country)", flush=True)
+    return n
 
 
 def main():

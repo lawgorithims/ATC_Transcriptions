@@ -49,7 +49,7 @@ struct MapLayersPanel: View {
                     // weather and TFRs — but the mode overrides three of them downward. Saying so beats
                     // disabling the rows, which would look like the pilot's saved preferences were lost.
                     if model.chartLayer == .smartDark {
-                        Text("Dark (minimal) hides airways, airspace and off-route navaids. TFRs, traffic, weather and your route stay on.")
+                        Text("Dark (minimal) hides airways and off-route navaids. Airspace, TFRs, traffic, weather, your route and any plate on the map all stay on.")
                             .font(.dsLabelS).foregroundStyle(p.textDim)
                             .accessibilityIdentifier("layers-smartdark-note")
                     }
@@ -67,6 +67,37 @@ struct MapLayersPanel: View {
 
                     header("Map controls", p)
                     layerToggle($showZoomControls, "Map buttons (zoom, north, center)", "plus.magnifyingglass", p, id: "layer-zoom-controls")
+
+                    // Wind sprite appearance — only worth showing while the layer is actually up.
+                    if model.showWindAloft {
+                        Divider().padding(.vertical, 2)
+                        header("Wind sprites", p)
+                        Picker("Colour", selection: $model.windPalette) {
+                            ForEach(WindRamp.Palette.allCases) { Text($0.title).tag($0) }
+                        }
+                        .pickerStyle(.menu).tint(p.accent)
+                        .accessibilityIdentifier("wind-palette-picker")
+                        Text("Automatic uses speed colours (blue→violet), or red-only at night and on the Dark base. A fixed colour trades that for contrast: speed then rides brightness.")
+                            .font(.dsLabelS).foregroundStyle(p.textDim)
+                        HStack(spacing: 9) {
+                            Image(systemName: "smallcircle.filled.circle").font(.dsLabel).foregroundStyle(p.textDim)
+                            Slider(value: $model.windSizeScale, in: 0.5...3.0)
+                                .tint(p.accent)
+                                .accessibilityIdentifier("wind-size-slider")
+                                .accessibilityLabel("Wind sprite size")
+                            Image(systemName: "circle.circle.fill").font(.dsLabel).foregroundStyle(p.textDim)
+                        }
+                        HStack(spacing: 9) {
+                            Image(systemName: "circle.lefthalf.filled").font(.dsLabel).foregroundStyle(p.textDim)
+                            Slider(value: $model.windOpacityScale, in: 0.6...1.8)
+                                .tint(p.accent)
+                                .accessibilityIdentifier("wind-contrast-slider")
+                                .accessibilityLabel("Wind sprite contrast")
+                            Image(systemName: "circle.fill").font(.dsLabel).foregroundStyle(p.textDim)
+                        }
+                        Text("Size and contrast. The overlay is deliberately translucent so the chart reads through it — turn contrast up only as far as the airway and airspace labels underneath stay legible.")
+                            .font(.dsLabelS).foregroundStyle(p.textDim)
+                    }
 
                     Divider().padding(.vertical, 2)
 

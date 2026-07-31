@@ -21,8 +21,53 @@ struct WindRamp {
     /// jet core without flattening the whole useful range below it.
     static let topKt: Float = 150
 
+    /// What the pilot picked in the layers menu. `.auto` keeps the shipped behaviour (spectrum by day,
+    /// red-only at night or on the dark base); the rest are FIXED HUES that carry speed in intensity
+    /// instead of colour.
+    ///
+    /// This exists because a spectrum ramp is a poor contrast tool. Its low end is a slate blue that sits
+    /// almost exactly on the value of a night chart, so light and moderate air disappeared into the
+    /// background — and the pilot has no way to trade the speed-by-hue reading for something they can
+    /// actually see. A single bright hue always separates from the chart, at every speed.
+    enum Palette: String, CaseIterable, Identifiable {
+        case auto, white, cyan, amber, red
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .auto:  return "Automatic (speed colours)"
+            case .white: return "White"
+            case .cyan:  return "Cyan"
+            case .amber: return "Amber"
+            case .red:   return "Red (night)"
+            }
+        }
+        /// True when speed is carried by intensity along one hue rather than by hue.
+        var isSolid: Bool { self != .auto }
+    }
+
     static func forTheme(_ theme: AppTheme) -> WindRamp {
         theme == .night ? nightRamp : dayRamp
+    }
+
+    /// The ramp actually drawn: an explicit palette wins, else the layer/theme default.
+    static func resolve(palette: Palette, layer: ChartLayer, theme: AppTheme) -> WindRamp {
+        switch palette {
+        case .auto:  return forLayer(layer, theme: theme)
+        case .white: return solid(SIMD3(1.00, 1.00, 1.00))
+        case .cyan:  return solid(SIMD3(0.40, 0.90, 1.00))
+        case .amber: return solid(SIMD3(1.00, 0.74, 0.24))
+        case .red:   return nightRamp
+        }
+    }
+
+    /// A single-hue ramp: speed rides brightness from a dim floor to the full colour, the same trade the
+    /// night ramp already makes. The floor is not black — a calm particle still has to be visible.
+    private static func solid(_ hue: SIMD3<Float>) -> WindRamp {
+        WindRamp(stops: [(0,   hue * 0.45),
+                         (25,  hue * 0.62),
+                         (55,  hue * 0.80),
+                         (90,  hue * 0.92),
+                         (150, hue)])
     }
 
     /// THE ramp entry point, mirroring `MapTheme.forLayer`: the selected base layer can override the app
@@ -86,8 +131,15 @@ struct WindRamp {
         assert(kt.isFinite, "WindRamp: non-finite speed")
         assert(Self.topKt > 0, "WindRamp: invalid ramp ceiling")
         let t = min(max(kt / 85, 0), 1)
-        return 0.26 + 0.36 * t
+        return (0.26 + 0.36 * t) * Self.opacityScale
     }
+
+    /// Global multiplier on particle opacity, from the layers menu (0.6…1.8, default 1.0).
+    ///
+    /// A static rather than an instance field so the pilot's contrast choice reaches the legend swatch and
+    /// the renderer through the one value, without threading it down two call chains. Set once from the
+    /// map host when the setting changes; read per particle.
+    nonisolated(unsafe) static var opacityScale: Float = 1.0
 
     /// CoreGraphics colours for the legend bar in the altitude slider's status chip.
     func cgColors(steps: Int = 7) -> [CGColor] {
