@@ -32,6 +32,30 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 101, version: "1.0", headline: "See where you are on the glidepath",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "chart.line.downtrend.xyaxis",
+                    title: "A vertical profile for the approach you are flying",
+                    detail: "Load an approach and a side-on view of the final segment appears above the map, with your aeroplane drawn in it. It reads left to right the way the profile on a plate does: the published path, every fix with its crossing altitude, the FAF and the missed approach point, and the ground underneath. Instead of comparing a DME distance against a printed altitude while flying, you can see whether you are on the path, above it or below it — and by how many feet. A precision approach draws its glidepath as a solid line; a non-precision one draws its crossing altitudes as steps, because those are limits you descend within rather than a beam you track. Decision altitudes and MDAs are not in the coded procedure, so the profile never prints one — the plate is still the authority for minimums."),
+                WhatsNewHighlight(
+                    icon: "airplane.circle",
+                    title: "Fixed: online traffic never appeared if you own a Stratux",
+                    detail: "If you had ever switched the Stratux link on in Settings, the internet traffic feed shut itself off whenever the app came to the foreground — whether or not the receiver was actually powered on, in range, or connected. On cell data, away from the aircraft, that meant no traffic from either source and a status pill that said Stratux was providing it. The online feed now stands down only for a receiver that is genuinely talking, and takes over again within one poll if the link drops."),
+                WhatsNewHighlight(
+                    icon: "doc.text.image",
+                    title: "Fixed: the plate disappearing, and a Smart base to read it against",
+                    detail: "Opening a plate could leave the map framed somewhere else entirely, which looked like the plate vanishing — most often on the Dark chart. The map now frames on the plate itself, every time. The plate menu also gained a \"Smart base\" button: one tap swaps the chart underneath for the decluttered dark base so the sectional's ink stops fighting the approach chart's, and one tap puts your chart back. Airspace is no longer hidden on that base — a Class B shelf is a constraint on where you may legally be, not clutter."),
+                WhatsNewHighlight(
+                    icon: "wind",
+                    title: "Winds aloft: bigger, clearer, and honest about their age",
+                    detail: "Panning the map used to stretch every wind streak in the direction you dragged, which looked like the wind changing as you moved the chart. Fixed — the streaks now show wind and nothing else. The sprites are twice the size by default, with size and contrast sliders and a colour picker in the layers menu (a single bright colour reads far better against a night chart than the speed spectrum does). And a stamp on the chart itself now names the valid time in Zulu, because animated particles look live whatever their age."),
+                WhatsNewHighlight(
+                    icon: "mountain.2",
+                    title: "Fixed: phantom terrain that could hide an emergency airport",
+                    detail: "The bundled elevation grid carried false high ground in flat country — 1,558 ft on Nantucket, where nothing is above 110 ft, and similar around Martha's Vineyard, the Outer Banks and the Mississippi delta. NRST sweeps that grid, so an invented ridge beside a sea-level island field could report the only airport within glide as blocked. The grid has been rebuilt; every real summit is unchanged."),
+            ]),
+        ReleaseNote(
             build: 100, version: "1.0", headline: "Winds aloft, a night chart, and somewhere to put it down",
             highlights: [
                 WhatsNewHighlight(
