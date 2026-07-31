@@ -2,7 +2,7 @@
 """build_terrain_relief.py — bake CommSight's bundled dark terrain-relief base ("Dark (minimal)").
 
 WHAT IT MAKES
-    Resources/basemap/terrain_base.mbtiles — WebP shaded-relief tiles, z0-z7, CONUS, served by the
+    Resources/basemap/terrain_base.mbtiles — WebP shaded-relief tiles, z0-z8, CONUS, served by the
     loopback tile server at /base/terrain/{z}/{x}/{y} under the decluttered night map mode.
 
 WHY PRE-BAKED, NOT A LIVE HILLSHADE LAYER
@@ -70,8 +70,11 @@ except ImportError:                                          # pragma: no cover 
 LAT_MIN, LAT_MAX = 24.0, 50.0
 LON_MIN, LON_MAX = -125.0, -66.0
 
-SRC_ZOOM = 8              # ~600 m/px: exactly 2x the finest OUTPUT zoom, so z7 gets free supersampling
-MAX_ZOOM = 7              # matches the shipped chart bases; MapLibre magnifies past it on the GPU
+SRC_ZOOM = 8              # ~600 m/px — the finest the AWS terrarium cache is fetched at
+# z8 is the finest level the cached source supports honestly (SRC_ZOOM is 8), and it is where the
+# relief stops softening under the enroute zooms a pilot actually flies at. Going deeper would be
+# invention, not detail.
+MAX_ZOOM = 8
 TILE = 256
 TILE_URL = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
 MAX_TILE_RETRIES = 3
@@ -84,23 +87,46 @@ CACHE_DIR = os.path.expanduser("~/CommSight/terrain-relief-build/raw")
 OUT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                         "..", "ATCTranscribe", "Resources", "basemap", "terrain_base.mbtiles")
 
-PALETTE_ID = "smartdark-v1"
-# Elevation -> color ramp for the near-black night base. Interpolated in sqrt(height) so the lowlands
-# darken fast (the plains must recede) while the ranges keep separation all the way up.
-# (metres, (r, g, b))
+PALETTE_ID = "smartdark-v3"
+# Elevation -> color ramp for the night base. Interpolated in sqrt(height) so the lowlands stay
+# recessive while the ranges keep separation all the way up.
+#
+# WHY v2 IS BRIGHTER THAN v1, AND BY HOW MUCH. v1 was measured against the surfaces it sits beside and
+# was wrong in a way that is arithmetic rather than taste. Relative luminance (Rec. 709) of what the
+# pilot actually saw: sea #0A0C10 = 11.9, the Natural Earth land silhouette #12161C = 21.6, and v1's
+# sea-level land 13.9 x 0.91 shade = 12.6. So CONUS lowlands rendered DARKER than the land silhouette
+# around them and all but identical to the OCEAN — the coastline stopped reading, and "everything is a
+# black void" was a literal description. Over the Colorado Rockies a shipped z6 tile measured luminance
+# 23-40 (median 28) against that 11.9 background: a contrast ratio of about 1.16:1, which is nothing.
+#
+# v2 pins sea-level land just ABOVE the land silhouette so CONUS is continuous with its neighbours, and
+# opens the range upward so mountains carry roughly 2.6:1 against the background — visible, but still
+# well under the amber route (#FF9F1C, luminance 170), which must stay the brightest thing on the map.
+# (metres, (r, g, b), approximate luminance)
 RAMP = [
-    (0,    (0x0C, 0x0E, 0x12)),   # sea-level lowland: barely above the app's #0A0C10 background
-    (500,  (0x13, 0x14, 0x15)),   # neutral by 500 m — a blue cast here reads as water, not plains
-    (1500, (0x21, 0x1F, 0x1B)),   # the umber only starts where there is real terrain to show
-    (3000, (0x2C, 0x27, 0x20)),
-    (4400, (0x36, 0x2E, 0x23)),
+    (0,    (0x16, 0x19, 0x1E)),   # 24.6 — sits just above the land silhouette, not below it
+    (500,  (0x20, 0x22, 0x25)),   # 33.7 — neutral; a blue cast here would read as water, not plains
+    (1500, (0x3A, 0x35, 0x2D)),   # 53.4 — the umber starts where there is real terrain to show
+    (3000, (0x5E, 0x55, 0x44)),   # 85.6
+    (4400, (0x7C, 0x6E, 0x56)),   # 111.0 — sunlit peaks reach ~147, the route still owns the map
 ]
-# Hillshade is a MULTIPLIER on the ramp, compressed into this range: a touch of lift on sunlit slopes,
-# a gentle darkening in shadow. Wider than this and the relief starts competing with the route.
-SHADE_LO, SHADE_HI = 0.75, 1.06
+# Hillshade is a MULTIPLIER on the ramp. v1 compressed it into 0.75-1.06 — a 1.41x ratio between deepest
+# shadow and brightest sun — which is why the relief read as a soft STAIN rather than as terrain: the
+# ramp carried the elevation but the shading carried almost no shape. 0.55-1.32 is a 2.4x ratio, so
+# ridges and valleys separate, and the recentring below still keeps flat ground off the highlight.
+SHADE_LO, SHADE_HI = 0.55, 1.32
+# The raw multidirectional shade this DEM actually produces, measured over all 1075 cached source
+# tiles: it never reaches 1.0, so the mapping has to be pivoted against what occurs rather than
+# against the theoretical range. See multidirectional_shade().
+SHADE_S_MIN = 0.25
+SHADE_S_MAX = 0.89
 SHADE_AZIMUTHS_DEG = (225.0, 270.0, 315.0, 360.0)   # Mark 1992 multidirectional set
 SHADE_ALTITUDE_DEG = 45.0
-Z_FACTOR = 1.6            # mild vertical exaggeration; relief at these zooms is otherwise near-flat
+# Vertical exaggeration. 1.6 was chosen when the shade range was so compressed that more exaggeration
+# had nowhere to go; with the pivot above it buys real separation in low country (the Appalachians and
+# the Ouachitas both read now) at the cost of a fraction of a per cent of pixels clipping to full shadow
+# in the steepest Rockies terrain.
+Z_FACTOR = 2.4
 
 
 # ---------------------------------------------------------------- PNG decode (dependency-free)
@@ -335,14 +361,25 @@ def multidirectional_shade(elev, y0, y1):
         acc += weight * np.clip(cosine, 0.0, 1.0)
         wsum += weight
     shade = acc / wsum                                          # 0..1; cos(zenith) on flat ground
-    # Recenter so FLAT ground sits slightly below neutral and only real slope earns the highlight. The
-    # naive mapping put flat terrain near the top of the range, which lifted the whole Great Plains into
-    # a visible grey wash — the opposite of what this mode is for.
+    # Map raw shade onto the multiplier with an EXPLICIT PIVOT ON FLAT GROUND.
+    #
+    # The old mapping was `t = clip((shade - flat*0.64) / 0.5)`, which needed a raw shade of 0.9525 to
+    # reach t = 1. Measured over the whole cached DEM the multidirectional shade never exceeds ~0.889,
+    # so the top of the declared range was UNREACHABLE: a nominal SHADE_HI of 1.32 actually topped out
+    # at 1.222, and the brightest twelve per cent of the range painted nothing at all. Flat ground also
+    # landed wherever the arithmetic happened to put it (t = 0.509) rather than anywhere chosen.
+    #
+    # Pivoting instead: flat ground is pinned to a multiplier of exactly 1.0 (the ramp colour is then
+    # what the ramp says it is), slopes falling away from the light interpolate down to SHADE_LO, and
+    # slopes facing it interpolate up to SHADE_HI across the range that actually occurs. The endpoints
+    # are measurements of this DEM, not guesses.
     flat = math.cos(math.radians(90.0 - SHADE_ALTITUDE_DEG))     # shade value on level ground
-    t = np.clip((shade - flat * 0.64) / 0.5, 0.0, 1.0)
-    lo, hi = SHADE_LO, SHADE_HI
-    out = lo + (hi - lo) * t
+    assert SHADE_S_MIN < flat < SHADE_S_MAX, "shade pivot outside the observed range"
+    below = SHADE_LO + (1.0 - SHADE_LO) * np.clip((shade - SHADE_S_MIN) / (flat - SHADE_S_MIN), 0.0, 1.0)
+    above = 1.0 + (SHADE_HI - 1.0) * np.clip((shade - flat) / (SHADE_S_MAX - flat), 0.0, 1.0)
+    out = np.where(shade <= flat, below, above)
     assert np.all(np.isfinite(out)), "shade produced non-finite values"
+    assert float(out.min()) >= SHADE_LO - 1e-3, "shade fell below its floor"
     return out.astype(np.float32)
 
 
@@ -477,11 +514,17 @@ def bake(preview=None):
 
     x0, _, _, _ = tile_range(SRC_ZOOM)
     levels = {}
-    # z7 comes from the z8-resolution mosaic: a 2x box reduce, i.e. 4 source samples per output pixel.
-    cur = box_downsample(rgba)
+    # Reduce the source-resolution mosaic down to the finest OUTPUT level. At MAX_ZOOM == SRC_ZOOM that
+    # is no reduction at all (the mosaic is already the right scale); each level below it costs one 2x
+    # box reduce. Writing this as a bounded loop rather than a single hardcoded call is what lets
+    # MAX_ZOOM move without silently shifting the whole pyramid by a factor of two.
+    assert SRC_ZOOM >= MAX_ZOOM, "MAX_ZOOM cannot exceed the source resolution — that would be invention"
+    cur = rgba
+    for _ in range(SRC_ZOOM - MAX_ZOOM):                        # bounded by SRC_ZOOM (rule 2)
+        cur = box_downsample(cur)
     del rgba
 
-    for z in range(MAX_ZOOM, -1, -1):                           # bounded (z7..z0)
+    for z in range(MAX_ZOOM, -1, -1):                           # bounded (MAX_ZOOM..z0)
         tiles = {}
         h, w = cur.shape[:2]
         n = 1 << z
