@@ -109,6 +109,75 @@ final class TerrainBundledGridTests: XCTestCase {
         XCTAssertLessThanOrEqual(maxSeen, 4425, "a cell above the CONUS ceiling is a refinement artifact")
     }
 
+    /// LOCAL plausibility, which the two GLOBAL ceiling tests above cannot see.
+    ///
+    /// `testNoImplausibleSpikes` and `testNoCellExceedsConusCeiling` both ask only "is anything taller
+    /// than Whitney". A phantom 475 m cell on Nantucket — where the true high ground is about 35 m —
+    /// passes both of them trivially, and that is exactly the artifact that shipped: NRST sweeps this
+    /// grid, so a 1,558 ft reading beside a sea-level island field turns the only airport within glide of
+    /// an offshore engine failure into a hard BLOCKED verdict.
+    ///
+    /// Islands and low coastal plains are the right place to assert this because their truth is known and
+    /// flat. Deliberately NOT a general "no cell exceeds its neighbourhood" rule: real coastal summits
+    /// (Cadillac Mountain rises 456 m almost from the water) would fail that, and a test that can be made
+    /// to pass by deleting real terrain is worse than no test.
+    func testLowCountryHasNoPhantomTerrain() throws {
+        try XCTSkipUnless(terrain.status == .ready, "no bundled grid")
+        // (name, lat range, lon range, true high ground in metres — generous)
+        // Ceilings are BARE-EARTH truth plus headroom for what this grid actually is: a max-aggregated
+        // SURFACE model, so a ~1 NM cell legitimately carries the tallest tree, tower or building in it.
+        // They are set to catch the class of artifact that shipped — Nantucket read 475 m and Martha's
+        // Vineyard 289 m against real high ground of 33 m and 95 m — not to assert bare earth, which this
+        // grid does not claim to be. A regression to that magnitude fails loudly; surface clutter does not.
+        let flatPlaces: [(String, ClosedRange<Double>, ClosedRange<Double>, Double)] = [
+            ("Nantucket",         41.23...41.32, (-70.25)...(-69.96), 110),   // true high ground 33 m
+            ("Martha's Vineyard", 41.34...41.44, (-70.78)...(-70.45), 140),   // Peaked Hill 95 m
+            ("Outer Banks NC",    35.20...35.95, (-75.75)...(-75.45),  70),   // Jockey's Ridge 30 m
+            ("Everglades FL",     25.40...26.10, (-81.20)...(-80.60),  90),   // essentially 3 m
+            ("Mississippi Delta", 29.20...29.80, (-90.20)...(-89.40),  95),   // essentially 5 m
+        ]
+        for (name, lats, lons, ceiling) in flatPlaces {
+            var worst = (v: -9999.0, lat: 0.0, lon: 0.0)
+            for latM in stride(from: Int(lats.lowerBound * 1000), through: Int(lats.upperBound * 1000), by: 10) {
+                for lonM in stride(from: Int(lons.lowerBound * 1000), through: Int(lons.upperBound * 1000), by: 10) {
+                    let c = Coord(lat: Double(latM) / 1000, lon: Double(lonM) / 1000)
+                    if let v = terrain.elevationM(at: c), v > worst.v { worst = (v, c.lat, c.lon) }
+                }
+            }
+            XCTAssertLessThanOrEqual(worst.v, ceiling,
+                "\(name): \(Int(worst.v)) m at \(worst.lat),\(worst.lon) — true high ground is under "
+                + "\(Int(ceiling)) m. A gross high in low country is a source artifact, and NRST reads it "
+                + "as terrain blocking the glide.")
+        }
+    }
+
+    /// The hold-out half of the test above: the same low-country rule must NOT have eaten real terrain.
+    /// Isolated peaks in otherwise low country are precisely what an over-eager artifact filter destroys,
+    /// and terrain reading LOW is the unsafe direction — it raises reported AGL.
+    func testIsolatedRealPeaksSurvive() throws {
+        try XCTSkipUnless(terrain.status == .ready, "no bundled grid")
+        let peaks: [(String, Double, Double, Double)] = [       // name, lat, lon, true summit m
+            ("Mt Monadnock NH",  42.8613, -72.1085, 965),
+            ("Mt Wachusett MA",  42.4890, -71.8860, 622),
+            ("Stone Mountain GA", 33.8053, -84.1455, 514),
+            ("Cadillac Mtn ME",  44.3528, -68.2247, 466),       // coastal: rises ~450 m from the sea
+            ("Bear Butte SD",    44.4722, -103.4283, 1283),
+            ("Mt Magazine AR",   35.1672, -93.6444, 839),
+        ]
+        for (name, lat, lon, truth) in peaks {
+            // Take the local max over a small box — the summit may not sit exactly on a cell centre.
+            var best = -9999.0
+            for dLat in stride(from: -0.02, through: 0.02, by: 0.01) {
+                for dLon in stride(from: -0.02, through: 0.02, by: 0.01) {
+                    if let v = terrain.elevationM(at: Coord(lat: lat + dLat, lon: lon + dLon)) { best = max(best, v) }
+                }
+            }
+            XCTAssertGreaterThan(best, truth * 0.55,
+                "\(name) reads \(Int(best)) m against a true \(Int(truth)) m — an artifact filter has "
+                + "removed real terrain, which raises reported AGL and is the unsafe direction.")
+        }
+    }
+
     func testOutsideCoverageIsRefusedNotGuessed() {
         XCTAssertNil(terrain.elevationM(at: Coord(lat: 60.0, lon: -150.0)), "Alaska is outside the CONUS grid")
         XCTAssertNil(terrain.elevationM(at: Coord(lat: 48.0, lon: 2.35)), "Paris is outside the CONUS grid")

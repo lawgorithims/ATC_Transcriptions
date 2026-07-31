@@ -2047,6 +2047,16 @@ struct MapLibreChartView: UIViewRepresentable {
                 }
             }
             plateKey = s.geoKey; plateOpacity = s.opacity; plateInverted = s.inverted; plateImageKey = imgKey
+            #if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("--debug-plate") {
+                let ids = style.layers.map(\.identifier).joined(separator: ",")
+                let q = Coordinator.plateQuad(s)
+                NSLog("CommSight PLATE dbg: layer=%@ img=%@ quadTL=%.4f,%.4f quadBR=%.4f,%.4f center=%.4f,%.4f zoom=%.2f layers=[%@]",
+                      inLayer.rawValue, s.displayImage == nil ? "NIL" : "ok",
+                      q.topLeft.latitude, q.topLeft.longitude, q.bottomRight.latitude, q.bottomRight.longitude,
+                      map.centerCoordinate.latitude, map.centerCoordinate.longitude, map.zoomLevel, ids)
+            }
+            #endif
             // Feed the host chrome's corner gear (the ONLY path to dim/invert/hide/remove the plate) + frame
             // the plate on first load so it never loads off-screen (mirrors ChartMapView's mapFrameRect).
             plateCornersCoord = Coordinator.plateTopCorners(s)
@@ -2075,11 +2085,29 @@ struct MapLibreChartView: UIViewRepresentable {
             let lats = cs.map(\.latitude), lons = cs.map(\.longitude)
             guard let minLat = lats.min(), let maxLat = lats.max(),
                   let minLon = lons.min(), let maxLon = lons.max() else { return }
-            let sw = CLLocationCoordinate2D(latitude: minLat, longitude: minLon)
-            let ne = CLLocationCoordinate2D(latitude: maxLat, longitude: maxLon)
-            map.setVisibleCoordinateBounds(MLNCoordinateBounds(sw: sw, ne: ne),
-                                           edgePadding: UIEdgeInsets(top: 80, left: 60, bottom: 80, right: 60),
-                                           animated: true, completionHandler: nil)
+            // COMPUTE THE CAMERA, DO NOT ASK FOR IT.
+            //
+            // `setVisibleCoordinateBounds` has to invert the projection to solve a centre and zoom from a
+            // box, and on the vertical-perspective globe that solve degenerates when it runs before the
+            // projection has settled — measured, with a correct Boston quad in hand it produced
+            // `center = -85.05, 27.34  zoom = 22`: the south pole at maximum zoom, with the plate layer
+            // present, ordered correctly and holding a good image the whole time. It looked like "the
+            // plate goes away" and it showed up in Dark mode because Dark loads no chart packs, so the
+            // framing fires earliest there. A centre and a zoom derived directly from the quad need no
+            // inverse solve and cannot degenerate.
+            let mid = CLLocationCoordinate2D(latitude: (minLat + maxLat) / 2,
+                                             longitude: (minLon + maxLon) / 2)
+            let lonSpan = max(maxLon - minLon, 1e-4)
+            let latSpan = max(maxLat - minLat, 1e-4)
+            // Web-mercator: the world is 360 degrees across 256 points at z0. Fit the WIDER axis, then
+            // back off a little for the edge padding the box deserves.
+            let w = max(Double(map.bounds.width), 1), h = max(Double(map.bounds.height), 1)
+            let zLon = log2(360.0 / lonSpan * w / 256.0)
+            let zLat = log2(180.0 / latSpan * h / 256.0)
+            let zoom = min(max(min(zLon, zLat) - 0.35, 2), 14)
+            guard mid.latitude.isFinite, mid.longitude.isFinite, zoom.isFinite,
+                  CLLocationCoordinate2DIsValid(mid) else { return }
+            map.setCenter(mid, zoomLevel: zoom, animated: false)
             // CLAIM THE FRAMING. `frameIfNeeded` is a ONE-SHOT that keeps retrying until it finds a target
             // (saved camera, else route, else ownship) — and it was never told the plate had already
             // framed, so whichever ran last won. Loading a plate then framed on the filed ROUTE instead,
