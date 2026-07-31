@@ -454,6 +454,19 @@ struct SettingsSheet: View {
                     .accessibilityIdentifier("settings-flight-simulator")
                 }
                 NavigationLink {
+                    NotamCredentialView(store: model.notams, palette: p)
+                } label: {
+                    HStack {
+                        Label("NOTAM feed", systemImage: "bell.badge")
+                            .font(.dsLabel).foregroundStyle(p.text)
+                        Spacer()
+                        Text(model.notams.credentialConfigured ? "key set" : "no key")
+                            .font(.dsLabelS).foregroundStyle(p.textDim)
+                        Image(systemName: "chevron.right").font(.dsLabelS).foregroundStyle(p.textDim)
+                    }
+                }
+                .accessibilityIdentifier("settings-notam-feed")
+                NavigationLink {
                     ScrollView {
                         WhatsNewContent(entries: WhatsNew.releaseNotes)
                             .environmentObject(model)
