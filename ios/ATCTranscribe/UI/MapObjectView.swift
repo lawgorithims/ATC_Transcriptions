@@ -627,7 +627,7 @@ struct MapObjectView: View {
         return HStack(spacing: 8) {
             Button { Haptics.impact(.light); plate = proc } label: {
                 HStack(spacing: 7) {
-                    Image(systemName: "doc.richtext").font(.dsLabel).foregroundStyle(p.accent)
+                    ProcedureTypeBadge(procedure: proc, palette: p)
                     Text(proc.name).font(.callout).foregroundStyle(p.text).lineLimit(2)
                     if auto { Image(systemName: "scope").font(.dsLabelS).foregroundStyle(p.good) }  // auto-aligns
                     Spacer(minLength: 4)

@@ -58,6 +58,19 @@ enum Procedures {
         return (data.airports[key] ?? []).map { AirportProcedure(code: $0.c, name: $0.n, pdf: $0.f) }
     }
 
+    /// Every distinct FAA chart code in the bundled index. Small (8 in the shipped cycle: IAP, MIN, DP,
+    /// STR, APD, HOT, ODP, LAH) and used to assert that the type-icon vocabulary covers the whole
+    /// catalogue — a new code in a future cycle would otherwise show a generic document icon with no
+    /// warning. Not on a hot path.
+    static func allChartCodes() -> Set<String> {
+        var out = Set<String>()
+        for recs in data.airports.values {                        // bounded by the bundled index (rule 2)
+            for r in recs where !r.c.isEmpty { out.insert(r.c) }
+        }
+        assert(out.count <= 64, "unexpectedly many distinct chart codes")
+        return out
+    }
+
     /// Does the airport publish ANY chart? A cheap membership test (no `[AirportProcedure]` allocation) —
     /// used by the hot nearby-airport filters that scan up to 120 candidates per GPS update.
     static func hasAirport(_ ident: String) -> Bool {
