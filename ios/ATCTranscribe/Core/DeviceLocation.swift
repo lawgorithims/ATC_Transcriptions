@@ -38,6 +38,24 @@ final class DeviceLocation: NSObject, ObservableObject, CLLocationManagerDelegat
     private var staleTimer: Timer?
     private static let staleTickS: TimeInterval = 5
 
+    // MARK: simulated flight (developer diagnostics only)
+
+    /// True while a SIMULATED position is being published instead of the receiver's. Everything that
+    /// draws ownship watches this so the state can never be invisible.
+    @Published private(set) var isSimulating = false
+    private var sim: ApproachSimulator?
+    private var simTimer: Timer?
+    private var simSpeedMultiplier: Double = 1
+    private var simPaused = false
+    /// Model tick. 4 Hz is smooth on the profile view without being a precision timer.
+    private static let simTickS: TimeInterval = 0.25
+    /// Last model sample, for the control panel's readout.
+    fileprivate var simSample: ApproachSimulator.Sample? {
+        get { _simSample }
+        set { _simSample = newValue }
+    }
+    private var _simSample: ApproachSimulator.Sample?
+
     /// Bounded log of this session's integrity state transitions (diagnostics / flight log).
     var integrityEvents: [GPSIntegrityEvent] { monitor.events }
 
@@ -73,15 +91,23 @@ final class DeviceLocation: NSObject, ObservableObject, CLLocationManagerDelegat
         manager.stopUpdatingLocation()
         staleTimer?.invalidate()
         staleTimer = nil
+        // A simulation MUST NOT survive the session that hosted it. Relying on the caller to disarm
+        // first would make "is the position real?" depend on call order, and the scene-phase path calls
+        // stop() on backgrounding — so an armed simulation would come back with the app.
+        stopSimulation()
         monitor.reset()                     // a resumed session must not diff across the paused gap
         integrity = GPSIntegrityAssessment()
     }
 
-    deinit { staleTimer?.invalidate() }
+    deinit { staleTimer?.invalidate(); simTimer?.invalidate() }
 
     /// Feed + staleness tick start together and stop together — one lifecycle, so no timer outlives the
     /// feed it watches.
     private func startFeed() {
+        // Re-entrant: `locationManagerDidChangeAuthorization` calls this whenever authorization changes,
+        // which can happen mid-simulation. Restarting the receiver then would interleave real fixes with
+        // simulated ones in the same publisher — the one state that would be genuinely dangerous.
+        guard !isSimulating else { return }
         manager.startUpdatingLocation()
         staleTimer?.invalidate()
         let t = Timer.scheduledTimer(withTimeInterval: Self.staleTickS, repeats: true) { [weak self] _ in
@@ -93,6 +119,7 @@ final class DeviceLocation: NSObject, ObservableObject, CLLocationManagerDelegat
     }
 
     func locationManager(_ m: CLLocationManager, didUpdateLocations locs: [CLLocation]) {
+        guard !isSimulating else { return }        // a late real fix must not overwrite the simulation
         guard let l = locs.last, l.horizontalAccuracy >= 0 else { return }   // negative accuracy = invalid
         let c = Coord(lat: l.coordinate.latitude, lon: l.coordinate.longitude)
         let f = Self.widen(l, coord: c)
@@ -151,4 +178,105 @@ final class DeviceLocation: NSObject, ObservableObject, CLLocationManagerDelegat
     }
 
     func locationManager(_ m: CLLocationManager, didFailWithError error: Error) {}
+}
+
+// MARK: - Simulated flight
+
+extension DeviceLocation {
+
+    /// Begin publishing a SIMULATED position in place of the receiver's.
+    ///
+    /// This exists so the approach vertical guidance can be flown on the ground. It is a developer
+    /// diagnostic and is gated behind `AppModel.armGPSSimulator()`, which refuses whenever a real
+    /// aircraft could be involved.
+    ///
+    /// THE INTEGRITY MONITOR IS DELIBERATELY BYPASSED. Feeding it these fixes would be worse than
+    /// useless: at any meaningful speed multiplier the displacement per wall-clock second exceeds what
+    /// `GPSIntegrityMonitor` allows, so it would latch `.suspect`, and `.suspect` suppresses ownship —
+    /// hiding the very aircraft under test. The assessment published here is hand-built and states
+    /// `.nominal`, which is honest: the simulated stream really does have no integrity faults. What
+    /// keeps this safe is not the monitor but `isSimulating` being published and shown, everywhere.
+    func startSimulation(_ simulator: ApproachSimulator, speedMultiplier: Double = 1) {
+        assert(speedMultiplier >= 1 && speedMultiplier <= 20, "startSimulation: implausible multiplier")
+        manager.stopUpdatingLocation()
+        staleTimer?.invalidate()
+        staleTimer = nil
+        monitor.reset()
+        sim = simulator
+        simSpeedMultiplier = min(max(speedMultiplier, 1), 20)
+        simPaused = false
+        isSimulating = true
+        simTimer?.invalidate()
+        let t = Timer.scheduledTimer(withTimeInterval: Self.simTickS, repeats: true) { [weak self] _ in
+            self?.tickSimulation()
+        }
+        t.tolerance = Self.simTickS / 4
+        simTimer = t
+        tickSimulation()                       // publish immediately rather than after the first tick
+    }
+
+    /// Stop the simulation and hand the publishers back to the receiver. Idempotent.
+    func stopSimulation() {
+        guard isSimulating || simTimer != nil else { return }
+        simTimer?.invalidate()
+        simTimer = nil
+        sim = nil
+        isSimulating = false
+        simPaused = false
+        coord = nil
+        courseDeg = nil
+        fix = nil
+        integrity = GPSIntegrityAssessment()   // back to `.unknown` until a real fix arrives
+        monitor.reset()
+        if running { startFeed() }
+    }
+
+    func setSimulation(paused: Bool) { simPaused = paused }
+    func setSimulation(speedMultiplier: Double) {
+        assert(speedMultiplier > 0, "setSimulation: non-positive multiplier")
+        simSpeedMultiplier = min(max(speedMultiplier, 1), 20)
+    }
+    func updateSimulation(config: ApproachSimulator.Config) { sim?.update(config: config) }
+    func placeSimulation(atNm d: Double) { sim?.place(atNm: d) }
+    func flySimulatedMissed() { sim?.flyMissed() }
+    /// The model's current sample, for the control panel's live readout.
+    var simulationSample: ApproachSimulator.Sample? { simSample }
+
+    /// One model step, published through the same four properties a real fix uses.
+    private func tickSimulation() {
+        guard isSimulating, !simPaused, var s = sim else { return }
+        // The multiplier scales FLIGHT time per wall-clock tick. Ground speed itself is never scaled —
+        // it is what `requiredVerticalSpeedFpm` consumes, and inflating it would make the advisory
+        // describe an aeroplane nobody is flying.
+        let sample = s.step(dt: Self.simTickS * simSpeedMultiplier)
+        sim = s
+        simSample = sample
+        publish(sample)
+    }
+
+    private func publish(_ sample: ApproachSimulator.Sample) {
+        var f = DeviceFix(coord: sample.coord,
+                          altitudeMSLm: sample.altitudeFtMSL * 0.3048,
+                          groundSpeedMps: sample.groundSpeedKt * 0.514444,
+                          courseDeg: sample.courseDegTrue,
+                          horizontalAccuracyM: 5)
+        f.timestamp = Date()
+        f.verticalAccuracyM = 3
+        f.speedAccuracyMps = 0.5
+        f.courseAccuracyDeg = 2
+        f.isSimulated = false          // the OS flag means "spoofed by software"; `isSimulating` is our own
+        var a = GPSIntegrityAssessment()
+        a.state = .nominal
+        a.at = f.timestamp
+        a.horizontalAccuracyM = 5
+        a.courseUsable = sample.groundSpeedKt >= 30
+        a.speedUsable = true
+        // verticalSpeedFpm is documented as a MEASURED quantity. Publishing the model's commanded rate
+        // would make the on-screen VSI identically equal to the advisory it is supposed to be checked
+        // against, so the one instrument that could disagree never would. Left nil on purpose.
+        coord = sample.coord
+        courseDeg = a.courseUsable ? sample.courseDegTrue : nil
+        fix = f
+        integrity = a
+    }
 }

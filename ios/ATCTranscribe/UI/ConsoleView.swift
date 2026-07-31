@@ -197,6 +197,11 @@ struct ConsoleView: View {
                 if let eng = model.nrstEngagement { nrstEngagedStrip(eng) }
                 if let sug = model.efbSuggestion { efbSuggestionBanner(sug) }
                 if let hz = model.hazardAlert, !hz.isEmpty { hazardBanner(hz) }
+                // A SIMULATED position outranks every other advisory in this stack: any of them may be
+                // read as describing the aeroplane, and while this is armed none of them do.
+                SimulatedGPSBanner(deviceLocation: model.deviceLocation, palette: model.palette) {
+                    model.disarmSimulator()
+                }
                 // GPS integrity / interference advisory. It belongs HERE in the bar stack, not as an
                 // overlay on the map: the map is full-bleed UNDER this chrome, so a top-aligned overlay
                 // on it renders beneath the top bar and is never seen.
