@@ -20,8 +20,12 @@ struct Metar: Decodable, Equatable, Sendable {
 
     struct Cloud: Decodable, Equatable, Sendable { let cover: String?; let base: Int? }
 
+    /// Surface temperature, °C. Needed for the Baro-VNAV temperature limit on an LNAV/VNAV line, which
+    /// is a real restriction on the aircraft's vertical guidance rather than a comfort figure.
+    let tempC: Double?
+
     private enum CodingKeys: String, CodingKey {
-        case icaoId, wdir, wspd, wgst, visib, clouds, rawOb, obsTime, fltCat
+        case icaoId, wdir, wspd, wgst, visib, clouds, rawOb, obsTime, fltCat, temp
     }
 
     init(from decoder: Decoder) throws {
@@ -41,6 +45,27 @@ struct Metar: Decodable, Equatable, Sendable {
         rawOb = try? c.decodeIfPresent(String.self, forKey: .rawOb)
         obsEpoch = try? c.decodeIfPresent(Int.self, forKey: .obsTime)
         fltCatRaw = try? c.decodeIfPresent(String.self, forKey: .fltCat)
+        // The feed usually carries `temp`; when it does not, the raw observation always does.
+        if let t = try? c.decodeIfPresent(Double.self, forKey: .temp) { tempC = t }
+        else { tempC = Self.temperatureFromRaw(rawOb) }
+    }
+
+    /// The `TT/DD` group of a raw METAR, where a leading `M` means minus: `M05/M12` is −5 °C.
+    ///
+    /// Anchored on the wind and altimeter groups around it so a runway designator or a visibility
+    /// fraction elsewhere in the observation cannot be mistaken for a temperature.
+    static func temperatureFromRaw(_ raw: String?) -> Double? {
+        guard let raw, !raw.isEmpty else { return nil }
+        let pattern = #"(?:^|\s)(M?\d{2})/(M?\d{2})(?=\s+[AQ]\d{4}|\s|$)"#
+        guard let re = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let ns = raw as NSString
+        guard let m = re.firstMatch(in: raw, range: NSRange(location: 0, length: ns.length)),
+              m.numberOfRanges > 1 else { return nil }
+        var text = ns.substring(with: m.range(at: 1))
+        var sign = 1.0
+        if text.hasPrefix("M") { sign = -1; text.removeFirst() }
+        guard let v = Double(text), v <= 70 else { return nil }
+        return sign * v
     }
 
     /// `visib` is a Double ("6.0") or a String ("10+", "1 1/2") — take the leading numeric.

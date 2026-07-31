@@ -99,12 +99,14 @@ struct MapObjectView: View {
         // frequencies, altitudes, minimums, and profile the coded waypoints can't show.
         .fullScreenCover(item: $plate) { proc in
             PlateViewer(procedure: proc, airport: plateAirport, palette: model.palette, deviceLocation: model.deviceLocation,
+                        minimaStore: model.minima,
                         onSendToMap: { url in
                             model.overlayPlate(proc, airport: plateAirport, pdf: url)
                             plate = nil; onClose()   // dismiss viewer + panel so the map (with the plate) is visible
                         },
                         onClose: { plate = nil })
                 .environmentObject(model)
+                .environmentObject(metars)
         }
         .sheet(item: $activateTarget) { t in
             ActivateApproachSheet(candidates: t.candidates, contextLabel: t.proc.name)

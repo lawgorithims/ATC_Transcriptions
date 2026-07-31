@@ -383,6 +383,8 @@ final class AppModel: ObservableObject {
 
     /// The Flight Bag plate downloader (per-airport / route / region bundle downloads + cache stats).
     let plateBag = PlateBag()
+    /// Minima read off the plates the pilot has already downloaded. Parsed once each, off the main actor.
+    let minima = MinimaStore()
     /// Continuous device-GPS ownship (for a Stratux-less iPad) — the plate viewer starts/stops it and
     /// observes it directly. Preferred fallback after a valid Stratux fix (see `ownshipCoord`).
     let deviceLocation = DeviceLocation()
