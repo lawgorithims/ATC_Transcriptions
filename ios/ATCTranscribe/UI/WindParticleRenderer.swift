@@ -57,7 +57,15 @@ final class WindParticleRenderer: NSObject, MTKViewDelegate {
     /// the upper bound a single affine no longer approximates the globe across the screen.
     static let fullAlphaSpan = 30.0
     static let cutoffSpan = 45.0
-    static let segmentWidth: Float = 2.0
+    /// Base streak width in points, before `sizeScale`. Doubled from the original 2.0: at 2 points a
+    /// streak is one physical pixel of colour on a Retina panel with a half-resolution trail behind it,
+    /// which is why the field read as faint haze rather than as wind.
+    static let segmentWidth: Float = 4.0
+
+    /// Pilot's size multiplier from the layers menu (0.5…3.0). Applied to BOTH the streak width and the
+    /// minimum dash length, so a bigger sprite is longer as well as thicker — scaling width alone just
+    /// makes fat dots. Static for the same reason as `WindRamp.opacityScale`: one value, two readers.
+    nonisolated(unsafe) static var sizeScale: Float = 1.0
     /// Shortest streak drawn, in points. A frame's true displacement in light air is a fraction of a
     /// point — a sliver that covers no sample point and rasterises to NOTHING, so calm regions rendered
     /// as empty space rather than as slow air. Every particle now paints at least a short dash along its
@@ -254,6 +262,21 @@ final class WindParticleRenderer: NSObject, MTKViewDelegate {
         }
     }
 
+    /// Move every particle (head AND tail) by the map's frame-to-frame motion, so it stays over the same
+    /// ground. `motion` is the same transform the fade pass uses to re-register the trail texture, so the
+    /// heads and their streaks now agree during a pan instead of pulling apart.
+    private func advect(by motion: CGAffineTransform) {
+        guard motion != .identity else { return }
+        assert(motion.a.isFinite && motion.d.isFinite, "WindParticleRenderer: non-finite map motion")
+        for i in particles.indices {                            // bounded by the pool size (rule 2)
+            let head = CGPoint(x: CGFloat(particles[i].x), y: CGFloat(particles[i].y)).applying(motion)
+            let tail = CGPoint(x: CGFloat(particles[i].prevX), y: CGFloat(particles[i].prevY)).applying(motion)
+            guard head.x.isFinite, head.y.isFinite, tail.x.isFinite, tail.y.isFinite else { continue }
+            particles[i].x = Float(head.x);     particles[i].y = Float(head.y)
+            particles[i].prevX = Float(tail.x); particles[i].prevY = Float(tail.y)
+        }
+    }
+
     /// Points per second per knot, mildly scaled by zoom so the flow reads at both continental and
     /// terminal scales without becoming either a crawl or a blur.
     static func renderSpeedScale(zoom: Double) -> Float {
@@ -280,10 +303,10 @@ final class WindParticleRenderer: NSObject, MTKViewDelegate {
         guard len > 0.001 else { return }                     // genuinely calm: no direction to draw along
         // Stretch the drawn streak back to the minimum dash length along the travel direction, so light air
         // is visible as slow motion instead of vanishing below the rasteriser's sample grid.
-        let drawn = max(len, Self.minSegmentLength)
+        let drawn = max(len, Self.minSegmentLength * Self.sizeScale)
         let ux = dx / len, uy = dy / len
         let tailX = p.x - ux * drawn, tailY = p.y - uy * drawn
-        let half = Self.segmentWidth / 2
+        let half = Self.segmentWidth * Self.sizeScale / 2
         let nx = -uy * half, ny = ux * half
         let rgb = ramp.rgb(kt: p.speedKt)
         // Fade in at birth and out at death so respawns do not pop.
@@ -334,9 +357,19 @@ final class WindParticleRenderer: NSObject, MTKViewDelegate {
         blanked = false
         makeTrailTextures(drawable: view.drawableSize)
         let dt = frameDelta()
-        step(dt: dt, camera: camera, field: field)
+        // CARRY THE PARTICLES THROUGH THE MAP'S MOTION FIRST, THEN STEP THEM BY WIND.
+        //
+        // Particles are stored in VIEW points, but they represent air over the GROUND. The trail texture
+        // was already being re-registered through this same motion, and the particle heads were not — so
+        // a pan slid the terrain out from under a stationary field, and the segment drawn from `prev` to
+        // `current` spanned the pan displacement as well as the wind step. Every streak stretched and
+        // swung toward the drag: the pilot was, visibly, changing the wind by moving the map. Advecting
+        // first pins each particle to its ground point, leaving the drawn segment to represent the wind
+        // and nothing else.
         let motion = lastCamera.flatMap { camera.transform.delta(from: $0) } ?? .identity
         lastCamera = camera.transform
+        advect(by: motion)
+        step(dt: dt, camera: camera, field: field)
         encode(view: view, motion: motion, alpha: Float(alpha))
     }
 

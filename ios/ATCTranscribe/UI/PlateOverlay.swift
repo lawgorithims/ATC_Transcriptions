@@ -310,6 +310,16 @@ struct PlateMenuBar: View {
                         showActivate = true
                     }
                 }
+                // SMART BASE — the decluttered dark chart, offered HERE because it is a property of how
+                // you want to read the PLATE, not a separate map layer you go hunting for in another menu.
+                // Under a plate the base map is context: the near-black, airway-free chart is what stops
+                // the sectional's ink fighting the approach's. Toggles back to whatever base was selected
+                // before, so it reads as a mode on this plate rather than a one-way trip.
+                menuAction(model.chartLayer == .smartDark ? "Chart base" : "Smart base",
+                           model.chartLayer == .smartDark ? "map" : "moon.stars",
+                           id: "plate-menu-smartbase", active: model.chartLayer == .smartDark) {
+                    model.toggleSmartBase()
+                }
             }
             // Opacity slider (in normal screen space → no MapKit gesture conflict)
             HStack(spacing: 8) {

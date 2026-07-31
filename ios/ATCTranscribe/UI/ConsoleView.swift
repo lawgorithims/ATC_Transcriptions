@@ -193,6 +193,7 @@ struct ConsoleView: View {
                 if let proc = model.previewedProcedure { procedureStrip(proc) }
                 // The engine-out engagement strip outranks every advisory below it — it is the one
                 // "you are currently doing this" mode banner that must never be scrolled behind chatter.
+                if let profile = model.approachProfile { approachProfileStrip(profile) }
                 if let eng = model.nrstEngagement { nrstEngagedStrip(eng) }
                 if let sug = model.efbSuggestion { efbSuggestionBanner(sug) }
                 if let hz = model.hazardAlert, !hz.isEmpty { hazardBanner(hz) }
@@ -395,6 +396,29 @@ struct ConsoleView: View {
         }
         .padding(.horizontal, 12).padding(.vertical, 7)
         .background(p.surface)
+        .transition(Self.barTransition)
+    }
+
+    /// The approach's PROFILE — the side-on picture with the aircraft in it.
+    ///
+    /// In the top chrome with the other approach state, not floating over the map, because it is read
+    /// while flying the approach and a strip cannot be covered by a card or panned off screen. Collapsed
+    /// by default on compact width, where 132 points of chart is most of the screen.
+    @ViewBuilder private func approachProfileStrip(_ profile: ApproachProfile) -> some View {
+        let pos = model.presentPosition.flatMap { c -> ApproachProfile.Position? in
+            let readout = GPSReadout.merge(stratux: model.freshStratuxGPS, device: model.deviceLocation.fix)
+            guard let alt = readout.altitudeFtMSL else { return nil }
+            let rwy = CIFP.runways(airport: profile.airport).first {
+                $0.designator.uppercased().hasSuffix((model.activeApproach?.runway ?? "").uppercased())
+            }
+            return profile.position(of: c, altitudeFtMSL: alt, threshold: rwy?.coord)
+        }
+        VStack(spacing: 0) {
+            ApproachProfileView(profile: profile, position: pos, terrain: model.approachProfileTerrain)
+                .environmentObject(model)
+                .padding(.horizontal, 12).padding(.vertical, 8)
+        }
+        .background(model.palette.surface)
         .transition(Self.barTransition)
     }
 

@@ -89,7 +89,7 @@ final class AppModel: ObservableObject {
             // While the Stratux link is streaming, the airport coordinate doesn't drive traffic (the
             // receiver reports its own in-range aircraft via on-board GPS), so skip the clear/re-sync —
             // it would only blink the live Stratux traffic off for a refresh tick.
-            if !stratuxTrafficActive,
+            if !stratuxTrafficSupplying,
                AirportCoordinates.coordinate(icao: airport) != AirportCoordinates.coordinate(icao: oldValue) {
                 clearTraffic(); syncADSB()
             }
@@ -607,6 +607,26 @@ final class AppModel: ObservableObject {
     }
 
     func clearPlateOverlay() { plateOverlay = nil; showPlateMenu = false }
+
+    /// Flip the base chart between the decluttered night base and whatever the pilot had before.
+    ///
+    /// Exposed from the PLATE menu because under a plate the base is context, not content: the reason to
+    /// want it is that a sectional's ink fights the approach chart's. Remembering the previous layer makes
+    /// it a MODE on this plate — one tap in, one tap back — instead of a one-way trip that leaves the
+    /// pilot to remember which base they were on.
+    func toggleSmartBase() {
+        if chartLayer == .smartDark {
+            chartLayer = preSmartBaseLayer ?? .sectional
+            preSmartBaseLayer = nil
+        } else {
+            preSmartBaseLayer = chartLayer
+            chartLayer = .smartDark
+        }
+        Haptics.impact(.light)
+    }
+    /// The base to come back to. In memory only: it describes the current glance at a plate, and a
+    /// restored "previous layer" from another session would be a claim about intent we do not have.
+    private var preSmartBaseLayer: ChartLayer?
     /// Floor at `plateMinOpacity` — a plate must never fade to invisible, or the pilot can forget one is
     /// still overlaid on the map.
     static let plateMinOpacity = 0.15
@@ -777,6 +797,41 @@ final class AppModel: ObservableObject {
     /// 9 = FL390), driven by the map's left-edge altitude slider. Persisted. Clamped on write so a value
     /// from a future build with more levels degrades instead of trapping; switching levels costs no
     /// network, because one download carries the whole column.
+    /// Wind sprite palette. `.auto` is the shipped behaviour; the fixed hues exist because a spectrum
+    /// ramp's low end sits at almost the same value as a night chart and light air vanished into it.
+    @Published var windPalette: WindRamp.Palette =
+        UserDefaults.standard.string(forKey: "atc.map.windPalette")
+            .flatMap(WindRamp.Palette.init(rawValue:)) ?? .auto {
+        didSet {
+            UserDefaults.standard.set(windPalette.rawValue, forKey: "atc.map.windPalette")
+        }
+    }
+    /// Wind sprite size multiplier (0.5…3.0). The BASE width already doubled; this is the pilot's trim on
+    /// top of it, because how big a streak needs to be depends on the panel and the light.
+    @Published var windSizeScale: Double = AppModel.storedWindScale("atc.map.windSize") {
+        didSet {
+            let c = min(max(windSizeScale, 0.5), 3.0)
+            if c != windSizeScale { windSizeScale = c; return }      // re-fires, then persists
+            UserDefaults.standard.set(windSizeScale, forKey: "atc.map.windSize")
+            WindParticleRenderer.sizeScale = Float(windSizeScale)
+        }
+    }
+    /// Wind sprite opacity multiplier (0.6…1.8) — the contrast trim.
+    @Published var windOpacityScale: Double = AppModel.storedWindScale("atc.map.windOpacity") {
+        didSet {
+            let c = min(max(windOpacityScale, 0.6), 1.8)
+            if c != windOpacityScale { windOpacityScale = c; return }
+            UserDefaults.standard.set(windOpacityScale, forKey: "atc.map.windOpacity")
+            WindRamp.opacityScale = Float(windOpacityScale)
+        }
+    }
+    /// A missing key reads 0 from UserDefaults, which would render the sprites invisible on first launch —
+    /// so absent means 1.0, not zero. Same trap the chart-brightness slider documents.
+    nonisolated static func storedWindScale(_ key: String) -> Double {
+        let v = UserDefaults.standard.double(forKey: key)
+        return v > 0 ? v : 1.0
+    }
+
     @Published var windLevelIndex = UserDefaults.standard.integer(forKey: "atc.map.windLevel") {
         didSet {
             let clamped = min(max(windLevelIndex, 0), WindLevel.allCases.count - 1)
@@ -1087,7 +1142,17 @@ final class AppModel: ObservableObject {
         stratuxGPS = gps
     }
 
-    @Published private(set) var stratuxStatus: StratuxStatus = .idle
+    @Published private(set) var stratuxStatus: StratuxStatus = .idle {
+        didSet {
+            // The internet poller stands down only while the Stratux is CONNECTED, so its connection
+            // state is an EDGE that has to reconcile the other feed — otherwise a receiver that drops
+            // mid-flight leaves the pilot with no traffic at all until they toggle something, which is
+            // the same "a restored toggle is not an edge" trap that left radar dead for a whole session.
+            guard didFinishInit, stratuxStatus != oldValue else { return }
+            let wasSupplying = (oldValue == .connected), nowSupplying = (stratuxStatus == .connected)
+            if wasSupplying != nowSupplying { syncADSB() }
+        }
+    }
     /// Built in `init` alongside `adsbService`.
     private var stratuxService: StratuxService!
 
@@ -1426,6 +1491,12 @@ final class AppModel: ObservableObject {
         // restored toggle is not an edge, so every poller must be reconciled explicitly here.
         syncRadar()
         syncWind()       // and the wind overlay, for exactly the same reason
+        // Seed the renderer's statics from the persisted trims. A `didSet` does NOT fire for the value an
+        // initialiser assigns, so without this the pilot's saved sprite size and contrast were silently
+        // 1.0 for the whole session and only took effect after they touched the slider — the same class of
+        // bug as the radar layer that never started until it was toggled (build 99).
+        WindParticleRenderer.sizeScale = Float(windSizeScale)
+        WindRamp.opacityScale = Float(windOpacityScale)
         refreshTripStats()   // seed the flight-plan strip's stats row from the restored plan
         // Under thermal pressure the map flattens its terrain + pauses network layers (it is NEVER torn
         // down). `--thermal` (QA-only, non-persisting) forces the state so the graceful degradation is
@@ -2363,7 +2434,12 @@ final class AppModel: ObservableObject {
     /// *loaded* procedure: this is the one being flown, it is what arms the missed-approach control,
     /// and it is what the map draws as the active approach path. Transient by design — an approach is
     /// a phase of THIS flight, so it is not persisted across launches.
-    @Published var activeApproach: ActiveApproach?
+    @Published var activeApproach: ActiveApproach? {
+        didSet {
+            guard didFinishInit, activeApproach?.id != oldValue?.id else { return }
+            rebuildApproachProfile()
+        }
+    }
 
     /// Activate an approach: amend the route to join it at `entry`, load its legs, and arm the missed.
     ///
@@ -2433,6 +2509,67 @@ final class AppModel: ObservableObject {
         Haptics.impact(.medium)
         NSLog("CommSight: approach ACTIVATED %@ %@ entry=%@ legs=%d missed=%d",
               proc.airport, proc.ident, entry.label, fixes.count, missedFixes.count)
+    }
+
+    // MARK: - Approach vertical profile
+
+    /// The side-on profile of the active approach's final segment, rebuilt when the approach changes.
+    ///
+    /// Held rather than recomputed per render: it reads the CIFP legs and the runway record, which is a
+    /// database round trip that has no business running inside a view body several times a second.
+    @Published private(set) var approachProfile: ApproachProfile?
+
+    /// Terrain under that final segment, sampled once with the approach. Same reason, and the same
+    /// surface-model caveats as the AGL readout apply — it is situational awareness, not an obstacle
+    /// database, which is exactly why the profile draws it as ground rather than as a clearance line.
+    @Published private(set) var approachProfileTerrain: [ApproachTerrainSample] = []
+
+    /// Rebuild the profile for the active approach (or clear it). Called from the `activeApproach` didSet
+    /// so the profile and the approach can never describe different procedures.
+    func rebuildApproachProfile() {
+        guard let appr = activeApproach else {
+            approachProfile = nil; approachProfileTerrain = []; return
+        }
+        let content = approachProperContent(airport: appr.airport, ident: appr.ident)
+        let finalLegs = content.legs.filter { !content.missedSeqs.contains($0.seq) }
+        // Anchor on the LANDING THRESHOLD, not the airport reference point: the geometry hangs off the
+        // threshold crossing height, and an ARP can sit a mile from the touchdown zone.
+        let rwy = CIFP.runways(airport: appr.airport).first {
+            $0.designator.uppercased().hasSuffix(appr.runway.uppercased())
+        }
+        // Threshold elevation: the terrain grid under the runway threshold itself. The airport table's
+        // field elevation is the ARP's, which can differ from the touchdown zone by tens of feet, and the
+        // whole geometry hangs off the threshold. Nil is fine — the profile then anchors on the runway
+        // leg's own published crossing altitude, which already includes it.
+        let elev = rwy.map { TerrainElevation.shared.elevationFt(at: $0.coord) } ?? nil
+        let profile = ApproachProfile.build(legs: finalLegs, threshold: rwy?.coord,
+                                            thresholdElevFt: elev, airport: appr.airport,
+                                            approachName: appr.name)
+        approachProfile = profile.isDrawable ? profile : nil
+        approachProfileTerrain = profile.isDrawable
+            ? Self.sampleApproachTerrain(profile: profile, threshold: rwy?.coord) : []
+    }
+
+    /// Ground elevation along the final approach course, outermost → threshold. Bounded sample count so
+    /// this is a fixed cost whatever the segment length.
+    private static func sampleApproachTerrain(profile: ApproachProfile,
+                                              threshold: Coord?) -> [ApproachTerrainSample] {
+        guard let threshold, let outer = profile.stations.first else { return [] }
+        let span = outer.distanceToThresholdNm
+        guard span > 0.2 else { return [] }
+        // The course to walk back along: from the threshold toward the outermost fix.
+        guard let outerCoord = profile.outerCoordinate else { return [] }
+        let bearing = Geo.bearing(threshold, outerCoord)
+        var out: [ApproachTerrainSample] = []
+        let steps = 48
+        for i in 0...steps {                                            // bounded (rule 2)
+            let d = span * Double(steps - i) / Double(steps)
+            let c = Geo.destination(from: threshold, bearingDeg: bearing, distanceNm: d)
+            guard let e = TerrainElevation.shared.elevationFt(at: c) else { continue }
+            out.append(ApproachTerrainSample(distanceNm: d, elevationFt: e))
+        }
+        assert(out.count <= 49, "sampleApproachTerrain: sample bound")
+        return out
     }
 
     /// Skip (or restore) a published course-reversal hold on the active approach.
@@ -3213,7 +3350,24 @@ final class AppModel: ObservableObject {
     /// transcription session (mirrors how the Stratux link streams). Suppressed while the Stratux link is
     /// streaming (that path provides traffic on-board, works offline); both publish into the same
     /// `applyTraffic`, so at most one runs.
-    private var adsbActive: Bool { adsbStreamingEnabled && !stratuxTrafficActive && scenePhaseActive && !standby }
+    private var adsbActive: Bool { adsbStreamingEnabled && !stratuxTrafficSupplying && scenePhaseActive && !standby }
+
+    /// Whether the Stratux is ACTUALLY SUPPLYING TRAFFIC right now — the gate the internet poller must
+    /// stand down for.
+    ///
+    /// ⚠️ This used to be `stratuxTrafficActive`, which is a PREFERENCE ("I own a Stratux") ANDed with
+    /// foreground and standby. It says nothing about whether the receiver is connected. So a pilot who
+    /// had ever switched the link on in Settings — most of this app's users — had the internet feed
+    /// permanently suppressed the moment the app came to the foreground, whether or not the Stratux was
+    /// powered on, in range, or connected. On cell data, away from the aircraft or with the receiver off,
+    /// they got NO traffic from either source and no explanation: the layer was on, the pill said the
+    /// feed was fine, and the sky was empty.
+    ///
+    /// The same mistake was already fixed once for OWNSHIP (`trustedStratuxOwnship` — keying on
+    /// `coordinate != nil` drew a dropped link as authoritative). This is that bug in the traffic path:
+    /// require a link that is CONNECTED, not merely wanted. `stratuxStatus` is published by the service
+    /// itself, so a dropped socket falls back to the internet feed within a poll rather than never.
+    private var stratuxTrafficSupplying: Bool { stratuxTrafficActive && stratuxStatus == .connected }
     /// Whether the Stratux link should be streaming traffic/GPS now: whenever it's enabled, the app
     /// is foregrounded, and standby is off — independent of the input source and of a running
     /// session (audio still requires picking the source + Start; see `beginCapture`). `!standby`
@@ -3232,7 +3386,9 @@ final class AppModel: ObservableObject {
     /// with the layer suppressed, watched a spinner promise data that was never coming. Distinguish
     /// them, and say what to DO about it.
     var trafficFeed: TrafficFeedState {
-        Self.trafficFeed(enabled: adsbStreamingEnabled, stratuxEnabled: stratuxEnabled,
+        // The pill answers "why do I see no aircraft?", so it must be told whether Stratux is SUPPLYING,
+        // not whether it is switched on — otherwise it reports "Stratux traffic" over an empty sky.
+        Self.trafficFeed(enabled: adsbStreamingEnabled, stratuxEnabled: stratuxTrafficSupplying,
                          standby: standby, foreground: scenePhaseActive, status: adsbStatus,
                          hasCenter: lastADSBCenter != nil, updatedAt: aircraftUpdatedAt,
                          aircraftCount: aircraft.count, hasPolledOnce: adsbHasPolledOnce)

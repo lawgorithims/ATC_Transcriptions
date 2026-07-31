@@ -433,6 +433,7 @@ struct MapHostView: View {
             chartBrightness: model.chartBrightness,   // pilot's raster-brightness slider (layers panel)
             windFields: windFields,           // decoded GFS column (nil until the first fetch lands)
             windLevel: model.windLevelIndex,  // the altitude slider's detent
+            windPalette: model.windPalette,   // pilot's sprite-colour choice (contrast)
             // The particle layer is paused unless all of this holds. `live` already covers the tab/route-map/
             // background cases by unmounting the whole engine, so only the toggle and thermal state remain.
             windEnabled: model.showWindAloft && !model.thermalSerious)
@@ -779,6 +780,14 @@ struct MapChrome: View {
                                topInset: topInset, theme: model.theme,
                                layer: model.chartLayer, thermalWarm: model.thermalSerious)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            // The valid-time stamp rides the CHART, bottom-centre, not the slider — animated particles
+            // look live at any age, so the one fact that stops a pilot trusting an eighteen-hour-old field
+            // has to sit with the thing it describes. See `WindDataStamp`.
+            WindDataStamp(windAloft: model.windAloft, level: WindLevel.at(index: model.windLevelIndex),
+                          palette: model.palette, thermalWarm: model.thermalSerious)
+                .padding(.bottom, 10)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                .allowsHitTesting(false)          // read-only: never take a tap from the map
         }
     }
 
