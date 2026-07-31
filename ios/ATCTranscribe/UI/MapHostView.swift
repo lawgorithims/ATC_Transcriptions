@@ -382,6 +382,7 @@ struct MapHostView: View {
             showAirspace: model.showAirspace,
             showNearby: model.showNearby,
             showAirways: model.showAirways,
+            declutter: model.declutter,
             northLocked: model.northLocked,
             plateOverlay: model.plateOverlay,
             routeIdents: Set(route.map { $0.ident }),

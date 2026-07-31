@@ -335,8 +335,10 @@ struct MapCommandRequest: Equatable { let token: Int; let kind: MapCommandKind }
 /// A pilot whose saved layer was `standard` decodes to `.sectional` (the rawValue lookup nil-coalesces),
 /// so the upgrade can't strand them on a blank map.
 /// `.smartDark` is the decluttered night base: a bundled dark terrain-relief raster under land
-/// silhouettes, with the enroute furniture (airways, airspace, off-route navaids/fixes) suppressed so
-/// only the flown route, its waypoints and their published restrictions remain. Not an FAA chart —
+/// silhouettes, with the enroute furniture (airways and off-route navaids/fixes) suppressed so only the
+/// flown route, its waypoints and their published restrictions remain. AIRSPACE IS NOT SUPPRESSED — it
+/// is a constraint on where the aircraft may legally be, not furniture, and it follows the pilot's own
+/// toggle here as on every other base. Not an FAA chart —
 /// `isRaster` is false, so it downloads nothing and shows no chart-currency pill.
 enum ChartLayer: String, CaseIterable, Identifiable {
     case sectional, ifrLow, ifrHigh, satellite, smartDark

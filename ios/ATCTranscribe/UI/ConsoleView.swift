@@ -186,6 +186,10 @@ struct ConsoleView: View {
                 if model.showFlightPlanBar { FlightPlanBar().transition(Self.barTransition) }
                 if let appr = model.activeApproach {
                     activeApproachStrip(appr)
+                    // The re-join chooser sits on its OWN row, below the strip and deliberately not
+                    // beside MISSED: changing the entry rewrites the route, and a control that does
+                    // that has no business one thumb-width from the go-around button.
+                    if model.approachEntryOptions.count > 1 { entryChooserRow(appr) }
                     // Published holds ride directly under the approach strip, in flight order.
                     ForEach(appr.holds) { holdRow($0, appr: appr) }
                 }
@@ -322,6 +326,69 @@ struct ConsoleView: View {
         }
         .padding(.horizontal, 12).padding(.vertical, 5)
         .background(p.surface)
+    }
+
+    /// Change HOW the active approach is joined, without deactivating it and hunting for the plate.
+    ///
+    /// Being re-cleared onto a different feeder is the ordinary case: 6,613 approaches publish two or
+    /// more transitions, and for 4,106 of them some transitions carry a course reversal and others do
+    /// not — so this choice is what decides whether one is flown at all. That is why each row says what
+    /// it commits you to rather than just naming the fix.
+    ///
+    /// Reads only `model.approachEntryOptions`, which was resolved once at activation. NO CIFP call may
+    /// appear in this body: a Menu's content is built with its enclosing view, and this view re-evaluates
+    /// many times a second in a live session.
+    @ViewBuilder private func entryChooserRow(_ appr: ActiveApproach) -> some View {
+        let p = model.palette
+        HStack(spacing: 8) {
+            Image(systemName: "arrow.triangle.branch").font(.dsLabelS).foregroundStyle(p.textDim)
+            Text("Join at").font(.dsLabelS).foregroundStyle(p.textDim)
+            Spacer(minLength: 4)
+            Menu {
+                ForEach(model.approachEntryOptions) { opt in
+                    Button {
+                        Haptics.impact(.medium)
+                        model.changeApproachEntry(to: opt.entry)
+                    } label: {
+                        // The published transition NAME is the label — it is what the plate prints and
+                        // what a controller says. Where the fix actually flown differs (95 rows in the
+                        // cycle do), the fix is named underneath rather than replacing the name.
+                        Text(opt.entry == .vectors ? "Vectors to final" : opt.label)
+                        if let says = entrySubtitle(opt) { Text(says) }
+                        if opt.entry == appr.entry { Image(systemName: "checkmark") }
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text(appr.entry == .vectors ? "VECTORS" : appr.entry.label)
+                        .font(.dsLabelSBold).lineLimit(1)
+                    Image(systemName: "chevron.up.chevron.down").font(.system(size: 9, weight: .bold))
+                }
+                .padding(.horizontal, 10).padding(.vertical, 4)
+                .background(Capsule().fill(p.accent.opacity(0.18)))
+                .foregroundStyle(p.accent)
+            }
+            .accessibilityIdentifier("approach-entry-chooser")
+        }
+        .padding(.horizontal, 12).padding(.vertical, 5)
+        .background(p.surface)
+    }
+
+    /// What an entry commits the aircraft to, or nil when there is nothing trustworthy to say.
+    ///
+    /// ⚠️ `nil` must render NOTHING. A course reversal is published in two codings that never overlap —
+    /// the hold in lieu (`HF`) and the plain procedure turn (`PI`) — and 848 approaches in the cycle use
+    /// only the second. Printing "no course reversal" for a transition whose legs could not be read
+    /// would be the app asserting something false about a published procedure.
+    private func entrySubtitle(_ opt: ApproachEntryOption) -> String? {
+        if opt.entry == .vectors { return "ATC vectors you onto the final approach course" }
+        guard let reversal = opt.reversal.summary else { return nil }
+        // Name the initial approach fix only when it is not already obvious — it is usually either the
+        // transition's own name or the fix the reversal is at, and repeating it would be noise. It is
+        // never phrased as a direct-to: the app routes to the transition NAME, which is what the
+        // clearance says (see ApproachEntryOption.initialFix).
+        guard let iaf = opt.initialFix, iaf != opt.label, !reversal.contains(iaf) else { return reversal }
+        return "IAF \(iaf) · \(reversal)"
     }
 
     private func activeApproachStrip(_ appr: ActiveApproach) -> some View {

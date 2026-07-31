@@ -8,6 +8,16 @@ struct ResolvedLeg: Identifiable, Equatable {
     /// The published crossing restriction on this leg, when it came from a coded procedure. nil for
     /// enroute waypoints, which carry none. Identity deliberately ignores it — a leg is the same leg.
     var constraint: LegConstraint?
+    /// The segment role the FAA publishes for this leg (`LegRole`, from the waypoint-description code).
+    /// `.none` for every enroute leg and for the many procedure legs the source marks no role on — it is
+    /// the common case, not a defect. Carried so the map can colour the FAF and the missed-approach point
+    /// apart from the lead-in; the role was previously read from CIFP, used to split the missed approach,
+    /// and then dropped at this exact boundary.
+    ///
+    /// ROLES EXIST ONLY ON APPROACHES. Cross-tabulated against the shipped cycle: all 66,103 role-marked
+    /// legs sit on IAP rows and SID/STAR rows carry none, so a departure or arrival waypoint has no
+    /// published role to colour and inferring one would be a guess.
+    var role: LegRole = .none
     var id: String { ident + "\(kind)" }
 }
 

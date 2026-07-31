@@ -342,8 +342,20 @@ final class AppModel: ObservableObject {
             ?? .sectional
     }
     @Published var chartLayer: ChartLayer = AppModel.savedChartLayer {
-        didSet { UserDefaults.standard.set(chartLayer.rawValue, forKey: Self.chartLayerKey) }
+        didSet {
+            UserDefaults.standard.set(chartLayer.rawValue, forKey: Self.chartLayerKey)
+            // Record where we came FROM on every base change, not only when the toggle below did it.
+            // Written here rather than in `toggleSmartBase` because a base picked in the layers menu or
+            // the route sheet was previously never recorded at all: a pilot on IFR-low who tapped the
+            // plate menu's Dark toggle twice landed on the SECTIONAL, because the fallback was the only
+            // thing left to fall back to.
+            if oldValue != chartLayer { previousChartLayer = oldValue }
+        }
     }
+    /// The base the pilot was on before the current one. In memory only: it describes this session's
+    /// glance at a chart, and a "previous layer" restored from another session would be a claim about
+    /// intent we do not have.
+    private(set) var previousChartLayer: ChartLayer?
 
     // MARK: Home-screen map + floating widgets
 
@@ -619,18 +631,19 @@ final class AppModel: ObservableObject {
     /// it a MODE on this plate — one tap in, one tap back — instead of a one-way trip that leaves the
     /// pilot to remember which base they were on.
     func toggleSmartBase() {
+        // Coming BACK lands on the base actually in use before Dark — whichever way it was chosen — and
+        // only falls back to the sectional when this is the first base change of the session. Never
+        // returns to `.smartDark` itself, which would make the control a no-op.
         if chartLayer == .smartDark {
-            chartLayer = preSmartBaseLayer ?? .sectional
-            preSmartBaseLayer = nil
+            let back = previousChartLayer ?? .sectional
+            chartLayer = (back == .smartDark) ? .sectional : back
         } else {
-            preSmartBaseLayer = chartLayer
             chartLayer = .smartDark
         }
+        assert(chartLayer != .smartDark || previousChartLayer != .smartDark,
+               "toggleSmartBase left nothing to come back to")
         Haptics.impact(.light)
     }
-    /// The base to come back to. In memory only: it describes the current glance at a plate, and a
-    /// restored "previous layer" from another session would be a claim about intent we do not have.
-    private var preSmartBaseLayer: ChartLayer?
     /// Floor at `plateMinOpacity` — a plate must never fade to invisible, or the pilot can forget one is
     /// still overlaid on the map.
     static let plateMinOpacity = 0.15
@@ -674,7 +687,9 @@ final class AppModel: ObservableObject {
         guard let procID = previewedProcedure?.id else { previewedProcedureLegs = []; return }
         Task.detached { [weak self] in
             let legs = CIFP.legs(procedureID: procID).prefix(256).compactMap { leg in
-                leg.coord.map { ResolvedLeg(ident: leg.fix, kind: .waypoint, coord: $0) }
+                // `role` carried for symmetry with ProcedureRoute, not for effect: previewed legs reach
+                // only the classic MKMapView engine's dashed preview, which draws its own annotations.
+                leg.coord.map { ResolvedLeg(ident: leg.fix, kind: .waypoint, coord: $0, role: leg.role) }
             }
             await MainActor.run { [weak self] in
                 guard let self, self.previewEpoch == epoch else { return }
@@ -700,6 +715,30 @@ final class AppModel: ObservableObject {
     /// other context layers; zoom-gated in the map so a continent view stays clean.
     @Published var showAirways = (UserDefaults.standard.object(forKey: "atc.map.airways") as? Bool) ?? true {
         didSet { UserDefaults.standard.set(showAirways, forKey: "atc.map.airways") }
+    }
+    /// DECLUTTER: suppress the enroute furniture — airways and off-route navaids/fixes — on any base.
+    ///
+    /// A MASK, not a preset. It writes NOTHING to the nine layer toggles above, so there is no state to
+    /// restore and "reset" is simply switching it back off: a pilot who declutters, then changes one
+    /// layer by hand, then un-declutters, gets exactly the set they had plus their edit. A preset that
+    /// wrote nine `false`s would also be a trap on relaunch — and "restore defaults" would be wrong
+    /// outright here, because the defaults are not the pilot's set (airspace/nearby/airways/TFRs default
+    /// ON, radar/wind/smoke/hazards/traffic default OFF), so a pilot flying with wind up and airways
+    /// down would have "reset" silently invert both.
+    ///
+    /// It composes with `.smartDark` rather than duplicating it: that base forces the same suppression
+    /// on regardless, so turning this off under it changes nothing.
+    ///
+    /// ⚠️ WHAT IT CANNOT DO. On the FAA raster bases this is largely INERT, and that is a property of
+    /// the charts, not a bug: V-routes, VOR roses, intersections and airspace blocks are printed into
+    /// the tile pixels. Suppressing the app's thin vector duplicate leaves the printed original. It does
+    /// the whole job on `.satellite`, which has no printed chart under it. That is exactly why the
+    /// shipped decluttered mode is a non-raster BASE and not a filter.
+    ///
+    /// It never touches a hazard. Airspace stays — a Class B shelf is a constraint on where the aircraft
+    /// may legally be, not furniture — and so do TFRs, traffic, weather, terrain, the route and ownship.
+    @Published var declutter = (UserDefaults.standard.object(forKey: "atc.map.declutter") as? Bool) ?? false {
+        didSet { UserDefaults.standard.set(declutter, forKey: "atc.map.declutter") }
     }
     /// Map ENGINE selector: the new MapLibre GPU/globe renderer (default) vs the classic MKMapView chart.
     /// Persisted. Default ON = MapLibre is the primary Map-tab map; flipping OFF falls back to the fully
@@ -2441,6 +2480,9 @@ final class AppModel: ObservableObject {
     @Published var activeApproach: ActiveApproach? {
         didSet {
             guard didFinishInit, activeApproach?.id != oldValue?.id else { return }
+            // Every path that ends an approach runs through here (cancel, go-around applied, the plan
+            // reconcile), so the entry options are dropped in ONE place rather than at each call site.
+            if activeApproach == nil { approachEntryOptions = [] }
             rebuildApproachProfile()
         }
     }
@@ -2509,10 +2551,73 @@ final class AppModel: ObservableObject {
         activeApproach = ActiveApproach(airport: proc.airport, ident: proc.ident, name: proc.name,
                                         runway: proc.runway, entry: entry, missedFixes: missedFixes,
                                         holds: applicable)
+        // Read the OTHER ways onto this approach once, here, so the in-flight chooser is a published
+        // property rather than a database round trip inside a view body. `ConsoleView` re-evaluates many
+        // times a second in a live session (it observes inputLevel, gpsFix and records), and a Menu's
+        // content is built with its enclosing body — the same trap this file already documents for
+        // `approachProfile` and PlatesTabView documents for its binder rows.
+        approachEntryOptions = CIFP.entryOptions(airport: proc.airport, ident: proc.ident)
         previewedProcedure = nil
         Haptics.impact(.medium)
         NSLog("CommSight: approach ACTIVATED %@ %@ entry=%@ legs=%d missed=%d",
               proc.airport, proc.ident, entry.label, fixes.count, missedFixes.count)
+    }
+
+    /// Every published way onto the ACTIVE approach, read once at activation. Empty when none is active.
+    ///
+    /// Held rather than queried on demand for the reason stated at `activateApproach`: this is a
+    /// database read and the only place it would otherwise be called from is a view body.
+    @Published private(set) var approachEntryOptions: [ApproachEntryOption] = []
+
+    /// Re-join the ACTIVE approach at a different published transition — or switch to vectors.
+    ///
+    /// Being re-cleared onto a different feeder is ordinary, not exotic, and until now it cost the pilot
+    /// a plate hunt with the map covered: the only routes to the entry chooser were gated behind a
+    /// matching plate row, and the active-approach strip offered no way back to it at all. Re-calling
+    /// `activateApproach` with a new entry is already the correct write path end to end — the route, the
+    /// legs, the holds and the vertical profile all rebuild from it — so this is about making that
+    /// reachable, plus the three things a naive re-activation would silently discard.
+    ///
+    /// 1. THE STALE IAF. `joinApproach(at: nil)` deliberately leaves the enroute route alone, because a
+    ///    vectors join has no fix to fly to. But a transition join set `route` to exactly `[thatIAF]`,
+    ///    so switching transition→vectors would have left the aircraft routed direct to the feeder it is
+    ///    no longer using. Cleared here, and ONLY when the route is still exactly that one fix — a route
+    ///    the pilot has since edited is theirs, not ours to discard.
+    /// 2. THE STAGED GO-AROUND. The missed sequence comes from the approach-PROPER row and does not vary
+    ///    with the transition, so withdrawing an armed missed because the pilot re-picked a feeder would
+    ///    be a regression. Carried across.
+    /// 3. SKIPPED HOLDS. Carried as an INTERSECTION: a skip only means anything for a hold that still
+    ///    exists, and the new transition may publish an entirely different course reversal (or none).
+    func changeApproachEntry(to entry: ApproachActivation.Entry) {
+        guard let current = activeApproach else { return }                    // rule 7
+        guard current.entry != entry else { return }                          // nothing to do
+        guard let proc = CIFP.approachProper(airport: current.airport, ident: current.ident) else {
+            // The coded row is gone — an AIRAC swap under a live approach. Re-activating from a
+            // synthesized record would load legs we cannot verify, so say so and change nothing.
+            detail = "\(current.ident) is no longer in the current CIFP cycle — reactivate the approach."
+            return
+        }
+        let staged = pendingMissed
+        let stagedSuggestion = efbSuggestion?.id == staged.map { "missed-\($0.airport)-\($0.ident)" }
+            ? efbSuggestion : nil
+        let skipped = current.skippedHoldIDs
+        if entry.iafFix == nil, let leavingIAF = current.entry.iafFix {
+            editPlan { plan in
+                if plan.route.count == 1,
+                   plan.route[0].caseInsensitiveCompare(leavingIAF) == .orderedSame { plan.route = [] }
+            }
+        }
+        activateApproach(proc, entry: entry)
+        guard var rejoined = activeApproach else { return }
+        rejoined.skippedHoldIDs = skipped.intersection(Set(rejoined.holds.map(\.id)))
+        activeApproach = rejoined
+        if staged != nil {
+            pendingMissed = rejoined            // same missed sequence, now carrying the new entry
+            if let s = stagedSuggestion { efbSuggestion = s }
+        }
+        NSLog("CommSight: approach ENTRY CHANGED %@ %@ %@ -> %@ (holds kept skipped=%d)",
+              current.airport, current.ident, current.entry.label, entry.label,
+              rejoined.skippedHoldIDs.count)
     }
 
     // MARK: - Approach vertical profile

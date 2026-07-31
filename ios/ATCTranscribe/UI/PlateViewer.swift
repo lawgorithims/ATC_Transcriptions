@@ -142,8 +142,28 @@ struct PlateViewer: View {
     @State private var loading = true
     @State private var showOverlay = true                  // show ownship/traffic by default on a georef'd plate
     @State private var showMinima = false
+    /// The plate FLIPPED to, or nil while the injected one is showing. See `flipPartner`.
+    @State private var flipped: AirportProcedure?
 
-    private var georef: PlateGeorefEntry? { PlateGeoref.lookup(pdf: procedure.pdf) }
+    /// THE plate on screen. Every read below goes through this and never through `procedure` directly —
+    /// title, georef, minima, and the document URL must describe the same chart at all times. Mixing
+    /// them would draw one plate's page under another's name with a third's georeference feeding the
+    /// ownship transform, which is the single most dangerous thing this screen can do.
+    private var current: AirportProcedure { flipped ?? procedure }
+
+    /// The chart to flip to: the airport DIAGRAM, resolved here rather than injected so both presenters
+    /// (`PlatesTabView` and `MapObjectView`) get the control without either having to pass it.
+    ///
+    /// Usually absent. Measured against the bundled cycle, 2,291 of 3,197 charted airports publish no
+    /// APD at all — so a missing partner is the MAJORITY case and the control is HIDDEN rather than
+    /// disabled, following the by-minima button next door.
+    private var flipPartner: AirportProcedure? {
+        let diagram = Procedures.forAirport(airport).first { $0.code == "APD" }
+        guard let diagram, diagram.id != procedure.id else { return nil }
+        return diagram
+    }
+
+    private var georef: PlateGeorefEntry? { PlateGeoref.lookup(pdf: current.pdf) }
     private var trafficMarkers: [PlateTraffic] {
         model.aircraft.compactMap { ac in ac.coordinate.map { PlateTraffic(coord: $0, track: ac.trackDeg) } }
     }
@@ -186,7 +206,7 @@ struct PlateViewer: View {
                     offlineState
                 }
             }
-            .navigationTitle(procedure.name)
+            .navigationTitle(current.name)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -194,7 +214,7 @@ struct PlateViewer: View {
                 }
                 ToolbarItem(placement: .principal) {
                     VStack(spacing: 0) {
-                        Text(procedure.name).font(.dsHeadline).lineLimit(1)
+                        Text(current.name).font(.dsHeadline).lineLimit(1)
                         Text(airport).font(.dsLabelS).foregroundStyle(palette.textDim)
                     }
                 }
@@ -213,13 +233,16 @@ struct PlateViewer: View {
                 // The minima block, read off this plate. Offered only once the plate is on disk and the
                 // parse actually produced a table — a button that opens an empty panel is worse than no
                 // button, because it implies the numbers were checked and found absent.
-                if url != nil, minimaStore.result(for: procedure)?.minima != nil {
+                if url != nil, minimaStore.result(for: current)?.minima != nil {
                     ToolbarItem(placement: .primaryAction) {
                         Button { Haptics.impact(.light); showMinima = true } label: {
                             Label("Minima", systemImage: "arrow.down.to.line")
                         }
                         .accessibilityIdentifier("plate-minima")
                     }
+                }
+                if let partner = flipPartner {
+                    ToolbarItem(placement: .primaryAction) { flipButton(partner) }
                 }
                 // Overlay-on-map is georef-only (placement is exact + not manually adjustable), so the
                 // action is hidden for schematic plates (SIDs/STARs/minimums) with no georeference.
@@ -232,13 +255,17 @@ struct PlateViewer: View {
             }
         }
         .tint(palette.accent)
-        .task { await load() }
+        // `.task(id:)`, NOT a bare `.task`. A plain task runs once per view identity, so flipping the
+        // internal state would have changed the title, the georef and the minima lookup while `url` still
+        // pointed at the OUTGOING document — plate A's page under plate B's name, with plate B's
+        // transform placing ownship on it.
+        .task(id: current.id) { await load() }
         .onChange(of: url) { _, new in
             guard new != nil else { return }
-            minimaStore.ensure(procedure, airport: airport)
+            minimaStore.ensure(current, airport: airport)
         }
         .sheet(isPresented: $showMinima) {
-            if let parsed = minimaStore.result(for: procedure), let m = parsed.minima {
+            if let parsed = minimaStore.result(for: current), let m = parsed.minima {
                 NavigationStack {
                     MinimaPanel(minima: m, refusals: parsed.refusals,
                                 temperatureC: metars.metar(airport)?.tempC, palette: palette)
@@ -259,6 +286,30 @@ struct PlateViewer: View {
         // GPS is owned by the always-mounted map (single owner) — the plate viewer only READS
         // deviceLocation.coord to place ownship, so it no longer starts/stops the shared session
         // (which previously left the map's ownship frozen after the viewer closed).
+    }
+
+    /// Swap between the approach plate and the airport diagram in one tap.
+    ///
+    /// This is the alternation this app leaves most expensive. Everything else is already cheap to swap
+    /// — tabs stay mounted, every chart base stays tile-loaded — but only one plate exists at a time,
+    /// and 0 of 908 airport diagrams are georeferenced, so the two cannot both be put on the map
+    /// instead. Going approach → diagram → approach otherwise costs Done, scroll the binder, find the
+    /// APD, tap, at the busiest minute of the flight.
+    @ViewBuilder private func flipButton(_ partner: AirportProcedure) -> some View {
+        let showingPartner = (flipped != nil)
+        Button {
+            Haptics.impact(.light)
+            // Reset the document state AT the swap so the spinner and the offline notice keep telling
+            // the truth while the new plate loads, rather than the old page lingering under a new title.
+            url = nil
+            loading = true
+            flipped = showingPartner ? nil : partner
+        } label: {
+            Label(showingPartner ? procedure.name : partner.name,
+                  systemImage: "arrow.left.arrow.right.square")
+        }
+        .tint(showingPartner ? palette.accent : palette.textDim)
+        .accessibilityIdentifier("plate-flip")
     }
 
     /// A small caption under the chart when the overlay is on — states what the markers are and the
@@ -288,11 +339,15 @@ struct PlateViewer: View {
     }
 
     private func load() async {
+        let want = current
         // Instant path: already cached.
-        if let cached = PlateStore.localURL(procedure), FileManager.default.fileExists(atPath: cached.path) {
+        if let cached = PlateStore.localURL(want), FileManager.default.fileExists(atPath: cached.path) {
             url = cached; loading = false; return
         }
-        let got = await PlateStore.ensureOnDisk(procedure)
+        let got = await PlateStore.ensureOnDisk(want)
+        // A slow fetch can land after the pilot has flipped again; adopting it would put the wrong
+        // document on screen. `.task(id:)` cancels the old task, but the await may already have resumed.
+        guard want.id == current.id else { return }
         url = got
         loading = false
     }

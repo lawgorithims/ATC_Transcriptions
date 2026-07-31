@@ -39,6 +39,8 @@ struct MapLibreChartView: UIViewRepresentable {
     var showAirspace: Bool = true                     // MapLayersMenu overlay toggles (parity with ChartMapView)
     var showNearby: Bool = true
     var showAirways: Bool = true
+    /// See AppModel.declutter — suppress the enroute furniture on ANY base, as `.smartDark` already does.
+    var declutter: Bool = false
     /// Lock the chart north-up (disable rotate + snap bearing to 0). See AppModel.northLocked.
     var northLocked: Bool = true
     var plateOverlay: PlateOverlayState? = nil
@@ -106,7 +108,8 @@ struct MapLibreChartView: UIViewRepresentable {
                       radarTemplate: radarTemplate, holds: holds, ownship: ownship, ownshipCourse: ownshipCourse,
                       ownshipAccuracyM: ownshipAccuracyM, ownshipIntegrity: ownshipIntegrity,
                       traffic: traffic, wxTrend: wxTrend, tfrs: showTFRs ? tfrs : [], showAirspace: showAirspace,
-                      showNearby: showNearby, showAirways: showAirways, plateOverlay: plateOverlay,
+                      showNearby: showNearby, showAirways: showAirways, declutter: declutter,
+                      plateOverlay: plateOverlay,
                       routeIdents: routeIdents, routeLegs: routeLegs, focus: focus, restoreCamera: restoreCamera,
                       onTap: onTapObjects, onAnchors: onPlateAnchors, searchHighlight: searchHighlight)
         guard c.map != nil else { return }      // map not built yet (scene still activating) → apply on createMap
@@ -200,6 +203,7 @@ struct MapLibreChartView: UIViewRepresentable {
         private var layer: ChartLayer = .sectional     // FAA base layer; drives ensureVisiblePacks
         private var appliedLayer: ChartLayer?          // last-applied — a change re-requests packs for the new layer
         private var showAirspace = true, showNearby = true, showAirways = true   // MapLayersMenu overlay toggles
+        private var declutterOn = false                                          // the pilot's declutter mask
         private var appliedToggles: String?            // last-applied toggle triple — a change re-runs refreshOverlays
         private var lastFocus: Coord?                  // search-recenter dedupe
         var onVisibleRegion: ((MKMapRect) -> Void)?    // settle → host persists model.lastMapCamera (M7)
@@ -227,6 +231,7 @@ struct MapLibreChartView: UIViewRepresentable {
         private var appliedCategoryVersion = 0
         private var inTFRs: [TFR] = []
         private var inShowAirspace = true, inShowNearby = true, inShowAirways = true
+        private var inDeclutter = false
         private var inPlate: PlateOverlayState?
         private var inFocus: Coord?
         private var inRouteLegs: [ResolvedLeg] = []          // flown route WITH idents + constraints
@@ -244,7 +249,8 @@ struct MapLibreChartView: UIViewRepresentable {
                          ownshipCourse: Double?, ownshipAccuracyM: Double?,
                          ownshipIntegrity: GPSIntegrityState,
                          traffic: [Aircraft], wxTrend: [WxTrendPin], tfrs: [TFR], showAirspace: Bool,
-                         showNearby: Bool, showAirways: Bool, plateOverlay: PlateOverlayState?,
+                         showNearby: Bool, showAirways: Bool, declutter: Bool,
+                         plateOverlay: PlateOverlayState?,
                          routeIdents: Set<String>, routeLegs: [ResolvedLeg],
                          focus: Coord?, restoreCamera: SavedMapCamera?,
                          onTap: @escaping ([IdentifiedObject]) -> Void,
@@ -255,7 +261,8 @@ struct MapLibreChartView: UIViewRepresentable {
             inOwnship = ownship; inOwnCourse = ownshipCourse
             inOwnAccuracy = ownshipAccuracyM; inOwnIntegrity = ownshipIntegrity
             inTraffic = traffic; inWxTrend = wxTrend; inTFRs = tfrs; inShowAirspace = showAirspace; inShowNearby = showNearby
-            inShowAirways = showAirways; inPlate = plateOverlay; inFocus = focus; self.restoreCamera = restoreCamera
+            inShowAirways = showAirways; inDeclutter = declutter
+            inPlate = plateOverlay; inFocus = focus; self.restoreCamera = restoreCamera
             self.routeIdents = routeIdents; inRouteLegs = routeLegs
             self.onTapObjects = onTap; self.onPlateAnchors = onAnchors
             inSearchHighlight = searchHighlight
@@ -300,7 +307,7 @@ struct MapLibreChartView: UIViewRepresentable {
             emitSearchPoint(map)               // keep the pulsing search marker glued to its spot
             applyNorthLock(map)                // chart north-up lock (rotate gesture + bearing)
             applyMapCommand(map)               // one-shot side-bar zoom / center-on-ownship
-            applyOverlayToggles(inShowAirspace, inShowNearby, inShowAirways, on: map)
+            applyOverlayToggles(inShowAirspace, inShowNearby, inShowAirways, declutter: inDeclutter, on: map)
             updateOwnship(inOwnship, course: inOwnCourse, accuracyM: inOwnAccuracy,
                           integrity: inOwnIntegrity, on: map)
             updateTraffic(inTraffic, on: map)
@@ -1086,7 +1093,7 @@ struct MapLibreChartView: UIViewRepresentable {
             sym.text = NSExpression(forKeyPath: "ident")
             sym.textFontNames = NSExpression(forConstantValue: ["Arial Bold"])   // the only bundled fontstack
             sym.textFontSize = NSExpression(forConstantValue: 9.5)
-            sym.textColor = NSExpression(forConstantValue: t.routeWptText)
+            sym.textColor = Self.routeWptTextExpr(t)
             sym.textHaloColor = NSExpression(forConstantValue: t.navLabelHalo)
             sym.textHaloWidth = NSExpression(forConstantValue: 1.2)
             sym.textAnchor = NSExpression(forConstantValue: "top")
@@ -1138,9 +1145,22 @@ struct MapLibreChartView: UIViewRepresentable {
         static func routeWptFeatures(_ legs: [ResolvedLeg]) -> [MLNPointFeature] {
             var out: [MLNPointFeature] = []
             var seen = Set<String>()
+            var indexOf: [String: Int] = [:]                             // key → its feature, for role promotion
             for leg in legs.prefix(maxRouteWpts) {                       // bounded (rule 2)
                 let key = "\(leg.ident)@\(q(leg.coord.lat)),\(q(leg.coord.lon))"
-                guard seen.insert(key).inserted else { continue }
+                guard seen.insert(key).inserted else {
+                    // A course reversal or a hold can bring the route back through a fix it already
+                    // passed, and the two visits are coded from different sides. Keep the more specific
+                    // role on the ONE surviving label rather than whichever visit happened to be first —
+                    // the same rule ProcedureRoute.appendDeduped applies at the transition join.
+                    if let i = indexOf[key], i < out.count,
+                       let prior = out[i].attributes["role"] as? String,
+                       ProcedureRoute.roleRank(leg.role) > ProcedureRoute.roleRank(LegRole(rawValue: prior) ?? .none) {
+                        out[i].attributes["role"] = leg.role.rawValue
+                    }
+                    continue
+                }
+                indexOf[key] = out.count
                 let f = MLNPointFeature()
                 f.coordinate = CLLocationCoordinate2D(latitude: leg.coord.lat, longitude: leg.coord.lon)
                 let altText = SmartRouteLabel.altText(leg.constraint)
@@ -1148,6 +1168,7 @@ struct MapLibreChartView: UIViewRepresentable {
                 // Empty strings render nothing, so absent constraints need no per-feature layer filtering.
                 f.attributes = ["glyph": routeWptGlyph(leg),
                                 "ident": leg.ident,
+                                "role": leg.role.rawValue,
                                 "alt": altText ?? "",
                                 "spd": spdText ?? "",
                                 "stacked": altText != nil]
@@ -1156,6 +1177,28 @@ struct MapLibreChartView: UIViewRepresentable {
             assert(out.count <= maxRouteWpts, "routeWptFeatures: exceeded the leg cap")
             assert(out.count == seen.count, "routeWptFeatures: dedupe key set out of step with output")
             return out
+        }
+
+        /// Per-feature ident colour, keyed on the leg's published `role` attribute.
+        ///
+        /// Only the TEXT is tinted, never the glyph: `iconColor` "must be set to a template image"
+        /// (MLNSymbolStyleLayer.h) and the route-fix star and the FAA airport symbols are drawn artwork,
+        /// not templates — recolouring them would either no-op or flatten the airport symbology this
+        /// mode deliberately keeps. The ident sits directly under the mark, so the colour reads as
+        /// belonging to it either way.
+        ///
+        /// Roles NOT in this table fall through to `routeWptText`, which is every enroute leg and every
+        /// procedure leg the FAA marks no role on — the common case by a wide margin.
+        static func routeWptTextExpr(_ t: MapTheme) -> NSExpression {
+            let fallback = MapTheme.hexString(t.routeWptText)
+            assert(fallback.count == 7, "routeWptTextExpr: hexString did not produce #RRGGBB")
+            let table: [Any] = ["match", ["get", "role"],
+                LegRole.initialApproachFix.rawValue,  MapTheme.hexString(t.routeWptIAF),
+                LegRole.finalApproachFix.rawValue,    MapTheme.hexString(t.routeWptFAF),
+                LegRole.missedApproachPoint.rawValue, MapTheme.hexString(t.routeWptMAP),
+                fallback]
+            assert(table.count == 3 + 2 * 3, "routeWptTextExpr: match arity is wrong")   // op + input + pairs + default
+            return NSExpression(mglJSONObject: table)
         }
 
         /// Airports keep their real FAA symbol (towered/fuel/runway-axis detail is exactly the "minimal
@@ -1179,6 +1222,7 @@ struct MapLibreChartView: UIViewRepresentable {
                 "\($0.ident):\(Self.q($0.coord.lat)),\(Self.q($0.coord.lon))"
                     + ":\(SmartRouteLabel.altText($0.constraint) ?? "")"
                     + ":\(SmartRouteLabel.speedText($0.constraint) ?? "")"
+                    + ":\($0.role.rawValue)"        // role drives ident COLOUR — must force a rebuild
             }.joined(separator: "|")
             guard sig != appliedRouteWptSig else { return }              // unchanged → skip the rebuild
             appliedRouteWptSig = sig
@@ -1296,7 +1340,10 @@ struct MapLibreChartView: UIViewRepresentable {
             // it is missing the part that can violate you. Airways and off-route fixes are genuinely
             // enroute furniture and stay suppressed; airspace now follows the pilot's own toggle in every
             // mode. (Its labels still drop at the wider scales, exactly as they do on the FAA bases.)
-            let smart = (layer == .smartDark)
+            // ONE composition point for the decluttered set: the purpose-built dark base forces it, and
+            // the pilot's own toggle asks for it on whatever base they are on. Everything downstream
+            // reads this single value rather than re-testing the layer.
+            let smart = (layer == .smartDark) || declutterOn
             let wantAir = showAirspace && scale < 14, wantLbl = showAirspace && scale < 7
             let wantAwy = showAirways && scale < 9 && !smart, wantNear = showNearby && scale < 5.5
             let showFixes = wantNear && wantFixes && !smart
@@ -1545,7 +1592,9 @@ struct MapLibreChartView: UIViewRepresentable {
                 l.textHaloColor = NSExpression(forConstantValue: t.navLabelHalo)
             }
             if let l = style.layer(withIdentifier: "route-wpt-sym") as? MLNSymbolStyleLayer {
-                l.textColor = NSExpression(forConstantValue: t.routeWptText)
+                // The SAME data-driven expression setup builds, not a constant — assigning a constant
+                // here would silently drop the role colouring on the first theme or base-layer switch.
+                l.textColor = Self.routeWptTextExpr(t)
                 l.textHaloColor = NSExpression(forConstantValue: t.navLabelHalo)
             }
             (style.layer(withIdentifier: "route-wpt-alt") as? MLNSymbolStyleLayer)?.textColor =
@@ -2207,9 +2256,12 @@ struct MapLibreChartView: UIViewRepresentable {
 
         /// Apply the MapLayersMenu overlay toggles; a real change re-runs refreshOverlays so a toggled-off
         /// layer clears (the builders return [] when its `want` is false).
-        func applyOverlayToggles(_ air: Bool, _ near: Bool, _ awy: Bool, on map: MLNMapView) {
-            showAirspace = air; showNearby = near; showAirways = awy
-            let sig = "\(air)\(near)\(awy)"
+        func applyOverlayToggles(_ air: Bool, _ near: Bool, _ awy: Bool, declutter: Bool,
+                                 on map: MLNMapView) {
+            showAirspace = air; showNearby = near; showAirways = awy; declutterOn = declutter
+            // `declutter` is IN the signature: it changes what refreshOverlays queries, so a flip with
+            // every other toggle unchanged must still force a rebuild.
+            let sig = "\(air)\(near)\(awy)\(declutter)"
             defer { appliedToggles = sig }
             guard let prev = appliedToggles, prev != sig, map.style != nil else { return }
             refreshOverlays(map)
