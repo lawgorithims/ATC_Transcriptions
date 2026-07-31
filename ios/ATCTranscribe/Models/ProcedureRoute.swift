@@ -76,7 +76,7 @@ enum ProcedureRoute {
             guard let coord = leg.coord, !leg.fix.isEmpty, !CIFP.isRunwayPseudoFix(leg.fix) else { continue }
             assert(coord.lat.isFinite && coord.lon.isFinite, "procedure leg coordinate is not finite")
             appendDeduped(ResolvedLeg(ident: leg.fix, kind: .waypoint, coord: coord,
-                                      constraint: leg.constraint), to: &out)
+                                      constraint: leg.constraint, role: leg.role), to: &out)
         }
     }
 
@@ -171,10 +171,34 @@ enum ProcedureRoute {
 
     /// Append `leg` unless it repeats the previous leg's ident (collapse the join-fix duplication) or the
     /// route is already at the cap. The entry assertion catches a caller that pushed past the cap.
+    ///
+    /// When the duplicate IS collapsed, the surviving leg keeps the more specific of the two ROLES. The
+    /// join fix is coded from both sides and the two sides disagree by design — at KBOS H33LX, CRLTN is
+    /// `B` on each transition's last leg and `I` on the approach proper's first leg: the same fix, seen
+    /// from either side. First-wins would keep whatever the transition happened to say, and measured on
+    /// the shipped cycle that silently discards the FAF mark on 1,129 approaches (1,026 where the
+    /// transition's last leg carries no role at all, 102 where it is coded IAF, 1 coded IF). The FAF is
+    /// the fix this whole colouring exists to point at, so it must not lose a tie to an unmarked leg.
     static func appendDeduped(_ leg: ResolvedLeg, to out: inout [ResolvedLeg]) {
         assert(out.count <= maxLegs, "route cap already breached on entry to appendDeduped")
         guard out.count < maxLegs, !leg.ident.isEmpty else { return }
-        if out.last?.ident == leg.ident { return }
+        if out.last?.ident == leg.ident {
+            if let last = out.last, roleRank(leg.role) > roleRank(last.role) { out[out.count - 1].role = leg.role }
+            return
+        }
         out.append(leg)
+    }
+
+    /// How specific a published role is, for resolving the join fix's two codings. Higher wins.
+    /// `.none` is last because it means "the source marks nothing here", never "no role applies".
+    static func roleRank(_ r: LegRole) -> Int {
+        switch r {
+        case .missedApproachPoint:     return 5   // the hardest limit on the chart
+        case .finalApproachFix:        return 4
+        case .initialApproachFix:      return 3
+        case .finalApproachCourseFix:  return 2
+        case .intermediateFix:         return 1
+        case .none:                    return 0
+        }
     }
 }

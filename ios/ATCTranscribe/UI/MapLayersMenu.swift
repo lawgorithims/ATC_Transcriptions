@@ -46,8 +46,10 @@ struct MapLayersPanel: View {
                 VStack(alignment: .leading, spacing: 11) {
                     header("Overlays", p)
                     // The toggles below stay live in Dark mode — they still control airports, traffic,
-                    // weather and TFRs — but the mode overrides three of them downward. Saying so beats
-                    // disabling the rows, which would look like the pilot's saved preferences were lost.
+                    // weather and TFRs — but the mode overrides TWO of them downward (airways, and the
+                    // off-route navaids/fixes half of Nearby; airspace was deliberately taken back out of
+                    // that set). Saying so beats disabling the rows, which would look like the pilot's
+                    // saved preferences were lost.
                     if model.chartLayer == .smartDark {
                         Text("Dark (minimal) hides airways and off-route navaids. Airspace, TFRs, traffic, weather, your route and any plate on the map all stay on.")
                             .font(.dsLabelS).foregroundStyle(p.textDim)
@@ -62,6 +64,24 @@ struct MapLayersPanel: View {
                     layerToggle($model.showSmoke, "Smoke & satellite (NASA)", "smoke", p, id: "layer-smoke")
                     layerToggle($model.showWxRadar, "Weather radar (precip)", "cloud.rain", p, id: "layer-radar")
                     layerToggle($model.showWindAloft, "Winds aloft (animated)", "wind", p, id: "layer-wind")
+
+                    Divider().padding(.vertical, 2)
+
+                    header("Declutter", p)
+                    layerToggle($model.declutter, "Hide airways & off-route navaids",
+                                "eye.slash", p, id: "layer-declutter")
+                    // Say what it can and cannot do. On the FAA raster charts the fixes, V-routes and VOR
+                    // roses are PRINTED INTO the chart image, so hiding the app's own copy of them leaves
+                    // the printed original and the map looks much the same — that is a property of the
+                    // charts, not a failure of the switch, and a pilot who is not told will read it as
+                    // broken. It does the whole job on Satellite, which has no printed chart under it.
+                    Text(model.chartLayer == .smartDark
+                         ? "Already on: Dark (minimal) hides these regardless."
+                         : (model.chartLayer.isRaster
+                            ? "Little effect on FAA charts — their fixes and airways are printed into the chart itself. Full effect on Satellite and Dark."
+                            : "Nothing else is hidden: airspace, TFRs, traffic, weather, terrain and your route all stay."))
+                        .font(.dsLabelS).foregroundStyle(p.textDim)
+                        .accessibilityIdentifier("layers-declutter-note")
 
                     Divider().padding(.vertical, 2)
 

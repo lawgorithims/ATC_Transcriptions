@@ -42,6 +42,21 @@ struct MapTheme: Equatable {
     /// separates "how high" from "how fast" (chart convention, and what SmartCharts does).
     let routeWptAlt: UIColor
     let routeWptSpeed: UIColor
+    /// Ident tint for the three approach roles worth calling out. Everything else — the intermediate
+    /// fix, the final approach COURSE fix, and every enroute leg — keeps `routeWptText`, because they
+    /// are read from position on the line and a fourth and fifth colour would only dilute the two that
+    /// matter. Published roles exist on approaches only, so on any other route these never apply.
+    ///
+    /// Hue carries the meaning by day (green: you may begin here / amber: start down / red: decide).
+    /// At NIGHT hue is not available — the whole theme is red-preserving for dark adaptation — and
+    /// LUMINANCE cannot carry it either: Rec. 709 weights green at 0.72, so the only way to make a red
+    /// label measurably brighter is to add green, which is the one thing a dark-adaptation theme must
+    /// not do. So night orders the roles by SATURATION instead, the way `nightAirspace` already does
+    /// (TFR is the purest red on the night map, not the lightest): green falls monotonically along
+    /// unmarked → initial → final → missed, ending at an almost pure red for the decision point.
+    let routeWptIAF: UIColor
+    let routeWptFAF: UIColor
+    let routeWptMAP: UIColor
     // FAA raster paint (identity = 1.0 / 0 / 0)
     let rasterBrightnessMax: Double
     let rasterSaturation: Double
@@ -132,6 +147,7 @@ struct MapTheme: Equatable {
             navLabelText: navLabelText, navLabelHalo: navLabelHalo,
             airspace: airspace, route: route, track: track, procedure: procedure,
             hold: hold, routeWptText: routeWptText, routeWptAlt: routeWptAlt, routeWptSpeed: routeWptSpeed,
+            routeWptIAF: routeWptIAF, routeWptFAF: routeWptFAF, routeWptMAP: routeWptMAP,
             rasterBrightnessMax: rasterBrightnessMax * scale,
             rasterSaturation: rasterSaturation, rasterContrast: rasterContrast,
             nightVeilOpacity: nightVeilOpacity)
@@ -140,8 +156,9 @@ struct MapTheme: Equatable {
     /// The decluttered night base (`ChartLayer.smartDark`): near-black ground, dark terrain relief, land
     /// silhouettes, and an AMBER route so the flown path is the brightest thing on the map. Fixed across
     /// cockpit/day — only the night theme trims label emission (see `routeWptText`). Airspace keeps the
-    /// chart tints even though the fills are suppressed, because TFR color is read from this table and a
-    /// live NOTAM must stay the most alarming mark on any base.
+    /// chart tints because it is NOT suppressed in this mode (it is a constraint, not furniture) and
+    /// because TFR colour is read from this table — a live NOTAM must stay the most alarming mark on
+    /// any base.
     static func smartDark(appTheme: AppTheme, chartBrightness: Double = 1.0) -> MapTheme {
         assert(chartBrightness > 0, "chart brightness must be positive")
         let night = (appTheme == .night)
@@ -165,6 +182,9 @@ struct MapTheme: Equatable {
             routeWptText: night ? rgb(0xF2B0A0) : .white,
             routeWptAlt: night ? rgb(0xC08A94) : rgb(0x4FC3F7),
             routeWptSpeed: night ? rgb(0xC77FB0) : rgb(0xE040FB),
+            routeWptIAF: night ? rgb(0xD98A72) : rgb(0x7FE0A0),
+            routeWptFAF: night ? rgb(0xFF7040) : rgb(0xFFC24B),
+            routeWptMAP: night ? rgb(0xFF3B24) : rgb(0xFF6B6B),
             // The terrain pack ships pre-dimmed, so identity paint — the slider still scales it below.
             rasterBrightnessMax: 1.0, rasterSaturation: 0, rasterContrast: 0,
             nightVeilOpacity: 0)                        // the mode IS the dark adaptation
@@ -187,6 +207,7 @@ struct MapTheme: Equatable {
                 route: rgb(0xF23D9E), track: rgb(0xFF9E33, 0.85), procedure: rgb(0x29C7F0),
                 hold: legacyHold,
                 routeWptText: .white, routeWptAlt: rgb(0x4FC3F7), routeWptSpeed: rgb(0xE040FB),
+                routeWptIAF: rgb(0x7FE0A0), routeWptFAF: rgb(0xFFC24B), routeWptMAP: rgb(0xFF6B6B),
                 rasterBrightnessMax: 0.95, rasterSaturation: 0, rasterContrast: 0,
                 nightVeilOpacity: 0)
         case .day:
@@ -203,6 +224,7 @@ struct MapTheme: Equatable {
                 route: rgb(0xF23D9E), track: rgb(0xFF9E33, 0.85), procedure: rgb(0x29C7F0),
                 hold: legacyHold,
                 routeWptText: rgb(0x17242E), routeWptAlt: rgb(0x0B6C93), routeWptSpeed: rgb(0x8E1FA0),
+                routeWptIAF: rgb(0x11703C), routeWptFAF: rgb(0x8A5200), routeWptMAP: rgb(0xB3261E),
                 rasterBrightnessMax: 1.0, rasterSaturation: 0, rasterContrast: 0,
                 nightVeilOpacity: 0)
         case .night:
@@ -221,6 +243,7 @@ struct MapTheme: Equatable {
                 route: rgb(0xFF5A3C), track: rgb(0xB0521E, 0.85), procedure: rgb(0xE07A5A),
                 hold: legacyHold,
                 routeWptText: rgb(0xF2B0A0), routeWptAlt: rgb(0xC08A94), routeWptSpeed: rgb(0xC77FB0),
+                routeWptIAF: rgb(0xD98A72), routeWptFAF: rgb(0xFF7040), routeWptMAP: rgb(0xFF3B24),
                 rasterBrightnessMax: 0.55, rasterSaturation: -0.65, rasterContrast: 0.10,
                 nightVeilOpacity: 0.10)
         }
