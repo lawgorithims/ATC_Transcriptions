@@ -4,6 +4,9 @@ import SwiftUI
 /// of airport binders (your route + nearby fields, plus search); opening a binder shows its FAA charts as
 /// LARGE thumbnails you can eyeball, grouped by category (approaches by runway). Tap a thumbnail to open
 /// the plate full-page or send it to the map as a georeferenced overlay.
+/// Sheet target for the by-minima ranking — a plain ident needs an Identifiable wrapper.
+private struct RankTarget: Identifiable { let ident: String; var id: String { ident } }
+
 struct PlatesTabView: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var metars: MetarStore   // re-passed into the plate sheet (see ConsoleView)
@@ -15,6 +18,7 @@ struct PlatesTabView: View {
     @State private var plate: AirportProcedure?     // the plate open full-screen
     @State private var searchActive = false         // drives `.searchable` focus so we can dismiss it on tab-leave
     @State private var showFlightBag = false
+    @State private var rankingAirport: String?      // the binder whose approaches are ranked by minima
     @State private var nearbyBinders: [String] = []  // nearest charted fields, recomputed as the GPS fix moves
     @State private var lastNearbyCoord: Coord?       // movement gate for the (off-main) nearby scan
     // Thumbnail min-width (persisted). ~340 yields 2 columns in iPad portrait / 3 in landscape from the
@@ -42,6 +46,22 @@ struct PlatesTabView: View {
         let dLat = (b.lat - a.lat) * 60.0
         let dLon = (b.lon - a.lon) * 60.0 * cos((a.lat + b.lat) / 2 * .pi / 180)
         return (dLat * dLat + dLon * dLon).squareRoot()
+    }
+
+    /// The by-minima ranking entry point. Hidden rather than disabled where an airport publishes a single
+    /// approach: there is nothing to rank, and an empty ranking reads as a failure.
+    @ViewBuilder private func rankButton(_ apt: String) -> some View {
+        let approaches = Self.approachCount(apt)
+        if approaches > 1 {
+            Button { Haptics.impact(.light); rankingAirport = apt } label: {
+                Label("By minima", systemImage: "arrow.down.to.line")
+            }
+            .accessibilityIdentifier("binder-rank-minima")
+        }
+    }
+
+    static func approachCount(_ apt: String) -> Int {
+        Procedures.forAirport(apt).filter { $0.category == .approach }.count
     }
 
     var body: some View {
@@ -85,6 +105,10 @@ struct PlatesTabView: View {
                     .navigationTitle(apt)
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbar {           // keep the Flight Bag reachable inside a binder (native back takes leading)
+                        // Which way in gets you lowest? Only offered where there is a choice to make.
+                        ToolbarItem(placement: .topBarTrailing) {
+                            rankButton(apt)
+                        }
                         ToolbarItem(placement: .topBarTrailing) {
                             FlightBagButton(bag: model.plateBag, accent: model.palette.accent) { showFlightBag = true }
                         }
@@ -92,6 +116,24 @@ struct PlatesTabView: View {
             }
             .sheet(isPresented: $showFlightBag) {
                 FlightBagView(bag: model.plateBag, currentAirport: airport).environmentObject(model)
+            }
+            .sheet(item: Binding(get: { rankingAirport.map { RankTarget(ident: $0) } },
+                                 set: { rankingAirport = $0?.ident })) { target in
+                NavigationStack {
+                    MinimaRankingView(airport: target.ident,
+                                      procedures: Procedures.forAirport(target.ident).filter { $0.category == .approach },
+                                      store: model.minima,
+                                      palette: model.palette,
+                                      onOpen: { proc in rankingAirport = nil; plate = proc })
+                        .navigationTitle("\(target.ident) — by minima")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button("Done") { rankingAirport = nil }
+                            }
+                        }
+                }
+                .tint(model.palette.accent)
             }
         }
         .tint(model.palette.accent)
