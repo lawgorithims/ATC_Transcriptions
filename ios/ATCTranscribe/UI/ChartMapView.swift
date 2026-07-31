@@ -191,6 +191,20 @@ final class MBTilesTileOverlay: MKTileOverlay {
                 ox: Double(x % scale) * sub, oy: Double(y % scale) * sub)
     }
 
+    /// Where a MISSING tile's nearest available ancestor is, and which quadrant of it to magnify.
+    ///
+    /// Distinct from `overzoomSource`, which answers the different question of a request BEYOND the
+    /// pack's declared depth. This one is for a SPARSE pack: the tile is inside the declared range and
+    /// simply is not there, because the terrain relief only carries its deepest level where the terrain
+    /// warrants the bytes. Pure so the index arithmetic can be pinned by a test — an off-by-one here
+    /// draws the wrong piece of the wrong parent, which reads as terrain in the wrong place.
+    static func ancestorSource(z: Int, x: Int, y: Int, step: Int) -> (ax: Int, ay: Int, ox: Int, oy: Int)? {
+        guard step > 0, step <= 8, z - step >= 0 else { return nil }
+        let scale = 1 << step                                       // tiles per ancestor edge
+        assert(scale > 0, "ancestorSource: degenerate step")
+        return (ax: x >> step, ay: y >> step, ox: x % scale, oy: y % scale)
+    }
+
     /// The MKMapRect a tile path covers — used for the fast out-of-bounds reject.
     static func tileRect(z: Int, x: Int, y: Int) -> MKMapRect {
         let side = MKMapSize.world.width / Double(1 << z)

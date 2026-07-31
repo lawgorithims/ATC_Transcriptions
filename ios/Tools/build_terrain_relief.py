@@ -2,7 +2,7 @@
 """build_terrain_relief.py — bake CommSight's bundled dark terrain-relief base ("Dark (minimal)").
 
 WHAT IT MAKES
-    Resources/basemap/terrain_base.mbtiles — WebP shaded-relief tiles, z0-z8, CONUS, served by the
+    Resources/basemap/terrain_base.mbtiles — WebP shaded-relief tiles, z0-z10, CONUS, served by the
     loopback tile server at /base/terrain/{z}/{x}/{y} under the decluttered night map mode.
 
 WHY PRE-BAKED, NOT A LIVE HILLSHADE LAYER
@@ -20,9 +20,14 @@ WHY NOT REUSE THE SHIPPED terrain_conus.bin
     the same AWS source tiles and keeps its own artifact. See build_terrain_grid.py for that side.
 
 DESIGN NOTES THAT MATTER IF YOU RETUNE IT
-    * ONE WHOLE-CONUS MOSAIC, shaded once, then cut. Hillshading tile-by-tile leaves visible gradient
-      discontinuities at every tile border (the gradient at an edge needs the neighbour's pixels).
-      Mosaic-then-cut makes seams impossible rather than merely unlikely.
+    * BLOCKS WITH A HALO, not tile-by-tile. Hillshading a tile in isolation leaves a visible gradient
+      discontinuity at every border, because the gradient at an edge needs the neighbour's pixels — so
+      each block is computed with a halo wider than every filter that reads neighbours, and its edge
+      pixels come out identical to a whole-CONUS pass. (It WAS one whole-CONUS mosaic; at z10 that array
+      is 4.5 GB, which is what forced the blocking.)
+    * A SPARSE DEEP LEVEL. z9 and z10 are carried only where a tile holds at least SPARSE_RELIEF_M of
+      relief; flat country is left to be magnified from its parent, which for flat country is
+      indistinguishable. The loopback server fills the gap (MBTilesHTTPServer.ancestorPNG).
     * MULTIDIRECTIONAL shade (Mark 1992, as GDAL does it): four azimuths combined with sin^2 weights.
       A single sun azimuth throws hard black shadows that fight the route overlay; this stays soft.
     * TRANSPARENT OCEAN (alpha 0 at or below sea level). An opaque sea would print the bbox as a
@@ -70,21 +75,19 @@ except ImportError:                                          # pragma: no cover 
 LAT_MIN, LAT_MAX = 24.0, 50.0
 LON_MIN, LON_MAX = -125.0, -66.0
 
-SRC_ZOOM = 8              # ~600 m/px — the finest the AWS terrarium cache is fetched at
-# z8 is the finest level the cached source supports honestly (SRC_ZOOM is 8), and it is where the
-# relief stops softening under the enroute zooms a pilot actually flies at. Going deeper would be
-# invention, not detail.
-MAX_ZOOM = 8
+SRC_ZOOM = 10             # ~117 m/px at 40N — fine enough for a small hill beside a runway
+# Matches SRC_ZOOM: every output level is real source data, never upsampled invention.
+MAX_ZOOM = 10
 TILE = 256
 TILE_URL = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"
 MAX_TILE_RETRIES = 3
 MIN_COVERAGE = 0.99       # refuse to bake a pack with visible holes
 FEATHER_PX = 64           # mosaic-edge alpha ramp, in source pixels
 # The local-relief tint has far more contrast than the old absolute ramp, and q75 put visible 8x8
-# blocking on ridge lines and banding in the basins — which a pilot sees magnified, because MapLibre
-# blows the deepest level up at approach zooms. The pack is a couple of megabytes against 9-10 MB for
-# each bundled chart base, so quality is the cheap side of this trade.
-WEBP_QUALITY = "93"
+# blocking on ridge lines — which a pilot sees MAGNIFIED, because MapLibre blows the deepest level up at
+# approach zooms. That magnification is 16x when the pack stops at z8 but only 4x when it reaches z10,
+# so the deeper pack does not need to carry as much quality to survive the same viewing.
+WEBP_QUALITY = "88"
 WEBP_ALPHA_QUALITY = "95"
 
 CACHE_DIR = os.path.expanduser("~/CommSight/terrain-relief-build/raw")
@@ -119,10 +122,33 @@ RAMP = [
     (400,  (0x50, 0x49, 0x3C)),   # 72.6
     (900,  (0x7C, 0x6E, 0x56)),   # 111.0 — sunlit tops reach ~147, the route still owns the map
 ]
-# Radius of the smoothing that defines "its own surroundings", in SOURCE pixels. At z8 a pixel is about
-# 470 m at 40N, so 96 px is roughly a 45 km radius — wide enough that a mountain range is local relief
-# rather than being averaged into its own baseline, narrow enough that the Great Plains stay flat.
-BASELINE_RADIUS_PX = 96
+# Radius of the smoothing that defines "its own surroundings". Expressed in KILOMETRES, not pixels, so
+# it means the same thing at any SRC_ZOOM — roughly a terminal area. Wide enough that a mountain range
+# is local relief rather than being averaged into its own baseline; narrow enough that the Great Plains
+# stay flat.
+BASELINE_RADIUS_KM = 45.0
+
+# A tile is only carried at the DEEP levels when it SHOWS SOMETHING ITS PARENT DOES NOT.
+#
+# The obvious test — "does this tile hold at least N metres of relief" — turns out to be useless: a z10
+# tile spans about 30 km, and almost nowhere in CONUS is flat to within 60 m over 30 km. The High
+# Plains failed it too, so nothing was ever skipped. The question that matters is not how much terrain
+# is in the tile but how much of it SURVIVES being halved: a long smooth slope looks identical at z9
+# and z10, while a 200 ft hill does not. So the tile is rendered, reduced, magnified back, and kept
+# only if the round trip loses more than a just-noticeable amount of luminance.
+SPARSE_BELOW_ZOOM = 9          # z0..8 are dense; 9 and deeper are carried only where they add detail
+SPARSE_JND_LUMA = 7.0          # a shade above the WebP q93 error floor, so this never chases noise
+
+# MEASURED AND REJECTED: gating the deep level on proximity to an airport. It is the obvious idea —
+# this resolution only matters on approach — but the US is so dense with airfields that even a 15 NM
+# radius around PUBLIC aerodromes alone covers 61 % of CONUS, and a 30 NM radius covers 69 %. A filter
+# that removes a third of the tiles is not worth a dependency on the airport table.
+
+# Source tiles per side of one bake block. The whole-CONUS array does not fit in memory past z8, so the
+# bake runs in blocks with a HALO wide enough for every filter that reads neighbours — which preserves
+# the mosaic-then-cut guarantee (no seams) because each block's edge pixels are computed from real
+# neighbouring data rather than from nothing.
+BLOCK_TILES = 8
 # Hillshade is a MULTIPLIER on the ramp. v1 compressed it into 0.75-1.06 — a 1.41x ratio between deepest
 # shadow and brightest sun — which is why the relief read as a soft STAIN rather than as terrain: the
 # ramp carried the elevation but the shading carried almost no shape. 0.55-1.32 is a 2.4x ratio, so
@@ -231,8 +257,31 @@ def encode_png_rgba(arr):
 
 # ---------------------------------------------------------------- tiles / geo
 
-def tile_range(zoom, lat_min=LAT_MIN, lat_max=LAT_MAX, lon_min=LON_MIN, lon_max=LON_MAX):
+def metres_per_pixel(zoom, lat):
+    """Ground resolution of one source pixel at this zoom and latitude."""
+    assert zoom >= 0, "metres_per_pixel: negative zoom"
+    return (2 * math.pi * 6378137.0 / (2 ** zoom * TILE)) * math.cos(math.radians(lat))
+
+
+def baseline_radius_px():
+    """The smoothing radius in SOURCE pixels at the middle of the bbox."""
+    mid = (LAT_MIN + LAT_MAX) / 2.0
+    r = int(round(BASELINE_RADIUS_KM * 1000.0 / metres_per_pixel(SRC_ZOOM, mid)))
+    return max(4, r)
+
+
+def block_halo_px():
+    """Halo each block carries so every neighbour-reading filter sees real data at its edges."""
+    return baseline_radius_px() + 8      # +8 covers the gradient and any rounding
+
+def tile_range(zoom, lat_min=None, lat_max=None, lon_min=None, lon_max=None):
     """Inclusive Web-Mercator tile index bounds covering the bbox: (x0, x1, y0, y1)."""
+    # Read the module globals at CALL time, not as default arguments — defaults are bound at import, so
+    # a caller that narrows the bbox (a test bake over one airport) would silently get the whole of CONUS.
+    lat_min = LAT_MIN if lat_min is None else lat_min
+    lat_max = LAT_MAX if lat_max is None else lat_max
+    lon_min = LON_MIN if lon_min is None else lon_min
+    lon_max = LON_MAX if lon_max is None else lon_max
     n = 2 ** zoom
 
     def xtile(lon):
@@ -307,36 +356,6 @@ def fetch_all(workers=8):
 
 
 # ---------------------------------------------------------------- mosaic + shade
-
-def build_mosaic():
-    """Assemble the cached source tiles into one float32 elevation mosaic in metres.
-
-    Returns (elev, y0, y1, coverage) where the mosaic spans source tile rows y0..y1 inclusive.
-    Missing tiles are left as NaN and become transparent output.
-    """
-    x0, x1, y0, y1 = tile_range(SRC_ZOOM)
-    w, h = (x1 - x0 + 1) * TILE, (y1 - y0 + 1) * TILE
-    print(f"mosaic: {w} x {h} px ({w * h / 1e6:.1f} Mpx)")
-    elev = np.full((h, w), np.nan, dtype=np.float32)
-    present = 0
-    total = (x1 - x0 + 1) * (y1 - y0 + 1)
-    for ty in range(y0, y1 + 1):                                # bounded by the bbox tile range
-        for tx in range(x0, x1 + 1):
-            path = cache_path(SRC_ZOOM, tx, ty)
-            if not os.path.exists(path):
-                continue
-            with open(path, "rb") as f:
-                rgb = decode_png_rgb(f.read()).astype(np.float32)
-            # Terrarium: h = R*256 + G + B/256 - 32768
-            tile = rgb[:, :, 0] * 256.0 + rgb[:, :, 1] + rgb[:, :, 2] / 256.0 - 32768.0
-            r0, c0 = (ty - y0) * TILE, (tx - x0) * TILE
-            elev[r0:r0 + TILE, c0:c0 + TILE] = tile
-            present += 1
-        print(f"  row {ty - y0 + 1}/{y1 - y0 + 1}", end="\r")
-    coverage = present / float(total)
-    print(f"\nmosaic coverage: {present}/{total} tiles ({coverage * 100:.1f}%)")
-    return elev, y0, y1, coverage
-
 
 def multidirectional_shade(elev, y0, y1):
     """Soft relief shading in [SHADE_LO, SHADE_HI], NaN-safe.
@@ -424,7 +443,7 @@ def regional_baseline(elev, radius_px):
     return out.astype(np.float32)
 
 
-def colorize(elev, shade):
+def colorize(elev, shade, abs_origin=None, full_shape=None):
     """LOCAL relief ramp times relief shading, with a transparent ocean. Returns (h, w, 4) uint8 RGBA.
 
     WHY THE TINT IS LOCAL AND NOT ABSOLUTE HEIGHT. An absolute hypsometric ramp answers "how high above
@@ -447,7 +466,7 @@ def colorize(elev, shade):
     land = np.isfinite(elev) & (elev > 0.0)
     hgt = np.where(land, elev, 0.0).astype(np.float32)
 
-    baseline = regional_baseline(np.where(land, elev, np.nan), BASELINE_RADIUS_PX)
+    baseline = regional_baseline(np.where(land, elev, np.nan), baseline_radius_px())
     relief = np.where(land, hgt - baseline, 0.0)
 
     # Interpolate in sqrt(relief) above the baseline so the first couple of hundred feet — the hill by
@@ -467,15 +486,19 @@ def colorize(elev, shade):
     alpha = np.where(land, 255, 0).astype(np.float32)
 
     # Feather the bbox EDGES so relief dissolves into the vector land silhouette at the borders
-    # instead of ending on a straight line (most visible along the Canada/Mexico frontier).
-    if FEATHER_PX > 0:
-        ramp = np.clip(np.arange(FEATHER_PX, dtype=np.float32) / float(FEATHER_PX), 0.0, 1.0)
+    # instead of ending on a straight line (most visible along the Canada/Mexico frontier). Computed
+    # from ABSOLUTE position, because the bake runs in blocks and a block edge in the middle of CONUS
+    # must not be feathered — that would print the block grid onto the map.
+    if FEATHER_PX > 0 and abs_origin is not None and full_shape is not None:
+        r0, c0 = abs_origin
+        H, W = full_shape
         for axis in (0, 1):                                     # bounded (2 axes)
             n = alpha.shape[axis]
-            prof = np.ones(n, dtype=np.float32)
-            k = min(FEATHER_PX, n // 2)
-            prof[:k] = ramp[:k]
-            prof[n - k:] = ramp[:k][::-1]
+            start = r0 if axis == 0 else c0
+            total = H if axis == 0 else W
+            idx = np.arange(n, dtype=np.float32) + float(start)
+            d = np.minimum(idx, (total - 1) - idx)              # distance to the nearest bbox edge
+            prof = np.clip(d / float(FEATHER_PX), 0.0, 1.0).astype(np.float32)
             alpha *= prof[:, None] if axis == 0 else prof[None, :]
 
     out[:, :, 3] = np.clip(alpha, 0, 255).astype(np.uint8)
@@ -559,64 +582,198 @@ def write_mbtiles(levels, path):
     return total, size
 
 
-def bake(preview=None):
-    elev, y0, y1, coverage = build_mosaic()
+def load_dem_window(tx0, ty0, tx1, ty1):
+    """Cached source tiles for the inclusive tile rect, as one float32 array in metres.
+
+    Tiles outside the cached bbox are simply absent and stay NaN — which is correct for a halo that
+    runs off the edge of coverage: the filters below count only real samples.
+    """
+    assert tx1 >= tx0 and ty1 >= ty0, "load_dem_window: inverted rect"
+    w, h = (tx1 - tx0 + 1) * TILE, (ty1 - ty0 + 1) * TILE
+    out = np.full((h, w), np.nan, dtype=np.float32)
+    present = 0
+    for ty in range(ty0, ty1 + 1):                              # bounded by the rect (rule 2)
+        for tx in range(tx0, tx1 + 1):
+            path = cache_path(SRC_ZOOM, tx, ty)
+            if not os.path.exists(path):
+                continue
+            with open(path, "rb") as f:
+                rgb = decode_png_rgb(f.read()).astype(np.float32)
+            # Terrarium: h = R*256 + G + B/256 - 32768
+            out[(ty - ty0) * TILE:(ty - ty0 + 1) * TILE, (tx - tx0) * TILE:(tx - tx0 + 1) * TILE] = (
+                rgb[:, :, 0] * 256.0 + rgb[:, :, 1] + rgb[:, :, 2] / 256.0 - 32768.0)
+            present += 1
+    return out, present
+
+
+def tile_is_worth_carrying(tile_rgba):
+    """Does this tile show anything its half-resolution parent would not?
+
+    Reduce it 2x and magnify it straight back — that is exactly what the loopback server will serve if
+    this tile is absent. Whatever the round trip destroys is the detail this level is adding.
+    """
+    assert tile_rgba.shape[0] == TILE and tile_rgba.shape[1] == TILE, "worth-carrying: not a tile"
+    half = box_downsample(tile_rgba)
+    back = np.repeat(np.repeat(half, 2, axis=0), 2, axis=1)
+    a = tile_rgba[:, :, 3].astype(np.float32) / 255.0
+    def luma(t):
+        return 0.2126 * t[:, :, 0] + 0.7152 * t[:, :, 1] + 0.0722 * t[:, :, 2]
+    d = np.abs(luma(tile_rgba.astype(np.float32)) - luma(back.astype(np.float32))) * a
+    if d.size == 0:
+        return False
+    # p99.5 rather than max: one stray pixel is not a terrain feature, but a ridge line is thousands.
+    return float(np.percentile(d, 99.5)) >= SPARSE_JND_LUMA
+
+
+def bake_deep_level(workers=8):
+    """Render the deepest level in blocks, returning {(x, y): webp bytes} and the coverage fraction.
+
+    BLOCKS WITH A HALO, not one mosaic. The original design shaded the whole of CONUS at once
+    specifically so that no tile boundary could show — the gradient at a tile edge needs the
+    neighbour's pixels, and shading tile-by-tile leaves a visible discontinuity at every border. That
+    guarantee is preserved here rather than abandoned: each block is computed with a halo wider than
+    every filter that reads neighbours, so its edge pixels see real data and come out identical to what
+    the whole-CONUS pass would have produced. What changes is only that the array fits in memory.
+    """
+    x0, x1, y0, y1 = tile_range(SRC_ZOOM)
+    halo = block_halo_px()
+    radius = baseline_radius_px()
+    assert halo > radius, "block halo must exceed every filter radius or blocks will show their seams"
+    full_h, full_w = (y1 - y0 + 1) * TILE, (x1 - x0 + 1) * TILE
+    total_tiles = (x1 - x0 + 1) * (y1 - y0 + 1)
+    print(f"deep level z{MAX_ZOOM}: {total_tiles} source tiles, "
+          f"blocks of {BLOCK_TILES}x{BLOCK_TILES} with a {halo}px halo (baseline radius {radius}px)")
+
+    out, present, skipped = {}, 0, 0
+    blocks = [(bx, by)
+              for by in range(y0, y1 + 1, BLOCK_TILES)
+              for bx in range(x0, x1 + 1, BLOCK_TILES)]
+    for i, (bx, by) in enumerate(blocks):                       # bounded by the tile range (rule 2)
+        cx1, cy1 = min(bx + BLOCK_TILES - 1, x1), min(by + BLOCK_TILES - 1, y1)
+        pad_t = (halo + TILE - 1) // TILE                       # halo in whole tiles
+        wx0, wy0 = bx - pad_t, by - pad_t
+        wx1, wy1 = cx1 + pad_t, cy1 + pad_t
+        elev, got = load_dem_window(wx0, wy0, wx1, wy1)
+        core_r0, core_c0 = (by - wy0) * TILE, (bx - wx0) * TILE
+        core_h, core_w = (cy1 - by + 1) * TILE, (cx1 - bx + 1) * TILE
+        core_elev = elev[core_r0:core_r0 + core_h, core_c0:core_c0 + core_w]
+        if not np.isfinite(core_elev).any():
+            continue                                            # all ocean / uncovered
+        shade = multidirectional_shade(elev, wy0, wy1)
+        # The WINDOW's absolute origin, not the core's — colorize runs on the whole window including
+        # the halo, so a core-relative origin walks the feather profile off the end of the bbox and
+        # zeroes the alpha of everything past the first tile row.
+        rgba = colorize(elev, shade,
+                        abs_origin=((wy0 - y0) * TILE, (wx0 - x0) * TILE),
+                        full_shape=(full_h, full_w))
+        rgba = rgba[core_r0:core_r0 + core_h, core_c0:core_c0 + core_w]
+        del elev, shade
+
+        jobs = []
+        for ty in range(by, cy1 + 1):
+            for tx in range(bx, cx1 + 1):
+                r0, c0 = (ty - by) * TILE, (tx - bx) * TILE
+                tile = rgba[r0:r0 + TILE, c0:c0 + TILE]
+                if tile.shape[:2] != (TILE, TILE) or not tile[:, :, 3].any():
+                    continue
+                if MAX_ZOOM >= SPARSE_BELOW_ZOOM and not tile_is_worth_carrying(tile):
+                    skipped += 1
+                    continue
+                jobs.append(((tx, ty), tile.copy()))
+                present += 1
+        with futures.ThreadPoolExecutor(max_workers=workers) as ex:
+            for key, blob in zip([k for k, _ in jobs], ex.map(encode_webp, [t for _, t in jobs])):
+                out[key] = blob
+        del rgba, core_elev
+        print(f"  block {i + 1}/{len(blocks)}: {len(out)} tiles kept, {skipped} flat skipped", end="\r")
+    print()
+    # Coverage = how much of the bbox the SOURCE actually covered. A tile deliberately skipped for
+    # being flat is covered, just not carried, so it counts toward coverage and not against it.
+    coverage = (present + skipped) / float(max(total_tiles, 1))
+    print(f"deep level: {present} tiles carried, {skipped} flat tiles left to the parent "
+          f"({100.0 * skipped / max(total_tiles, 1):.0f}% saved)")
+    return out, coverage
+
+
+def reduce_level(children, z):
+    """Build level z by box-reducing the four children of each tile at z+1."""
+    assert z >= 0, "reduce_level: negative zoom"
+    parents = {}
+    for (cx, cy) in children:                                   # bounded by the level below (rule 2)
+        parents.setdefault((cx >> 1, cy >> 1), True)
+    out = {}
+    for (px, py) in parents:                                    # bounded (rule 2)
+        canvas = np.zeros((TILE * 2, TILE * 2, 4), dtype=np.uint8)
+        any_child = False
+        for dy in (0, 1):
+            for dx in (0, 1):
+                blob = children.get((px * 2 + dx, py * 2 + dy))
+                if blob is None:
+                    continue
+                canvas[dy * TILE:(dy + 1) * TILE, dx * TILE:(dx + 1) * TILE] = decode_webp_rgba(blob)
+                any_child = True
+        if not any_child:
+            continue
+        out[(px, py)] = encode_webp(box_downsample(canvas))
+    return out
+
+
+def decode_webp_rgba(blob):
+    """WebP bytes -> premultiplied RGBA, the form the pyramid averages in."""
+    with tempfile.TemporaryDirectory() as td:
+        src, dst = os.path.join(td, "t.webp"), os.path.join(td, "t.pam")
+        with open(src, "wb") as f:
+            f.write(blob)
+        subprocess.run(["dwebp", "-quiet", src, "-pam", "-o", dst], check=True)
+        with open(dst, "rb") as f:
+            d = f.read()
+    i = d.index(b"ENDHDR\n") + 7
+    hdr = d[:i].decode()
+    g = lambda k: int([l for l in hdr.split("\n") if l.startswith(k)][0].split()[1])
+    w, h, dep = g("WIDTH"), g("HEIGHT"), g("DEPTH")
+    a = np.frombuffer(d[i:i + w * h * dep], dtype=np.uint8).reshape(h, w, dep).copy()
+    if dep == 3:
+        a = np.dstack([a, np.full((h, w, 1), 255, np.uint8)])
+    # Premultiply so the 2x2 average below cannot bleed colour out of transparent pixels.
+    al = a[:, :, 3:4].astype(np.float32) / 255.0
+    a[:, :, :3] = (a[:, :, :3].astype(np.float32) * al).astype(np.uint8)
+    return a
+
+
+def bake(preview=None, workers=8):
+    assert SRC_ZOOM >= MAX_ZOOM, "MAX_ZOOM cannot exceed the source resolution — that would be invention"
+    deep, coverage = bake_deep_level(workers=workers)
     if coverage < MIN_COVERAGE:
         sys.exit(f"coverage {coverage * 100:.1f}% below {MIN_COVERAGE * 100:.0f}% — run --fetch first")
-    print("shading…")
-    shade = multidirectional_shade(elev, y0, y1)
-    print("colorizing…")
-    rgba = colorize(elev, shade)
-    del elev, shade
-
-    if preview:
-        step = max(1, rgba.shape[1] // 1600)
-        with open(preview, "wb") as f:
-            f.write(encode_png_rgba(unpremultiply(rgba[::step, ::step])))
-        print(f"preview -> {preview} ({rgba.shape[1] // step} px wide)")
-
-    x0, _, _, _ = tile_range(SRC_ZOOM)
-    levels = {}
-    # Reduce the source-resolution mosaic down to the finest OUTPUT level. At MAX_ZOOM == SRC_ZOOM that
-    # is no reduction at all (the mosaic is already the right scale); each level below it costs one 2x
-    # box reduce. Writing this as a bounded loop rather than a single hardcoded call is what lets
-    # MAX_ZOOM move without silently shifting the whole pyramid by a factor of two.
-    assert SRC_ZOOM >= MAX_ZOOM, "MAX_ZOOM cannot exceed the source resolution — that would be invention"
-    cur = rgba
-    for _ in range(SRC_ZOOM - MAX_ZOOM):                        # bounded by SRC_ZOOM (rule 2)
-        cur = box_downsample(cur)
-    del rgba
-
-    for z in range(MAX_ZOOM, -1, -1):                           # bounded (MAX_ZOOM..z0)
-        tiles = {}
-        h, w = cur.shape[:2]
-        n = 1 << z
-        # Where the mosaic's top-left corner sits in this zoom's GLOBAL pixel grid. The mosaic starts on
-        # a z8 tile boundary, so at zoom z its origin is (x0, y0) * 256 / 2^(8-z) = (x0, y0) * 2^z —
-        # always an integer, and generally NOT tile-aligned (a half-tile offset is normal). Deriving it
-        # in closed form beats carrying an offset down the pyramid, which is easy to get subtly wrong and
-        # would silently shift the relief away from the terrain it depicts.
-        org_c, org_r = x0 * n, y0 * n
-        assert org_c >= 0 and org_r >= 0, "mosaic origin must be non-negative"
-        for ty in range(max(0, org_r // TILE), min(n, (org_r + h + TILE - 1) // TILE)):
-            for tx in range(max(0, org_c // TILE), min(n, (org_c + w + TILE - 1) // TILE)):
-                r0, c0 = ty * TILE - org_r, tx * TILE - org_c   # tile's top-left within the mosaic
-                sr0, sc0 = max(0, r0), max(0, c0)
-                sr1, sc1 = min(h, r0 + TILE), min(w, c0 + TILE)
-                if sr1 <= sr0 or sc1 <= sc0:
-                    continue
-                tile = np.zeros((TILE, TILE, 4), dtype=np.uint8)
-                tile[sr0 - r0:sr1 - r0, sc0 - c0:sc1 - c0] = cur[sr0:sr1, sc0:sc1]
-                if not tile[:, :, 3].any():
-                    continue                                    # fully transparent → don't ship it
-                tiles[(tx, ty)] = encode_webp(tile)
-        levels[z] = tiles
-        print(f"  built z{z}: {len(tiles)} tiles")
-        if z == 0:
+    levels = {MAX_ZOOM: deep}
+    print(f"  built z{MAX_ZOOM}: {len(deep)} tiles")
+    cur = deep
+    for z in range(MAX_ZOOM - 1, -1, -1):                       # bounded (rule 2)
+        cur = reduce_level(cur, z)
+        levels[z] = cur
+        print(f"  built z{z}: {len(cur)} tiles")
+        if not cur:
             break
-        cur = box_downsample(cur)
-
+    if preview:
+        _write_preview(levels, preview)
     return write_mbtiles(levels, os.path.abspath(OUT_PATH))
+
+
+def _write_preview(levels, path):
+    """Stitch the shallowest useful level into one PNG for eyeballing the palette."""
+    z = min(6, MAX_ZOOM)
+    tiles = levels.get(z) or {}
+    if not tiles:
+        return
+    xs = [x for x, _ in tiles]; ys = [y for _, y in tiles]
+    w = (max(xs) - min(xs) + 1) * TILE; h = (max(ys) - min(ys) + 1) * TILE
+    canvas = np.zeros((h, w, 4), dtype=np.uint8)
+    for (x, y), blob in tiles.items():                          # bounded by the level (rule 2)
+        canvas[(y - min(ys)) * TILE:(y - min(ys) + 1) * TILE,
+               (x - min(xs)) * TILE:(x - min(xs) + 1) * TILE] = decode_webp_rgba(blob)
+    with open(path, "wb") as f:
+        f.write(encode_png_rgba(unpremultiply(canvas)))
+    print(f"preview -> {path} ({w} px wide, z{z})")
 
 
 def verify(path):
@@ -668,6 +825,10 @@ def verify(path):
         luma = float(arr[oy, ox, :3].mean())
         return alpha, luma, f"z{z}/{tx}/{ty} px({ox},{oy})"
 
+    # ALIGNMENT is checked at the deepest DENSE level, not at MAX_ZOOM. Past SPARSE_BELOW_ZOOM an
+    # absent tile means "flat, take the parent" rather than "water", so "no tile == ocean" — the
+    # inference this check rests on — is only sound where every land tile is guaranteed present.
+    dense_z = min(SPARSE_BELOW_ZOOM - 1, MAX_ZOOM) if MAX_ZOOM >= SPARSE_BELOW_ZOOM else MAX_ZOOM
     # (name, lat, lon, expect_land)
     checks = [("Denver CO", 39.74, -104.99, True), ("Pikes Peak", 38.84, -105.04, True),
               ("Wichita KS", 37.69, -97.34, True), ("Miami FL", 25.78, -80.20, True),
@@ -675,18 +836,33 @@ def verify(path):
               ("Pacific off CA", 34.00, -124.50, False)]
     bad = []
     for name, lat, lon, want_land in checks:                    # bounded (rule 2)
-        alpha, _, where = sample(lat, lon)
-        is_land = alpha is not None and alpha > 32               # absent tile == transparent == water
+        alpha, _, where = sample(lat, lon, z=dense_z)
+        is_land = alpha is not None and alpha > 32               # at a dense level, absent == water
         if is_land != want_land:
             bad.append(f"{name} ({where}): alpha={alpha}, expected {'land' if want_land else 'water'}")
     if bad:
         sys.exit("ALIGNMENT FAILED:\n  " + "\n  ".join(bad))
-    _, high, _ = sample(38.84, -105.04)
-    _, low, _ = sample(37.69, -97.34)
+    _, high, _ = sample(38.84, -105.04, z=dense_z)
+    _, low, _ = sample(37.69, -97.34, z=dense_z)
     if not (high and low and high > low):
         sys.exit(f"relief inverted or flat: high-terrain luma {high} vs plains {low}")
-    print(f"  alignment: {len(checks)}/{len(checks)} land/water samples correct")
+    print(f"  alignment: {len(checks)}/{len(checks)} land/water samples correct at z{dense_z}")
     print(f"  relief: high-terrain luma {high:.1f} > plains {low:.1f}")
+
+    # And the DEEP level separately: it must be present over real terrain, and aligned there. This is
+    # the check that catches a pyramid-origin error at MAX_ZOOM — the failure that puts perfectly good
+    # relief in the wrong place, which on a moving map is shaded terrain where there is none.
+    if MAX_ZOOM > dense_z:
+        deep_bad = []
+        for name, lat, lon in [("Pikes Peak", 38.84, -105.04), ("Aspen CO", 39.2232, -106.8687),
+                               ("Butte MT", 45.9548, -112.4975)]:
+            alpha, _, where = sample(lat, lon, z=MAX_ZOOM)
+            if alpha is None or alpha <= 32:
+                deep_bad.append(f"{name} ({where}): mountain terrain missing from z{MAX_ZOOM}")
+        if deep_bad:
+            sys.exit("DEEP LEVEL FAILED:\n  " + "\n  ".join(deep_bad))
+        carried = db.execute("SELECT count(*) FROM tiles WHERE zoom_level=?", (MAX_ZOOM,)).fetchone()[0]
+        print(f"  deep level: z{MAX_ZOOM} present over all 3 mountain samples ({carried} tiles carried)")
     db.close()
 
 
@@ -707,7 +883,7 @@ def main():
     if args.fetch:
         fetch_all(workers=args.workers)
     if args.bake or args.preview:
-        bake(preview=args.preview)
+        bake(preview=args.preview, workers=args.workers)
     if args.verify:
         verify(OUT_PATH)
 
