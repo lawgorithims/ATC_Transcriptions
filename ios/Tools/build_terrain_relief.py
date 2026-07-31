@@ -86,8 +86,10 @@ FEATHER_PX = 64           # mosaic-edge alpha ramp, in source pixels
 # The local-relief tint has far more contrast than the old absolute ramp, and q75 put visible 8x8
 # blocking on ridge lines — which a pilot sees MAGNIFIED, because MapLibre blows the deepest level up at
 # approach zooms. That magnification is 16x when the pack stops at z8 but only 4x when it reaches z10,
-# so the deeper pack does not need to carry as much quality to survive the same viewing.
-WEBP_QUALITY = "88"
+# so the deeper pack does not need to carry as much quality to survive the same viewing. Measured over a
+# Rockies-to-High-Plains strip, q84 costs about a fifth of q88's bytes for detail that is already being
+# resolved four times finer than the level it replaces.
+WEBP_QUALITY = "84"
 WEBP_ALPHA_QUALITY = "95"
 
 CACHE_DIR = os.path.expanduser("~/CommSight/terrain-relief-build/raw")
@@ -137,7 +139,7 @@ BASELINE_RADIUS_KM = 45.0
 # and z10, while a 200 ft hill does not. So the tile is rendered, reduced, magnified back, and kept
 # only if the round trip loses more than a just-noticeable amount of luminance.
 SPARSE_BELOW_ZOOM = 9          # z0..8 are dense; 9 and deeper are carried only where they add detail
-SPARSE_JND_LUMA = 7.0          # a shade above the WebP q93 error floor, so this never chases noise
+SPARSE_JND_LUMA = 9.0          # above the WebP error floor, so this never chases compression noise
 
 # MEASURED AND REJECTED: gating the deep level on proximity to an airport. It is the obvious idea —
 # this resolution only matters on approach — but the US is so dense with airfields that even a 15 NM
@@ -644,16 +646,24 @@ def bake_deep_level(workers=8):
     print(f"deep level z{MAX_ZOOM}: {total_tiles} source tiles, "
           f"blocks of {BLOCK_TILES}x{BLOCK_TILES} with a {halo}px halo (baseline radius {radius}px)")
 
-    out, present, skipped = {}, 0, 0
+    # SNAP the block grid to EVEN tile indices. Every 2x2 group that reduces to one parent tile then
+    # lies wholly inside one block, so the level below can be built here, from the DENSE pixels, before
+    # the sparse selection throws any of them away.
+    out, parents, present, skipped, src_loaded = {}, {}, 0, 0, 0
+    gx0, gy0 = x0 & ~1, y0 & ~1
     blocks = [(bx, by)
-              for by in range(y0, y1 + 1, BLOCK_TILES)
-              for bx in range(x0, x1 + 1, BLOCK_TILES)]
+              for by in range(gy0, y1 + 1, BLOCK_TILES)
+              for bx in range(gx0, x1 + 1, BLOCK_TILES)]
     for i, (bx, by) in enumerate(blocks):                       # bounded by the tile range (rule 2)
         cx1, cy1 = min(bx + BLOCK_TILES - 1, x1), min(by + BLOCK_TILES - 1, y1)
         pad_t = (halo + TILE - 1) // TILE                       # halo in whole tiles
         wx0, wy0 = bx - pad_t, by - pad_t
         wx1, wy1 = cx1 + pad_t, cy1 + pad_t
         elev, got = load_dem_window(wx0, wy0, wx1, wy1)
+        # Count the CORE's source tiles, not the window's — halos overlap between blocks and would be
+        # counted many times over.
+        src_loaded += sum(1 for ty in range(by, cy1 + 1) for tx in range(bx, cx1 + 1)   # bounded (rule 2)
+                          if x0 <= tx <= x1 and y0 <= ty <= y1 and os.path.exists(cache_path(SRC_ZOOM, tx, ty)))
         core_r0, core_c0 = (by - wy0) * TILE, (bx - wx0) * TILE
         core_h, core_w = (cy1 - by + 1) * TILE, (cx1 - bx + 1) * TILE
         core_elev = elev[core_r0:core_r0 + core_h, core_c0:core_c0 + core_w]
@@ -669,6 +679,10 @@ def bake_deep_level(workers=8):
         rgba = rgba[core_r0:core_r0 + core_h, core_c0:core_c0 + core_w]
         del elev, shade
 
+        # Build the level below from EVERY rendered tile, sparse or not. The pyramid used to be reduced
+        # from whatever the deepest level shipped, which meant a skipped tile took its parent, its
+        # grandparent and every ancestor with it — flat country ended up with no tile at ANY zoom and
+        # would have rendered as nothing instead of as flat land.
         jobs = []
         for ty in range(by, cy1 + 1):
             for tx in range(bx, cx1 + 1):
@@ -676,6 +690,13 @@ def bake_deep_level(workers=8):
                 tile = rgba[r0:r0 + TILE, c0:c0 + TILE]
                 if tile.shape[:2] != (TILE, TILE) or not tile[:, :, 3].any():
                     continue
+                pkey = (tx >> 1, ty >> 1)
+                canvas = parents.get(pkey)
+                if canvas is None:
+                    canvas = np.zeros((TILE * 2, TILE * 2, 4), dtype=np.uint8)
+                    parents[pkey] = canvas
+                canvas[(ty & 1) * TILE:((ty & 1) + 1) * TILE,
+                       (tx & 1) * TILE:((tx & 1) + 1) * TILE] = tile
                 if MAX_ZOOM >= SPARSE_BELOW_ZOOM and not tile_is_worth_carrying(tile):
                     skipped += 1
                     continue
@@ -685,14 +706,26 @@ def bake_deep_level(workers=8):
             for key, blob in zip([k for k, _ in jobs], ex.map(encode_webp, [t for _, t in jobs])):
                 out[key] = blob
         del rgba, core_elev
-        print(f"  block {i + 1}/{len(blocks)}: {len(out)} tiles kept, {skipped} flat skipped", end="\r")
+        print(f"  block {i + 1}/{len(blocks)}: {present} carried, {skipped} flat, "
+              f"{len(parents)} parents", end="\r")
     print()
     # Coverage = how much of the bbox the SOURCE actually covered. A tile deliberately skipped for
     # being flat is covered, just not carried, so it counts toward coverage and not against it.
-    coverage = (present + skipped) / float(max(total_tiles, 1))
+    # Coverage is about the SOURCE, not the output. Ocean tiles load perfectly well and produce no
+    # output tile at all (alpha 0), so counting output made a complete cache read as 75 % and tripped a
+    # gate whose whole purpose is to catch an incomplete download.
+    coverage = src_loaded / float(max(total_tiles, 1))
     print(f"deep level: {present} tiles carried, {skipped} flat tiles left to the parent "
-          f"({100.0 * skipped / max(total_tiles, 1):.0f}% saved)")
-    return out, coverage
+          f"({100.0 * skipped / max(present + skipped, 1):.0f}% of land saved), "
+          f"source coverage {100.0 * coverage:.1f}%")
+    # Encode the DENSE level below, so every square inch of land has a tile from here down.
+    below = {}
+    keys = list(parents.keys())
+    with futures.ThreadPoolExecutor(max_workers=workers) as ex:
+        for k, blob in zip(keys, ex.map(lambda kk: encode_webp(box_downsample(parents[kk])), keys)):
+            below[k] = blob
+    print(f"  dense z{MAX_ZOOM - 1}: {len(below)} tiles")
+    return out, below, coverage
 
 
 def reduce_level(children, z):
@@ -742,13 +775,13 @@ def decode_webp_rgba(blob):
 
 def bake(preview=None, workers=8):
     assert SRC_ZOOM >= MAX_ZOOM, "MAX_ZOOM cannot exceed the source resolution — that would be invention"
-    deep, coverage = bake_deep_level(workers=workers)
+    deep, below, coverage = bake_deep_level(workers=workers)
     if coverage < MIN_COVERAGE:
         sys.exit(f"coverage {coverage * 100:.1f}% below {MIN_COVERAGE * 100:.0f}% — run --fetch first")
-    levels = {MAX_ZOOM: deep}
-    print(f"  built z{MAX_ZOOM}: {len(deep)} tiles")
-    cur = deep
-    for z in range(MAX_ZOOM - 1, -1, -1):                       # bounded (rule 2)
+    levels = {MAX_ZOOM: deep, MAX_ZOOM - 1: below}
+    print(f"  built z{MAX_ZOOM}: {len(deep)} tiles (sparse)   z{MAX_ZOOM - 1}: {len(below)} tiles (dense)")
+    cur = below
+    for z in range(MAX_ZOOM - 2, -1, -1):                       # bounded (rule 2)
         cur = reduce_level(cur, z)
         levels[z] = cur
         print(f"  built z{z}: {len(cur)} tiles")
