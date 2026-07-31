@@ -35,6 +35,11 @@ final class MBTilesHTTPServer {
 
     init() {}
 
+    /// Most charts a single tile can straddle. Three sectionals meet at a corner; four is slack.
+    /// Compositing is bounded by this so a mis-catalogued pack set cannot turn one tile request into an
+    /// unbounded decode storm on the tile thread.
+    static let maxSeamLayers = 4
+
     /// Push the current chart packs (call from the main actor whenever they change).
     func setReaders(_ r: [MBTilesReader]) { lock.lock(); readers = r; lock.unlock() }
     private func currentReaders() -> [MBTilesReader] { lock.lock(); defer { lock.unlock() }; return readers }
@@ -147,9 +152,37 @@ final class MBTilesHTTPServer {
         }
         assert(readers.count <= 64, "unexpectedly many chart packs mounted")
         assert(z >= 0 && z <= 24, "tile: out-of-range zoom")
+
+        // A tile claimed by MORE THAN ONE pack is a MOSAIC SEAM, and picking one of them is wrong.
+        // Every chart is cut to its own neatline by charts/build_chart.sh ("outside-cutline pixels
+        // become transparent (alpha 0) so adjacent charts show through — the seamless-mosaic trick"),
+        // so at a seam BOTH packs hold the same tile and NEITHER is complete: measured at the San
+        // Antonio / Houston boundary, z9/118/297 is 37 % opaque in one pack and 49 % in the other.
+        // Returning either leaves a transparent column one tile wide, and what shows through it is the
+        // bundled base underneath at maxzoom 7 — the same chart magnified 4-32x. That is the reported
+        // "strips of land which remain very low resolution", and it is structural, not a loading delay.
+        if readers.count >= 2, let seam = compositeSeam(readers: readers, z: z, x: x, y: y) { return seam }
+
+        // TWO PASSES: every pack that has this tile NATIVELY before any pack that would have to upscale
+        // for it. First-match-wins across a mixed set let a shallow pack answer with a blurred guess
+        // while a deeper pack sitting later in the array held the real thing — the same class of defect
+        // as the seam above, just from a different direction.
+        for pass in 0..<2 {                                              // bounded (rule 2)
+            if let hit = scan(readers: readers, z: z, x: x, y: y, allowOverzoom: pass == 1) { return hit }
+        }
+        return nil
+    }
+
+    /// One pass of the reader scan. `allowOverzoom == false` considers only packs that hold the tile at
+    /// its own zoom; the second pass admits the upscalers.
+    private func scan(readers: [MBTilesReader], z: Int, x: Int, y: Int,
+                      allowOverzoom: Bool) -> (Data, String)? {
+        assert(z >= 0 && z <= 24, "scan: out-of-range zoom")
         for r in readers.prefix(64) {                                    // bounded (rule 2)
-            guard z >= r.minZoom, z <= r.maxZoom + MBTilesTileOverlay.overzoomLevels else { continue }
-            let key = "\(r.packID)/\(z)/\(x)/\(y)" as NSString
+            let ceiling = allowOverzoom ? r.maxZoom + MBTilesTileOverlay.overzoomLevels : r.maxZoom
+            guard z >= r.minZoom, z <= ceiling else { continue }
+            if !allowOverzoom && z > r.maxZoom { continue }
+            let key = "\(r.packID)/\(allowOverzoom ? "o" : "n")/\(z)/\(x)/\(y)" as NSString
             if let hit = pngCache.object(forKey: key) {
                 if hit.length == 0 { continue }        // cached NEGATIVE (this pack has no such tile) → try the next
                 return (hit as Data, Self.mime(for: r, z: z))
@@ -189,6 +222,57 @@ final class MBTilesHTTPServer {
             pngCache.setObject(NSData(), forKey: key, cost: 1)
         }
         return nil
+    }
+
+    /// Cache key for a composited seam tile — distinct from any single pack's key.
+    private static func seamKey(_ ids: [String], _ z: Int, _ x: Int, _ y: Int) -> NSString {
+        "seam:\(ids.joined(separator: "+"))/\(z)/\(x)/\(y)" as NSString
+    }
+
+    /// Alpha-composite the packs that all hold this tile, first pack on top.
+    ///
+    /// Returns nil for the ordinary case — fewer than two packs carry the tile — so the single-pack fast
+    /// path and its WebP passthrough are untouched and this costs nothing away from a seam. Only NATIVE
+    /// tiles are composited: an upscaled tile is a guess about a pack's own interior, never the reason a
+    /// neighbouring chart is missing, and blending guesses would spread blur along the join.
+    private func compositeSeam(readers: [MBTilesReader], z: Int, x: Int, y: Int) -> (Data, String)? {
+        // Decided ONCE per tile and remembered, because the scan below costs a BLOB read per pack and
+        // the overwhelming majority of tiles are not seams. The key covers the whole mounted set, so
+        // mounting or unmounting a pack naturally invalidates it.
+        let decision = Self.seamKey(readers.map(\.packID), z, x, y)
+        if let hit = pngCache.object(forKey: decision) {
+            return hit.length == 0 ? nil : (hit as Data, "image/png")    // empty = known NOT a seam
+        }
+        var claims: [(reader: MBTilesReader, raw: Data)] = []
+        for r in readers.prefix(64) {                                    // bounded (rule 2)
+            guard z >= r.minZoom, z <= r.maxZoom else { continue }       // native only
+            guard let raw = r.tileData(z: z, x: x, y: y) else { continue }
+            claims.append((r, raw))
+            if claims.count >= Self.maxSeamLayers { break }
+        }
+        guard claims.count >= 2 else {
+            pngCache.setObject(NSData(), forKey: decision, cost: 1)      // not a seam — never scan again
+            return nil
+        }
+        assert(claims.count <= Self.maxSeamLayers, "compositeSeam: unbounded seam stack")
+
+        let images = claims.compactMap { UIImage(data: $0.raw) }
+        // A decode failure must not silently drop a chart out of the stack: fall back to the ordinary
+        // single-pack path rather than serving a composite that is missing one of its layers.
+        guard images.count == claims.count, let first = images.first else { return nil }
+
+        let side: CGFloat = max(first.size.width, 256)
+        let fmt = UIGraphicsImageRendererFormat.default(); fmt.scale = 1; fmt.opaque = false
+        let out = UIGraphicsImageRenderer(size: CGSize(width: side, height: side), format: fmt).image { _ in
+            // Back to front: the LAST claimant is drawn first so the first pack ends up on top, which
+            // matches the order the single-pack path would have chosen.
+            for img in images.reversed().prefix(Self.maxSeamLayers) {    // bounded (rule 2)
+                img.draw(in: CGRect(x: 0, y: 0, width: side, height: side))
+            }
+        }
+        guard let png = out.pngData() else { return nil }
+        pngCache.setObject(png as NSData, forKey: decision, cost: png.count)
+        return (png, "image/png")
     }
 
     /// Upscale the deepest available ancestor tile to cover a z>maxZoom request (mirrors

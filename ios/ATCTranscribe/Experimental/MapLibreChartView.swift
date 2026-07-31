@@ -581,7 +581,7 @@ struct MapLibreChartView: UIViewRepresentable {
               \(projection)"glyphs": "http://127.0.0.1:\(port)/font/{fontstack}/{range}.pbf",
               "sources": {
                 "faa": { "type": "raster", "tiles": ["http://127.0.0.1:\(port)/\(faaTiles)"],
-                         "tileSize": 256, "minzoom": 0, "maxzoom": 16, "attribution": "FAA charts (offline pack)" }
+                         "tileSize": \(Coordinator.rasterTileSize), "minzoom": 0, "maxzoom": 11, "attribution": "FAA charts (offline pack)" }
               },
               "layers": [
                 { "id": "bg", "type": "background", "paint": { "background-color": "\(sea)" } },
@@ -1607,6 +1607,42 @@ struct MapLibreChartView: UIViewRepresentable {
         /// with no re-request. They sit above satellite and below the downloaded-pack "faa" layer, so the pilot's
         /// downloads always win. Composited over satellite, so transparent chart collars reveal terrain, not sea.
         /// GLOBE only (the flat map keeps its existing vector-land + downloaded-pack behaviour).
+        /// Declared raster tileSize, used here as a PURE PER-SOURCE ZOOM BIAS.
+        ///
+        /// MapLibre chooses the raster level with `round`, not `floor`:
+        ///     tileZ = clamp(round(mapZoom + log2(512 / tileSize)), minzoom, maxzoom)
+        /// (fork `src/mbgl/util/tile_cover.cpp:151`, `tileSize_D = 512`). At the conventional 256 that is
+        /// `round(Z + 1)`, so the level DROPS at the half-zoom — at Z = 6.501 the chart is drawn at 1.41x
+        /// supersample and one hair of pinch later, at Z = 6.499, at 1.41x MAGNIFICATION. That instant 2x
+        /// resolution loss, half an octave before the integer zoom the eye reads as the level change, is
+        /// the "it reduces the chart to a lower resolution prematurely" the pilot reported.
+        ///
+        /// 181 gives log2(512/181) = 1.500154, so `tileZ = floor(Z) + 2` across the whole octave: the
+        /// deeper level is held all the way down to the integer instead of being surrendered half an
+        /// octave early, and the worst case within an octave becomes ~1.0 chart-pixels per screen point
+        /// instead of 0.707. The chart is then never drawn magnified.
+        ///
+        /// 181 AND NOT 182, which is the tempting choice and is a no-op where it matters. 182 gives a
+        /// bias of 1.4922, so at EXACTLY integer zoom `round(8 + 1.4922) = 9` — the same level 256
+        /// already picks. The app parks its camera on integer zooms (`zoomLevel: 8.0`, `7.0`), so a 182
+        /// bias would have changed nothing at the commonest position on screen while still paying the
+        /// tile cost everywhere else. 181's bias is a hair OVER 1.5, which is what puts the step at the
+        /// integer rather than just after it.
+        ///
+        /// tileSize's only other consumer is the tile cache-size heuristic in `tile_pyramid.cpp`, which
+        /// scales the retained-tile budget with screen area / tileSize² — so a smaller value also buys a
+        /// proportionally larger cache, which is the right direction here. If the tile budget ever
+        /// measures badly on an older device, 215 is the half-strength setting (+0.25 bias).
+        static let rasterTileSize = 181
+
+        /// The level MapLibre will request for a raster source — the formula above, made testable.
+        static func rasterTileZ(mapZoom: Double, tileSize: Int, maxZoom: Int, minZoom: Int = 0) -> Int {
+            assert(tileSize > 0 && tileSize <= 512, "rasterTileZ: implausible tileSize")
+            assert(maxZoom >= 0 && maxZoom <= 24, "rasterTileZ: out-of-range maxZoom")
+            let biased = mapZoom + log2(512.0 / Double(tileSize))
+            return min(max(Int(biased.rounded()), minZoom), maxZoom)
+        }
+
         private func setupChartBaseLayers(_ style: MLNStyle) {
             guard globeProjection, serverPort > 0 else { server.setBaseReaders([:]); return }
             assert(Self.baseNames.count <= 8, "setupChartBaseLayers: unexpectedly many bundled bases")
@@ -1626,7 +1662,7 @@ struct MapLibreChartView: UIViewRepresentable {
                 if style.source(withIdentifier: ident) == nil {
                     let src = MLNRasterTileSource(identifier: ident,
                         tileURLTemplates: ["http://127.0.0.1:\(serverPort)/base/\(name)/{z}/{x}/{y}"],
-                        options: [.tileSize: 256,
+                        options: [.tileSize: Self.rasterTileSize,
                                   .minimumZoomLevel: NSNumber(value: reader.minZoom),
                                   // TRUE maxzoom (no +overzoomLevels): tile_pyramid clamps ideal->maxzoom and
                                   // MapLibre magnifies the deepest real tile on the GPU at zero CPU cost. The
@@ -1697,7 +1733,7 @@ struct MapLibreChartView: UIViewRepresentable {
             let src = MLNRasterTileSource(identifier: "satellite",
                 tileURLTemplates: ["http://127.0.0.1:\(serverPort)/sat/{z}/{x}/{y}"],
                 // TRUE maxzoom (see the chart bases above) — MapLibre magnifies past it for free.
-                options: [.tileSize: 256, .minimumZoomLevel: 0,
+                options: [.tileSize: Self.rasterTileSize, .minimumZoomLevel: 0,
                           .maximumZoomLevel: NSNumber(value: bundledSatelliteBase?.maxZoom ?? 5)])
             style.addSource(src)
             let layer = MLNRasterStyleLayer(identifier: "satellite", source: src)   // bottom raster (above bg)
@@ -1724,8 +1760,16 @@ struct MapLibreChartView: UIViewRepresentable {
             assert(faaMax >= 0, "syncFAASource: negative maxzoom")
             let fresh = MLNRasterTileSource(identifier: "faa",
                 tileURLTemplates: ["http://127.0.0.1:\(serverPort)/{z}/{x}/{y}"],
-                options: [.tileSize: 256,
-                          .maximumZoomLevel: NSNumber(value: faaMax + MBTilesTileOverlay.overzoomLevels)])
+                // TRUE pack maxzoom, not faaMax + overzoomLevels. Declaring the deeper band made
+                // MapLibre request levels the packs do not have, and every one of those went through
+                // `MBTilesHTTPServer.overzoomedPNG` — SQLite read + WebP decode + CoreGraphics redraw +
+                // PNG re-encode, per tile, on the tile thread — for output the GPU produces for free by
+                // magnifying the deepest real tile. The bundled bases already declare the true maxzoom
+                // (see setupChartBaseLayers) and this source had simply never been brought into line.
+                // It matters more with the tileSize bias above, which would otherwise open that CPU path
+                // half a zoom earlier and at ~1.8x the tile count.
+                options: [.tileSize: Self.rasterTileSize,
+                          .maximumZoomLevel: NSNumber(value: faaMax)])
             style.addSource(fresh)
             let faaRaster = MLNRasterStyleLayer(identifier: "faa", source: fresh)   // BOTTOM (below the first vector layer)
             Self.applyRasterPaint(to: faaRaster, currentMapTheme)   // fresh layer must keep the theme's dim
