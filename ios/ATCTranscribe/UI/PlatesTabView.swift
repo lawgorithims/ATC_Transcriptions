@@ -455,8 +455,11 @@ struct PlateThumb: View {
                     .font(.dsLabelS).padding(5)
                     .background(p.overlay, in: Capsule()).padding(4)   // legible over the chart, not floating on white
                 }
-                Text(proc.name).font(.dsLabelS).foregroundStyle(p.text).lineLimit(2)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(spacing: 5) {
+                    ProcedureTypeBadge(procedure: proc, palette: p, size: .dsLabelS)
+                    Text(proc.name).font(.dsLabelS).foregroundStyle(p.text).lineLimit(2)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .buttonStyle(.plainHaptic)
