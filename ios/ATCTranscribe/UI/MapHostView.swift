@@ -767,7 +767,15 @@ struct MapChrome: View {
 
     @ViewBuilder private var chrome: some View {
         if !nrstPanelShowing {
-            nrstButton.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+            // Inset below the MEASURED chrome before centring. This layer spans the whole window, so a
+            // plain vertical centre puts the button at the SCREEN's midpoint — and the chrome above the
+            // map now grows with the approach strip, the hold rows and the vertical profile, which on a
+            // loaded approach is tall enough to reach it. Before MapChrome the button was drawn under
+            // that chrome and simply disappeared behind it; now it would float ON it. Centring within the
+            // MAP's own band is what both behaviours were reaching for.
+            nrstButton
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
+                .padding(.top, topInset)
         }
         // TOP-leading: high altitude belongs at the top of the screen, and the track then grows downward
         // from measured chrome rather than from a guessed centre.
