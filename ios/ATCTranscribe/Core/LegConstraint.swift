@@ -28,6 +28,15 @@ struct LegConstraint: Equatable {
     /// "no constraint": it means *do not draw a conclusion*, and it is why `alt` is nil here too.
     let altUnmodelled: Bool
 
+    /// The computed vertical-path altitude the source publishes alongside the crossing restriction on
+    /// the `G`/`H`/`I`/`J`/`V` qualifiers — the glideslope altitude at the FAF, the glideslope INTERCEPT
+    /// altitude, or the coded VNAV path altitude at a step-down, depending on the qualifier.
+    ///
+    /// NOT a constraint and never labelled as one: it is where the vertical path passes, which is a
+    /// different statement from where the aircraft is required to be. `alt` carries the requirement.
+    /// nil on every other qualifier.
+    let glidepathAltFt: Int?
+
     init(altDesc: String, alt altText: String, alt2 alt2Text: String,
          speedLimitKt: Int?, verticalAngleDeg: Double?, rnpNm: Double?) {
         self.speedLimitKt = speedLimitKt
@@ -36,13 +45,31 @@ struct LegConstraint: Equatable {
 
         let a = Self.feet(altText), b = Self.feet(alt2Text)
         switch altDesc.trimmingCharacters(in: .whitespaces).uppercased() {
-        case "":   alt = a.map { .at($0) };              altUnmodelled = false
-        case "+":  alt = a.map { .atOrAbove($0) };       altUnmodelled = false
-        case "-":  alt = a.map { .atOrBelow($0) };       altUnmodelled = false
+        case "":   alt = a.map { .at($0) };              altUnmodelled = false; glidepathAltFt = nil
+        case "+":  alt = a.map { .atOrAbove($0) };       altUnmodelled = false; glidepathAltFt = nil
+        case "-":  alt = a.map { .atOrBelow($0) };       altUnmodelled = false; glidepathAltFt = nil
         case "B":
+            glidepathAltFt = nil
             if let a, let b { alt = .between(high: max(a, b), low: min(a, b)); altUnmodelled = false }
             else { alt = nil; altUnmodelled = true }     // "between" without both values is not usable
-        default:   alt = nil;                            altUnmodelled = true
+        // THE VERTICAL-PATH QUALIFIERS. These pair a normal procedural altitude in the FIRST field with
+        // a computed glideslope / glidepath / intercept altitude in the SECOND. Falling them through to
+        // "unmodelled" discarded the FIRST altitude too, and that first altitude is the published
+        // crossing restriction — so on the shipped cycle 5,856 legs across 4,576 approaches drew no
+        // altitude and were skipped by LegConstraintCheck, INCLUDING THE FAF ITSELF on 1,187 approaches
+        // (PABE I19R-Y's FAF KAYSE is coded H/01800 and rendered blank).
+        //
+        // The at-vs-at-or-above split below is ARINC 424, and it is corroborated by the data rather than
+        // taken on trust: on all 3,477 `V` legs that carry both values the second is at or above the
+        // first (2,523 above, 953 equal, 1 anomaly), which is only consistent with field one being the
+        // step-down MINIMUM and field two the VNAV path that must clear it — PABE R01R's DISVE is coded
+        // 00960/00973 with a -3.0 degree angle, a path 13 ft above the minimum. H/I/J run the other way
+        // (field one at or above field two), consistent with levelling at or above until intercept.
+        case "G", "I":                                   // 'at' + glideslope / intercept altitude
+            alt = a.map { .at($0) };                     altUnmodelled = false; glidepathAltFt = b
+        case "H", "J", "V":                              // 'at or above' + glideslope / path altitude
+            alt = a.map { .atOrAbove($0) };              altUnmodelled = false; glidepathAltFt = b
+        default:   alt = nil;                            altUnmodelled = true;  glidepathAltFt = nil
         }
     }
 
