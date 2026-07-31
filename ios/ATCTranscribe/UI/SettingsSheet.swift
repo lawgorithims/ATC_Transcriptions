@@ -439,6 +439,19 @@ struct SettingsSheet: View {
                         }
                     }
                     .accessibilityIdentifier("settings-test-bench")
+                    // Flies a simulated aircraft down the active approach so the vertical guidance can
+                    // be watched working. Publishes a FAKE position — see the refusals it arms behind.
+                    NavigationLink {
+                        FlightSimulatorView(deviceLocation: model.deviceLocation).environmentObject(model)
+                    } label: {
+                        HStack {
+                            Label("Flight simulator", systemImage: "location.viewfinder")
+                                .font(.dsLabel).foregroundStyle(p.text)
+                            Spacer()
+                            Image(systemName: "chevron.right").font(.dsLabelS).foregroundStyle(p.textDim)
+                        }
+                    }
+                    .accessibilityIdentifier("settings-flight-simulator")
                 }
                 NavigationLink {
                     ScrollView {

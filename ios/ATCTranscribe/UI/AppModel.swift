@@ -2555,6 +2555,79 @@ final class AppModel: ObservableObject {
             ? Self.sampleApproachTerrain(profile: profile, threshold: rwy?.coord) : []
     }
 
+    // MARK: simulated flight (developer diagnostics)
+
+    /// Live configuration for the flight simulator. IN MEMORY ONLY — deliberately no UserDefaults key
+    /// anywhere in this feature, so a simulation cannot survive a relaunch and greet a pilot as a real
+    /// position.
+    @Published var simConfig = ApproachSimulator.Config()
+    @Published private(set) var simSpeedMultiplier: Double = 1
+    @Published private(set) var simPaused = false
+
+    /// Why the simulator will not arm. Each case names the specific thing that must change.
+    enum SimRefusal: String, Equatable {
+        case diagnosticsOff = "Developer diagnostics are not unlocked."
+        case noApproach = "No approach is active — activate one first."
+        case notFlyable = "This procedure has no threshold or final course to fly."
+        case stratuxConnected = "A Stratux is supplying a real position. Disconnect it first."
+        case moving = "The aircraft is moving. The simulator will not arm above 5 knots."
+        case recording = "A flight is being recorded. Stop the recorder first."
+    }
+
+    /// Everything that must hold before a fake position may be published. The bar is deliberately
+    /// "could this possibly be a real aeroplane?", not "is a real fix present" — a pilot at a desk has a
+    /// perfectly good fix and must still be able to test, while an aircraft taxiing must be refused.
+    func simulatorRefusal() -> SimRefusal? {
+        if !diagnosticsEnabled { return .diagnosticsOff }
+        guard let profile = approachProfile else { return .noApproach }
+        if trustedStratuxOwnship != nil { return .stratuxConnected }
+        if flightRecorder.isRecording { return .recording }
+        let merged = GPSReadout.merge(stratux: freshStratuxGPS, device: deviceLocation.fix)
+        if let gs = merged.groundSpeedKt, gs >= 5 { return .moving }
+        let threshold = activeApproach.flatMap { Self.landingThreshold(airport: $0.airport, runway: $0.runway) }
+        guard ApproachSimulator(profile: profile, threshold: threshold?.coord) != nil else { return .notFlyable }
+        return nil
+    }
+
+    /// Arm the simulator. Returns the refusal when it will not arm, nil when it did.
+    @discardableResult
+    func armSimulator() -> SimRefusal? {
+        if let refusal = simulatorRefusal() { return refusal }
+        guard let profile = approachProfile,
+              let appr = activeApproach,
+              let threshold = Self.landingThreshold(airport: appr.airport, runway: appr.runway) else {
+            return .notFlyable
+        }
+        var config = simConfig
+        config.startAtNm = ApproachSimulator.defaultStartNm(profile: profile)
+        guard let sim = ApproachSimulator(profile: profile, threshold: threshold.coord, config: config) else {
+            return .notFlyable
+        }
+        simConfig = config
+        simPaused = false
+        deviceLocation.startSimulation(sim, speedMultiplier: simSpeedMultiplier)
+        return nil
+    }
+
+    func disarmSimulator() {
+        deviceLocation.stopSimulation()
+        simPaused = false
+    }
+
+    func setSimulatorPaused(_ paused: Bool) {
+        simPaused = paused
+        deviceLocation.setSimulation(paused: paused)
+    }
+
+    func setSimulatorSpeed(_ multiplier: Double) {
+        simSpeedMultiplier = min(max(multiplier, 1), 20)
+        deviceLocation.setSimulation(speedMultiplier: simSpeedMultiplier)
+    }
+
+    func applySimulatorConfig() {
+        deviceLocation.updateSimulation(config: simConfig)
+    }
+
     /// The LANDING THRESHOLD record for an approach, or nil when the procedure does not name one.
     ///
     /// Shared so the profile builder and the view's live-position lookup cannot disagree about which
