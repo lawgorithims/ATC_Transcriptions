@@ -130,13 +130,18 @@ struct PlateViewer: View {
     let airport: String
     let palette: Palette
     @ObservedObject var deviceLocation: DeviceLocation      // observed directly (nested-observable, see C2)
+    /// Observed directly for the same reason: a change inside `AppModel.minima` does not redraw a view
+    /// that only observes `AppModel`, so the Minima button would never appear once the parse finished.
+    @ObservedObject var minimaStore: MinimaStore
     var onSendToMap: ((URL) -> Void)? = nil
     var onClose: () -> Void
 
     @EnvironmentObject var model: AppModel
+    @EnvironmentObject var metars: MetarStore
     @State private var url: URL?
     @State private var loading = true
     @State private var showOverlay = true                  // show ownship/traffic by default on a georef'd plate
+    @State private var showMinima = false
 
     private var georef: PlateGeorefEntry? { PlateGeoref.lookup(pdf: procedure.pdf) }
     private var trafficMarkers: [PlateTraffic] {
@@ -205,6 +210,17 @@ struct PlateViewer: View {
                         .accessibilityIdentifier("plate-traffic-toggle")
                     }
                 }
+                // The minima block, read off this plate. Offered only once the plate is on disk and the
+                // parse actually produced a table — a button that opens an empty panel is worse than no
+                // button, because it implies the numbers were checked and found absent.
+                if url != nil, minimaStore.result(for: procedure)?.minima != nil {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button { Haptics.impact(.light); showMinima = true } label: {
+                            Label("Minima", systemImage: "arrow.down.to.line")
+                        }
+                        .accessibilityIdentifier("plate-minima")
+                    }
+                }
                 // Overlay-on-map is georef-only (placement is exact + not manually adjustable), so the
                 // action is hidden for schematic plates (SIDs/STARs/minimums) with no georeference.
                 if let onSendToMap, let url, georef != nil {
@@ -217,6 +233,27 @@ struct PlateViewer: View {
         }
         .tint(palette.accent)
         .task { await load() }
+        .onChange(of: url) { _, new in
+            guard new != nil else { return }
+            minimaStore.ensure(procedure, airport: airport)
+        }
+        .sheet(isPresented: $showMinima) {
+            if let parsed = minimaStore.result(for: procedure), let m = parsed.minima {
+                NavigationStack {
+                    MinimaPanel(minima: m, refusals: parsed.refusals,
+                                temperatureC: metars.metar(airport)?.tempC, palette: palette)
+                        .navigationTitle("Minima")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .toolbar {
+                            ToolbarItem(placement: .cancellationAction) {
+                                Button("Done") { showMinima = false }
+                            }
+                        }
+                }
+                .tint(palette.accent)
+                .presentationDetents([.large, .medium])
+            }
+        }
         // Run the device GPS only while a GEOREFERENCED plate is open (it's the only kind that can plot
         // ownship); stop on close so it isn't a background battery drain. The stop is SYMMETRIC with the
         // GPS is owned by the always-mounted map (single owner) — the plate viewer only READS

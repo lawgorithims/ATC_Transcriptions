@@ -6,6 +6,7 @@ import SwiftUI
 /// the plate full-page or send it to the map as a georeferenced overlay.
 struct PlatesTabView: View {
     @EnvironmentObject var model: AppModel
+    @EnvironmentObject var metars: MetarStore   // re-passed into the plate sheet (see ConsoleView)
     @State private var query = ""
     // Airport binders are PUSHED onto this path (one ident) so iOS gives a native back button AND the
     // interactive edge-swipe-back for free — the binder used to be a manual state-swap with neither.
@@ -96,6 +97,7 @@ struct PlatesTabView: View {
         .tint(model.palette.accent)
         .fullScreenCover(item: $plate) { proc in
             PlateViewer(procedure: proc, airport: airport ?? "", palette: model.palette, deviceLocation: model.deviceLocation,
+                        minimaStore: model.minima,
                         onSendToMap: { url in
                             model.overlayPlate(proc, airport: airport ?? "", pdf: url)
                             model.selectedTab = .map          // jump to the map so the overlay is visible
@@ -103,6 +105,7 @@ struct PlatesTabView: View {
                         },
                         onClose: { plate = nil })
                 .environmentObject(model)
+                .environmentObject(metars)
         }
         .onAppear {
             refreshNearby()               // GPS is owned by the map; just read the current fix for "Nearby"
