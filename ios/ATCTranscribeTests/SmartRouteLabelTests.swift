@@ -55,11 +55,23 @@ final class SmartRouteLabelTests: XCTestCase {
 
     /// THE governing rule, inherited from LegConstraint: a qualifier this app does not model prints
     /// nothing. Drawing a limit the chart does not state is worse than drawing no limit at all.
-    func testUnmodelledQualifierPrintsNothing() {
-        for desc in ["V", "H", "J", "I", "G", "X"] {
+    ///
+    /// ⚠️ `V`/`H`/`J`/`I`/`G` were removed from this list when they were modelled — see
+    /// LegConstraintVerticalPathTests. They print their crossing altitude now, which is the point.
+    func testUnknownQualifierPrintsNothing() {
+        for desc in ["X", "?", "C"] {
             let c = constraint(altDesc: desc, alt: "05000")
             XCTAssertTrue(c.altUnmodelled, "\(desc) should be unmodelled")
             XCTAssertNil(SmartRouteLabel.altText(c), "unmodelled qualifier \(desc) must not label")
+        }
+    }
+
+    func testVerticalPathQualifiersNowPrintTheirCrossingAltitude() {
+        for desc in ["V", "H", "J"] {
+            XCTAssertEqual(SmartRouteLabel.altText(constraint(altDesc: desc, alt: "05000")), "5000A", desc)
+        }
+        for desc in ["I", "G"] {
+            XCTAssertEqual(SmartRouteLabel.altText(constraint(altDesc: desc, alt: "05000")), "5000", desc)
         }
     }
 

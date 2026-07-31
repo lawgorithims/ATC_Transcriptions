@@ -32,14 +32,21 @@ final class LegConstraintTests: XCTestCase {
         XCTAssertNil(LegConstraint.feet("ABOVE"))
     }
 
-    /// The whole safety argument for this feature: ARINC's step-down and glidepath qualifiers mean
-    /// different things depending on the leg's role and on a second altitude. We do not model them, so
-    /// they must produce silence — not a guess at a restriction the chart does not state.
-    func testUnmodelledQualifiersAreSilentRatherThanGuessed() {
-        for desc in ["V", "H", "J", "I", "G", "X", "?"] {
+    /// The governing rule, unchanged: a qualifier this app does not understand produces SILENCE, not a
+    /// guess at a restriction the chart does not state.
+    ///
+    /// ⚠️ THE SET SHRANK. `V`, `H`, `J`, `I` and `G` used to be in this list because the work of reading
+    /// them had not been done — not because they are unknowable. They are ARINC's vertical-path
+    /// qualifiers, they carry an ordinary crossing altitude in the FIRST field, and refusing them threw
+    /// that altitude away: 5,856 legs across 4,576 approaches drew nothing, including the FAF itself on
+    /// 1,187 approaches. They are now modelled and corroborated against the shipped cycle (see
+    /// LegConstraintVerticalPathTests). Anything still genuinely unknown stays silent.
+    func testUnknownQualifiersAreSilentRatherThanGuessed() {
+        for desc in ["X", "?", "C", "Y", "Z"] {
             let k = c(desc, "02000", "03000")
             XCTAssertNil(k.alt, "\(desc) must not be turned into a rule")
             XCTAssertTrue(k.altUnmodelled, "\(desc) must be flagged unmodelled")
+            XCTAssertNil(k.glidepathAltFt, "\(desc) must not claim a path altitude either")
         }
     }
 
@@ -129,9 +136,21 @@ final class LegConstraintCheckTests: XCTestCase {
     }
 
     func testStaysQuietOnAnUnmodelledQualifier() {
-        let stepDown = LegConstraint(altDesc: "V", alt: "02000", alt2: "03000",
+        // `X` rather than `V`: V is now modelled, and a step-down minimum SHOULD be checked. The rule
+        // being pinned is that a qualifier the app cannot read produces no verdict at all.
+        let unknown = LegConstraint(altDesc: "X", alt: "02000", alt2: "03000",
+                                    speedLimitKt: nil, verticalAngleDeg: nil, rnpNm: nil)
+        XCTAssertNil(check(alt: 100, constraint: unknown))
+    }
+
+    func testAStepDownMinimumIsNowActuallyChecked() {
+        // The other half of the same change: an aircraft below a published step-down minimum used to
+        // draw no warning at all, because the qualifier was refused before the comparison ran.
+        let stepDown = LegConstraint(altDesc: "V", alt: "02000", alt2: "02013",
                                      speedLimitKt: nil, verticalAngleDeg: nil, rnpNm: nil)
-        XCTAssertNil(check(alt: 100, constraint: stepDown))
+        let w = check(alt: 100, constraint: stepDown)
+        XCTAssertNotNil(w, "a published minimum must be compared against, not skipped")
+        XCTAssertEqual(w?.sense, .below)
     }
 
     func testStaysQuietWhenNothingIsPublished() {
