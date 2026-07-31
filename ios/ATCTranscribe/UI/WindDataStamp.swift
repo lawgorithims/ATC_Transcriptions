@@ -19,6 +19,11 @@ struct WindDataStamp: View {
     /// True while `thermalSerious` has the layer paused — the stamp must not keep describing a field that
     /// has stopped drawing (same rule as the slider's chip and the radar pill).
     let thermalWarm: Bool
+    /// Visible longitude span, degrees. The renderer blanks the layer past `cutoffSpan` because one
+    /// affine stops describing the globe there — and a stamp that goes on naming a valid time over an
+    /// empty chart reads as "the wind really is calm", which is the whole failure this stamp exists to
+    /// prevent. It has to know the same gate the renderer uses.
+    let lonSpan: Double
 
     /// Re-render the relative offset without polling: the whole stamp is cheap and this only fires while
     /// the layer is up.
@@ -42,6 +47,7 @@ struct WindDataStamp: View {
 
     private var text: String {
         if thermalWarm { return "Winds paused — device warm" }
+        if lonSpan >= WindParticleRenderer.cutoffSpan { return "Winds — zoom in to show" }
         guard let set = windAloft.fieldSet else {
             if windAloft.failed { return "Winds unavailable" }
             return windAloft.fetching ? "Loading winds…" : "Winds off"

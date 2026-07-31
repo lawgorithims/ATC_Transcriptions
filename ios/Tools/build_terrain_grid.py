@@ -364,9 +364,18 @@ def refine_summits(grid, workers):
             if done % 200 == 0:
                 print(f"  {done}/{len(tiles)}", flush=True)
     reverted = _revert_implausible_refinements(grid, pre_refine)
+    # THE CONUS CEILING, ENFORCED AFTER REFINEMENT TOO. `MAX_PLAUSIBLE_M` filters individual zoom-13
+    # PIXELS, but the grid cell takes their maximum, and a cell can still finish above the ceiling if the
+    # tile is mis-indexed. Nothing in the lower 48 is higher than Whitney, so this is a physical bound,
+    # not a heuristic — and `testNoCellExceedsConusCeiling` asserts it on the shipped file.
+    over = grid > MAX_PLAUSIBLE_M
+    n_over = int(over.sum())
+    if n_over:
+        grid[over] = np.int16(MAX_PLAUSIBLE_M)
+        print(f"  clamped {n_over} cell(s) above the CONUS ceiling", flush=True)
     return grid, {"summitCellsFound": int(len(rs)), "refineTiles": len(tiles),
                   "cellsRaised": raised, "refineZoom": REFINE_ZOOM,
-                  "implausibleReverted": reverted}
+                  "implausibleReverted": reverted, "aboveConusCeiling": n_over}
 
 
 # A refined cell this far above the 90th percentile of its ~11 NM neighbourhood, while that
@@ -432,6 +441,7 @@ def main():
         grid, stats = refine_summits(grid, args.workers)
         grid.astype("<i2").tofile(binpath)
         hdr["summitRefinement"] = stats
+        hdr["maxPlausibleM"] = MAX_PLAUSIBLE_M
         json.dump(hdr, open(os.path.join(outdir, "terrain_conus.json"), "w"), indent=2)
         print(f"refined: {stats}; min {int(grid.min())} max {int(grid.max())}")
         return
@@ -522,6 +532,9 @@ def main():
         "advisory": "Surface model (includes vegetation/buildings), max-aggregated. Situational "
                     "awareness only — NOT a terrain-avoidance database.",
         "seaLevelClamp": True, "spikeThresholdM": SPIKE_M, "cleanup": stats,
+        "artifactContextMultiple": ARTIFACT_CONTEXT_MULTIPLE,
+        "artifactContextFloorM": ARTIFACT_CONTEXT_FLOOR_M,
+        "maxPlausibleM": MAX_PLAUSIBLE_M,
     }
     with open(os.path.join(outdir, "terrain_conus.json"), "w") as f:
         json.dump(header, f, indent=2)

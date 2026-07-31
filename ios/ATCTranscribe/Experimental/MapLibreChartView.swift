@@ -2101,9 +2101,16 @@ struct MapLibreChartView: UIViewRepresentable {
             let latSpan = max(maxLat - minLat, 1e-4)
             // Web-mercator: the world is 360 degrees across 256 points at z0. Fit the WIDER axis, then
             // back off a little for the edge padding the box deserves.
+            // MapLibre Native's zoom is defined against a 512-point world (util::tileSize_D), not the
+            // 256 of the slippy-map convention — using 256 overstates zoom by exactly 1, which opens
+            // every plate at twice the intended scale and crops it. Latitude spans also have to be
+            // compared in MERCATOR units, where a degree of longitude is cos(lat) of a degree of
+            // latitude; without that the fit is wrong by a factor that grows with latitude (1.4x at
+            // 45 degrees) and picks the wrong axis to fit.
             let w = max(Double(map.bounds.width), 1), h = max(Double(map.bounds.height), 1)
-            let zLon = log2(360.0 / lonSpan * w / 256.0)
-            let zLat = log2(180.0 / latSpan * h / 256.0)
+            let cosLat = max(cos(mid.latitude * .pi / 180), 0.15)
+            let zLon = log2(360.0 / lonSpan * w / 512.0)
+            let zLat = log2(360.0 * cosLat / latSpan * h / 512.0)
             let zoom = min(max(min(zLon, zLat) - 0.35, 2), 14)
             guard mid.latitude.isFinite, mid.longitude.isFinite, zoom.isFinite,
                   CLLocationCoordinate2DIsValid(mid) else { return }

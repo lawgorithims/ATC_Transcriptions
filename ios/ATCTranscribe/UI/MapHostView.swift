@@ -786,13 +786,15 @@ struct MapChrome: View {
             WindAltitudeSlider(windAloft: model.windAloft, widgets: widgets,
                                levelIndex: $model.windLevelIndex, palette: model.palette,
                                topInset: topInset, theme: model.theme,
-                               layer: model.chartLayer, thermalWarm: model.thermalSerious)
+                               layer: model.chartLayer, windPalette: model.windPalette,
+                               thermalWarm: model.thermalSerious)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             // The valid-time stamp rides the CHART, bottom-centre, not the slider — animated particles
             // look live at any age, so the one fact that stops a pilot trusting an eighteen-hour-old field
             // has to sit with the thing it describes. See `WindDataStamp`.
             WindDataStamp(windAloft: model.windAloft, level: WindLevel.at(index: model.windLevelIndex),
-                          palette: model.palette, thermalWarm: model.thermalSerious)
+                          palette: model.palette, thermalWarm: model.thermalSerious,
+                          lonSpan: model.lastMapCamera?.region.span.longitudeDelta ?? 0)
                 .padding(.bottom, 10)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                 .allowsHitTesting(false)          // read-only: never take a tap from the map

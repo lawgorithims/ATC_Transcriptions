@@ -407,10 +407,15 @@ struct ConsoleView: View {
     @ViewBuilder private func approachProfileStrip(_ profile: ApproachProfile) -> some View {
         let pos = model.presentPosition.flatMap { c -> ApproachProfile.Position? in
             let readout = GPSReadout.merge(stratux: model.freshStratuxGPS, device: model.deviceLocation.fix)
-            guard let alt = readout.altitudeFtMSL else { return nil }
-            let rwy = CIFP.runways(airport: profile.airport).first {
-                $0.designator.uppercased().hasSuffix((model.activeApproach?.runway ?? "").uppercased())
-            }
+            // The altitude needs the SAME gate as the coordinate. `presentPosition` already refuses an
+            // untrusted fix, but the altitude was taken raw — so a receiver the integrity monitor has
+            // called unreliable could still place the aeroplane on the glidepath and colour it green.
+            // Vertical error is exactly what this view is about, so a vertical figure nobody vouches for
+            // has no business in it. Same rule the AGL readout applies.
+            guard !model.gpsIntegrity.shouldSuppressOwnship || model.stratuxOwnshipTrusted,
+                  let alt = readout.altitudeFtMSL, alt.isFinite else { return nil }
+            let rwy = AppModel.landingThreshold(airport: profile.airport,
+                                                runway: model.activeApproach?.runway ?? "")
             return profile.position(of: c, altitudeFtMSL: alt, threshold: rwy?.coord)
         }
         VStack(spacing: 0) {

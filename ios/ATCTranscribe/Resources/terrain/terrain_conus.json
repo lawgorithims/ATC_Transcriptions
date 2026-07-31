@@ -19,17 +19,16 @@
   "cleanup": {
     "clampedBelowSeaLevel": 1619241,
     "despiked": 253,
-    "seaLevelArtifacts": 905,
-    "noDataCells": 0,
-    "contextArtifacts": 85,
-    "aboveConusCeiling": 1
+    "seaLevelArtifacts": 990,
+    "noDataCells": 0
   },
   "summitRefinement": {
     "summitCellsFound": 4596,
     "refineTiles": 4561,
     "cellsRaised": 247949336,
     "refineZoom": 13,
-    "implausibleReverted": 0
+    "implausibleReverted": 0,
+    "aboveConusCeiling": 1
   },
   "artifactContextMultiple": 3.0,
   "artifactContextFloorM": 40,
