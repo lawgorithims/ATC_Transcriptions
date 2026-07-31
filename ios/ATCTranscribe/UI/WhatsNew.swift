@@ -32,6 +32,30 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 102, version: "1.0", headline: "The minimums, read off your own plate",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "arrow.down.to.line",
+                    title: "Minimums, answered",
+                    detail: "Open a plate and tap Minima. Pick your approach category and the line you are flying, and you get ONE decision altitude and ONE visibility instead of a table to interpret — with the figure it was read from shown underneath so you can check it against the chart in a couple of seconds. Categories the plate does not publish are blacked out, because that is information. The plate's own conditional notes become questions you answer: Boston's \"when the control tower reports tall vessels in the approach area\" is a switch that swaps 218/RVR 1800 for 374/RVR 4000, rather than fine print to notice under load. Inoperative approach lighting, a remote altimeter setting and the cold-temperature limit on LNAV/VNAV are applied for you, each one showing where the rule came from. Minima are chart-only data, so every figure is read from the plate you already downloaded — and anything that does not read cleanly is reported as a gap rather than guessed at."),
+                WhatsNewHighlight(
+                    icon: "list.number",
+                    title: "Which approach gets you lowest",
+                    detail: "An airport binder with more than one approach now has a By minima button: every approach ranked by the lowest line it publishes for your category, naming that line, so \"the ILS gets you to 218\" is only claimed when you can fly the ILS. Ties break on visibility. Approaches that could not be ranked are listed separately with the reason instead of being quietly dropped."),
+                WhatsNewHighlight(
+                    icon: "mountain.2.fill",
+                    title: "Terrain you can actually see on the dark chart",
+                    detail: "The decluttered night base was rendering low ground DARKER than the land silhouette around it and almost exactly the same as the ocean, so the coastline stopped reading and mountains carried about 1.16:1 of contrast — which is to say none. The relief has been rebuilt: sea-level land now sits just above the silhouette, the ranges open upward, and the shading was pivoted on flat ground after measuring that the old mapping could never reach the top of its own range. The amber route is still the brightest thing on the map."),
+                WhatsNewHighlight(
+                    icon: "square.grid.3x3",
+                    title: "Fixed: the chart going soft too early, and low-resolution strips",
+                    detail: "Zooming out dropped the chart to a coarser tile half a zoom before it needed to, so half of every zoom range was drawn magnified. That transition now happens where it should, and the chart is never blown up. Separately, strips of very low resolution ran along the seams between adjacent sectionals: charts are cut to their neatlines so neighbours show through, but only one of the two was being drawn, leaving a transparent column one tile wide with a heavily magnified base showing through it. Overlapping charts are now composited the way they were built to be."),
+                WhatsNewHighlight(
+                    icon: "bell.badge",
+                    title: "NOTAMs, pinned to the approach you are flying",
+                    detail: "The airport card's NOTAM tab now pulls the real feed and pins what bears on the procedure in use — runway closures, navaids and lighting out of service, approach-not-authorised notices — with the full list one tap away and the counts stated. Nothing is ever filtered out: a NOTAM this cannot categorise is shown at the TOP rather than set aside, and one that names no runway is treated as applying to all of them. The FAA's NOTAM service needs a free developer key, so add one in Settings under NOTAM feed; until you do, the tab says exactly that rather than showing an empty list, because an empty list would read as there being no NOTAMs."),
+            ]),
+        ReleaseNote(
             build: 101, version: "1.0", headline: "See where you are on the glidepath",
             highlights: [
                 WhatsNewHighlight(
