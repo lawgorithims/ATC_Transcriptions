@@ -15,18 +15,23 @@
   "source": "AWS Open Data terrain-tiles (s3://elevation-tiles-prod), Terrarium PNG; public-domain SRTM/NASADEM/3DEP/GMTED2010",
   "advisory": "Surface model (includes vegetation/buildings), max-aggregated. Situational awareness only \u2014 NOT a terrain-avoidance database.",
   "seaLevelClamp": true,
-  "spikeThresholdM": 300,
+  "spikeThresholdM": 600,
   "cleanup": {
-    "clampedBelowSeaLevel": 0,
-    "despiked": 0,
-    "noDataCells": 0
+    "clampedBelowSeaLevel": 1619241,
+    "despiked": 253,
+    "seaLevelArtifacts": 905,
+    "noDataCells": 0,
+    "contextArtifacts": 85,
+    "aboveConusCeiling": 1
   },
   "summitRefinement": {
-    "summitCellsFound": 4594,
-    "refineTiles": 4559,
-    "cellsRaised": 247811905,
+    "summitCellsFound": 4596,
+    "refineTiles": 4561,
+    "cellsRaised": 247949336,
     "refineZoom": 13,
-    "artifactCeilingM": 4425,
-    "artifactsClamped": 2
-  }
+    "implausibleReverted": 0
+  },
+  "artifactContextMultiple": 3.0,
+  "artifactContextFloorM": 40,
+  "maxPlausibleM": 4425
 }

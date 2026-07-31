@@ -59,6 +59,15 @@ SPIKE_M = 600                           # a cell this far above its SECOND-highe
                                         # z8 cone is already smoothed away. 600 leaves all twelve surveyed
                                         # peaks untouched and still removes genuine adjacent-pair artifacts.
 SPIKE_PASSES = 3                        # artifacts come in runs; each pass isolates the next survivor
+# "Implausible" is MULTIPLICATIVE, not additive. Real relief is continuous: a summit stands proportionally
+# above the country it belongs to, so 3x its neighbourhood is enormous in the mountains (Whitney would need
+# 12,400 m) and tight on a barrier island (25 m country allows 115 m). Fixed thresholds cannot do both —
+# tuned low enough to catch a 289 m "hill" on Martha's Vineyard they start deleting real coastal summits.
+# MEASURED against fifteen real peaks including the hardest cases — Cadillac Mountain (456 m rising almost
+# from the water), Mt Tamalpais, Mt Diablo, Bear Butte and Devils Tower — this flags NONE of them, and none
+# of their neighbours, while removing the gross highs in flat country.
+ARTIFACT_CONTEXT_MULTIPLE = 3.0
+ARTIFACT_CONTEXT_FLOOR_M = 40           # ...so a near-zero neighbourhood still allows a real dune or bluff
 MAX_TILE_RETRIES = 3
 
 try:
@@ -246,7 +255,27 @@ def clean(grid):
             break
         n_spikes += int(spikes.sum())
         grid[spikes] = second[spikes].astype(np.int16)
+    # SECOND RULE: A MOUNTAIN IN THE SEA IS NOT A MOUNTAIN.
+    #
+    # The neighbour test above cannot catch an artifact CLUSTER — three or more bad cells shield each
+    # other however you rank them — and raising SPIKE_M far enough to matter starts deleting real peaks.
+    # Nantucket is the case that proves it: 475 m of "terrain" on an island whose true high ground is
+    # about 35 m, sitting in a neighbourhood whose 90th percentile is 25 m. NRST sweeps this grid, so
+    # that cell is a hard BLOCKED verdict on the only airport within glide of an offshore engine failure.
+    #
+    # Context separates it cleanly where excess alone cannot — see the constants for why the test is a
+    # MULTIPLE of the neighbourhood rather than a fixed rise.
+    #
+    # Replaced with the neighbourhood's own 90th percentile — the surrounding country — never with zero.
+    ctx_pad = np.pad(np.where(grid == NO_DATA, 0, grid).astype(np.int32), 5, mode="edge")
+    win = np.lib.stride_tricks.sliding_window_view(ctx_pad, (11, 11))
+    p90 = np.percentile(win, 90, axis=(2, 3))
+    sea = (grid > p90 * ARTIFACT_CONTEXT_MULTIPLE + ARTIFACT_CONTEXT_FLOOR_M) & (grid != NO_DATA)
+    n_sea = int(sea.sum())
+    grid[sea] = p90[sea].astype(np.int16)
+
     return grid, {"clampedBelowSeaLevel": below, "despiked": n_spikes,
+                  "seaLevelArtifacts": n_sea,
                   "noDataCells": int((grid == NO_DATA).sum())}
 
 
@@ -261,7 +290,11 @@ MAX_REFINE_TILES = 8_000         # bound the work (rule 2)
 # because refinement MAXES into the grid, one such pixel would poison a cell in the unsafe direction
 # (terrain too high -> AGL too low -> a false "you are at the ground"). The base build's despike runs
 # BEFORE refinement, so refinement must reject these itself.
-MAX_PLAUSIBLE_M = 4600
+# THE CONUS CEILING. Mount Whitney is 4,421 m and nothing in the lower 48 is higher, so a refined pixel
+# above this is a source artifact by definition — there is no terrain it could be. 4,600 was too generous
+# and let a 4,570 m cell into the Sangre de Cristos, which `testNoCellExceedsConusCeiling` then caught.
+# The margin over Whitney is for the surface model (snowpack, a summit structure), not for doubt.
+MAX_PLAUSIBLE_M = 4425
 
 
 def refine_summits(grid, workers):
