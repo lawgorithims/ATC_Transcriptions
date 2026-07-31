@@ -80,36 +80,49 @@ TILE_URL = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.
 MAX_TILE_RETRIES = 3
 MIN_COVERAGE = 0.99       # refuse to bake a pack with visible holes
 FEATHER_PX = 64           # mosaic-edge alpha ramp, in source pixels
-WEBP_QUALITY = "75"
-WEBP_ALPHA_QUALITY = "90"
+# The local-relief tint has far more contrast than the old absolute ramp, and q75 put visible 8x8
+# blocking on ridge lines and banding in the basins — which a pilot sees magnified, because MapLibre
+# blows the deepest level up at approach zooms. The pack is a couple of megabytes against 9-10 MB for
+# each bundled chart base, so quality is the cheap side of this trade.
+WEBP_QUALITY = "93"
+WEBP_ALPHA_QUALITY = "95"
 
 CACHE_DIR = os.path.expanduser("~/CommSight/terrain-relief-build/raw")
 OUT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                         "..", "ATCTranscribe", "Resources", "basemap", "terrain_base.mbtiles")
 
-PALETTE_ID = "smartdark-v3"
-# Elevation -> color ramp for the night base. Interpolated in sqrt(height) so the lowlands stay
-# recessive while the ranges keep separation all the way up.
+PALETTE_ID = "smartdark-v4"
+# TWO THINGS WERE WRONG, AND THEY WERE FOUND IN THAT ORDER.
 #
-# WHY v2 IS BRIGHTER THAN v1, AND BY HOW MUCH. v1 was measured against the surfaces it sits beside and
-# was wrong in a way that is arithmetic rather than taste. Relative luminance (Rec. 709) of what the
-# pilot actually saw: sea #0A0C10 = 11.9, the Natural Earth land silhouette #12161C = 21.6, and v1's
-# sea-level land 13.9 x 0.91 shade = 12.6. So CONUS lowlands rendered DARKER than the land silhouette
-# around them and all but identical to the OCEAN — the coastline stopped reading, and "everything is a
-# black void" was a literal description. Over the Colorado Rockies a shipped z6 tile measured luminance
-# 23-40 (median 28) against that 11.9 background: a contrast ratio of about 1.16:1, which is nothing.
+# First, AMPLITUDE. v1 was measured against the surfaces it sits beside: sea #0A0C10 has relative
+# luminance 11.9 and the land silhouette #12161C has 21.6, while v1 rendered sea-level CONUS at 12.6 —
+# darker than the land around it and all but identical to the ocean. Over the Rockies it measured 23-40
+# against that background, a contrast ratio of 1.16:1. "A black void" was a literal description.
 #
-# v2 pins sea-level land just ABOVE the land silhouette so CONUS is continuous with its neighbours, and
-# opens the range upward so mountains carry roughly 2.6:1 against the background — visible, but still
-# well under the amber route (#FF9F1C, luminance 170), which must stay the brightest thing on the map.
-# (metres, (r, g, b), approximate luminance)
+# Second, and this is the one that matters more, THE WRONG QUESTION. Fixing the amplitude was verified
+# against a whole-CONUS preview, which answers "is Colorado brighter than Kansas" — a question no
+# approach depends on. Measured properly, at the airports a pilot actually flies into, an ABSOLUTE
+# hypsometric ramp gave the entire local relief within 15 NM almost no tone at all: 18 luminance levels
+# at Las Cruces for the 852 m of the Organ Mountains, 5 at Boston for 346 m, and about 3 for the 200 ft
+# hill beside a runway. The palette was spending its whole range on which part of the country you were
+# in. See `colorize` for what replaced it.
+# Metres of LOCAL RELIEF (height above the smoothed regional baseline) -> colour. Negative is a valley
+# floor, positive is ground standing above its surroundings. The span is chosen from what actually
+# occurs within a terminal area rather than from CONUS: 300 m below to 900 m above covers the Organ
+# Mountains at Las Cruces, the ridges around Butte, and the walls of the Roaring Fork valley at Aspen,
+# and it gives the first 200 ft of a hill real tone instead of three luminance levels.
+# (metres of local relief, (r, g, b), approximate luminance)
 RAMP = [
-    (0,    (0x16, 0x19, 0x1E)),   # 24.6 — sits just above the land silhouette, not below it
-    (500,  (0x20, 0x22, 0x25)),   # 33.7 — neutral; a blue cast here would read as water, not plains
-    (1500, (0x3A, 0x35, 0x2D)),   # 53.4 — the umber starts where there is real terrain to show
-    (3000, (0x5E, 0x55, 0x44)),   # 85.6
-    (4400, (0x7C, 0x6E, 0x56)),   # 111.0 — sunlit peaks reach ~147, the route still owns the map
+    (-300, (0x10, 0x13, 0x18)),   # 18.0 — valley floors recede below the land silhouette
+    (0,    (0x1E, 0x21, 0x26)),   # 32.0 — the local datum: level ground reads as level ground
+    (150,  (0x33, 0x31, 0x2C)),   # 48.5 — a 500 ft rise is already unmistakable
+    (400,  (0x50, 0x49, 0x3C)),   # 72.6
+    (900,  (0x7C, 0x6E, 0x56)),   # 111.0 — sunlit tops reach ~147, the route still owns the map
 ]
+# Radius of the smoothing that defines "its own surroundings", in SOURCE pixels. At z8 a pixel is about
+# 470 m at 40N, so 96 px is roughly a 45 km radius — wide enough that a mountain range is local relief
+# rather than being averaged into its own baseline, narrow enough that the Great Plains stay flat.
+BASELINE_RADIUS_PX = 96
 # Hillshade is a MULTIPLIER on the ramp. v1 compressed it into 0.75-1.06 — a 1.41x ratio between deepest
 # shadow and brightest sun — which is why the relief read as a soft STAIN rather than as terrain: the
 # ramp carried the elevation but the shading carried almost no shape. 0.55-1.32 is a 2.4x ratio, so
@@ -383,16 +396,66 @@ def multidirectional_shade(elev, y0, y1):
     return out.astype(np.float32)
 
 
+def regional_baseline(elev, radius_px):
+    """The terrain with its LOCAL detail removed — a heavy box blur, NaN-aware.
+
+    Two passes of a separable box filter via cumulative sums, which is O(n) and exact. Ocean is NaN and
+    must not drag coastal land down, so the sums carry a validity mask and divide by the count of REAL
+    samples rather than by the window size.
+    """
+    assert radius_px >= 1, "regional_baseline: degenerate radius"
+    valid = np.isfinite(elev)
+    filled = np.where(valid, elev, 0.0).astype(np.float64)
+    weight = valid.astype(np.float64)
+
+    def box(a, r):
+        # Cumulative-sum box filter along both axes, edges clamped.
+        pad = np.pad(a, ((r + 1, r), (0, 0)), mode="edge")
+        cs = np.cumsum(pad, axis=0)
+        a = cs[2 * r + 1:] - cs[:-(2 * r + 1)]
+        pad = np.pad(a, ((0, 0), (r + 1, r)), mode="edge")
+        cs = np.cumsum(pad, axis=1)
+        return cs[:, 2 * r + 1:] - cs[:, :-(2 * r + 1)]
+
+    s = box(filled, radius_px)
+    n = box(weight, radius_px)
+    out = np.where(n > 0.5, s / np.maximum(n, 1e-6), 0.0)
+    assert out.shape == elev.shape, "regional_baseline: shape changed"
+    return out.astype(np.float32)
+
+
 def colorize(elev, shade):
-    """Elevation ramp times relief shading, with a transparent ocean. Returns (h, w, 4) uint8 RGBA."""
+    """LOCAL relief ramp times relief shading, with a transparent ocean. Returns (h, w, 4) uint8 RGBA.
+
+    WHY THE TINT IS LOCAL AND NOT ABSOLUTE HEIGHT. An absolute hypsometric ramp answers "how high above
+    the sea is this?", which is a question about Colorado versus Kansas. A pilot is asking a different
+    one: is there a hill beside this runway, is there a peak in the circling area. Measured on the
+    shipped absolute ramp, the whole local relief within 15 NM of a field mapped to almost no tone at
+    all — 18 luminance levels at Las Cruces (852 m of relief, the Organ Mountains), 5 at Boston (346 m),
+    and about 3 for the 200 ft hill next to a runway that started this. The palette was spending its
+    entire range on the difference between one part of the country and another, which is a difference no
+    approach depends on.
+
+    So the ramp is driven by the RESIDUAL — the terrain minus a heavily smoothed version of itself.
+    What is left is exactly "how far does this stand above its own surroundings", which is the same
+    question at Aspen and at Boston, and it means every airport gets the full palette instead of
+    whichever slice of it its region happens to occupy. High country still reads as high country because
+    the hillshade and the coastline do that work; what changes is that the LOCAL shape now carries the
+    tone.
+    """
     h, w = elev.shape
     land = np.isfinite(elev) & (elev > 0.0)
     hgt = np.where(land, elev, 0.0).astype(np.float32)
 
-    # Interpolate the ramp in sqrt(height): lowlands fade fast, ranges keep separation up high.
+    baseline = regional_baseline(np.where(land, elev, np.nan), BASELINE_RADIUS_PX)
+    relief = np.where(land, hgt - baseline, 0.0)
+
+    # Interpolate in sqrt(relief) above the baseline so the first couple of hundred feet — the hill by
+    # the runway — earns tone quickly, while a 3,000 ft ridge still has somewhere left to go.
     stops = np.array([s[0] for s in RAMP], dtype=np.float32)
-    keys = np.sqrt(np.maximum(stops, 0.0))
-    x = np.sqrt(np.clip(hgt, 0.0, stops[-1]))
+    keys = np.sign(stops) * np.sqrt(np.abs(stops))
+    x = np.clip(relief, stops[0], stops[-1])
+    x = np.sign(x) * np.sqrt(np.abs(x))
     rgb = np.empty((h, w, 3), dtype=np.float32)
     for ch in range(3):                                         # bounded (3 channels)
         vals = np.array([s[1][ch] for s in RAMP], dtype=np.float32)
