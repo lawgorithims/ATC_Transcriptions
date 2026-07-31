@@ -40,6 +40,10 @@ final class MBTilesHTTPServer {
     /// unbounded decode storm on the tile thread.
     static let maxSeamLayers = 4
 
+    /// How far up the pyramid a sparse pack may be filled in from. Four levels is a 16x magnification —
+    /// past that the parent carries so little of the requested area that serving nothing is honester.
+    static let maxAncestorSteps = 4
+
     /// Push the current chart packs (call from the main actor whenever they change).
     func setReaders(_ r: [MBTilesReader]) { lock.lock(); readers = r; lock.unlock() }
     private func currentReaders() -> [MBTilesReader] { lock.lock(); defer { lock.unlock() }; return readers }
@@ -210,6 +214,14 @@ final class MBTilesHTTPServer {
                     // (a permanent blank square) nor cached — return no-tile so MapLibre treats it as no coverage.
                     out = UIImage(data: raw)?.pngData()
                 }
+            } else if allowOverzoom, let ancestor = Self.ancestorPNG(reader: r, z: z, x: x, y: y) {
+                // A SPARSE pack: the tile is inside the declared zoom range but simply is not there.
+                // The terrain relief is built this way deliberately — it only carries its deepest level
+                // where there is terrain worth the bytes, and flat country is left to be magnified from
+                // a shallower one, which for flat country is indistinguishable. Without this fallback a
+                // missing deep tile is a HOLE rather than a smooth parent, so the pack could only ever
+                // be dense. Second pass only, so a genuine neighbour-pack miss is still tried first.
+                out = ancestor
             } else {
                 out = nil                                                // this pack lacks the tile; try the next
             }
@@ -273,6 +285,33 @@ final class MBTilesHTTPServer {
         guard let png = out.pngData() else { return nil }
         pngCache.setObject(png as NSData, forKey: decision, cost: png.count)
         return (png, "image/png")
+    }
+
+    /// Upscale the nearest available ANCESTOR of a tile that is missing from a sparse pack.
+    ///
+    /// Walks up at most `maxAncestorSteps` levels looking for a parent that exists, then crops and
+    /// magnifies the relevant quadrant of it. Distinct from `overzoomedPNG`, which handles the
+    /// different case of a request BEYOND the pack's declared depth.
+    private static func ancestorPNG(reader r: MBTilesReader, z: Int, x: Int, y: Int) -> Data? {
+        assert(z >= 0 && z <= 24, "ancestorPNG: out-of-range zoom")
+        assert(maxAncestorSteps > 0, "ancestorPNG: no ancestors allowed")
+        for step in 1...maxAncestorSteps {                               // bounded (rule 2)
+            let az = z - step
+            guard az >= r.minZoom else { return nil }
+            guard let src = MBTilesTileOverlay.ancestorSource(z: z, x: x, y: y, step: step) else { return nil }
+            guard let raw = r.tileData(z: az, x: src.ax, y: src.ay), let img = UIImage(data: raw) else { continue }
+            let sub = 1 << step                                          // how many tiles across the parent covers
+            let ox = src.ox, oy = src.oy
+            let tile: CGFloat = 256
+            let fmt = UIGraphicsImageRendererFormat.default(); fmt.scale = 1; fmt.opaque = false
+            let out = UIGraphicsImageRenderer(size: CGSize(width: tile, height: tile), format: fmt).image { _ in
+                let draw = CGFloat(sub)                                  // magnify the parent by 2^step
+                img.draw(in: CGRect(x: -CGFloat(ox) * tile, y: -CGFloat(oy) * tile,
+                                    width: img.size.width * draw, height: img.size.height * draw))
+            }
+            return out.pngData()
+        }
+        return nil
     }
 
     /// Upscale the deepest available ancestor tile to cover a z>maxZoom request (mirrors
