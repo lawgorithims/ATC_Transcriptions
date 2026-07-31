@@ -178,7 +178,10 @@ struct MapLibreChartView: UIViewRepresentable {
             Bundle.main.url(forResource: "ifrhigh_base", withExtension: "mbtiles", subdirectory: "basemap")
                 .flatMap { MBTilesReader(path: $0.path) }
         /// The decluttered night base's terrain relief: pre-baked dark shaded relief with a TRANSPARENT
-        /// ocean (CONUS, z0–z7; ios/Tools/build_terrain_relief.py). Pre-baked rather than a live
+        /// ocean (CONUS, z0–z10 from z10 source DEM; ios/Tools/build_terrain_relief.py). SPARSE at its
+        /// deepest level — z10 is carried only where there is terrain worth the bytes and flat country
+        /// falls back to the magnified parent (MBTilesHTTPServer.ancestorPNG), which is why the pack can
+        /// afford 118 m/px at the terminal area. Pre-baked rather than a live
         /// hillshade/raster-DEM layer because the globe fork never ported those render paths — they would
         /// draw as unsubdivided Mercator quads on the sphere, while the raster path is globe-correct.
         /// A missing pack is not fatal: `.smartDark` then shows the dark base + land silhouettes.

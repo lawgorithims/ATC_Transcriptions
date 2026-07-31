@@ -70,6 +70,22 @@ final class MBTilesReader {
         return Data(bytes: blob, count: Int(sqlite3_column_bytes(st, 0)))
     }
 
+    /// How many tiles this pack holds at one zoom. A pack may legitimately be SPARSE at its DEEPEST
+    /// level — the terrain relief carries z10 only where there is terrain worth the bytes — but every
+    /// shallower level must stay dense, or a dropped deep tile walks up into a second hole instead of a
+    /// smooth parent. Exists so that invariant can be asserted against the shipped pack rather than
+    /// assumed. Read-only; a missing DB answers 0.
+    func tileCount(z: Int) -> Int {
+        assert(z >= 0 && z <= 24, "tileCount: out-of-range zoom")
+        var st: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "select count(*) from tiles where zoom_level=?", -1, &st, nil) == SQLITE_OK
+        else { return 0 }
+        defer { sqlite3_finalize(st) }
+        sqlite3_bind_int(st, 1, Int32(z))
+        guard sqlite3_step(st) == SQLITE_ROW else { return 0 }
+        return Int(sqlite3_column_int(st, 0))
+    }
+
     deinit { if db != nil { sqlite3_close(db) } }
 }
 
