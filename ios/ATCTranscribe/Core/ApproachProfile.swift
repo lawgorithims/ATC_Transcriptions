@@ -137,7 +137,7 @@ struct ApproachProfile: Equatable {
     /// `threshold` is the landing runway's coordinate; distances are measured to it, because that is what
     /// the geometry is anchored on and an airport reference point can be a mile from the touchdown zone.
     static func build(legs: [CIFPLeg], threshold: Coord?, thresholdElevFt: Double?,
-                      airport: String, approachName: String) -> ApproachProfile {
+                      airport: String, approachName: String, codedRunway: String = "-") -> ApproachProfile {
         assert(legs.count <= 512, "ApproachProfile: leg list bound")
         var stations: [Station] = []
         var angle: Double?
@@ -164,13 +164,21 @@ struct ApproachProfile: Equatable {
         // glidepath; on one that has not, the identical field is an ADVISORY descent angle. CIFP does not
         // label which, so the approach TYPE decides — and the distinction changes both the rendering
         // (DA on the slope vs MDA as a floor) and what the app is entitled to claim.
-        let guided = Self.impliesVerticalGuidance(approachName)
+        let guided = Self.impliesVerticalGuidance(approachName, codedRunway: codedRunway)
         // The farthest leg that has a coordinate, in the same order the stations were sorted into.
         let outer = stations.first.flatMap { st in
             legs.first { $0.fix == st.fix && $0.coord != nil }?.coord
         }
         return ApproachProfile(stations: stations, descentAngleDeg: angle,
-                               thresholdCrossingAltFt: crossing ?? thresholdElevFt.map { $0 + 50 },
+                               // NO FABRICATED ANCHOR. The crossing altitude is the runway leg's OWN
+                               // published value or nothing. The previous fallback — terrain elevation
+                               // plus an assumed 50 ft TCH — hung the entire path off a max-aggregated
+                               // SURFACE DEM cell (trees, buildings, hundreds of feet of error in the
+                               // wrong direction) and printed the result as a number. 1,251 of 10,243
+                               // approach rows carry no runway pseudo-fix, so that was not a corner
+                               // case. With no anchor there is no path: `isDrawable` goes false and the
+                               // strip does not appear — the same rule a missing descent angle follows.
+                               thresholdCrossingAltFt: crossing,
                                thresholdElevFt: thresholdElevFt, airport: airport,
                                approachName: approachName, hasVerticalGuidance: guided,
                                outerCoord: outer)
@@ -182,8 +190,21 @@ struct ApproachProfile: Equatable {
     /// CONSERVATIVE: anything not recognised is treated as non-precision, which renders an MDA-style
     /// floor and calls the angle advisory. Being wrong that way understates the guidance available;
     /// being wrong the other way would draw a decision altitude on an approach that has none.
-    static func impliesVerticalGuidance(_ name: String) -> Bool {
+    static func impliesVerticalGuidance(_ name: String, codedRunway: String = "-") -> Bool {
         let n = name.uppercased()
+        // CIRCLING-ONLY FIRST, because it outranks the type. "RNAV (GPS)-A" names a LETTER, not a runway:
+        // the procedure publishes no straight-in line of minima at all — no glidepath, no DA, only a
+        // circling MDA held level to the MAP. The RNAV rule below captured 271 of them, 89 with a coded
+        // angle, and drew each as an unbroken glidepath to a decision altitude that does not exist
+        // (KASE RNAV (GPS)-F codes -6.49°, KSMN -8.91°). The coded angle on a circling procedure is the
+        // published descent GRADIENT, and on many of them it is the very reason it is circling-only.
+        //
+        // Two discriminators, because neither alone is complete: the dash-letter in the title, and the
+        // procedure's own coded runway — empty for circling AND for the COPTER point-in-space titles,
+        // which carry no letter either. `codedRunway` defaults to a non-empty sentinel so a caller that
+        // genuinely only has a name still gets the title test.
+        if ApproachActivation.circlingLetter(name) != nil { return false }
+        if codedRunway.trimmingCharacters(in: .whitespaces).isEmpty { return false }
         if n.contains("LOC") && !n.contains("ILS") { return false }      // LOC-only: no glideslope
         if n.contains("ILS") || n.contains("GLS") || n.contains("JPALS") { return true }
         // RNAV procedures publish LPV / LNAV+VNAV lines with a real glidepath; an RNAV chart without a
@@ -213,12 +234,30 @@ extension ApproachProfile {
     /// Fix the aircraft in the profile from a live position. Returns nil when the aircraft is not
     /// meaningfully on this approach (behind the outermost fix, or past the threshold), so the view can
     /// say so instead of drawing an ownship pinned to an edge.
+    /// How far off the final approach course the aircraft may be and still be drawn in the profile. The
+    /// profile is a section along ONE line; an aircraft abeam it is not on it, and a picture that says
+    /// otherwise is worse than no picture.
+    static let maxCrossTrackNm = 4.0
+
     func position(of coord: Coord, altitudeFtMSL: Double, threshold: Coord?) -> Position? {
-        guard let threshold, let outer = stations.first else { return nil }
-        let d = Geo.nmBetween(coord, threshold)
-        // A little slack past the threshold so the symbol does not vanish in the flare, and a little
-        // beyond the outermost fix so joining traffic still appears.
-        guard d <= outer.distanceToThresholdNm + 2, d >= -0.5 else { return nil }
+        guard let threshold, let outer = stations.first, let axis = outerCoord else { return nil }
+        // ALONG-TRACK, NOT RANGE. `Geo.nmBetween` is an unsigned great-circle distance, so on its own it
+        // describes a CIRCLE about the threshold: an aircraft on downwind, on the far side of the field,
+        // or established on a different approach entirely all produced the same number and were drawn as
+        // though established on this final — at an along-track position they were nowhere near, against a
+        // glidepath they were not flying. Project onto the course, and reject anything too far off it.
+        let range = Geo.nmBetween(coord, threshold)
+        guard range > 1e-6 else {
+            return Position(distanceNm: 0, altitudeFtMSL: altitudeFtMSL,
+                            deviationFt: deviationFt(altitudeFtMSL: altitudeFtMSL, atNm: 0), insideFAF: true)
+        }
+        let courseToOuter = Geo.bearing(threshold, axis)
+        let delta = (Geo.bearing(threshold, coord) - courseToOuter) * .pi / 180
+        let along = range * cos(delta)          // + out along the approach course, - past the threshold
+        let cross = abs(range * sin(delta))
+        guard cross <= Self.maxCrossTrackNm else { return nil }
+        guard along <= outer.distanceToThresholdNm + 2, along >= -0.5 else { return nil }
+        let d = max(along, 0)
         return Position(distanceNm: d, altitudeFtMSL: altitudeFtMSL,
                         deviationFt: deviationFt(altitudeFtMSL: altitudeFtMSL, atNm: d),
                         insideFAF: faf.map { d <= $0.distanceToThresholdNm } ?? false)

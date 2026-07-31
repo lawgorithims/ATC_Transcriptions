@@ -1236,7 +1236,7 @@ final class AppModel: ObservableObject {
         // initialized here.
         adsbService = ADSBService(
             onUpdate: { [weak self] list, snapshotAt in
-                Task { @MainActor in self?.applyTraffic(list, snapshotAt: snapshotAt) }
+                Task { @MainActor in self?.applyTraffic(list, snapshotAt: snapshotAt, from: .internet) }
             },
             onStatus: { [weak self] status in
                 Task { @MainActor in
@@ -1253,7 +1253,7 @@ final class AppModel: ObservableObject {
         // foregrounded — independent of the input source (see `stratuxTrafficActive`).
         stratuxService = StratuxService(
             onTraffic: { [weak self] list, snapshotAt in
-                Task { @MainActor in self?.applyTraffic(list, snapshotAt: snapshotAt) }
+                Task { @MainActor in self?.applyTraffic(list, snapshotAt: snapshotAt, from: .stratux) }
             },
             onGPS: { [weak self] gps in
                 Task { @MainActor in self?.ingestStratuxGPS(gps) }
@@ -2534,9 +2534,12 @@ final class AppModel: ObservableObject {
         let finalLegs = content.legs.filter { !content.missedSeqs.contains($0.seq) }
         // Anchor on the LANDING THRESHOLD, not the airport reference point: the geometry hangs off the
         // threshold crossing height, and an ARP can sit a mile from the touchdown zone.
-        let rwy = CIFP.runways(airport: appr.airport).first {
-            $0.designator.uppercased().hasSuffix(appr.runway.uppercased())
-        }
+        // ⚠️ `hasSuffix("")` is TRUE for every string, and a CIRCLING or point-in-space approach codes an
+        // EMPTY runway — so this matched the first runway record in the table and anchored the whole
+        // profile (its distance axis AND its crossing altitude) on an arbitrary runway end the procedure
+        // has nothing to do with. There is no landing threshold to measure to on those procedures, and
+        // saying so is the correct answer.
+        let rwy = Self.landingThreshold(airport: appr.airport, runway: appr.runway)
         // Threshold elevation: the terrain grid under the runway threshold itself. The airport table's
         // field elevation is the ARP's, which can differ from the touchdown zone by tens of feet, and the
         // whole geometry hangs off the threshold. Nil is fine — the profile then anchors on the runway
@@ -2544,10 +2547,21 @@ final class AppModel: ObservableObject {
         let elev = rwy.map { TerrainElevation.shared.elevationFt(at: $0.coord) } ?? nil
         let profile = ApproachProfile.build(legs: finalLegs, threshold: rwy?.coord,
                                             thresholdElevFt: elev, airport: appr.airport,
-                                            approachName: appr.name)
+                                            approachName: appr.name, codedRunway: appr.runway)
         approachProfile = profile.isDrawable ? profile : nil
         approachProfileTerrain = profile.isDrawable
             ? Self.sampleApproachTerrain(profile: profile, threshold: rwy?.coord) : []
+    }
+
+    /// The LANDING THRESHOLD record for an approach, or nil when the procedure does not name one.
+    ///
+    /// Shared so the profile builder and the view's live-position lookup cannot disagree about which
+    /// runway they are measuring to — they were two separate `hasSuffix` expressions, and both had the
+    /// empty-runway bug.
+    static func landingThreshold(airport: String, runway: String) -> CIFPRunway? {
+        let r = runway.trimmingCharacters(in: .whitespaces).uppercased()
+        guard !r.isEmpty else { return nil }               // circling / point-in-space: no threshold
+        return CIFP.runways(airport: airport).first { $0.designator.uppercased().hasSuffix(r) }
     }
 
     /// Ground elevation along the final approach course, outermost → threshold. Bounded sample count so
@@ -3367,7 +3381,17 @@ final class AppModel: ObservableObject {
     /// `coordinate != nil` drew a dropped link as authoritative). This is that bug in the traffic path:
     /// require a link that is CONNECTED, not merely wanted. `stratuxStatus` is published by the service
     /// itself, so a dropped socket falls back to the internet feed within a poll rather than never.
-    private var stratuxTrafficSupplying: Bool { stratuxTrafficActive && stratuxStatus == .connected }
+    private var stratuxTrafficSupplying: Bool {
+        guard stratuxTrafficActive else { return false }
+        if stratuxStatus == .connected { return true }
+        // ⚠️ `.connected` is announced on the FIRST MESSAGE the traffic socket delivers, and that socket
+        // is PUSH-only — so a perfectly healthy receiver with an empty sky never reaches it, and would be
+        // classified as not supplying for the whole flight. The GPS poll is the independent proof that
+        // the receiver is present and answering: it is a request/response loop that runs regardless of
+        // traffic. A fresh Stratux fix therefore means "the link is up", empty sky or not.
+        if let at = stratuxGPSAt, Date().timeIntervalSince(at) <= Self.stratuxOwnshipMaxAge * 4 { return true }
+        return false
+    }
     /// Whether the Stratux link should be streaming traffic/GPS now: whenever it's enabled, the app
     /// is foregrounded, and standby is off — independent of the input source and of a running
     /// session (audio still requires picking the source + Start; see `beginCapture`). `!standby`
@@ -3659,7 +3683,21 @@ final class AppModel: ObservableObject {
     /// on `adsbActive` so a late callback that lands after a toggle-off / standby / background CLEARS
     /// the carousel + corrector instead of repopulating them (the callback hops the main actor async,
     /// so it can arrive after the synchronous clearTraffic()).
-    private func applyTraffic(_ list: [Aircraft], snapshotAt: Date) {
+    /// Which provider a traffic snapshot came from. The two publish into ONE sink, so the sink has to
+    /// know: while the internet poller owns the feed, the Stratux service's ~2 s empty heartbeat would
+    /// otherwise blank the list it just filled, and the aircraft would flicker in and out of existence.
+    enum TrafficSource { case internet, stratux }
+
+    /// The provider entitled to write right now. Exactly one, always — a receiver that is actually
+    /// supplying wins, else the online poller.
+    private var trafficOwner: TrafficSource { stratuxTrafficSupplying ? .stratux : .internet }
+
+    private func applyTraffic(_ list: [Aircraft], snapshotAt: Date, from source: TrafficSource) {
+        // A publish from the provider that is NOT the current owner is dropped rather than merged: the
+        // two feeds have different identity conventions and different snapshot cadences, and merging
+        // them would double-render the same aircraft. Dropping is also what makes the hand-over clean —
+        // the moment a Stratux starts supplying, its first snapshot takes the feed.
+        guard source == trafficOwner else { return }
         let active = trafficActive
         let shown = active ? list : []
         aircraft = shown

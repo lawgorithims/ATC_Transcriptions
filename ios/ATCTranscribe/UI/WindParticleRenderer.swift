@@ -179,13 +179,19 @@ final class WindParticleRenderer: NSObject, MTKViewDelegate {
         guard drawable.width > 0, drawable.height > 0 else { return }
         let w = max(Int(drawable.width * Self.trailScale), 16)
         let h = max(Int(drawable.height * Self.trailScale), 16)
-        if let t = trailFront, t.width == w, t.height == h { return }
+        // BOTH must exist and match. Testing only `trailFront` meant a half-successful allocation (front
+        // made, back nil) short-circuited every later call, and `encode`'s `let back = trailBack` guard
+        // then bailed on every frame — the last drawn frame frozen over the chart for the session.
+        if let f = trailFront, let b = trailBack,
+           f.width == w, f.height == h, b.width == w, b.height == h { return }
         let d = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm, width: w, height: h,
                                                         mipmapped: false)
         d.usage = [.renderTarget, .shaderRead]
         d.storageMode = .private
-        trailFront = device.makeTexture(descriptor: d)
-        trailBack = device.makeTexture(descriptor: d)
+        let front = device.makeTexture(descriptor: d), back = device.makeTexture(descriptor: d)
+        guard let front, let back else { trailFront = nil; trailBack = nil; return }   // all or nothing
+        trailFront = front
+        trailBack = back
         // A freshly allocated PRIVATE texture holds undefined bytes, and the very next frame's fade pass
         // SAMPLES trailFront — so the first frame after every allocation and every resize (rotation,
         // Split View drag) composited whatever was in that memory over the chart. Zero them once here.
@@ -480,6 +486,7 @@ final class WindParticleRenderer: NSObject, MTKViewDelegate {
                                alpha: alpha)
         enc.setRenderPipelineState(composite)
         enc.setFragmentTexture(texture, index: 0)
+        enc.setFragmentBytes(&u, length: MemoryLayout<WindSegUniforms>.stride, index: 0)   // span fade
         enc.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
         if let segments = segmentPipeline, !vertices.isEmpty {
             enc.setRenderPipelineState(segments)

@@ -22,6 +22,10 @@ struct WindAltitudeSlider: View {
     /// The selected base layer — the ramp resolves through it (`.smartDark` forces the night ramp),
     /// so the legend key matches the particles it describes.
     let layer: ChartLayer
+    /// The pilot's sprite-colour choice. Named `windPalette` because `palette` here is already the app's
+    /// UI palette. The legend is a KEY: if it shows the spectrum while the sprites are drawn in one
+    /// colour, the pilot reads speed off a scale that does not describe what is on screen.
+    let windPalette: WindRamp.Palette
     /// True while `thermalSerious` has the overlay paused. The control stays on screen (hiding it would
     /// leave the layers menu showing "Winds aloft" ON with nothing to explain the empty chart) and says
     /// so instead — the same doctrine as the radar pill, which was fixed once for lying about a stopped
@@ -194,7 +198,7 @@ struct WindAltitudeSlider: View {
 
     /// The speed key. Labelled in knots because that is the unit in the clearance and on the strip.
     private var legend: some View {
-        let ramp = WindRamp.forLayer(layer, theme: theme)
+        let ramp = WindRamp.resolve(palette: windPalette, layer: layer, theme: theme)
         return VStack(alignment: .leading, spacing: 2) {
             LinearGradient(colors: ramp.cgColors(steps: 9).map { Color(cgColor: $0) },
                            startPoint: .leading, endPoint: .trailing)

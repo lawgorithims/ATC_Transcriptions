@@ -76,8 +76,14 @@ fragment float4 windFadeFragment(QuadOut in [[stage_in]],
     return src.sample(s, uv) * u.fade;
 }
 
+// The layer-wide span fade has to be applied HERE, to the accumulated trail — this pass draws almost all
+// of the visible field. Without the uniform the composite ran at full strength no matter what
+// `spanAlpha` said, so the layer never actually faded as the pilot zoomed out: it stayed solid right up
+// to the cutoff and then vanished in one step, through exactly the regime where a single affine is known
+// to stop describing the globe. (Premultiplied alpha, so the whole sample scales uniformly.)
 fragment float4 windCompositeFragment(QuadOut in [[stage_in]],
-                                      texture2d<float> src [[texture(0)]]) {
+                                      texture2d<float> src [[texture(0)]],
+                                      constant WindSegUniforms& u [[buffer(0)]]) {
     constexpr sampler s(filter::linear, address::clamp_to_edge);
-    return src.sample(s, in.uv);
+    return src.sample(s, in.uv) * u.alpha;
 }

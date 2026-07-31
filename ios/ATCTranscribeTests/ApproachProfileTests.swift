@@ -89,21 +89,76 @@ final class ApproachProfileTests: XCTestCase {
         XCTAssertFalse(ApproachProfile.impliesVerticalGuidance("VOR-A"))
         XCTAssertFalse(ApproachProfile.impliesVerticalGuidance("NDB RWY 12"))
         XCTAssertFalse(ApproachProfile.impliesVerticalGuidance("SOMETHING UNRECOGNISED"))
+        // CIRCLING-ONLY outranks the type. These publish no straight-in line of minima at all — no
+        // glidepath and no DA, only a circling MDA — so a coded angle on them is a descent GRADIENT.
+        // 271 of them classified as guided before this, 89 with a real angle (KASE RNAV (GPS)-F at
+        // 6.49 degrees), each drawn as an unbroken glidepath to a decision altitude that does not exist.
+        XCTAssertFalse(ApproachProfile.impliesVerticalGuidance("RNAV (GPS)-A"))
+        XCTAssertFalse(ApproachProfile.impliesVerticalGuidance("RNAV (GPS)-F"))
+        XCTAssertFalse(ApproachProfile.impliesVerticalGuidance("VOR/DME-B"))
+        // ...and the coded runway catches the ones with no dash-letter (COPTER point-in-space).
+        XCTAssertFalse(ApproachProfile.impliesVerticalGuidance("COPTER RNAV (GPS) 027", codedRunway: ""))
+        XCTAssertTrue(ApproachProfile.impliesVerticalGuidance("ILS RWY 04R", codedRunway: "04R"))
+    }
+
+    /// With no PUBLISHED crossing altitude there is no anchor, so there is no path — the previous
+    /// fallback hung it off a max-aggregated SURFACE DEM cell plus an assumed TCH and printed the result.
+    func testNoPublishedCrossingAltitudeMeansNoProfile() {
+        let legs: [CIFPLeg] = []
+        let p = ApproachProfile.build(legs: legs, threshold: Coord(lat: 42, lon: -71),
+                                      thresholdElevFt: 1200, airport: "KTST",
+                                      approachName: "RNAV (GPS) RWY 04", codedRunway: "04")
+        XCTAssertNil(p.thresholdCrossingAltFt,
+                     "terrain elevation + an assumed 50 ft TCH is a fabricated anchor, not a measurement")
+        XCTAssertFalse(p.isDrawable)
+        XCTAssertNil(p.pathAltitudeFt(atNm: 5))
+    }
+
+    /// The ownship is placed by ALONG-TRACK distance, so an aircraft abeam the field — on downwind, or
+    /// established on a different approach — is not drawn as though it were on this final.
+    func testPositionRejectsAircraftOffTheFinalCourse() {
+        let thr = Coord(lat: 42.0, lon: -71.0)
+        let outer = Geo.destination(from: thr, bearingDeg: 0, distanceNm: 8)     // final runs due north
+        let p = ApproachProfile(
+            stations: [.init(fix: "FAFXX", distanceToThresholdNm: 6, constraint: nil, role: .finalApproachFix),
+                       .init(fix: "RW36", distanceToThresholdNm: 0, constraint: nil, role: .missedApproachPoint)],
+            descentAngleDeg: 3.0, thresholdCrossingAltFt: 1255, thresholdElevFt: 1200,
+            airport: "KTST", approachName: "ILS RWY 36", hasVerticalGuidance: true, outerCoord: outer)
+        // 5 NM due EAST of the threshold: the same RANGE as a fix on final, nowhere near the course.
+        let abeam = Geo.destination(from: thr, bearingDeg: 90, distanceNm: 5)
+        XCTAssertNil(p.position(of: abeam, altitudeFtMSL: 2500, threshold: thr),
+                     "an aircraft abeam the field is not on this final, whatever its range")
+        // 5 NM out ON the course is placed at 5 NM.
+        let onCourse = Geo.destination(from: thr, bearingDeg: 0, distanceNm: 5)
+        let pos = p.position(of: onCourse, altitudeFtMSL: 2500, threshold: thr)
+        XCTAssertEqual(try! XCTUnwrap(pos).distanceNm, 5, accuracy: 0.1)
+        // Behind the threshold (past the runway) is refused rather than mirrored onto final.
+        let behind = Geo.destination(from: thr, bearingDeg: 180, distanceNm: 3)
+        XCTAssertNil(p.position(of: behind, altitudeFtMSL: 1500, threshold: thr))
     }
 
     /// The ownship is only placed while it is actually on this segment — otherwise the view would pin an
     /// aircraft to an edge of the chart and imply it was flying the approach.
     func testPositionRefusesOffSegment() {
         let thr = Coord(lat: 42.0, lon: -71.0)
+        // The final runs due north from the threshold; `outerCoord` is what gives the profile its axis,
+        // and without one there is no course to project onto and no position to report.
+        let axis = Geo.destination(from: thr, bearingDeg: 0, distanceNm: 6)
         let p = ApproachProfile(
             stations: [.init(fix: "FAFXX", distanceToThresholdNm: 6, constraint: nil, role: .finalApproachFix),
                        .init(fix: "RW34", distanceToThresholdNm: 0, constraint: nil, role: .missedApproachPoint)],
             descentAngleDeg: 3.0, thresholdCrossingAltFt: 1255, thresholdElevFt: 1200,
-            airport: "KTST", approachName: "ILS RWY 34", hasVerticalGuidance: true, outerCoord: nil)
+            airport: "KTST", approachName: "ILS RWY 34", hasVerticalGuidance: true, outerCoord: axis)
+        XCTAssertNil(ApproachProfile(
+            stations: p.stations, descentAngleDeg: 3.0, thresholdCrossingAltFt: 1255,
+            thresholdElevFt: 1200, airport: "KTST", approachName: "ILS RWY 34",
+            hasVerticalGuidance: true, outerCoord: nil)
+            .position(of: axis, altitudeFtMSL: 3000, threshold: thr),
+            "no axis, no along-track projection, no ownship")
         let far = Geo.destination(from: thr, bearingDeg: 0, distanceNm: 40)
         XCTAssertNil(p.position(of: far, altitudeFtMSL: 5000, threshold: thr),
                      "40 NM out is not on this final segment")
-        let inside = Geo.destination(from: thr, bearingDeg: 0, distanceNm: 3)
+        let inside = Geo.destination(from: thr, bearingDeg: 0, distanceNm: 3)   // on the course
         let pos = p.position(of: inside, altitudeFtMSL: 2000, threshold: thr)
         XCTAssertNotNil(pos)
         XCTAssertTrue(try! XCTUnwrap(pos).insideFAF, "3 NM is inside a 6 NM FAF")
