@@ -701,17 +701,17 @@ struct MapObjectView: View {
         }
     }
 
-    /// NOTAM = honest placeholder (no offline NOTAM/TFR source bundled).
+    /// NOTAMs for this aerodrome, with the ones bearing on the approach in use pinned. The runway comes
+    /// from the ACTIVE approach when there is one — that is what "relevant to the procedure" means —
+    /// and is empty otherwise, which the classifier reads as "everything at this field applies".
     @ViewBuilder private func notamTab(_ ident: String) -> some View {
-        let p = model.palette
         Section {
-            VStack(spacing: 10) {
-                Image(systemName: "bell.slash").font(.system(size: 30)).foregroundStyle(p.textDim.opacity(0.7))
-                Text("NOTAMs need a connection").font(.callout).foregroundStyle(p.text)
-                Text("Offline NOTAM/TFR data isn't bundled yet. Check an official source before flight.")
-                    .font(.dsLabelS).foregroundStyle(p.textDim).multilineTextAlignment(.center)
-            }
-            .frame(maxWidth: .infinity).padding(.vertical, 20)
+            NotamPanel(airport: ident,
+                       runway: model.activeApproach?.airport.caseInsensitiveCompare(ident) == .orderedSame
+                           ? (model.activeApproach?.runway ?? "") : "",
+                       store: model.notams,
+                       palette: model.palette)
+                .padding(.vertical, 4)
         }
     }
 
