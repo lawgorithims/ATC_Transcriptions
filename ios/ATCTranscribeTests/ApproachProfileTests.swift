@@ -82,8 +82,22 @@ final class ApproachProfileTests: XCTestCase {
     /// drawing a decision altitude on an approach that has none is the dangerous direction.
     func testVerticalGuidanceClassification() {
         XCTAssertTrue(ApproachProfile.impliesVerticalGuidance("ILS OR LOC RWY 04R"))
-        XCTAssertTrue(ApproachProfile.impliesVerticalGuidance("RNAV (GPS) RWY 23"))
-        XCTAssertTrue(ApproachProfile.impliesVerticalGuidance("RNAV (RNP) Z RWY 07"))
+        // ⚠️ RNAV / GPS / RNP NOW CLASSIFY AS NON-PRECISION, and this reversal is deliberate. The title
+        // is identical whether the chart publishes an LPV line, an LNAV/VNAV line, or an LNAV MDA and
+        // nothing else — so returning true was a guess from the name. Cross-checked against OCR'd
+        // cycle-2607 plates, 1,335 straight-in RNAV approaches publish an MDA and NO vertically-guided
+        // line, and the app drew an unbroken glidepath to a decision altitude on every one of them.
+        //
+        // The cost is real and is accepted knowingly: roughly 4,600 approaches that DO publish LPV or
+        // LNAV/VNAV now render an MDA-style floor with the angle called advisory, which understates the
+        // guidance available. That is the direction this function's own doc comment chooses, and the
+        // asymmetry is not close — understating leaves a pilot with the guidance in their box, while
+        // overstating draws a DA picture on a procedure that requires levelling at an MDA.
+        //
+        // The proper fix is evidence rather than a better guess: PlateMinima.Kind.usesDecisionAltitude,
+        // once the plate has been parsed. Restore a `true` here only from that.
+        XCTAssertFalse(ApproachProfile.impliesVerticalGuidance("RNAV (GPS) RWY 23"))
+        XCTAssertFalse(ApproachProfile.impliesVerticalGuidance("RNAV (RNP) Z RWY 07"))
         XCTAssertFalse(ApproachProfile.impliesVerticalGuidance("LOC RWY 15"),
                        "a localiser-only approach has no glideslope, whatever angle is coded")
         XCTAssertFalse(ApproachProfile.impliesVerticalGuidance("VOR-A"))

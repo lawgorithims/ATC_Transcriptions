@@ -183,7 +183,18 @@ enum ProcedureRoute {
         assert(out.count <= maxLegs, "route cap already breached on entry to appendDeduped")
         guard out.count < maxLegs, !leg.ident.isEmpty else { return }
         if out.last?.ident == leg.ident {
-            if let last = out.last, roleRank(leg.role) > roleRank(last.role) { out[out.count - 1].role = leg.role }
+            guard let last = out.last else { return }
+            if roleRank(leg.role) > roleRank(last.role) { out[out.count - 1].role = leg.role }
+            // The RESTRICTION must survive the collapse too, not just the role. Keeping only the first
+            // leg's altitude discarded a differing published rule on 1,452 adjacent pairs, and on 464 of
+            // them the retained floor sat more than the warning tolerance above the discarded one — so
+            // the app told a pilot flying the published hold altitude that they were thousands of feet
+            // low. See LegConstraint.unioned(with:) for why this widens rather than tightens.
+            switch (last.constraint, leg.constraint) {
+            case (let a?, let b?): out[out.count - 1].constraint = a.unioned(with: b)
+            case (nil, let b?):    out[out.count - 1].constraint = b
+            default:               break                     // incoming carries nothing to merge
+            }
             return
         }
         out.append(leg)
