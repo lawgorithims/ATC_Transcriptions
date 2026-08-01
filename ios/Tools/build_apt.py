@@ -91,12 +91,31 @@ def main():
         site_type TEXT, far139 TEXT);
       CREATE TABLE runway(
         ident TEXT, designator TEXT, length_ft REAL, width_ft REAL,
-        surface TEXT, condition TEXT, lights TEXT);
+        surface TEXT, condition TEXT, lights TEXT,
+        -- Weight-bearing capacity, in KIPS (single / dual / dual-tandem / double-dual-tandem wheel),
+        -- plus the pavement classification number. Item 45's "weight limits", read from APT_RWY.csv
+        -- columns this builder was already opening and not selecting.
+        gross_wt_sw REAL, gross_wt_dw REAL, gross_wt_dtw REAL, gross_wt_ddtw REAL, pcn TEXT);
       CREATE TABLE runway_end(
         ident TEXT, designator TEXT, end_id TEXT, true_align REAL,
         lat REAL, lon REAL, elev_ft REAL, tdze_ft REAL,
         displaced_ft REAL, tora_ft REAL, toda_ft REAL, asda_ft REAL, lda_ft REAL,
-        vgsi TEXT, app_lights TEXT);
+        vgsi TEXT, app_lights TEXT,
+        -- ⚠️ COLUMNS THAT WERE IN THE SOURCE ALL ALONG. This builder read 15 of APT_RWY_END.csv's 80
+        -- fields, so features were designed around data believed absent while it sat in the file:
+        --   vgsi_angle       the VISUAL glideslope angle. An advisory descent angle is NOT
+        --                    obstacle-assessed below the MDA and need not agree with it — a 3.00 VDA
+        --                    into a 4.00 PAPI puts the aircraft low on the visual segment. A plate-text
+        --                    regex was written for this at 28% coverage; the source has it outright.
+        --   tch_ft           threshold crossing height, the other half of the same picture.
+        --   markings/_cond   item 45's "markings" (PIR/NPI/BSC/NSTD).
+        --   obstn_*          the CONTROLLING OBSTACLE — the departure panel's whole point.
+        --   lahso_*          the ONLY hold-short geometry the FAA publishes anywhere, WITH coordinates.
+        vgsi_angle REAL, tch_ft REAL,
+        markings TEXT, markings_cond TEXT,
+        obstn_type TEXT, obstn_hgt_ft REAL, obstn_dist_ft REAL, obstn_slope REAL,
+        right_traffic TEXT, centreline_lights TEXT, tdz_lights TEXT,
+        lahso_ald_ft REAL, lahso_lat REAL, lahso_lon REAL);
       CREATE TABLE frequency(
         ident TEXT, freq TEXT, use TEXT, sectorization TEXT, facility TEXT);
       CREATE INDEX ix_apt_ident ON airport(ident);
@@ -136,11 +155,14 @@ def main():
     # ---- runways --------------------------------------------------------------------------------
     n = 0
     for r in rows(zf, "APT_RWY.csv"):
-        con.execute("INSERT INTO runway VALUES(?,?,?,?,?,?,?)", (
+        con.execute("INSERT INTO runway VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (
             (r.get("ARPT_ID") or "").strip(), (r.get("RWY_ID") or "").strip(),
             num(r.get("RWY_LEN")), num(r.get("RWY_WIDTH")),
             (r.get("SURFACE_TYPE_CODE") or "").strip(), (r.get("COND") or "").strip(),
-            (r.get("RWY_LGT_CODE") or "").strip()))
+            (r.get("RWY_LGT_CODE") or "").strip(),
+            num(r.get("GROSS_WT_SW")), num(r.get("GROSS_WT_DW")),
+            num(r.get("GROSS_WT_DTW")), num(r.get("GROSS_WT_DDTW")),
+            (r.get("PCN") or "").strip()))
         n += 1
     counts["runway"] = n
 
@@ -148,14 +170,24 @@ def main():
     n = 0
     for r in rows(zf, "APT_RWY_END.csv"):
         lat, lon = latlon(r, "LAT")
-        con.execute("INSERT INTO runway_end VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
+        hs_lat, hs_lon = latlon(r, "LAT_LAHSO")
+        con.execute("INSERT INTO runway_end VALUES(" + ",".join(["?"] * 29) + ")", (
             (r.get("ARPT_ID") or "").strip(), (r.get("RWY_ID") or "").strip(),
             (r.get("RWY_END_ID") or "").strip(), num(r.get("TRUE_ALIGNMENT")),
             lat, lon, num(r.get("RWY_END_ELEV")), num(r.get("TDZ_ELEV")),
             num(r.get("DISPLACED_THR_LEN")), num(r.get("TKOF_RUN_AVBL")),
             num(r.get("TKOF_DIST_AVBL")), num(r.get("ACLT_STOP_DIST_AVBL")),
             num(r.get("LNDG_DIST_AVBL")), (r.get("VGSI_CODE") or "").strip(),
-            (r.get("APCH_LGT_SYSTEM_CODE") or "").strip()))
+            (r.get("APCH_LGT_SYSTEM_CODE") or "").strip(),
+            num(r.get("VISUAL_GLIDE_PATH_ANGLE")), num(r.get("THR_CROSSING_HGT")),
+            (r.get("RWY_MARKING_TYPE_CODE") or "").strip(),
+            (r.get("RWY_MARKING_COND") or "").strip(),
+            (r.get("OBSTN_TYPE") or "").strip(), num(r.get("OBSTN_HGT")),
+            num(r.get("DIST_FROM_THR")), num(r.get("OBSTN_CLNC_SLOPE")),
+            (r.get("RIGHT_HAND_TRAFFIC_PAT_FLAG") or "").strip(),
+            (r.get("CNTRLN_LGTS_AVBL_FLAG") or "").strip(),
+            (r.get("TDZ_LGT_AVBL_FLAG") or "").strip(),
+            num(r.get("LAHSO_ALD")), hs_lat, hs_lon))
         n += 1
     counts["runway_end"] = n
 

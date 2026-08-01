@@ -2808,7 +2808,8 @@ final class AppModel: ObservableObject {
             touchdownZoneElevFt: end?.touchdownZoneElevationFt,
             approachLights: end?.approachLights ?? "",
             vgsi: end?.vgsi ?? "",
-            edgeLights: rwy?.lights ?? "")
+            edgeLights: rwy?.lights ?? "",
+            vgsiAngleDeg: end?.visualGlidePathAngleDeg)
     }
 
     /// Parse the ACTIVE approach's own plate, from disk, so the vertical-guidance question is answered

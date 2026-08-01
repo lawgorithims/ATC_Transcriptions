@@ -71,6 +71,11 @@ enum AirportData {
         let landingDistanceFt: Double?
         let vgsi: String
         let approachLights: String
+        /// The VISUAL glideslope angle, degrees. Published by NASR in APT_RWY_END and recovered when
+        /// the builder was widened from 15 of its 80 columns to 29 — see build_apt.py.
+        var visualGlidePathAngleDeg: Double? = nil
+        /// Threshold crossing height, feet.
+        var thresholdCrossingHeightFt: Double? = nil
     }
 
     /// One published runway, with the surface that decides whether it is drawn on the chart symbol.
@@ -281,7 +286,8 @@ enum AirportData {
         let (a, b) = keys(airport)
         return query("""
             SELECT designator, end_id, true_align, lat, lon, elev_ft, tdze_ft,
-                   displaced_ft, lda_ft, COALESCE(vgsi,''), COALESCE(app_lights,'')
+                   displaced_ft, lda_ft, COALESCE(vgsi,''), COALESCE(app_lights,''),
+                   vgsi_angle, tch_ft
             FROM runway_end WHERE ident=?1 OR ident=?2 ORDER BY designator, end_id
             """, a, b) { st in
             let hasCoord = sqlite3_column_type(st, 3) != SQLITE_NULL
@@ -291,7 +297,9 @@ enum AirportData {
                                                      lon: sqlite3_column_double(st, 4)) : nil,
                              elevationFt: dbl(st, 5), touchdownZoneElevationFt: dbl(st, 6),
                              displacedThresholdFt: dbl(st, 7), landingDistanceFt: dbl(st, 8),
-                             vgsi: text(st, 9), approachLights: text(st, 10))
+                             vgsi: text(st, 9), approachLights: text(st, 10),
+                             visualGlidePathAngleDeg: dbl(st, 11),
+                             thresholdCrossingHeightFt: dbl(st, 12))
         }
     }
 

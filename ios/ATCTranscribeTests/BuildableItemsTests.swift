@@ -4,30 +4,16 @@ import XCTest
 /// Items 30, 32, 43 and 18.
 final class BuildableItemsTests: XCTestCase {
 
-    // MARK: item 30 — the visual glideslope angle, read off the plate
+    // MARK: item 30 — the visual glideslope angle
+    //
+    // ⚠️ The plate-text parser these tests used to cover was WITHDRAWN. The angle is
+    // VISUAL_GLIDE_PATH_ANGLE in NASR's APT_RWY_END, which the builder now reads — the regex reached
+    // 28% of plates and measurably caught wrong numbers. What survives is the DISAGREEMENT check,
+    // which is the part that matters.
 
-    func testTheVGSIAngleIsReadFromThePlateText() {
-        XCTAssertEqual(ApproachBrief.parseVGSIAngle(fromPlateText: "PAPI 3.00 TCH 55"), 3.00)
-        XCTAssertEqual(ApproachBrief.parseVGSIAngle(fromPlateText: "VASI 4.00"), 4.00)
-        XCTAssertEqual(ApproachBrief.parseVGSIAngle(fromPlateText: "VGSI and descent angles NA 3.50"), 3.50)
-    }
 
-    func testANumberFarFromTheSystemNameIsNotTakenAsTheAngle() {
-        // A bare "3.00" on a plate is more likely a glideslope, a course or a distance. The angle must
-        // sit near the system it belongs to.
-        let far = "PAPI" + String(repeating: " ", count: 90) + "3.00"
-        XCTAssertNil(ApproachBrief.parseVGSIAngle(fromPlateText: far))
-    }
 
-    func testAnImplausibleAngleIsRefused() {
-        XCTAssertNil(ApproachBrief.parseVGSIAngle(fromPlateText: "PAPI 9.99"))
-        XCTAssertNil(ApproachBrief.parseVGSIAngle(fromPlateText: "PAPI 1.00"))
-    }
 
-    func testNoSystemMeansNoAngle() {
-        XCTAssertNil(ApproachBrief.parseVGSIAngle(fromPlateText: "GS 3.00 TCH 55"))
-        XCTAssertNil(ApproachBrief.parseVGSIAngle(fromPlateText: ""))
-    }
 
     func testADisagreementIsOnlyReportedWhenItMatters() {
         // THE case: a 3.00 VDA flown into a 4.00 PAPI puts the aircraft low on the visual segment.

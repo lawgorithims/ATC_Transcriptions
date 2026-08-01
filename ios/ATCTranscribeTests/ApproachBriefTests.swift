@@ -13,14 +13,14 @@ final class ApproachBriefTests: XCTestCase {
                        len: Double? = 7000, minimum: ApproachBrief.Minimum? = nil) -> ApproachBrief {
         ApproachBrief(inboundCourseMag: nil, minimum: minimum, runway: "04R",
                       runwayLengthFt: len, touchdownZoneElevFt: tdze,
-                      approachLights: alt, vgsi: vgsi, edgeLights: "HIGH")
+                      approachLights: alt, vgsi: vgsi, edgeLights: "HIGH", vgsiAngleDeg: 3.00)
     }
 
     // MARK: absence is absence
 
     func testAnEmptyBriefIsNotShown() {
         let b = ApproachBrief(inboundCourseMag: nil, minimum: nil, runway: "04R", runwayLengthFt: nil,
-                              touchdownZoneElevFt: nil, approachLights: "", vgsi: "", edgeLights: "")
+                              touchdownZoneElevFt: nil, approachLights: "", vgsi: "", edgeLights: "", vgsiAngleDeg: nil)
         XCTAssertFalse(b.hasContent, "a brief with only a runway number is not a brief")
     }
 
