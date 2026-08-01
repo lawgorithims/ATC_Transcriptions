@@ -1896,6 +1896,81 @@ final class NearbyMarkerView: MKAnnotationView {
         }
     }()
 
+    /// The route-fix star, tinted by WHICH KIND of published restriction the fix carries — the chart
+    /// convention this app follows: blue for an altitude, magenta for a speed, and a SPLIT star (blue
+    /// left, magenta right) when the fix publishes both.
+    ///
+    /// Drawn as separate registered images rather than tinted at draw time, because MapLibre's
+    /// `iconColor` only applies to a TEMPLATE image and these are drawn artwork — which is also why the
+    /// role colouring went on the ident text instead. The colours match `routeWptAlt` / `routeWptSpeed`
+    /// so the mark and its own sublabels agree; a fix whose altitude label is cyan gets a cyan mark.
+    ///
+    /// `plain` is the unrestricted fix and keeps the white star, so the coding reads as "this one has a
+    /// restriction" at a glance rather than requiring the pilot to decode four colours.
+    enum RouteFixTint: String, CaseIterable {
+        case plain, altitude, speed, both
+        /// The attribute value the map's icon expression matches on.
+        ///
+        /// `.plain` keeps the ORIGINAL "rw-fix" name rather than gaining a synonym: an unrestricted fix
+        /// gets exactly the mark it always had, so this is additive — nothing that was already correct
+        /// changes name, and there is one image per name.
+        var glyphName: String { self == .plain ? "rw-fix" : "rw-fix-" + rawValue }
+    }
+
+    static func routeFixGlyph(_ tint: RouteFixTint) -> UIImage {
+        switch tint {
+        case .plain:    return routeFixImg
+        case .altitude: return routeFixAltImg
+        case .speed:    return routeFixSpdImg
+        case .both:     return routeFixBothImg
+        }
+    }
+
+    /// One star, filled by a caller-supplied routine so the four variants share the geometry exactly —
+    /// a second hand-written path would drift from the white one at the first edit.
+    private static func routeFixStar(_ fill: (UIBezierPath, CGRect) -> Void) -> UIImage {
+        let d = glyphSize
+        return UIGraphicsImageRenderer(size: CGSize(width: d, height: d)).image { _ in
+            let c = CGPoint(x: d / 2, y: d / 2)
+            let outer = d / 2 - 1.5, inner = outer * 0.34
+            let path = UIBezierPath()
+            for i in 0..<8 {                                                 // bounded (rule 2)
+                let a = CGFloat(i) * .pi / 4 - .pi / 2
+                let r = i.isMultiple(of: 2) ? outer : inner
+                let p = CGPoint(x: c.x + cos(a) * r, y: c.y + sin(a) * r)
+                if i == 0 { path.move(to: p) } else { path.addLine(to: p) }
+            }
+            path.close()
+            fill(path, CGRect(x: 0, y: 0, width: d, height: d))
+            UIColor.black.withAlphaComponent(0.75).setStroke()
+            path.lineWidth = 1.0; path.lineJoinStyle = .miter; path.stroke()
+        }
+    }
+
+    /// Cyan and magenta, matching MapTheme.routeWptAlt / routeWptSpeed in the day/cockpit palette.
+    private static let routeFixAltColor = UIColor(red: 0x4F / 255, green: 0xC3 / 255, blue: 0xF7 / 255, alpha: 1)
+    private static let routeFixSpdColor = UIColor(red: 0xE0 / 255, green: 0x40 / 255, blue: 0xFB / 255, alpha: 1)
+
+    private static let routeFixAltImg: UIImage = routeFixStar { path, _ in
+        routeFixAltColor.setFill(); path.fill()
+    }
+    private static let routeFixSpdImg: UIImage = routeFixStar { path, _ in
+        routeFixSpdColor.setFill(); path.fill()
+    }
+    /// BOTH: the star split down the middle — altitude on the left, speed on the right. A single blended
+    /// colour would be a third hue the pilot has to learn; a split says "two restrictions" directly.
+    private static let routeFixBothImg: UIImage = routeFixStar { path, bounds in
+        for (half, colour) in [(CGRect(x: bounds.minX, y: bounds.minY, width: bounds.width / 2, height: bounds.height), routeFixAltColor),
+                               (CGRect(x: bounds.midX, y: bounds.minY, width: bounds.width / 2, height: bounds.height), routeFixSpdColor)] {
+            guard let ctx = UIGraphicsGetCurrentContext() else { continue }
+            ctx.saveGState()
+            path.addClip()
+            colour.setFill()
+            ctx.fill(half)
+            ctx.restoreGState()
+        }
+    }
+
     static func navaidGlyph(_ type: String) -> UIImage {
         // Order matters: a standalone TACAN or DME provides NO civil VOR azimuth, so it must NOT be drawn
         // with the blue VOR hexagon (that would tell a pilot a VOR exists there). Match those exact types
