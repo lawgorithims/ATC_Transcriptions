@@ -83,6 +83,23 @@ struct MapLayersPanel: View {
                         .font(.dsLabelS).foregroundStyle(p.textDim)
                         .accessibilityIdentifier("layers-declutter-note")
 
+                    Button {
+                        Haptics.impact(.light)
+                        model.resetMapView()
+                    } label: {
+                        HStack(spacing: 7) {
+                            Image(systemName: "arrow.counterclockwise").font(.dsLabelS)
+                            Text("Reset view").font(.dsLabel)
+                            Spacer(minLength: 0)
+                        }
+                        .foregroundStyle(p.accent)
+                    }
+                    .buttonStyle(.plainHaptic)
+                    .accessibilityIdentifier("layer-reset")
+                    Text("Clears declutter and re-centres on you. Your layer choices are left alone — "
+                         + "the defaults are not your set, so restoring them would flip layers you chose.")
+                        .font(.dsLabelS).foregroundStyle(p.textDim)
+
                     Divider().padding(.vertical, 2)
 
                     header("Map controls", p)

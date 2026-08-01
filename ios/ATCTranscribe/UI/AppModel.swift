@@ -2681,6 +2681,51 @@ final class AppModel: ObservableObject {
             ? Self.sampleApproachTerrain(profile: profile, threshold: rwy?.coord) : []
     }
 
+    /// ITEM 18 — RESET. Put the map back to its ordinary state and re-centre.
+    ///
+    /// ⚠️ SCOPED, AND THE SCOPE IS THE POINT. It clears the DECLUTTER MASK and re-centres on the
+    /// aircraft. It deliberately does NOT "restore defaults" for the nine layer toggles, because those
+    /// defaults are not the pilot's set — airspace/nearby/airways/TFRs default ON while
+    /// radar/wind/smoke/hazards/traffic default OFF — so a blanket restore would silently invert a
+    /// pilot flying with winds aloft up and airways down. Nor does it touch the ACTIVE APPROACH or its
+    /// transition: changing that re-routes the aircraft, and a control labelled "Reset" must never do
+    /// that. Reset undoes what Declutter did; it does not undo the flight.
+    func resetMapView() {
+        declutter = false
+        mapFocus = nil
+        searchHighlight = nil
+        sendMapCommand(.centerOwnship)
+        Haptics.impact(.light)
+    }
+
+    /// ITEM 34 — the frequencies for the ACTIVE approach's field, in the order they are used.
+    ///
+    /// ⚠️ NOT per-PROCEDURE, and the UI must not imply it is. Measured: 1,628 of the 1,679 airports with
+    /// an approach frequency publish MORE THAN ONE (max 19 at one field), 74 of 5,098 approach rows name
+    /// a runway, and matching a sectorized approach frequency to an actual IAP runway end succeeds for
+    /// 51 of 6,300 ends — 0.8%. So this is the FIELD's list, with each entry's published sectorization
+    /// shown so the pilot can pick, rather than one silently chosen on their behalf.
+    var approachComs: [(label: String, value: String, note: String)] {
+        guard let appr = activeApproach else { return [] }
+        let tiers: [(match: String, label: String)] = [
+            ("ATIS", "ATIS"), ("D-ATIS", "ATIS"), ("APCH", "APCH"),
+            ("LCL", "TWR"), ("CTAF", "CTAF"), ("UNIC", "UNICOM"), ("GND", "GND"),
+        ]
+        var out: [(String, String, String)] = []
+        var seen = Set<String>()
+        let freqs = AirportData.frequencies(airport: appr.airport).prefix(256)   // bounded (rule 2)
+        for tier in tiers {                                                      // bounded (rule 2)
+            for f in freqs where f.use.uppercased().hasPrefix(tier.match) {
+                let key = tier.label + f.value
+                guard seen.insert(key).inserted, out.count < 12 else { continue }
+                out.append((tier.label, f.value,
+                            f.sectorization.trimmingCharacters(in: .whitespaces)))
+            }
+        }
+        assert(out.count <= 12, "approachComs: over the display cap")
+        return out
+    }
+
     /// The approach brief for the ACTIVE approach — assembled once when it is activated and when its
     /// plate finishes parsing, never per render. Nil when no approach is active.
     @Published private(set) var approachBrief: ApproachBrief?
