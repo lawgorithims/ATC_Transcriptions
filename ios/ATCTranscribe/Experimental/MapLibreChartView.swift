@@ -1077,7 +1077,12 @@ struct MapLibreChartView: UIViewRepresentable {
         /// must never cover traffic or the aircraft. Created hidden-or-shown by `applyRouteWptVisibility`.
         private func setupRouteWptLayers(_ style: MLNStyle) {
             guard style.source(withIdentifier: "route-wpt") == nil else { return }   // per-id idempotency
-            style.setImage(NearbyMarkerView.routeFixGlyphImage, forName: "rw-fix")
+            // The four restriction tints, `.plain` being the original "rw-fix" star. Registered up
+            // front (there are only four) so the per-feature icon expression can select one without a
+            // registration pass per update.
+            for t in NearbyMarkerView.RouteFixTint.allCases {                // bounded (rule 2)
+                style.setImage(NearbyMarkerView.routeFixGlyph(t), forName: t.glyphName)
+            }
             let src = MLNShapeSource(identifier: "route-wpt", shape: nil, options: nil)
             style.addSource(src)
             let t = currentMapTheme
@@ -1207,8 +1212,26 @@ struct MapLibreChartView: UIViewRepresentable {
         /// Airports keep their real FAA symbol (towered/fuel/runway-axis detail is exactly the "minimal
         /// airport data" this mode wants); everything else on the route gets the white route-fix star.
         private static func routeWptGlyph(_ leg: ResolvedLeg) -> String {
-            guard leg.kind == .airport else { return "rw-fix" }
+            guard leg.kind == .airport else { return routeFixTint(leg).glyphName }
             return "apt-" + AirportSymbolData.spec(leg.ident, category: cachedCategory(leg.ident)).signature
+        }
+
+        /// Which restriction the fix's mark should announce: blue for an altitude, magenta for a speed,
+        /// a split star for both, plain white for neither.
+        ///
+        /// Reads the SAME two accessors that produce the sublabels beneath the mark, so the star and the
+        /// text can never disagree — an unmodelled qualifier yields no altitude text and therefore no
+        /// altitude tint, which is the honest answer rather than a mark implying a limit the app refused
+        /// to read.
+        static func routeFixTint(_ leg: ResolvedLeg) -> NearbyMarkerView.RouteFixTint {
+            let hasAlt = SmartRouteLabel.altText(leg.constraint) != nil
+            let hasSpd = SmartRouteLabel.speedText(leg.constraint) != nil
+            switch (hasAlt, hasSpd) {
+            case (true, true):   return .both
+            case (true, false):  return .altitude
+            case (false, true):  return .speed
+            case (false, false): return .plain
+            }
         }
 
         /// The route cap mirrors ProcedureRoute's own leg cap — beyond it the map is not the problem.

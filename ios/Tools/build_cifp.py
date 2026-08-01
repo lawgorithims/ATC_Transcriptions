@@ -265,6 +265,7 @@ def main():
     # ---- pass 2b: enroute airways (section E, subsection R) — V/J/T/Q routes as ordered fix chains.
     # Empirical layout: route ident 14-18, sequence 26-29, fix 30-34, MEA 84-88, MEA-2 89-93, MAA 94-98.
     nawy = 0
+    nawy_dropped = []
     def alt(s):
         s = s.strip()
         return int(s) if s.isdigit() and int(s) > 0 else None
@@ -288,6 +289,22 @@ def main():
             con.execute("INSERT INTO airway(area,ident,seq,fix,lat,lon,mea,maa) VALUES(?,?,?,?,?,?,?,?)",
                         (l[1:4].strip(), ident, int(seq), fix, c[0], c[1], mea, alt(l[93:98])))
             nawy += 1
+        else:
+            # ⚠️ ACCOUNTED, NOT SILENT. An airway point whose fix has no coordinate cannot be stored —
+            # `Airways.points()` would coerce a NULL to 0.0 and draw the route through 0N/0E — so it is
+            # dropped, but a drop that nobody counts is how 37 airways came to have holes in their
+            # sequence while the build reported a clean run. The reader already refuses NULL rows; this
+            # is so the BUILD says what it discarded.
+            nawy_dropped.append(f"{l[1:4].strip()}/{ident}@{seq} {fix}")
+
+    if nawy_dropped:
+        holed = sorted({d.split("@")[0] for d in nawy_dropped})
+        print(f"⚠️  airway points DROPPED (fix has no coordinate): {len(nawy_dropped)} "
+              f"across {len(holed)} airways — these routes have a gap in their drawn path", flush=True)
+        for d in nawy_dropped[:12]:                             # bounded (rule 2)
+            print(f"      {d}", flush=True)
+        if len(nawy_dropped) > 12:
+            print(f"      … and {len(nawy_dropped) - 12} more", flush=True)
 
     for l in lines:
         if len(l) < 60 or l[4] != "P":
