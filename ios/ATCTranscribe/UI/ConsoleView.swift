@@ -631,8 +631,14 @@ struct ConsoleView: View {
                                                 runway: model.activeApproach?.runway ?? "")
             return profile.position(of: c, altitudeFtMSL: alt, threshold: rwy?.coord)
         }
+        // ITEM 32: the NOT-AUTHORISED annotation, placed at the station it applies to. Stated only when
+        // the temperature is KNOWN to be below the published limit — an unknown temperature yields
+        // nothing rather than a warning "in case" (see ApproachProfile.naAnnotations).
+        let annotations = profile.naAnnotations(temperatureC: metars.metar(profile.airport)?.tempC,
+                                                baroVNAVLimitC: model.activeBaroVNAVLimitC())
         VStack(spacing: 0) {
-            ApproachProfileView(profile: profile, position: pos, terrain: model.approachProfileTerrain)
+            ApproachProfileView(profile: profile, position: pos, terrain: model.approachProfileTerrain,
+                                annotations: annotations)
                 .environmentObject(model)
                 .padding(.horizontal, 12).padding(.vertical, 8)
         }

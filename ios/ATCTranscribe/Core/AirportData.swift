@@ -50,6 +50,18 @@ enum AirportData {
     /// The US ICAO prefix is not only K: Alaska is PA, Hawaii PH, Guam PG, Puerto Rico and the Virgin
     /// Islands TJ/TI. Stripping only a leading K left every airport in those regions — PANC, PHNL, PGUM,
     /// TJSJ — resolving to nothing at all.
+    ///
+    /// ⚠️ STRIPPING THE PREFIX IS A GUESS, AND OUTSIDE THE LOWER 48 IT IS USUALLY WRONG. Only the K
+    /// airports are "prefix + FAA code": Bethel is PABE/**BET**, Adak PADK/**ADK**, Kake PFAK/**AKI**.
+    /// Measured on the bundled NASR: of 2,725 airports carrying an ICAO code, **307 cannot be recovered
+    /// by stripping** — 258 Alaska, 20 Hawaii, the rest Puerto Rico, Guam, Samoa, the Marianas and the
+    /// Virgin Islands — and every one of them has runway data. Asking for PABE's runways returned an
+    /// EMPTY LIST, so the approach brief, the airport card and the runway diagram were blank for the
+    /// region that flies the most instrument approaches per capita in the country.
+    ///
+    /// `airport(_:)` always matched `icao` directly and so was never affected; the runway, runway-end
+    /// and frequency queries keyed on `ident` alone and were. They now resolve through the airport table
+    /// first, which is the only authority on the pairing.
     private static let icaoPrefixes = ["K", "PA", "PH", "PG", "PM", "PO", "PW", "TJ", "TI"]
     private static func keys(_ ident: String) -> (String, String) {
         let s = ident.uppercased()
@@ -58,6 +70,18 @@ enum AirportData {
             return (s, String(s.dropFirst(p.count)))
         }
         return (s, s)
+    }
+
+    /// The FAA identifier the runway and frequency tables are keyed by, resolved through the airport
+    /// table's own `icao` column. Falls back to the prefix guess when the field is not in the table, so
+    /// a lookup is never worse than it was.
+    static func faaIdent(_ ident: String) -> (String, String) {
+        let (a, b) = keys(ident)
+        guard a != b || a.count == 4 else { return (a, b) }
+        let resolved = query("SELECT ident FROM airport WHERE icao=?1 LIMIT 1", a, a) { text($0, 0) }
+        guard let r = resolved.first, !r.isEmpty else { return (a, b) }
+        assert(!r.isEmpty, "AirportData.faaIdent: empty resolution")
+        return (a, r)
     }
 
     struct RunwayEnd: Equatable {
@@ -123,7 +147,7 @@ enum AirportData {
 
     /// Every published runway at the field, in NASR order.
     static func runways(airport: String) -> [Runway] {
-        let (a, b) = keys(airport)
+        let (a, b) = faaIdent(airport)
         return query("""
             SELECT designator, length_ft, width_ft, COALESCE(surface,''), COALESCE(condition,''),
                    COALESCE(lights,'')
@@ -283,7 +307,7 @@ enum AirportData {
     }
 
     static func runwayEnds(airport: String) -> [RunwayEnd] {
-        let (a, b) = keys(airport)
+        let (a, b) = faaIdent(airport)
         return query("""
             SELECT designator, end_id, true_align, lat, lon, elev_ft, tdze_ft,
                    displaced_ft, lda_ft, COALESCE(vgsi,''), COALESCE(app_lights,''),
@@ -305,7 +329,7 @@ enum AirportData {
 
     /// Every published frequency for the field, in the order NASR lists them.
     static func frequencies(airport: String) -> [Frequency] {
-        let (a, b) = keys(airport)
+        let (a, b) = faaIdent(airport)
         return query("""
             SELECT freq, COALESCE(use,''), COALESCE(sectorization,''), COALESCE(facility,'')
             FROM frequency WHERE ident=?1 OR ident=?2

@@ -65,4 +65,36 @@ final class AirportDataTests: XCTestCase {
         XCTAssertTrue(AirportData.runwayEnds(airport: "ZZZZ").isEmpty)
         XCTAssertTrue(AirportData.frequencies(airport: "").isEmpty)
     }
+
+    // MARK: ⚠️ ICAO resolution outside the lower 48
+
+    /// Only the K airports are "ICAO prefix + FAA code". Bethel is PABE/BET, Adak PADK/ADK — measured
+    /// on the bundled NASR, 307 of the 2,725 airports carrying an ICAO code cannot be recovered by
+    /// stripping the prefix, and 258 of those are Alaska. Every one has runway data, so asking by ICAO
+    /// returned an EMPTY runway list and the approach brief, airport card and runway diagram were blank.
+    func testAnAlaskaICAOResolvesToItsRunways() {
+        let byICAO = AirportData.runwayEnds(airport: "PABE")
+        let byFAA = AirportData.runwayEnds(airport: "BET")
+        XCTAssertFalse(byFAA.isEmpty, "BET must have runway ends for this test to mean anything")
+        XCTAssertEqual(byICAO.count, byFAA.count, "PABE and BET are the same field")
+    }
+
+    func testAnAlaskaICAOResolvesItsRunwaysAndFrequencies() {
+        XCTAssertEqual(AirportData.runways(airport: "PADK").count,
+                       AirportData.runways(airport: "ADK").count)
+        XCTAssertEqual(AirportData.frequencies(airport: "PABE").count,
+                       AirportData.frequencies(airport: "BET").count)
+    }
+
+    /// The lower-48 path must not regress: KBOS still resolves by stripping, without a table lookup.
+    func testALowerFortyEightICAOStillResolves() {
+        XCTAssertEqual(AirportData.runwayEnds(airport: "KBOS").count,
+                       AirportData.runwayEnds(airport: "BOS").count)
+        XCTAssertFalse(AirportData.runwayEnds(airport: "KBOS").isEmpty)
+    }
+
+    /// An identifier the table does not know must not be made worse than the old guess.
+    func testAnUnknownIdentFallsBackToTheGuess() {
+        XCTAssertTrue(AirportData.runwayEnds(airport: "ZZZZ").isEmpty)
+    }
 }

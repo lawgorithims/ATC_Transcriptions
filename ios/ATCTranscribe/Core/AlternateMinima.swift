@@ -64,6 +64,18 @@ struct AlternateMinima: Equatable {
         /// Anything else, printed as-is.
         case other(String)
 
+        /// The condition as a pilot reads it. The two classified cases are reworded into full
+        /// sentences; anything else is printed VERBATIM, because a condition the app cannot classify
+        /// is still one that must be read exactly as published.
+        var displayText: String {
+            switch self {
+            case .naWithoutLocalWeather: return "NA when local weather is not available."
+            case .naWhenTowerClosed:     return "NA when the control tower is closed."
+            case .categoryMinima(let t): return t
+            case .other(let t):          return t
+            }
+        }
+
         static func classify(_ text: String) -> Condition {
             let t = text.uppercased()
             if t.contains("NA WHEN") || t.contains("NOT AUTHORIZED") || t.hasPrefix("NA ") {

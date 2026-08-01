@@ -28,6 +28,10 @@ struct MapObjectView: View {
     @State private var procTab: ProcTab = .approach
     @State private var wxTab: WxTab = .current
     @State private var sendingToMap: Set<String> = []
+    // ITEM 28's two pilot-set conditions — see alternateMinima(_:). Persisted because a pilot who has
+    // told the app the tower is shut should not have to say so again on the next field.
+    @AppStorage("altmin.localWeather") private var altMinLocalWeather = true
+    @AppStorage("altmin.towerOpen") private var altMinTowerOpen = true
 
     /// Top-level airport-card tabs (matches ForeFlight's Info / Weather / Runway / Procedure / NOTAM).
     private enum AirportTab: String, CaseIterable, Identifiable {
@@ -622,6 +626,92 @@ struct MapObjectView: View {
         }
     }
 
+    /// ITEM 28: this field's IFR alternate minimums, PARSED, on the arrival tab.
+    ///
+    /// The question a pilot asks of the booklet is not "what does it say" but "can I file this field as
+    /// my alternate right now", and the answer turns on two things the app cannot know: whether local
+    /// weather reporting is available and whether the tower is open. `airport.tower` carries a facility
+    /// TYPE with no schedule, so both are ASKED, and an unanswered question is read as the restrictive
+    /// case (see `AlternateMinima.usability`).
+    ///
+    /// ⚠️ BUILT AS A ViewBuilder ON THIS VIEW, NOT AS A CHILD `View`. A nested view that returns a
+    /// `Section` into a `List` draws perfectly — separators, insets and all — but the List gives it one
+    /// row's bounds and hit-testing stops there. Verified on the iPad: every toggle and the booklet row
+    /// rendered correctly and NO TAP ON ANY OF THEM DID ANYTHING. `departureEssentials` above is the
+    /// shape that works, so this matches it.
+    @ViewBuilder private func alternateMinima(_ ident: String) -> some View {
+        if let booklet = AlternateMinimaStore.booklet(for: ident) {
+            Section("If you file this as an alternate") {
+                essentialRow(booklet, title: "Alternate minimums", icon: "arrow.uturn.down.circle",
+                             note: "Read for \(ident) — the booklet stays the authority")
+                alternateMinimaBody(ident, booklet)
+            }
+            .onAppear { model.alternateMinima.ensure(booklet, ident: ident) }
+        }
+    }
+
+    @ViewBuilder private func alternateMinimaBody(_ ident: String,
+                                                  _ booklet: AirportProcedure) -> some View {
+        let store = model.alternateMinima
+        if !PlateStore.isCached(booklet) {
+            alternateMinimaNote("Download the booklet to read this field's alternate minimums.")
+        } else if store.isLoading(booklet, ident: ident) {
+            alternateMinimaNote("Reading the booklet…")
+        } else if let r = store.result(for: booklet, ident: ident) {
+            if let refusal = r.refusal {
+                alternateMinimaNote(refusal, tint: model.palette.bad)
+            } else if let m = r.minima {
+                // Both default to the PERMISSIVE state so a field with no restrictions is not
+                // gratuitously red; the usability rule fails toward unusable when either is turned off.
+                Toggle(isOn: $altMinLocalWeather) {
+                    Text("Local weather reporting available")
+                        .font(.dsLabel).foregroundStyle(model.palette.text)
+                }
+                .accessibilityIdentifier("altmin-weather-toggle")
+                Toggle(isOn: $altMinTowerOpen) {
+                    Text("Control tower open").font(.dsLabel).foregroundStyle(model.palette.text)
+                }
+                .accessibilityIdentifier("altmin-tower-toggle")
+                ForEach(m.entries) { entry in alternateMinimaRow(entry, in: m) }
+                if let all = m.footnotes[0], !all.isEmpty { alternateMinimaNote(all) }
+            } else {
+                // Absent from the booklet IS the answer, and a favourable one — it must never read as
+                // a parse failure.
+                alternateMinimaNote("Not listed — standard alternate minimums apply: 600-2 with a "
+                                    + "precision approach, 800-2 without.")
+            }
+        }
+    }
+
+    @ViewBuilder private func alternateMinimaRow(_ entry: AlternateMinima.Entry,
+                                                 in m: AlternateMinima) -> some View {
+        let p = model.palette
+        let use = m.usability(entry, localWeatherAvailable: altMinLocalWeather,
+                              towerOpen: altMinTowerOpen)
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Image(systemName: use.isAuthorised ? "checkmark.circle.fill" : "xmark.octagon.fill")
+                    .font(.dsLabelS).foregroundStyle(use.isAuthorised ? p.good : p.bad)
+                Text(entry.name).font(.dsLabelBold).foregroundStyle(p.text)
+                Spacer(minLength: 4)
+                // The STANDARD ceiling for this approach's class, which is what the entry modifies.
+                Text("\(entry.standardCeilingFt)-2").font(.dsLabelS).foregroundStyle(p.textDim)
+            }
+            if case .notAuthorised(let why) = use {
+                Text("Not authorised — \(why)").font(.dsLabelS).foregroundStyle(p.bad)
+            }
+            // EVERY condition is printed, including ones no toggle models.
+            ForEach(Array(m.conditions(for: entry).enumerated()), id: \.offset) { _, c in
+                Text(c.displayText).font(.dsLabelS).foregroundStyle(p.textDim)
+            }
+        }
+        .accessibilityIdentifier("altmin-entry")
+    }
+
+    @ViewBuilder private func alternateMinimaNote(_ s: String, tint: Color? = nil) -> some View {
+        Text(s).font(.dsLabelS).foregroundStyle(tint ?? model.palette.textDim)
+    }
+
     @ViewBuilder private func essentialRow(_ proc: AirportProcedure, title: String,
                                            icon: String, note: String? = nil) -> some View {
         let p = model.palette
@@ -659,6 +749,11 @@ struct MapObjectView: View {
         // 3,197 charted airports (98%) publish at least one of them, so promoting them is not a
         // special case, it is the common one.
         if procTab == .departure { departureEssentials(ident) }
+        // ARRIVING, the equivalent buried chart is the alternate minimums booklet — filed under "Other"
+        // among hot spots, and unreadable as a chart anyway because one booklet covers up to 145
+        // airports. Parsed, it answers the actual question in place. 2,052 of the charted airports are
+        // listed in one.
+        if procTab == .arrival { alternateMinima(ident) }
         let items = Procedures.forAirport(ident).filter { $0.category == procTab.category }
         if items.isEmpty {
             Section { emptyRow("No charts", "No \(procTab.label.lowercased()) charts for \(ident) this cycle.") }
