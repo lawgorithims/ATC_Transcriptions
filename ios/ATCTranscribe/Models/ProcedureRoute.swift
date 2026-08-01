@@ -72,9 +72,16 @@ enum ProcedureRoute {
         default:     legs = CIFP.legs(airport: proc.airport, ident: proc.ident, transition: proc.transition)
         }
         assert(legs.count <= maxProcedureLegs, "procedure has more legs than the cap — tail is truncated")
+        // Resolved ONCE, outside the loop: the geometry guard below needs the field's own position.
+        let field = proc.kind == "IAP" ? AirportCoordinates.coordinate(icao: proc.airport) : nil
         for leg in legs.prefix(maxProcedureLegs) where out.count < maxLegs {
             guard let coord = leg.coord, !leg.fix.isEmpty, !CIFP.isRunwayPseudoFix(leg.fix) else { continue }
             assert(coord.lat.isFinite && coord.lon.isFinite, "procedure leg coordinate is not finite")
+            guard isPlausibleApproachLeg(coord, field: field) else {
+                NSLog("CommSight: REFUSED implausible approach leg %@ %@ fix=%@ (%.4f, %.4f)",
+                      proc.airport, proc.ident, leg.fix, coord.lat, coord.lon)
+                continue
+            }
             appendDeduped(ResolvedLeg(ident: leg.fix, kind: .waypoint, coord: coord,
                                       constraint: leg.constraint, role: leg.role), to: &out)
         }
@@ -198,6 +205,41 @@ enum ProcedureRoute {
             return
         }
         out.append(leg)
+    }
+
+    /// The furthest a leg of an APPROACH may plausibly sit from its own airport.
+    ///
+    /// Measured over every coded approach leg in the shipped cycle: the 99.9th percentile is 70.8 NM
+    /// and the distribution then stops — the next value is 2,028.9 NM. The count caught is identical at
+    /// 150, 200 and 300 NM (66 legs), so this is a genuine cliff and not a threshold that trades good
+    /// data for bad. 150 NM sits at roughly twice the legitimate extreme.
+    ///
+    /// ⚠️ APPROACHES ONLY. SIDs and STARs legitimately reach 480 NM from their field (KMIA's FROGZ5
+    /// touches ACORI at 463 NM), so no comparable bound exists for them and none is applied.
+    static let maxApproachLegNm = 150.0
+
+    /// Refuse to plot an approach leg that cannot belong to its own airport.
+    ///
+    /// `Tools/build_cifp.py` resolves each leg's fix through ONE global ident table, first-record-wins,
+    /// with no airport scoping — so a terminal NDB whose two-letter ident collides with a distant navaid
+    /// takes the wrong coordinate. 66 legs across 19 published approaches at 10 airports land 369-2,028
+    /// NM away: KSJT's NDB RWY 03 resolves its fix "SJ" to San Juan, Puerto Rico, and every one of its
+    /// 15 legs — the IF, the procedure turn, the FAF, the missed-approach hold — goes with it.
+    ///
+    /// The real fix is in the builder (scope terminal fixes by their owning airport, which the ARINC
+    /// record states). This is the guard that should have been here anyway: nothing downstream sanity-
+    /// checked a coordinate before drawing it, and the consequences were not cosmetic — a magenta
+    /// approach line from Texas to Puerto Rico, DIST/ETE/fuel computed along it, and a published
+    /// missed-approach hold drawn as a confident racetrack 942 NM from the runway.
+    ///
+    /// Refusing is the safe direction: a missing leg is visibly missing, while a leg 2,000 NM away is
+    /// drawn with exactly the same authority as a correct one. `field == nil` cannot judge, so it
+    /// permits — this must never reject a leg merely because the airport is unknown.
+    static func isPlausibleApproachLeg(_ coord: Coord, field: Coord?) -> Bool {
+        guard let field else { return true }                 // nothing to compare against
+        assert(coord.lat.isFinite && coord.lon.isFinite, "isPlausibleApproachLeg: non-finite leg")
+        assert(field.lat.isFinite && field.lon.isFinite, "isPlausibleApproachLeg: non-finite field")
+        return Geo.nmBetween(field, coord) <= maxApproachLegNm
     }
 
     /// How specific a published role is, for resolving the join fix's two codings. Higher wins.

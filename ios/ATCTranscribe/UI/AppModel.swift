@@ -2449,7 +2449,8 @@ final class AppModel: ObservableObject {
         for leg in legs where missedSeqs.contains(leg.seq) { missedRaw.append(leg.fix) }
         let holds = ApproachHolds.resolve(legs: legs, missedSeqs: missedSeqs,
                                           arrivingFrom: presentPosition,
-                                          variation: MagneticVariation.at)
+                                          variation: MagneticVariation.at,
+                                          field: AirportCoordinates.coordinate(icao: airport))
         return (legs, missedSeqs, ApproachActivation.missedSequence(missedRaw), holds)
     }
 
@@ -2522,7 +2523,8 @@ final class AppModel: ObservableObject {
             // the missed-approach hold and never once found the course reversal — the skip control could
             // not appear. Transition legs are never part of the missed approach, so no missed sequences.
             holds += ApproachHolds.resolve(legs: tLegs, missedSeqs: [], arrivingFrom: presentPosition,
-                                           variation: MagneticVariation.at)
+                                           variation: MagneticVariation.at,
+                                           field: AirportCoordinates.coordinate(icao: proc.airport))
         }
         // ONE read of the approach-proper row, shared with the ATC-cleared path: its legs, its missed
         // split, the go-around sequence and the published holds all come from the same call, so the

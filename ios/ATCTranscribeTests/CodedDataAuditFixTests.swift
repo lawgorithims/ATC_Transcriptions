@@ -115,4 +115,36 @@ final class CodedDataAuditFixTests: XCTestCase {
         XCTAssertFalse(ApproachProfile.impliesVerticalGuidance("LOC RWY 26", codedRunway: "26"))
         XCTAssertFalse(ApproachProfile.impliesVerticalGuidance("RNAV (GPS)-A", codedRunway: ""))
     }
+
+    // MARK: - a leg that cannot belong to its own airport is refused
+
+    func testALegAcrossTheContinentIsRefused() {
+        // KSJT NDB RWY 03 resolves its fix "SJ" to San Juan, Puerto Rico — 2,028 NM from San Angelo,
+        // Texas. Every one of that approach's 15 legs went with it: the IF, the procedure turn, the
+        // final approach fix and the missed-approach hold.
+        let sanAngelo = Coord(lat: 31.3577, lon: -100.4963)
+        let sanJuan = Coord(lat: 18.4373, lon: -66.0018)
+        XCTAssertFalse(ProcedureRoute.isPlausibleApproachLeg(sanJuan, field: sanAngelo))
+    }
+
+    func testAnOrdinaryApproachLegIsAccepted() {
+        // The 99.9th percentile of real approach-leg distance is 70.8 NM; a normal transition is well
+        // inside that.
+        let field = Coord(lat: 42.3630, lon: -71.0064)                 // KBOS
+        let thirtyNmNorth = Coord(lat: 42.8630, lon: -71.0064)
+        XCTAssertTrue(ProcedureRoute.isPlausibleApproachLeg(thirtyNmNorth, field: field))
+    }
+
+    func testTheBoundSitsAboveEveryLegitimateApproachLeg() {
+        // The count caught is identical at 150, 200 and 300 NM, so this is a cliff in the data rather
+        // than a threshold trading good legs for bad. Guard against someone tightening it casually.
+        XCTAssertGreaterThanOrEqual(ProcedureRoute.maxApproachLegNm, 100,
+                                    "below ~100 NM the bound starts rejecting real approach legs")
+    }
+
+    func testAnUnknownAirportPermitsRatherThanRejects() {
+        // A leg must never be dropped merely because the field could not be resolved — that would blank
+        // procedures at every airport missing from the coordinate table.
+        XCTAssertTrue(ProcedureRoute.isPlausibleApproachLeg(Coord(lat: 0, lon: 0), field: nil))
+    }
 }
