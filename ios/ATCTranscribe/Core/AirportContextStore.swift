@@ -189,7 +189,12 @@ struct NASRAirportContextSource: AirportContextSource {
         guard !key.isEmpty else { return nil }
         var byUse: [String: [Double]] = [:]
         for f in AirportData.frequencies(airport: key).prefix(512) {        // bounded (rule 2)
-            guard let mhz = Double(f.value), (108.0...137.0).contains(mhz) else { continue }
+            // NASR appends a single transmit/receive letter to some values — "122.1R" is a receive-only
+            // RCO. `Double("122.1R")` is nil, so 1,358 rows at 1,156 airports were dropped, and 173 of
+            // them at 172 fields are the ONLY publication of that frequency there. A heard "122.1"
+            // could then not be verified against the field it belongs to.
+            let raw = "TR".contains(f.value.last ?? " ") ? String(f.value.dropLast()) : f.value
+            guard let mhz = Double(raw), (108.0...137.0).contains(mhz) else { continue }
             let tag = f.use.isEmpty ? "COMM" : String(f.use.prefix(12)).uppercased()
             if !(byUse[tag]?.contains(mhz) ?? false) { byUse[tag, default: []].append(mhz) }
         }

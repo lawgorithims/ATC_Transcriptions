@@ -324,7 +324,15 @@ enum NearestAirports {
         assert(tiers.count == 3, "CTAF then tower then unicom")
         for tier in tiers {                                  // bounded: three tiers
             if let f = frequencies.first(where: { $0.use.uppercased().hasPrefix(tier.match) }) {
-                return "\(tier.label) \(f.value)"
+                // NAME THE QUALIFIER WHEN THERE IS ONE. 10,562 frequency rows carry a sectorization
+                // string, and on 10,104 of them at 2,910 airports another frequency at the same field
+                // shares the same use tag — so the qualifier is the ONLY thing distinguishing them. 594
+                // airports publish more than one tower frequency. Offering one of several with no
+                // indication that it serves a single side or runway of the field is a silent choice
+                // made on the pilot's behalf, and this line is what the engine-out banner reads.
+                let q = f.sectorization.trimmingCharacters(in: .whitespaces)
+                return q.isEmpty ? "\(tier.label) \(f.value)"
+                                 : "\(tier.label) \(f.value) (\(q.prefix(24)))"
             }
         }
         return nil

@@ -86,7 +86,15 @@ enum AirportData {
         /// runway with a turf shoulder and "TURF-ASPH" is a grass strip with some paving. Reading only
         /// the first component gets that right without enumerating every combination.
         var isPaved: Bool {
-            let primary = surface.uppercased().split(separator: "-").first.map(String.init) ?? ""
+            // NASR delimits surface components with EITHER a hyphen or a slash: "ASPH-TURF" and
+            // "ASPH/GRVL" are the same shape. Splitting only on the hyphen made 5 runways read as
+            // unpaved, and each of those 5 airports has exactly ONE runway row — so each lost its only
+            // runway from the map symbol and from the hard-surface flag. 3T9 (Big Bend Ranch State
+            // Park) is a 5,500 ft asphalt strip that drew as a bare dot and was offered to a gliding
+            // pilot as an unpaved field.
+            let primary = surface.uppercased()
+                .split(whereSeparator: { $0 == "-" || $0 == "/" })
+                .first.map(String.init) ?? ""
             return ["ASPH", "CONC", "PEM"].contains(primary)
         }
 
@@ -191,6 +199,35 @@ enum AirportData {
     ///
     /// A bounded full-scan bbox query (19,436 rows, no spatial index) — a few milliseconds. Same cost
     /// contract as `NavDatabase.nearby`: call once per need, off the hot path, never per frame.
+    /// One airport's NASR record by identifier, or nil. Tries both identifier forms (see `AirportKey`),
+    /// because the map keys airports by ICAO while this table keys 707 of them by their bare FAA code.
+    /// Not on the pan-time hot path — `airportsNear` serves that.
+    static func airport(_ ident: String) -> Airport? {
+        AirportKey.resolving(ident) { key -> [Airport] in
+            guard let db else { return [] }
+            let cols = hasSiteTypeColumns ? "COALESCE(site_type,''), COALESCE(far139,'')" : "'', ''"
+            let sql = """
+                SELECT ident, COALESCE(icao,''), COALESCE(name,''), lat, lon, elev_ft,
+                       COALESCE(ownership,''), COALESCE(use,''), COALESCE(status,''),
+                       COALESCE(tower,''), COALESCE(fuel,''), \(cols)
+                FROM airport WHERE ident=?1 OR icao=?1 LIMIT 1
+                """
+            var st: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK else { return [] }
+            defer { sqlite3_finalize(st) }
+            sqlite3_bind_text(st, 1, key, -1, SQLITE_TRANSIENT)
+            guard sqlite3_step(st) == SQLITE_ROW,
+                  sqlite3_column_type(st, 3) != SQLITE_NULL,
+                  sqlite3_column_type(st, 4) != SQLITE_NULL else { return [] }
+            return [Airport(ident: text(st, 0), icao: text(st, 1), name: text(st, 2),
+                            coord: Coord(lat: sqlite3_column_double(st, 3),
+                                         lon: sqlite3_column_double(st, 4)),
+                            elevationFt: dbl(st, 5), ownership: text(st, 6), use: text(st, 7),
+                            status: text(st, 8), tower: text(st, 9), fuel: text(st, 10),
+                            siteType: text(st, 11), far139: text(st, 12))]
+        }.first
+    }
+
     static func airportsNear(_ center: Coord, radiusNm: Double, limit: Int = 64) -> [Airport] {
         assert(radiusNm > 0 && radiusNm <= 500, "radius in NM, bounded")
         assert(limit > 0 && limit <= 512, "limit bounded")
