@@ -77,7 +77,11 @@ enum ProcedureRoute {
         }
         assert(legs.count <= maxProcedureLegs, "procedure has more legs than the cap — tail is truncated")
         // Resolved ONCE, outside the loop: the geometry guard below needs the field's own position.
-        let field = proc.kind == "IAP" ? AirportCoordinates.coordinate(icao: proc.airport) : nil
+        // ⚠️ NOT `AirportCoordinates` — that table is the 78-airport ADS-B centering list, and NONE of
+        // the ten airports this guard exists for is in it, so the guard silently never fired. The coded
+        // runway thresholds are the right source: they are in the same database as the legs, they cover
+        // every airport that publishes an approach, and they are what the approach is flown to.
+        let field = proc.kind == "IAP" ? Self.fieldPosition(proc.airport) : nil
         for leg in legs.prefix(maxProcedureLegs) where out.count < maxLegs {
             guard let coord = leg.coord, !leg.fix.isEmpty, !CIFP.isRunwayPseudoFix(leg.fix) else { continue }
             assert(coord.lat.isFinite && coord.lon.isFinite, "procedure leg coordinate is not finite")
@@ -321,7 +325,27 @@ enum ProcedureRoute {
     ///
     /// ⚠️ APPROACHES ONLY. SIDs and STARs legitimately reach 480 NM from their field (KMIA's FROGZ5
     /// touches ACORI at 463 NM), so no comparable bound exists for them and none is applied.
-    static let maxApproachLegNm = 150.0
+    ///
+    /// ⚠️ 250, NOT 150. The original 150 was measured against airport-reference positions that fail near
+    /// the ANTIMERIDIAN, where a longitude difference of ~360 degrees reads as an enormous distance —
+    /// so a legitimate Pacific approach could be refused. 250 NM still sits far below the 369 NM and
+    /// 2,028 NM misplacements this exists to catch, and above every legitimate leg measured.
+    static let maxApproachLegNm = 250.0
+
+    /// The airport's position, from its own coded runway thresholds — averaged, so one bad threshold
+    /// cannot move it far. Falls back to the curated coordinate table and then the nav database.
+    /// nil only when the airport is unknown to all three, and a nil field PERMITS every leg.
+    static func fieldPosition(_ airport: String) -> Coord? {
+        let rwys = CIFP.runways(airport: airport).prefix(32)          // bounded (rule 2)
+        if !rwys.isEmpty {
+            let n = Double(rwys.count)
+            let c = Coord(lat: rwys.reduce(0) { $0 + $1.coord.lat } / n,
+                          lon: rwys.reduce(0) { $0 + $1.coord.lon } / n)
+            assert(c.lat.isFinite && c.lon.isFinite, "fieldPosition: non-finite centroid")
+            return c
+        }
+        return AirportCoordinates.coordinate(icao: airport) ?? NavDatabase.resolve(airport, near: nil)
+    }
 
     /// Refuse to plot an approach leg that cannot belong to its own airport.
     ///
