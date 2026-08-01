@@ -116,6 +116,30 @@ final class VectorChartTests: XCTestCase {
         XCTAssertTrue(text.contains("040"), "the published course must be stated: \(text)")
     }
 
+    func testOnlyAnInstructionLegIsDrawnAsOne() {
+        // Found by LOOKING at the rendered chart: KBOS's RNAV 4L drew a stray "TF" beside its final
+        // approach fix. A TF/DF/IF is a track TO A FIX, so a missing coordinate is missing DATA — drawing
+        // it as a dashed instruction tells the pilot the procedure says something it does not.
+        for t in ["CA", "VA", "FA", "CI", "VI", "CD", "VD", "CR", "VR", "VM", "FM", "PI"] {
+            XCTAssertTrue(VectorProcedureChart.isInstructionLeg(t), "\(t) terminates without a fix")
+        }
+        for t in ["TF", "DF", "IF", "RF", "AF", "HM", "HF"] {
+            XCTAssertFalse(VectorProcedureChart.isInstructionLeg(t), "\(t) names a fix")
+        }
+    }
+
+    func testACoordinatelessTrackLegDrawsNothingAtAll() {
+        let legs = [
+            CIFPLeg(seq: 10, fix: "AAAAA", coord: Coord(lat: 42.2, lon: -71.0), legType: "IF",
+                    course: nil, altitude: "", wpDesc: "   A"),
+            CIFPLeg(seq: 20, fix: "BBBBB", coord: nil, legType: "TF", course: 40, altitude: ""),
+        ]
+        let chart = VectorProcedureChart.build(legs: legs, airport: "KTST",
+                                               procedureName: "TEST", kind: "IAP")
+        XCTAssertFalse(chart.primitives.contains { if case .unplacedLeg = $0 { return true }; return false },
+                       "a track-to-fix leg with no coordinate must not become an instruction")
+    }
+
     func testEveryPathTerminatorTheDataUsesIsDescribed() {
         for t in ["CA", "VA", "FA", "CI", "VI", "CD", "VD", "CR", "VR", "VM", "FM", "PI"] {
             let leg = CIFPLeg(seq: 1, fix: "", coord: nil, legType: t, course: 90, altitude: "")
@@ -253,5 +277,67 @@ final class VectorChartTests: XCTestCase {
         guard case .runway(let a, let b, _)? = d.primitives.first else { return XCTFail("no runway") }
         let drawn = hypot(g.point(a).x - g.point(b).x, g.point(a).y - g.point(b).y)
         XCTAssertEqual(Double(drawn), Double(g.points(nm: Geo.nmBetween(a, b))), accuracy: 0.5)
+    }
+
+    // MARK: items 2 and 3 — framing a departure or arrival
+
+    func testADepartureFramesOnItsTerminalEnd() {
+        // Measured: a SID's furthest leg is a median 67 NM from the field and a STAR's 96 (p90 ~200).
+        // Fitting the whole thing gives a 200 NM chart where every ident is correctly suppressed and
+        // the end actually flown is a dot.
+        XCTAssertEqual(VectorProcedureChart.Framing.default(for: "SID"), .terminal(nm: 30))
+        XCTAssertEqual(VectorProcedureChart.Framing.default(for: "STAR"), .terminal(nm: 30))
+        XCTAssertEqual(VectorProcedureChart.Framing.default(for: "IAP"), .whole,
+                       "an approach is already a terminal procedure")
+    }
+
+    func testTerminalFramingKeepsOnlyTheNearEnd() {
+        let field = c(42.0, -71.0)
+        let chart = longProcedure()
+        let whole = chart.extent(.whole, field: field)
+        let near = chart.extent(.terminal(nm: 30), field: field)
+        XCTAssertLessThan(near.count, whole.count, "the far enroute end should be excluded")
+        for p in near {
+            XCTAssertLessThanOrEqual(Geo.nmBetween(field, p), 30.1, "a far point survived the framing")
+        }
+    }
+
+    func testFramingFallsBackRatherThanLeavingTooLittleToDraw() {
+        // A window that would leave one point has no scale; framing wide beats refusing to frame.
+        let chart = longProcedure()
+        let tiny = chart.extent(.terminal(nm: 0.1), field: c(42.0, -71.0))
+        XCTAssertEqual(tiny.count, chart.extent.count)
+    }
+
+    func testWithNoFieldTheWholeExtentIsUsed() {
+        let chart = longProcedure()
+        XCTAssertEqual(chart.extent(.terminal(nm: 30), field: nil).count, chart.extent.count)
+    }
+
+    func testTheTerminalFramingProducesAReadableChart() throws {
+        // The point of the whole change: framed terminally, the chart is narrow enough that idents and
+        // restrictions are actually disclosed.
+        let field = c(42.0, -71.0)
+        let chart = longProcedure()
+        let g = try XCTUnwrap(VectorChartGeometry.fitting(
+            chart.extent(.terminal(nm: 30), field: field), in: size))
+        let detail = ChartDetail.forScale(nmAcross: g.nmPerPoint * Double(g.size.width))
+        XCTAssertGreaterThanOrEqual(detail, .idents, "a terminally-framed chart must name its fixes")
+
+        let wide = try XCTUnwrap(VectorChartGeometry.fitting(chart.extent, in: size))
+        let wideDetail = ChartDetail.forScale(nmAcross: wide.nmPerPoint * Double(wide.size.width))
+        XCTAssertEqual(wideDetail, .overview, "the whole-extent chart is correctly an overview only")
+    }
+
+    /// A departure that runs 150 NM out — the shape the framing exists for.
+    private func longProcedure() -> VectorProcedureChart {
+        var legs: [CIFPLeg] = []
+        for (i, d) in [0.05, 0.15, 0.30, 0.45, 1.5, 2.5].enumerated() {
+            legs.append(CIFPLeg(seq: (i + 1) * 10, fix: "FIX\(i)",
+                                coord: Coord(lat: 42.0 + d, lon: -71.0), legType: "TF",
+                                course: nil, altitude: "05000", wpDesc: "    ", altDesc: "+"))
+        }
+        return VectorProcedureChart.build(legs: legs, airport: "KTST",
+                                          procedureName: "TEST ONE", kind: "SID")
     }
 }

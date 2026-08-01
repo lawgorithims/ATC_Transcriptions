@@ -72,9 +72,13 @@ struct VectorProcedureChart: Equatable {
 
         for leg in legs.prefix(512) {                                     // bounded (rule 2)
             guard let c = leg.coord else {
-                // An altitude- or heading-terminated leg has no endpoint. Say what it is and where it
-                // starts; do not draw a line to a point the source never published.
-                if let from = track.last {
+                // ⚠️ ONLY AN INSTRUCTION IS DRAWN AS ONE. An altitude- or heading-terminated leg
+                // legitimately has no endpoint — "climb on 037 to 700" is the whole leg. But a TF, DF or
+                // IF leg is a track TO A FIX, so a missing coordinate there is MISSING DATA, not an
+                // instruction, and rendering it as a dashed ray labelled "TF" tells the pilot the
+                // procedure says something it does not. Caught by looking at the drawn chart: KBOS's
+                // RNAV 4L showed a stray "TF" beside its final approach fix.
+                if let from = track.last, Self.isInstructionLeg(leg.legType) {
                     primitives.append(.unplacedLeg(from: from, courseMag: leg.course,
                                                    text: Self.unplacedText(leg)))
                 }
@@ -153,6 +157,16 @@ struct VectorProcedureChart: Equatable {
         return String(format: "%02d", opp) + flipped
     }
 
+    /// Is this path terminator an INSTRUCTION — a leg the source describes rather than places?
+    ///
+    /// These terminate on an altitude, a heading, a radial or a DME distance, so they have no published
+    /// endpoint by design. Everything else names a fix, and a missing coordinate on one of those is a
+    /// gap in the data rather than something to draw.
+    static func isInstructionLeg(_ legType: String) -> Bool {
+        ["CA", "VA", "FA", "CI", "VI", "CD", "VD", "CR", "VR", "VM", "FM", "PI"]
+            .contains(legType.uppercased())
+    }
+
     /// What an unplaceable leg says. The ARINC path terminator IS the instruction, so it is stated
     /// rather than hidden — "climb on heading 040 to 2000 ft" is the procedure, and a chart that
     /// silently omitted it would show a gap the pilot has to fill from the plate.
@@ -167,8 +181,45 @@ struct VectorProcedureChart: Equatable {
         case "CR", "VR": return "\(crs ?? "course") to a radial"
         case "VM", "FM": return "\(crs ?? "course") for vectors"
         case "PI":       return "procedure turn"
-        default:         return leg.legType.isEmpty ? "unpublished leg" : leg.legType
+        // Unreachable for a non-instruction leg (isInstructionLeg gates the caller), so this is the
+        // instruction terminators only — never a raw ARINC code shown to a pilot.
+        default:         return "as published"
         }
+    }
+
+    /// HOW A CHART IS FRAMED, which is NOT the same question for every procedure kind.
+    ///
+    /// Measured over the shipped cycle, the furthest leg from its own field: an approach a median 14.6
+    /// NM (p90 29.5), a SID 67.3 (p90 194.8), a STAR 96.1 (p90 200.6). So fitting a STAR to its whole
+    /// extent produces a chart ~200 NM across — at which the disclosure rules correctly suppress every
+    /// ident, and the terminal end, which is the part actually flown, is a dot. The rules are right;
+    /// the FRAMING was wrong.
+    ///
+    /// An approach frames whole because it IS a terminal procedure. A departure or arrival opens on its
+    /// terminal end, where the fixes are dense and the restrictions live, and the pilot zooms out to see
+    /// the enroute shape.
+    enum Framing: Equatable {
+        case whole
+        /// Everything within this many NM of the field.
+        case terminal(nm: Double)
+
+        /// The sensible default for a procedure kind.
+        static func `default`(for kind: String) -> Framing {
+            switch kind {
+            case "SID", "STAR": return .terminal(nm: 30)
+            default:            return .whole          // an approach is already terminal
+            }
+        }
+    }
+
+    /// The coordinates to fit, under `framing`. Falls back to the whole extent when the terminal window
+    /// would leave too little to draw — a chart of one point has no scale, and refusing to frame is
+    /// worse than framing wide.
+    func extent(_ framing: Framing, field: Coord?) -> [Coord] {
+        guard case .terminal(let nm) = framing, let field else { return extent }
+        let near = extent.filter { Geo.nmBetween(field, $0) <= nm }
+        assert(near.count <= extent.count, "terminal extent grew")
+        return near.count >= 2 ? near : extent
     }
 
     /// The primitives that should be drawn at `detail`. Progressive disclosure (item 6) is applied HERE

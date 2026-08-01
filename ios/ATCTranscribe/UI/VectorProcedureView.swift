@@ -15,13 +15,18 @@ struct VectorProcedureView: View {
     let chart: VectorProcedureChart
     let palette: Palette
     let theme: MapTheme
+    /// The field, used to frame a departure or arrival on its terminal end. nil frames whole.
+    var field: Coord? = nil
 
     @State private var zoom: Double = 1
     @State private var committedZoom: Double = 1
 
     var body: some View {
         GeometryReader { geo in
-            let base = VectorChartGeometry.fitting(chart.extent, in: geo.size)
+            // A SID or STAR opens on its terminal end — see VectorProcedureChart.Framing for why
+            // fitting one to its whole 200 NM extent produces a chart with no readable detail.
+            let framed = chart.extent(.default(for: chart.kind), field: field)
+            let base = VectorChartGeometry.fitting(framed, in: geo.size)
             if let base {
                 let g = base.zoomed(zoom)
                 let detail = ChartDetail.forScale(nmAcross: g.nmPerPoint * Double(g.size.width))
