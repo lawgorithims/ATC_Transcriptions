@@ -144,6 +144,12 @@ struct PlateViewer: View {
     @State private var showMinima = false
     /// The plate FLIPPED to, or nil while the injected one is showing. See `flipPartner`.
     @State private var flipped: AirportProcedure?
+    /// ITEM 11, finally paying off: showing the VECTOR chart instead of the raster page.
+    ///
+    /// This is the flip-flop the feature list actually describes — "instantly revert to the classic
+    /// raster chart" only means something once there is a vector chart to revert FROM. The raster page
+    /// stays loaded underneath, so the swap is a view change and not a reload.
+    @State private var showingVector = false
 
     /// THE plate on screen. Every read below goes through this and never through `procedure` directly —
     /// title, georef, minima, and the document URL must describe the same chart at all times. Mixing
@@ -164,6 +170,35 @@ struct PlateViewer: View {
     }
 
     private var georef: PlateGeorefEntry? { PlateGeoref.lookup(pdf: current.pdf) }
+
+    /// The vector chart for the plate on screen, when its geometry is coded.
+    ///
+    /// Built from CIFP for an APPROACH, and from the runway thresholds for an airport DIAGRAM. nil for
+    /// anything else — a minimums booklet or a hot-spot chart has no geometry, and offering a blank
+    /// vector view for one would be worse than the page itself.
+    private var vectorChart: VectorProcedureChart? {
+        switch current.category {
+        case .airport:
+            let rwys = CIFP.runways(airport: airport)
+            guard !rwys.isEmpty else { return nil }
+            let d = VectorProcedureChart.airportDiagram(airport: airport, runways: rwys)
+            return d.primitives.isEmpty ? nil : d
+        case .approach:
+            // Match the plate to its coded procedure through the app's own scorer, so the chart drawn
+            // is the procedure this page is about.
+            let candidates = CIFP.approaches(airport: airport)
+                .map { (ident: $0.ident, name: $0.name, runway: $0.runway) }
+            guard let m = ApproachActivation.matchPlate(plateName: current.name, runway: nil,
+                                                        candidates: candidates).first,
+                  let proper = CIFP.approachProper(airport: airport, ident: m.ident) else { return nil }
+            let legs = Array(CIFP.legs(procedureID: proper.id).prefix(256))
+            let chart = VectorProcedureChart.build(legs: legs, airport: airport,
+                                                   procedureName: m.name, kind: "IAP")
+            return chart.extent.count >= 2 ? chart : nil
+        default:
+            return nil
+        }
+    }
     private var trafficMarkers: [PlateTraffic] {
         model.aircraft.compactMap { ac in ac.coordinate.map { PlateTraffic(coord: $0, track: ac.trackDeg) } }
     }
@@ -180,7 +215,11 @@ struct PlateViewer: View {
     var body: some View {
         NavigationStack {
             Group {
-                if let url {
+                if showingVector, let chart = vectorChart {
+                    VectorProcedureView(chart: chart, palette: palette,
+                                        theme: MapTheme.forLayer(model.chartLayer, theme: model.theme))
+                        .ignoresSafeArea(edges: .bottom)
+                } else if let url {
                     PDFKitView(url: url, georef: georef,
                                ownship: showOverlay ? ownshipCoord : nil,
                                traffic: showOverlay ? trafficMarkers : [],
@@ -239,6 +278,20 @@ struct PlateViewer: View {
                             Label("Minima", systemImage: "arrow.down.to.line")
                         }
                         .accessibilityIdentifier("plate-minima")
+                    }
+                }
+                // VECTOR ⇄ RASTER. Offered only when the coded geometry exists — an empty vector chart
+                // would be a worse answer than the plate the pilot already has.
+                if vectorChart != nil {
+                    ToolbarItem(placement: .primaryAction) {
+                        Button {
+                            Haptics.impact(.light); showingVector.toggle()
+                        } label: {
+                            Label(showingVector ? "Chart" : "Vector",
+                                  systemImage: showingVector ? "doc.richtext" : "scribble.variable")
+                        }
+                        .tint(showingVector ? palette.accent : palette.textDim)
+                        .accessibilityIdentifier("plate-vector-toggle")
                     }
                 }
                 if let partner = flipPartner {

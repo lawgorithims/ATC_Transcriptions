@@ -102,6 +102,57 @@ struct VectorProcedureChart: Equatable {
                                     primitives: primitives, extent: extent)
     }
 
+    /// ITEM 4 — the AIRPORT DIAGRAM, drawn to scale from the published runway thresholds.
+    ///
+    /// Every one of the 16,805 coded runway ends carries a coordinate and a length, so the runways
+    /// themselves are exact. What is NOT in the bundle is everything else a paper diagram shows —
+    /// taxiways, hold-short lines, surface markings, windsocks — verified across every table. So this is
+    /// a RUNWAY diagram and is labelled as one; the raster diagram stays the authority for the surface.
+    /// A vector picture that quietly omitted the taxiways would be read as an airport with none.
+    static func airportDiagram(airport: String, runways: [CIFPRunway]) -> VectorProcedureChart {
+        var primitives: [Primitive] = []
+        var extent: [Coord] = []
+        var drawn = Set<String>()
+        for r in runways.prefix(64) {                                     // bounded (rule 2)
+            let d = r.designator.uppercased().replacingOccurrences(of: "RW", with: "")
+            guard !drawn.contains(d), let opp = reciprocal(of: d),
+                  let far = runways.first(where: {
+                      $0.designator.uppercased().replacingOccurrences(of: "RW", with: "") == opp })
+            else { continue }
+            // A pair more than 5 NM apart is not one runway — at a multi-runway field the reciprocal
+            // NUMBER can match a different strip, and the published lengths are the cross-check.
+            guard Geo.nmBetween(r.coord, far.coord) < 5 else { continue }
+            drawn.insert(d); drawn.insert(opp)
+            primitives.append(.runway(from: r.coord, to: far.coord, designator: "\(d)/\(opp)"))
+            extent.append(r.coord); extent.append(far.coord)
+        }
+        assert(primitives.count <= 64, "airportDiagram: runway cap")
+        return VectorProcedureChart(airport: airport, procedureName: "Runway diagram",
+                                    kind: "APD", primitives: primitives, extent: extent)
+    }
+
+    /// The opposite end's designator: the reciprocal number, AND the side swapped.
+    ///
+    /// ⚠️ THE SIDE SWAPS. Boston's RW04L pairs with RW22R, not RW22L — a left runway approached from the
+    /// other direction is the right one. Pairing on the number alone puts 04L with 22L, which at a
+    /// parallel-runway field is a DIFFERENT STRIP, and the diagram would draw two crossing lines where
+    /// there are two parallel ones.
+    static func reciprocal(of designator: String) -> String? {
+        let d = designator.uppercased()
+        let digits = d.prefix { $0.isASCII && $0.isNumber }
+        guard let n = Int(digits), n >= 1, n <= 36 else { return nil }
+        let opp = n > 18 ? n - 18 : n + 18
+        let side = d.dropFirst(digits.count).first
+        let flipped: String
+        switch side {
+        case "L": flipped = "R"
+        case "R": flipped = "L"
+        case "C": flipped = "C"                                   // a centre runway stays centre
+        default:  flipped = ""
+        }
+        return String(format: "%02d", opp) + flipped
+    }
+
     /// What an unplaceable leg says. The ARINC path terminator IS the instruction, so it is stated
     /// rather than hidden — "climb on heading 040 to 2000 ft" is the procedure, and a chart that
     /// silently omitted it would show a gap the pilot has to fill from the plate.
