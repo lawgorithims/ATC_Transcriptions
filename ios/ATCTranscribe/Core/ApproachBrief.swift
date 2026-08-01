@@ -121,6 +121,52 @@ extension ApproachBrief {
     }
 }
 
+extension ApproachBrief {
+
+    /// ITEM 30 — the VISUAL glideslope angle, read off the plate.
+    ///
+    /// ⚠️ ON-DEVICE, NOT A DATASET. `runway_end.vgsi` carries the system TYPE ("P4L") but no angle, and
+    /// the FAA publishes the angle in a separate VGSI dataset — folding that in would mean a database
+    /// rebuild and a redistribution every cycle. The plate prints it beside the system in its profile
+    /// view, and the app already reads that page's text for the minima, so this costs one more regex on
+    /// a parse that is already happening.
+    ///
+    /// WHY IT MATTERS: a non-precision approach's advisory descent angle is NOT obstacle-assessed below
+    /// the MDA, and it does not have to agree with the visual glideslope. A 3.00 degree VDA flown into a
+    /// 4.00 degree PAPI puts the aircraft low on the visual segment — which is exactly the cross-check
+    /// item 30 exists to make possible, and it cannot be made from the coded data at all.
+    ///
+    /// COVERAGE IS PARTIAL AND THE UI MUST NOT IMPLY OTHERWISE: measured over 300 cached plates, 30%
+    /// name a VGSI system and 28% print both the system and an angle. nil is the common answer.
+    static func parseVGSIAngle(fromPlateText text: String) -> Double? {
+        let up = text.uppercased()
+        // The angle must be NEAR the system name — a bare "3.00" anywhere on a plate is far more likely
+        // to be a glideslope angle, a course, or a distance. Search a bounded window after the mention.
+        guard let r = up.range(of: "PAPI") ?? up.range(of: "VASI") ?? up.range(of: "VGSI") else {
+            return nil
+        }
+        let tail = up[r.upperBound...].prefix(60)             // bounded (rule 2)
+        guard let m = tail.range(of: "[2-7]\\.[0-9]{2}", options: .regularExpression),
+              let v = Double(tail[m]) else { return nil }
+        // A visual glideslope outside this band is not one — TERPS standard is 3.00 with steeper angles
+        // at terrain-constrained fields, and nothing civil is below 2.5 or above 7.
+        guard v >= 2.5, v <= 7.0 else { return nil }
+        return v
+    }
+
+    /// Does the published VISUAL glideslope disagree with the coded descent angle by enough to matter?
+    ///
+    /// Half a degree is the threshold: at 1 NM that is roughly 50 ft of path difference, which is the
+    /// point at which flying one while looking at the other becomes visible on the runway. Returns nil
+    /// when either angle is unknown — silence, not a reassurance that they agree.
+    static func vgsiDisagreement(codedAngleDeg: Double?, vgsiAngleDeg: Double?) -> Double? {
+        guard let coded = codedAngleDeg, let vgsi = vgsiAngleDeg else { return nil }
+        assert(coded > 0 && coded < 12, "vgsiDisagreement: implausible coded angle")
+        let delta = abs(coded - vgsi)
+        return delta >= 0.5 ? delta : nil
+    }
+}
+
 private extension Character {
     var isASCIIDigit: Bool { isASCII && isNumber }
 }

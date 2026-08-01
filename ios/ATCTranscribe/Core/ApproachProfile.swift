@@ -256,6 +256,33 @@ struct ApproachProfile: Equatable {
 }
 
 extension ApproachProfile {
+
+    /// ITEM 32 — a NOT-AUTHORISED fact worth annotating on the profile.
+    ///
+    /// ⚠️ MOST NA FACTS HAVE NO POSITION, and those must NOT be drawn inline. A per-category NA cell and
+    /// a "circling NA at night" note carry neither an altitude nor a distance, so placing them on the
+    /// x-axis would mean inventing a coordinate — the annotation would appear to say "this applies
+    /// HERE". Of the NA facts the app holds, exactly one is point-positionable (the Baro-VNAV
+    /// temperature limit, which applies from the final approach fix inward) and the rest belong in the
+    /// minima panel, where they already are.
+    struct NAAnnotation: Equatable {
+        let text: String
+        /// Distance from the threshold, NM. The annotation is drawn at this station and nowhere else.
+        let atNm: Double
+    }
+
+    /// The annotations this profile can honestly place. Empty is the normal answer.
+    ///
+    /// The Baro-VNAV limit is the one that positions: an LNAV/VNAV line is unusable below its published
+    /// temperature, the limitation begins at the final approach fix, and the FAF has a distance. It is
+    /// stated only when the temperature is KNOWN to be below the limit — an unknown temperature yields
+    /// nothing, never a warning "in case".
+    func naAnnotations(temperatureC: Double?, baroVNAVLimitC: Double?) -> [NAAnnotation] {
+        guard let faf, let t = temperatureC, let limit = baroVNAVLimitC, t < limit else { return [] }
+        assert(faf.distanceToThresholdNm >= 0, "naAnnotations: negative FAF distance")
+        return [NAAnnotation(text: "LNAV/VNAV NA below \(Int(limit))°C", atNm: faf.distanceToThresholdNm)]
+    }
+
     /// Coordinate of the outermost station, captured at build time so the terrain walk has a direction
     /// to follow. Deliberately the ONLY coordinate the profile keeps: a coordinate on every station would
     /// invite drawing the profile as a map, which it is not.

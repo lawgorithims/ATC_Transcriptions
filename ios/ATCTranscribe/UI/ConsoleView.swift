@@ -191,6 +191,8 @@ struct ConsoleView: View {
                     // that has no business one thumb-width from the go-around button.
                     if model.approachEntryOptions.count > 1 { entryChooserRow(appr) }
                     if let brief = model.approachBrief, brief.hasContent { briefRow(brief) }
+                    if !model.approachComs.isEmpty { comsRow() }
+                    if appr.hasCodedMissed { missedSequenceRow(appr) }
                     // Published holds ride directly under the approach strip, in flight order.
                     ForEach(appr.holds) { holdRow($0, appr: appr) }
                 }
@@ -329,6 +331,79 @@ struct ConsoleView: View {
         .background(p.surface)
     }
 
+    /// ITEM 34 — the field's frequencies, in the order they are used.
+    ///
+    /// ⚠️ The FIELD's, not the procedure's, and the wording says so. Measured: 1,628 of the 1,679
+    /// airports with an approach frequency publish more than one, and only 0.8% of runway ends can be
+    /// matched to a sectorized approach frequency — so picking one silently would be a choice made on
+    /// the pilot's behalf with a 1-in-125 chance of being the right sector. Each entry shows its own
+    /// published sectorization instead, and the pilot picks.
+    @ViewBuilder private func comsRow() -> some View {
+        let p = model.palette
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Image(systemName: "antenna.radiowaves.left.and.right")
+                    .font(.dsLabelS).foregroundStyle(p.textDim)
+                Text("COMs · this field").font(.dsLabelS).foregroundStyle(p.textDim)
+            }
+            ForEach(model.approachComs, id: \.value) { c in
+                HStack(spacing: 6) {
+                    Text(c.label).font(.dsLabelSBold).foregroundStyle(p.accent)
+                        .frame(width: 46, alignment: .leading)
+                    Text(c.value).font(.system(size: 11, weight: .semibold).monospacedDigit())
+                        .foregroundStyle(p.text)
+                    if !c.note.isEmpty {
+                        Text(c.note.prefix(28)).font(.system(size: 10)).foregroundStyle(p.textDim)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 5)
+        .background(p.surface)
+        .accessibilityIdentifier("approach-coms")
+    }
+
+    /// ITEM 35 — the published missed approach, in flight order, ending at its hold.
+    ///
+    /// The sequence and the hold were already held on `ActiveApproach`; what was missing was seeing them
+    /// as a SEQUENCE before the go-around rather than as a button and a separate list. Read-only: the
+    /// MISSED control on the strip above is still the only thing that acts, and it still raises the
+    /// one-tap confirmation rather than mutating the plan.
+    @ViewBuilder private func missedSequenceRow(_ appr: ActiveApproach) -> some View {
+        let p = model.palette
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.uturn.up").font(.dsLabelS).foregroundStyle(p.warn)
+                Text("If you go missed").font(.dsLabelS).foregroundStyle(p.textDim)
+            }
+            HStack(spacing: 4) {
+                ForEach(Array(appr.missedFixes.prefix(6).enumerated()), id: \.offset) { i, fix in
+                    if i > 0 {
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 8)).foregroundStyle(p.textDim)
+                    }
+                    Text(fix).font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(i == 0 ? p.warn : p.text)
+                }
+                if appr.missedFixes.count > 6 {
+                    Text("+\(appr.missedFixes.count - 6)")
+                        .font(.system(size: 10)).foregroundStyle(p.textDim)
+                }
+                Spacer(minLength: 0)
+            }
+            if let hold = appr.missedHold {
+                Text("hold at \(hold.pattern.fix)"
+                     + (hold.entry.map { " · \($0.label) entry" } ?? ""))
+                    .font(.system(size: 10)).foregroundStyle(p.textDim)
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 5)
+        .background(p.surface)
+        .accessibilityIdentifier("missed-sequence")
+    }
+
     /// THE BRIEF — the handful of facts read out loud before flying the approach, from data already on
     /// the device. Nothing here is fetched and nothing is inferred.
     ///
@@ -352,6 +427,18 @@ struct ConsoleView: View {
                         .font(.system(size: 10)).foregroundStyle(p.textDim)
                 } else {
                     Text("minima: read the plate").font(.system(size: 10)).foregroundStyle(p.textDim)
+                }
+            }
+            // ITEM 43 — the lighting system DRAWN, when the app knows its layout. Falls back to the
+            // decoded text (and then the raw acronym) when it does not, so an unrecognised or
+            // non-standard installation is never given a picture of a system it is not.
+            if !b.approachLights.isEmpty,
+               ApproachLightingView.layout(for: b.approachLights) != nil {
+                HStack(spacing: 8) {
+                    ApproachLightingView(code: b.approachLights, palette: p).frame(width: 108)
+                    Text(b.approachLights).font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(p.textDim)
+                    Spacer(minLength: 0)
                 }
             }
             let facts = briefFacts(b)
