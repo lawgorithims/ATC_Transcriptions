@@ -2677,6 +2677,7 @@ final class AppModel: ObservableObject {
                                             publishedVerticalGuidance: chartVerticalGuidance(for: appr))
         approachProfile = profile.isDrawable ? profile : nil
         rebuildApproachBrief()
+        rebuildVectorChart()
         approachProfileTerrain = profile.isDrawable
             ? Self.sampleApproachTerrain(profile: profile, threshold: rwy?.coord) : []
     }
@@ -2724,6 +2725,39 @@ final class AppModel: ObservableObject {
         }
         assert(out.count <= 12, "approachComs: over the display cap")
         return out
+    }
+
+    /// The VECTOR chart for the active approach — its coded geometry, drawn to scale.
+    ///
+    /// Built from the SAME legs the map draws (`ProcedureRoute.approachLegs`), so the chart and the
+    /// magenta line can never disagree about where the procedure goes. Nil when nothing is active or
+    /// the procedure publishes no plottable geometry.
+    @Published private(set) var approachVectorChart: VectorProcedureChart?
+
+    private func rebuildVectorChart() {
+        guard let appr = activeApproach,
+              let proper = CIFP.approachProper(airport: appr.airport, ident: appr.ident) else {
+            approachVectorChart = nil; return
+        }
+        let legs = Array(CIFP.legs(procedureID: proper.id).prefix(256))     // bounded (rule 2)
+        // The landing runway, from its own coded thresholds, so it draws at its real length.
+        let rwys = CIFP.runways(airport: appr.airport)
+        let end = rwys.first { $0.designator.uppercased() == "RW" + appr.runway.uppercased() }
+        var thresholds: (from: Coord, to: Coord, designator: String)?
+        if let end {
+            // The OPPOSITE threshold is the reciprocal designator's — matched by number rather than by
+            // distance, because "the furthest other threshold" at a multi-runway field is a different
+            // runway entirely. A pair more than 5 NM apart is not one runway, so it is refused.
+            let num = Int(appr.runway.prefix(2).filter(\.isNumber)) ?? 0
+            let recip = String(format: "%02d", num > 18 ? num - 18 : num + 18)
+            let far = rwys.first { $0.designator.uppercased().dropFirst(2).hasPrefix(recip) }
+            if let far, Geo.nmBetween(end.coord, far.coord) < 5 {
+                thresholds = (from: end.coord, to: far.coord, designator: appr.runway)
+            }
+        }
+        approachVectorChart = VectorProcedureChart.build(
+            legs: legs, airport: appr.airport, procedureName: appr.name, kind: "IAP",
+            runwayThresholds: thresholds)
     }
 
     /// The approach brief for the ACTIVE approach — assembled once when it is activated and when its
