@@ -2656,12 +2656,41 @@ final class AppModel: ObservableObject {
         // whole geometry hangs off the threshold. Nil is fine — the profile then anchors on the runway
         // leg's own published crossing altitude, which already includes it.
         let elev = rwy.map { TerrainElevation.shared.elevationFt(at: $0.coord) } ?? nil
+        // THE CHART IS THE AUTHORITY, when we have read it. Whether an approach is flown to a decision
+        // altitude or levelled at an MDA is printed in the plate's minima block and is NOT derivable from
+        // the coded data — "RNAV (GPS) RWY 17" is the title either way. When MinimaStore has already
+        // parsed this plate, believe it; otherwise `build` falls back to the conservative name test.
         let profile = ApproachProfile.build(legs: finalLegs, threshold: rwy?.coord,
                                             thresholdElevFt: elev, airport: appr.airport,
-                                            approachName: appr.name, codedRunway: appr.runway)
+                                            approachName: appr.name, codedRunway: appr.runway,
+                                            publishedVerticalGuidance: chartVerticalGuidance(for: appr))
         approachProfile = profile.isDrawable ? profile : nil
         approachProfileTerrain = profile.isDrawable
             ? Self.sampleApproachTerrain(profile: profile, threshold: rwy?.coord) : []
+    }
+
+    /// Does the PLATE publish a line flown to a decision altitude? nil when the plate has not been
+    /// parsed, which is the common case — `MinimaStore` never downloads, so this is real evidence when
+    /// it exists and silence when it does not.
+    ///
+    /// Read from the highest line the chart actually prints: an LPV, LNAV/VNAV, ILS, GLS or RNP AR line
+    /// means a DA, and a chart whose best line is an LNAV, LOC, VOR or circling MDA means a level-off.
+    /// That is the distinction 1,335 approaches were getting wrong from their title alone.
+    private func chartVerticalGuidance(for appr: ActiveApproach) -> Bool? {
+        // Reuse the app's own plate<->approach scorer, in the direction it is written: ask, for each
+        // approach chart at the field, whether it matches THIS approach. That keeps the ILS-vs-LOC and
+        // Y/Z-suffix rules in one place rather than re-deriving them here.
+        let want = [(ident: appr.ident, name: appr.name, runway: appr.runway)]
+        for chart in Procedures.forAirport(appr.airport).prefix(64)      // bounded (rule 2)
+        where chart.category == .approach {
+            guard !ApproachActivation.matchPlate(plateName: chart.name, runway: appr.runway,
+                                                 candidates: want).isEmpty,
+                  let m = minima.result(for: chart)?.minima else { continue }
+            let kinds = m.rows.map(\.kind)
+            guard !kinds.isEmpty else { continue }
+            return kinds.contains { $0.usesDecisionAltitude }
+        }
+        return nil
     }
 
     // MARK: simulated flight (developer diagnostics)
