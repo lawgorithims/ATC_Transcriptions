@@ -32,6 +32,34 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 103, version: "1.0", headline: "Data the app had all along, finally reaching the chart",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "arrow.down.right.circle",
+                    title: "Departures and arrivals draw in full",
+                    detail: "A departure is published as several separate coded rows — the runway transition, the common route, and each enroute exit — and the app had been drawing only one of them. Measured against the current cycle, that meant the typical SID showed about a fifth of itself: Denver's EMMYS EIGHT drew 2 legs of 67, often starting tens of miles from the field with nothing joining it to the runway. Arrivals had a matching gap, where 1,423 of them lost their whole common segment because it is named \"ALL\" rather than left blank — taking 1,686 published crossing altitudes with it. Both now assemble the branch actually being flown."),
+                WhatsNewHighlight(
+                    icon: "point.topleft.down.to.point.bottomright.curvepath",
+                    title: "Arcs curve, and airways follow their fixes",
+                    detail: "DME arcs and RNP radius-to-fix turns were drawn as straight lines between their endpoints, cutting inside the real track by up to 13 nautical miles — at Pendleton the line ran directly over the VOR instead of arcing around it at 20 DME. Both now follow the published curve. A filed airway was drawn the same way: type \"GDM V1 ORW\" and you got a straight line with none of V1's fixes on it, and the distance, time and fuel were computed along that line."),
+                WhatsNewHighlight(
+                    icon: "exclamationmark.triangle",
+                    title: "Crossing altitudes that were being dropped",
+                    detail: "Five ARINC altitude codes were not modelled, and refusing them discarded the ordinary crossing altitude published alongside — 5,856 legs across 4,576 approaches, including the FINAL APPROACH FIX itself on 1,187 of them. Bethel's ILS 19R publishes its final approach fix at 1,800 feet and the app drew nothing there, and never compared your altitude against it. Approaches at fields below sea level lost theirs too."),
+                WhatsNewHighlight(
+                    icon: "mappin.slash",
+                    title: "Fixes that were on the wrong side of the country",
+                    detail: "A short navaid identifier is only unique within its region, and the app resolved them globally, first match wins. San Angelo's NDB RWY 03 took its fix from San Juan, Puerto Rico — so the whole approach, including the missed-approach hold, was drawn 2,028 miles away, with distance and fuel computed along it. Nineteen published approaches were affected. All are corrected, and the map now refuses to draw an approach leg that cannot belong to its own airport."),
+                WhatsNewHighlight(
+                    icon: "airplane.circle",
+                    title: "Airports that were showing as unknown",
+                    detail: "Most fields on the map were drawing as the FAA's circled U — information lacking — even though their full record was already on board: 10,360 of them, including 6,880 private strips, 254 closed airports and 74 heliports, all rendered identically to each other. Separately, 707 charted airports were unreachable entirely because the app files them under one identifier and their procedures under another, hiding 1,271 approach plates. Both fixed."),
+                WhatsNewHighlight(
+                    icon: "chart.line.downtrend.xyaxis",
+                    title: "The profile knows a decision altitude from a minimum",
+                    detail: "Whether an approach is flown down to a decision altitude or levelled at a minimum descent altitude is printed on the plate and cannot be told from the procedure's name — \"RNAV (GPS) RWY 17\" is the title either way. The profile had been guessing from the title and drawing a glidepath through a decision altitude on 1,335 approaches that publish an MDA. It now reads your own plate, automatically, from the copy already on your device, and says nothing rather than guessing when it cannot. The vertical profile also now appears on 266 approaches where it simply did not draw."),
+            ]),
+        ReleaseNote(
             build: 102, version: "1.0", headline: "The minimums, read off your own plate",
             highlights: [
                 WhatsNewHighlight(
