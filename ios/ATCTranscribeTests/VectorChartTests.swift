@@ -181,4 +181,77 @@ final class VectorChartTests: XCTestCase {
             runwayThresholds: (from: Coord(lat: 42.00, lon: -71.00),
                                to: Coord(lat: 42.01, lon: -70.99), designator: "04"))
     }
+
+    // MARK: item 4 — the airport diagram
+
+    func testTheReciprocalSwapsTheSide() {
+        // ⚠️ Boston's 04L pairs with 22R, not 22L — a LEFT runway approached from the other direction is
+        // the RIGHT one. Pairing on the number alone puts 04L with 22L, which at a parallel-runway field
+        // is a DIFFERENT STRIP, and the diagram draws two crossing lines where there are two parallel.
+        XCTAssertEqual(VectorProcedureChart.reciprocal(of: "04L"), "22R")
+        XCTAssertEqual(VectorProcedureChart.reciprocal(of: "22R"), "04L")
+        XCTAssertEqual(VectorProcedureChart.reciprocal(of: "09"), "27")
+        XCTAssertEqual(VectorProcedureChart.reciprocal(of: "27"), "09")
+        XCTAssertEqual(VectorProcedureChart.reciprocal(of: "18C"), "36C", "a centre runway stays centre")
+    }
+
+    func testAnImplausibleDesignatorHasNoReciprocal() {
+        XCTAssertNil(VectorProcedureChart.reciprocal(of: "99"))
+        XCTAssertNil(VectorProcedureChart.reciprocal(of: ""))
+        XCTAssertNil(VectorProcedureChart.reciprocal(of: "AB"))
+    }
+
+    func testEachRunwayIsDrawnOnceNotTwice() {
+        // Both ends are separate rows; drawing per row would stack two identical lines.
+        let rwys = [
+            CIFPRunway(designator: "RW04", coord: c(42.00, -71.00), bearingMag: 40, lengthFt: 7000),
+            CIFPRunway(designator: "RW22", coord: c(42.02, -70.98), bearingMag: 220, lengthFt: 7000),
+        ]
+        let d = VectorProcedureChart.airportDiagram(airport: "KTST", runways: rwys)
+        XCTAssertEqual(d.primitives.count, 1)
+        if case .runway(_, _, let designator)? = d.primitives.first {
+            XCTAssertEqual(designator, "04/22")
+        } else { XCTFail("no runway drawn") }
+    }
+
+    func testParallelRunwaysPairWithTheirOwnOppositeEnd() {
+        // The real KBOS shape: 04L/22R (7,864 ft) and 04R/22L (10,006 ft). Mis-pairing would draw two
+        // crossing lines through the middle of the field.
+        let rwys = [
+            CIFPRunway(designator: "RW04L", coord: c(42.3580, -71.0143), bearingMag: 40, lengthFt: 7864),
+            CIFPRunway(designator: "RW22R", coord: c(42.3762, -71.0055), bearingMag: 220, lengthFt: 7864),
+            CIFPRunway(designator: "RW04R", coord: c(42.3540, -71.0104), bearingMag: 40, lengthFt: 10006),
+            CIFPRunway(designator: "RW22L", coord: c(42.3738, -71.0008), bearingMag: 220, lengthFt: 10006),
+        ]
+        let d = VectorProcedureChart.airportDiagram(airport: "KBOS", runways: rwys)
+        XCTAssertEqual(d.primitives.count, 2)
+        let names = d.primitives.compactMap { p -> String? in
+            if case .runway(_, _, let n) = p { return n }; return nil
+        }.sorted()
+        XCTAssertEqual(names, ["04L/22R", "04R/22L"])
+    }
+
+    func testAFarApartPairIsRefusedRatherThanDrawn() {
+        // A reciprocal NUMBER at a different field (or a bad coordinate) must not become a runway
+        // stretching across the chart.
+        let rwys = [
+            CIFPRunway(designator: "RW09", coord: c(42.00, -71.00), bearingMag: 90, lengthFt: 5000),
+            CIFPRunway(designator: "RW27", coord: c(43.00, -70.00), bearingMag: 270, lengthFt: 5000),
+        ]
+        XCTAssertTrue(VectorProcedureChart.airportDiagram(airport: "KTST", runways: rwys)
+                        .primitives.isEmpty)
+    }
+
+    func testTheDiagramIsDrawnToScale() throws {
+        // A 7,000 ft runway is 1.15 NM; the drawn line must be that long in the chart's own units.
+        let rwys = [
+            CIFPRunway(designator: "RW18", coord: c(42.00, -71.00), bearingMag: 180, lengthFt: 7000),
+            CIFPRunway(designator: "RW36", coord: c(42.0192, -71.00), bearingMag: 360, lengthFt: 7000),
+        ]
+        let d = VectorProcedureChart.airportDiagram(airport: "KTST", runways: rwys)
+        let g = try XCTUnwrap(VectorChartGeometry.fitting(d.extent, in: size))
+        guard case .runway(let a, let b, _)? = d.primitives.first else { return XCTFail("no runway") }
+        let drawn = hypot(g.point(a).x - g.point(b).x, g.point(a).y - g.point(b).y)
+        XCTAssertEqual(Double(drawn), Double(g.points(nm: Geo.nmBetween(a, b))), accuracy: 0.5)
+    }
 }
