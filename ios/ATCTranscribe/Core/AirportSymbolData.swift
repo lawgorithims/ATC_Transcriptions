@@ -42,12 +42,27 @@ enum AirportSymbolData {
     static func attributes(_ ident: String, nasr: [AirportData.Runway]) -> AirportSymbol.Attributes {
         let key = ident.trimmingCharacters(in: .whitespaces).uppercased()
         let name = NavMeta.airport(key)?.name
-        guard let r = table[key] else {
-            return AirportSymbol.Attributes(name: name)          // no record → unverified
-        }
+        // ⚠️ FALL BACK TO NASR RATHER THAN GIVING UP. `airport_symbols.json` covers only part of what
+        // the map plots: 10,360 of the 14,089 airport idents in nav_coords.json have no record in it,
+        // and 8,907 of those DO have a full NASR record in the bundled apt.sqlite. They were all drawn
+        // as the FAA's circled "U" — information lacking — so 6,880 private strips, 254 CLOSED fields
+        // and 74 heliports rendered identically to each other and to a genuinely unknown field.
+        //
+        // apt.sqlite carries every attribute the symbol needs (tower, beacon, fuel, ownership, site
+        // type), so an absent row in the curated table is not an absence of data. Only when NASR has
+        // nothing either is "unverified" the honest answer.
+        guard let r = table[key] else { return nasrAttributes(key, name: name, nasr: nasr) }
+        // Resolved AT MOST ONCE per call and memoised — this function runs for every field on screen
+        // while the pilot pans, and the whole reason the curated table exists is to keep a per-airport
+        // query off that path. `cachedNASR` returns nil without touching SQLite once an ident is known
+        // to be absent, so the miss is paid once per airport per launch, not per frame.
+        let fallback: () -> AirportData.Airport? = { cachedNASR(key) }
         return AirportSymbol.Attributes(
-            hasTower: r.t.map { $0 != 0 },
-            hasFuel: r.f.map { $0 != 0 },
+            // Each field prefers the curated table but falls through to NASR — the towered flag matters
+            // most: 26 fields NASR codes ATCT are missing or wrong here, including KDJT, KHDC and KFIN,
+            // which drew as unverified rather than as towered airports.
+            hasTower: r.t.map { $0 != 0 } ?? fallback()?.isTowered,
+            hasFuel: r.f.map { $0 != 0 } ?? fallback().map(\.hasFuel),
             hasBeacon: r.b.map { $0 != 0 },
             // Prefer the PUBLISHED surface over the approximated flag in airport_symbols.json
             // (derived from aviationweather.gov because NASR was unavailable at the time). A
@@ -57,6 +72,50 @@ enum AirportSymbolData {
             owner: r.o,
             typeCode: r.y,
             name: name)
+    }
+
+    /// Memo for the NASR fallback. Keyed by ident, and it stores the MISS as well as the hit — an ident
+    /// absent from apt.sqlite must not re-query on every pan. Bounded so a long session over a large
+    /// area cannot grow it without limit; at the cap it is cleared rather than evicted one at a time,
+    /// because the working set is whatever is on screen and that changes wholesale.
+    private static var nasrMemo: [String: AirportData.Airport?] = [:]
+    private static let nasrMemoCap = 4_096
+    private static let nasrMemoLock = NSLock()
+
+    private static func cachedNASR(_ key: String) -> AirportData.Airport? {
+        nasrMemoLock.lock()
+        if let hit = nasrMemo[key] { nasrMemoLock.unlock(); return hit }
+        nasrMemoLock.unlock()
+        let looked = AirportData.airport(key)
+        nasrMemoLock.lock()
+        if nasrMemo.count >= nasrMemoCap { nasrMemo.removeAll(keepingCapacity: true) }
+        nasrMemo[key] = looked
+        nasrMemoLock.unlock()
+        assert(nasrMemo.count <= nasrMemoCap, "nasrMemo over cap")
+        return looked
+    }
+
+    /// The symbol attributes an airport's NASR record supports, for the 8,907 fields the curated table
+    /// does not cover. Returns the plain unverified attributes when NASR has nothing either — which is
+    /// then a true statement rather than a gap.
+    ///
+    /// NASR's codes are mapped, not invented: `tower` is the TWR_TYPE_CODE ("ATCT…" = towered),
+    /// `beacon` is published per field, `fuel` is a comma list where empty genuinely means none, and
+    /// `ownership`/`site_type` are the FAA's own single-letter codes, which is exactly what the symbol
+    /// renderer already consumes.
+    private static func nasrAttributes(_ key: String, name: String?,
+                                       nasr: [AirportData.Runway]) -> AirportSymbol.Attributes {
+        guard let a = cachedNASR(key) else {
+            return AirportSymbol.Attributes(name: name)          // genuinely no record → unverified
+        }
+        return AirportSymbol.Attributes(
+            hasTower: a.isTowered,
+            hasFuel: a.hasFuel,
+            hasBeacon: nil,                                       // not carried on this row
+            hardSurface: Self.hardSurface(nasr),
+            owner: a.ownership.isEmpty ? nil : a.ownership,
+            typeCode: a.siteType.isEmpty ? nil : a.siteType,
+            name: name ?? (a.name.isEmpty ? nil : a.name))
     }
 
     /// The runways an airport's symbol draws: PAVED, in service, and actual runways.

@@ -156,6 +156,56 @@ enum Airways {
 
     /// The full ordered geometry of one airway within one AREA (≤400 points — the longest US airway is
     /// well under that). Area-scoped so same-ident airways in different regions never mix.
+    /// The airway's fixes in sequence: ident plus position. Same query and same bound as `points`; the
+    /// `fix` column is 100% populated over all 19,099 rows and was simply never SELECTed.
+    ///
+    /// This is what makes a filed airway a PATH rather than a straight line. "GDM V1 ORW" — the exact
+    /// syntax the airway card tells the pilot to use — drew a direct magenta line with none of the
+    /// airway's fixes on it, and DIST/ETE/ETA/fuel were computed along that line. Measured over 4,231
+    /// realistic filed sub-segments, the published route is a median 0.1 NM longer than the chord but a
+    /// mean of 2.5 NM, a 90th percentile of 6.9 NM and up to 100.6 NM (V78 BAITS to BANJO).
+    static func fixes(of ident: String, area: String = "USA") -> [(fix: String, coord: Coord)] {
+        guard let db, !ident.isEmpty else { return [] }
+        var out: [(fix: String, coord: Coord)] = []
+        var st: OpaquePointer?
+        let sql = """
+            SELECT COALESCE(fix,''), lat, lon FROM airway
+            WHERE ident=?1 AND area=?2 ORDER BY seq LIMIT 400
+            """
+        if sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK {
+            sqlite3_bind_text(st, 1, ident, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+            sqlite3_bind_text(st, 2, area, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+            while sqlite3_step(st) == SQLITE_ROW {
+                // ⚠️ A NULL coordinate must be DROPPED, not coerced. `build_cifp.py` skips airway points
+                // whose fix has no coordinate (37 airways have such a gap), and sqlite3_column_double
+                // returns 0.0 for NULL — which would draw the airway through 0°N 0°E in the Atlantic.
+                guard sqlite3_column_type(st, 1) != SQLITE_NULL,
+                      sqlite3_column_type(st, 2) != SQLITE_NULL else { continue }
+                let name = sqlite3_column_text(st, 0).map { String(cString: $0) } ?? ""
+                out.append((fix: name,
+                            coord: Coord(lat: sqlite3_column_double(st, 1),
+                                         lon: sqlite3_column_double(st, 2))))
+            }
+        }
+        sqlite3_finalize(st)
+        assert(out.count <= 400, "airway fix list bound respected")
+        return out
+    }
+
+    /// The segment of `ident` BETWEEN two fixes, in the direction filed, inclusive of both ends.
+    /// Empty when either fix is not on the airway — the caller then leaves the direct line alone rather
+    /// than drawing a path it cannot justify.
+    static func segment(of ident: String, from: String, to: String,
+                        area: String = "USA") -> [(fix: String, coord: Coord)] {
+        let all = fixes(of: ident, area: area)
+        let a = all.firstIndex { $0.fix.caseInsensitiveCompare(from) == .orderedSame }
+        let b = all.firstIndex { $0.fix.caseInsensitiveCompare(to) == .orderedSame }
+        guard let a, let b, a != b else { return [] }
+        let slice = a < b ? Array(all[a...b]) : Array(all[b...a]).reversed().map { $0 }
+        assert(slice.count <= 400, "airway segment bound")
+        return slice
+    }
+
     static func points(of ident: String, area: String = "USA") -> [Coord] {
         guard let db, !ident.isEmpty else { return [] }
         var out: [Coord] = []
