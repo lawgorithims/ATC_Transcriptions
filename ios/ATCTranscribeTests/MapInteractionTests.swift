@@ -279,7 +279,11 @@ final class MapInteractionTests: XCTestCase {
         XCTAssertGreaterThan(route.count, 2, "endpoints + approach legs")
         XCTAssertLessThanOrEqual(route.count, ProcedureRoute.maxLegs)
         XCTAssertTrue(route.contains { fixes.contains($0.ident) }, "the coded approach fixes are in the drawn route")
-        // consecutive-duplicate collapse holds
-        for i in 1..<route.count { XCTAssertNotEqual(route[i].ident, route[i - 1].ident) }
+        // Consecutive-duplicate collapse holds — for NAMED waypoints. Interpolated DME/RF arc points
+        // carry no ident by design (they shape the line, they are not fixes), so they are excluded
+        // rather than treated as a collapse failure.
+        let named = route.filter { !$0.isPathOnly }
+        for i in 1..<named.count { XCTAssertNotEqual(named[i].ident, named[i - 1].ident) }
+        for p in route where p.isPathOnly { XCTAssertTrue(p.ident.isEmpty, "a path point must be unnamed") }
     }
 }

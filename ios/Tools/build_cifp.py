@@ -189,6 +189,7 @@ def main():
             add_fix(l[13:17].strip(), coord(l))
         elif sec == "P" and sub == "A":                         # airport reference point
             add_fix(l[6:10].strip(), coord(l))
+    nrf = 0
     print(f"fixes: {len(fixes)} global, {len(terminal_fixes)} airport-scoped, "
           f"{len(region_fixes)} region-scoped", flush=True)
 
@@ -211,7 +212,15 @@ def main():
       CREATE TABLE leg(procedure_id INTEGER, seq INTEGER, fix TEXT, lat REAL, lon REAL,
                        leg_type TEXT, course_mag REAL, alt TEXT,
                        alt_desc TEXT, alt2 TEXT, speed_limit INTEGER, vertical_angle REAL,
-                       turn TEXT, rnp REAL, wp_desc TEXT, recd_navaid TEXT);
+                       turn TEXT, rnp REAL, wp_desc TEXT, recd_navaid TEXT,
+                       -- RF (radius-to-fix) ARC CENTRE, resolved to a position at build time.
+                       -- ARINC publishes the centre FIX at 0-based cols 106-111 with its own region at
+                       -- 112-114; it was never extracted, so 1,439 RF legs had no centre and RNP AR
+                       -- arcs — whose whole purpose is a fixed-radius turn threaded through terrain —
+                       -- could only be drawn as straight chords. Stored as coordinates rather than an
+                       -- ident because the centre is often a terminal waypoint the app's nav database
+                       -- does not carry.
+                       rf_lat REAL, rf_lon REAL);
       -- Provenance travels with the data (constraint: source/cycle/effective/expiration/ingested_at).
       CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
       CREATE TABLE ils(airport TEXT, runway TEXT, ident TEXT, freq_mhz REAL, course_mag REAL, lat REAL, lon REAL);
@@ -336,12 +345,23 @@ def main():
             c = (region_fixes.get((fix, fix_region))
                  or terminal_fixes.get((apt, fix))
                  or fixes.get(fix)) if fix else None
+            # RF arc centre: the fix named at 106-111, resolved through the same most-specific-first
+            # tables as the leg's own fix. Only RF legs carry one.
+            rf = None
+            if leg_type == "RF" and len(l) > 116:
+                cfix, creg = l[106:111].strip(), l[112:114].strip()
+                if cfix:
+                    rf = (region_fixes.get((cfix, creg)) or terminal_fixes.get((apt, cfix))
+                          or fixes.get(cfix))
+                    if rf: nrf += 1
             con.execute("INSERT INTO leg(procedure_id,seq,fix,lat,lon,leg_type,course_mag,alt,"
-                        "alt_desc,alt2,speed_limit,vertical_angle,turn,rnp,wp_desc,recd_navaid) "
-                        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        "alt_desc,alt2,speed_limit,vertical_angle,turn,rnp,wp_desc,recd_navaid,"
+                        "rf_lat,rf_lon) "
+                        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (proc_id[key], seq, fix, c[0] if c else None, c[1] if c else None,
                          leg_type, course, alt, alt_desc, alt2, speed, vangle,
-                         turn or None, rnp, wp_desc, recd or None))
+                         turn or None, rnp, wp_desc, recd or None,
+                         rf[0] if rf else None, rf[1] if rf else None))
             nleg += 1
         elif sub == "G":                                        # runway: RWxx, length (21-26), bearing (27-30), threshold coord
             c = coord(l)
