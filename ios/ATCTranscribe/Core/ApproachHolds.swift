@@ -55,13 +55,24 @@ enum ApproachHolds {
     /// exercise both the known and unknown cases explicitly. Production passes `MagneticVariation.at`.
     static func resolve(legs: [CIFPLeg], missedSeqs: Set<Int>,
                         arrivingFrom: Coord?, arrivingFromLabel: String = "present position",
-                        variation: (Coord) -> Double?) -> [ApproachHold] {
+                        variation: (Coord) -> Double?, field: Coord? = nil) -> [ApproachHold] {
         var out: [ApproachHold] = []
         for (i, leg) in legs.enumerated() {
             assert(i <= 4096, "resolve: leg bound")
             let isMissed = missedSeqs.contains(leg.seq)
             let kind = HoldingPattern.kind(legType: leg.legType, isMissedApproachSegment: isMissed)
             guard let pattern = HoldingPattern(leg: leg, kind: kind) else { continue }
+            // The same geometry guard the drawn route applies, and it matters MORE here. A hold leg
+            // carries both a course and a turn direction, so a mis-resolved fix still produces a
+            // perfectly well-formed racetrack — drawn with a confident card naming its entry — at a
+            // coordinate that has nothing to do with the airport. 19 of the 66 legs that resolve to the
+            // wrong navaid are holds; activating KRUQ's ILS RWY 20 drew its missed-approach hold, the
+            // termination of the go-around, 942 NM away in Texas.
+            guard ProcedureRoute.isPlausibleApproachLeg(pattern.coord, field: field) else {
+                NSLog("CommSight: REFUSED implausible hold at %@ (%.4f, %.4f)",
+                      pattern.fix, pattern.coord.lat, pattern.coord.lon)
+                continue
+            }
 
             // Where this hold is entered FROM: the preceding leg that has a position, else the
             // caller's origin. A missed-approach hold is reached from the missed approach itself, so
