@@ -18,6 +18,10 @@ struct ApproachProfileView: View {
     let position: ApproachProfile.Position?
     /// Terrain under the final segment, sampled outermost → threshold, for the shaded ground.
     let terrain: [ApproachTerrainSample]
+    /// ITEM 32: "not authorised" annotations, each at the station where the limitation begins. Empty is
+    /// the normal case — see `ApproachProfile.naAnnotations`, which states one only when the condition
+    /// is KNOWN to apply.
+    var annotations: [ApproachProfile.NAAnnotation] = []
 
     private var p: Palette { model.palette }
 
@@ -29,6 +33,7 @@ struct ApproachProfileView: View {
                     terrainShape(geo.size)
                     pathShape(geo.size)
                     constraintMarks(geo.size)
+                    naMarks(geo.size)
                     if let position { ownship(geo.size, position) }
                 }
             }
@@ -129,6 +134,31 @@ struct ApproachProfileView: View {
             }
             .fixedSize()
             .position(x: px + 16, y: 12)
+        }
+    }
+
+    /// ITEM 32: a NOT-AUTHORISED band drawn AT the station the limitation starts from, not as a caption.
+    ///
+    /// A Baro-VNAV temperature limit does not apply to the whole approach — it applies from the final
+    /// approach fix inward, which is a place on this drawing. Putting it there says which part of the
+    /// descent is unavailable; putting it in a footnote would only say that something is.
+    @ViewBuilder private func naMarks(_ size: CGSize) -> some View {
+        ForEach(Array(annotations.enumerated()), id: \.offset) { _, a in
+            let px = x(a.atNm, size)
+            Path { p in p.move(to: CGPoint(x: px, y: 0)); p.addLine(to: CGPoint(x: px, y: size.height)) }
+                .stroke(self.p.bad.opacity(0.9), style: StrokeStyle(lineWidth: 1.4, dash: [3, 2]))
+            // Inward of the fix is the part that is unavailable, so the shading runs to the threshold.
+            Rectangle()
+                .fill(self.p.bad.opacity(0.10))
+                .frame(width: max(0, size.width - px), height: size.height)
+                .offset(x: px)
+            Text(a.text)
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(self.p.bad)
+                .padding(.horizontal, 3)
+                .background(self.p.surface.opacity(0.85), in: RoundedRectangle(cornerRadius: 2))
+                .offset(x: min(px + 3, size.width - 96), y: 3)
+                .accessibilityIdentifier("profile-na")
         }
     }
 

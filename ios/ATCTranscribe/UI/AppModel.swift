@@ -397,6 +397,8 @@ final class AppModel: ObservableObject {
     let plateBag = PlateBag()
     /// Minima read off the plates the pilot has already downloaded. Parsed once each, off the main actor.
     let minima = MinimaStore()
+    /// Item 28: the parsed IFR alternate-minimums booklet, per airport.
+    let alternateMinima = AlternateMinimaStore()
     /// NOTAMs, per aerodrome. Needs an FAA developer key — see `NotamCredential`.
     let notams = NotamStore()
     /// Continuous device-GPS ownship (for a Stratux-less iPad) — the plate viewer starts/stops it and
@@ -2677,7 +2679,6 @@ final class AppModel: ObservableObject {
                                             publishedVerticalGuidance: chartVerticalGuidance(for: appr))
         approachProfile = profile.isDrawable ? profile : nil
         rebuildApproachBrief()
-        rebuildVectorChart()
         approachProfileTerrain = profile.isDrawable
             ? Self.sampleApproachTerrain(profile: profile, threshold: rwy?.coord) : []
     }
@@ -2727,49 +2728,32 @@ final class AppModel: ObservableObject {
         return out
     }
 
-    /// The VECTOR chart for the active approach — its coded geometry, drawn to scale.
-    ///
-    /// Built from the SAME legs the map draws (`ProcedureRoute.approachLegs`), so the chart and the
-    /// magenta line can never disagree about where the procedure goes. Nil when nothing is active or
-    /// the procedure publishes no plottable geometry.
-    @Published private(set) var approachVectorChart: VectorProcedureChart?
-
-    private func rebuildVectorChart() {
-        guard let appr = activeApproach,
-              let proper = CIFP.approachProper(airport: appr.airport, ident: appr.ident) else {
-            approachVectorChart = nil; return
-        }
-        // The FLOWN approach only — the raw row is 47.4% missed-approach legs. Same rule as the map.
-        let all = Array(CIFP.legs(procedureID: proper.id).prefix(256))     // bounded (rule 2)
-        let split = ApproachActivation.splitMissed(
-            all.map { (seq: $0.seq, fix: $0.fix, legType: $0.legType) }, roles: all.map(\.role))
-        let missedSeqs = Set(split.missed)
-        let legs = all.filter { !missedSeqs.contains($0.seq) }
-        // The landing runway, from its own coded thresholds, so it draws at its real length.
-        let rwys = CIFP.runways(airport: appr.airport)
-        let end = rwys.first { $0.designator.uppercased() == "RW" + appr.runway.uppercased() }
-        var thresholds: (from: Coord, to: Coord, designator: String)?
-        if let end {
-            // The OPPOSITE threshold is the reciprocal designator's — matched by number rather than by
-            // distance, because "the furthest other threshold" at a multi-runway field is a different
-            // runway entirely. A pair more than 5 NM apart is not one runway, so it is refused.
-            let num = Int(appr.runway.prefix(2).filter(\.isNumber)) ?? 0
-            let recip = String(format: "%02d", num > 18 ? num - 18 : num + 18)
-            let far = rwys.first { $0.designator.uppercased().dropFirst(2).hasPrefix(recip) }
-            if let far, Geo.nmBetween(end.coord, far.coord) < 5 {
-                thresholds = (from: end.coord, to: far.coord, designator: appr.runway)
-            }
-        }
-        approachVectorChart = VectorProcedureChart.build(
-            legs: legs, airport: appr.airport, procedureName: appr.name, kind: "IAP",
-            runwayThresholds: thresholds)
-    }
-
     /// The approach brief for the ACTIVE approach — assembled once when it is activated and when its
     /// plate finishes parsing, never per render. Nil when no approach is active.
     @Published private(set) var approachBrief: ApproachBrief?
 
     /// Build the brief from what is already on the device. All reads are local; nothing is fetched.
+    /// The published Baro-VNAV low-temperature limit for the approach being flown, °C.
+    ///
+    /// Item 32's positioning annotation: an LNAV/VNAV line is NOT AUTHORISED below this temperature, and
+    /// the limitation begins at the final approach fix — which is a station on the profile, so it can be
+    /// drawn where it applies rather than stated as a footnote. Nil whenever the plate does not publish
+    /// a limit, which is most of them; the annotation then draws nothing at all.
+    func activeBaroVNAVLimitC() -> Double? {
+        guard let appr = activeApproach else { return nil }
+        for chart in Procedures.forAirport(appr.airport).prefix(64)          // bounded (rule 2)
+        where chart.category == .approach {
+            guard !ApproachActivation.matchPlate(plateName: chart.name, runway: appr.runway,
+                                                 candidates: [(ident: appr.ident, name: appr.name,
+                                                               runway: appr.runway)]).isEmpty,
+                  let m = minima.result(for: chart)?.minima else { continue }
+            guard let limit = MinimaSolver.temperatureLimit(m), let lo = limit.minC else { return nil }
+            assert(lo > -100 && lo < 60, "activeBaroVNAVLimitC: implausible limit")
+            return Double(lo)
+        }
+        return nil
+    }
+
     private func rebuildApproachBrief() {
         guard let appr = activeApproach else { approachBrief = nil; return }
         let ends = AirportData.runwayEnds(airport: appr.airport)

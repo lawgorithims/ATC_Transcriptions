@@ -44,20 +44,30 @@ enum AlternateMinimaParser {
                 pendingFootnote = nil
                 continue
             }
-            // ⚠️ AN APPROACH LINE IS TRIED FIRST. The boundary test looks for a "(IDENT)" parenthetical,
-            // and an approach name carries one too — "RNAV (GPS) Rwy 4" — so checking the boundary
-            // first ended every block after its first entry.
+            // ⚠️ THE BOUNDARY IS TESTED BEFORE THE ENTRY, AND IT MUST BE. A city block holds SEVERAL
+            // airports — "DETROIT, MI" lists COLEMAN A YOUNG MUNI (DET) and then WILLOW RUN (YIP) — and
+            // the next airport's FIRST line is both a boundary and a valid entry: "WILLOW RUN
+            // (YIP)…….ILS or LOC Rwy 5". Trying the entry first consumed it, so DET absorbed Willow
+            // Run's approaches and reported runways 5, 9 and 23 that Coleman A Young does not have.
+            // Measured across the cycle's 27 booklets: 665 entries at 2,051 airports carried a runway
+            // their own field does not publish.
+            //
+            // Testing the boundary first is only safe because it now knows whose block this is: the
+            // block's OWN opening line carries its own "(IDENT)" and must not end it.
+            if isBlockBoundary(line, ident: ident) { break }
             if let e = entry(from: line, publishedRunways: publishedRunways), entries.count < maxEntries {
                 entries.append(e)
                 continue
             }
-            // ⚠️ TESTED EVEN BEFORE THE FIRST ENTRY. Gating this on `entries.count > 0` meant an airport
-            // whose FIRST line is circling-only ("CHATHAM MUNI (CQX)…RNAV (GPS)-B", which has no "Rwy"
-            // and so is not recognised as an entry) walked straight through the next city header and
-            // adopted the NEXT airport's approaches as its own. Measured over all 26 real booklets: 526
-            // of 2,047 airports (25.7%) picked up a runway their field does not publish — KCQX was
-            // credited with Chester's "RNAV (GPS) Rwy 17" while Chatham's runways are 6/24.
-            if isBlockBoundary(line, ident: ident) { break }
+            // ⚠️ THE REAL BOOKLETS PUT THE MARKER INLINE. PDFKit keeps a superscript on the same
+            // baseline as its text, so a footnote arrives as "1LOC Cat C 800-2½, Cat D 900-2¾." — one
+            // line, not the marker-then-text pair handled above. Handling only the split form read zero
+            // footnotes out of the cycle's 27 booklets, and the footnote IS the answer to "why is this
+            // approach restricted". Tried after the entry so a real approach line can never be eaten.
+            if let (n, body) = inlineFootnote(line) {
+                footnotes[n] = footnotes[n].map { $0 + " " + body } ?? body
+                continue
+            }
             // An unnumbered condition line ("NA when local weather not available." with no marker)
             // applies to the whole airport. Keyed 0, which no printed marker uses.
             if isConditionLine(line) {
@@ -74,21 +84,73 @@ enum AlternateMinimaParser {
     }
 
     /// The line index where `ident`'s block starts — the line carrying "(IDENT)".
+    ///
+    /// ⚠️ THE PREAMBLE CAN CONTAIN THE IDENTIFIER. Every booklet opens with a paragraph naming the
+    /// approach types, including "RNAV (RNP)" — and Owosso's identifier IS RNP, so the first match was
+    /// prose on page 1 and the airport read as unlisted. A real block line carries the FAA's run of
+    /// leader dots between the airport name and its first approach, so that is preferred when present;
+    /// the first match is still the fallback for a booklet that sets its leaders differently.
     private static func blockStart(_ lines: [String], ident: String) -> Int? {
         let key = "(" + ident.trimmingCharacters(in: .whitespaces).uppercased() + ")"
         // The booklet keys by the BARE FAA code, never the ICAO one: "(LEW)", not "(KLEW)".
         let bare = "(" + AirportKey.forms(ident).alternate + ")"
-        return lines.firstIndex { $0.uppercased().contains(key) || $0.uppercased().contains(bare) }
+        var first: Int?
+        for (i, l) in lines.enumerated().prefix(20_000) {                    // bounded (rule 2)
+            let u = l.uppercased()
+            guard u.contains(key) || u.contains(bare) else { continue }
+            if first == nil { first = i }
+            if l.range(of: "[.…]{2,}", options: .regularExpression) != nil { return i }
+        }
+        return first
     }
 
-    private static func isBlockBoundary(_ line: String, ident: String) -> Bool {
+    static func isBlockBoundary(_ line: String, ident: String) -> Bool {
         let u = line.uppercased()
+        // ⚠️ THIS AIRPORT'S OWN PARENTHETICAL IS NOT A BOUNDARY. The block OPENS on the line carrying
+        // "(DET)", so without this the block ends on the very line it starts and every airport parses
+        // as empty. Both keying forms are excluded because the booklet prints the bare FAA code while
+        // the app may hold the ICAO one.
+        let forms = AirportKey.forms(ident)
+        let mine = ["(" + forms.asGiven.uppercased() + ")", "(" + forms.alternate.uppercased() + ")"]
+        if mine.contains(where: { u.contains($0) }) { return false }
         // An approach TYPE qualifier is not an airport identifier, even though both are parenthesised.
-        let qualifiers = ["(GPS)", "(RNP)", "(RNAV)", "(PRM)", "(SA)", "(CAT"]
-        if qualifiers.contains(where: { u.contains($0) }) { return false }
-        if u.range(of: "\\([A-Z0-9]{3,4}\\)", options: .regularExpression) != nil { return true }
+        //
+        // ⚠️ A LINE CAN CARRY BOTH. "FLD (ANJ)……….RNAV (GPS) Rwy 14" opens a new airport AND names an
+        // approach type, so rejecting the whole line whenever a qualifier appears anywhere in it missed
+        // every boundary whose first entry is an RNAV approach — the common case. Each parenthetical is
+        // judged on its own; a boundary needs one that is not a qualifier.
+        let qualifiers: Set<String> = ["GPS", "RNAV", "RNP", "PRM", "SA", "CAT"]
+        if let re = try? NSRegularExpression(pattern: "\\(([A-Z0-9]{2,4})\\)") {
+            let ns = u as NSString
+            for m in re.matches(in: u, range: NSRange(location: 0, length: ns.length)).prefix(16) {
+                let code = ns.substring(with: m.range(at: 1))
+                guard !qualifiers.contains(code), code.count >= 3 else { continue }
+                return true                                              // bounded (rule 2)
+            }
+        }
         // "AUGUSTA, ME" — a city header.
         return u.range(of: ", [A-Z]{2}$", options: .regularExpression) != nil
+    }
+
+    /// A footnote whose superscript marker sits at the head of its own text — "1LOC Cat C 800-2½".
+    ///
+    /// ⚠️ AN AIRPORT IDENTIFIER LOOKS THE SAME AT THE FIRST TWO CHARACTERS. "9G3 SOMEWHERE MUNI" also
+    /// begins digit-then-letter, so the marker is only accepted when the remainder reads like footnote
+    /// PROSE: it carries a lowercase letter, opens with NA, or states a ceiling-visibility pair. Booklet
+    /// names are set in full capitals, so the lowercase test separates them cleanly.
+    static func inlineFootnote(_ line: String) -> (id: Int, text: String)? {
+        var chars = Array(line.prefix(240))                                  // bounded (rule 2)
+        guard let first = chars.first, let n = first.wholeNumberValue,
+              n > 0, n <= maxFootnotes, chars.count > 4 else { return nil }
+        chars.removeFirst()
+        guard let second = chars.first, !second.isNumber else { return nil }
+        let body = String(chars).trimmingCharacters(in: .whitespaces)
+        let looksLikeProse = body.contains(where: { $0.isLowercase })
+            || body.uppercased().hasPrefix("NA")
+            || body.range(of: "[0-9]{3,4}-", options: .regularExpression) != nil
+        guard looksLikeProse else { return nil }
+        assert(n <= maxFootnotes, "alternate minima: inline marker out of range")
+        return (n, body)
     }
 
     private static func isConditionLine(_ line: String) -> Bool {
@@ -105,12 +167,7 @@ enum AlternateMinimaParser {
         // published entry like any other. Recognising it also stops the block walking into the next
         // airport looking for a "Rwy" that will never come.
         guard let r = line.range(of: "RWY", options: [.caseInsensitive]) else {
-            guard line.range(of: "[A-Z]{3,}.*-[A-Z]$", options: [.regularExpression]) != nil,
-                  line.uppercased().range(of: "(GPS)|(RNAV)|VOR|NDB|LOC|ILS|LDA|SDF|TACAN",
-                                          options: .regularExpression) != nil else { return nil }
-            let name = cleanedName(line)
-            return name.isEmpty ? nil
-                : AlternateMinima.Entry(name: name, runway: "", footnoteIDs: [])
+            return runwayLessEntry(from: line)
         }
         let head = String(line[..<r.lowerBound])
         let tail = String(line[r.upperBound...]).trimmingCharacters(in: .whitespaces)
@@ -119,6 +176,36 @@ enum AlternateMinimaParser {
         // Strip the leader dots and any airport name preceding the approach type.
         let name = cleanedName(head) + " Rwy " + runway
         return AlternateMinima.Entry(name: name, runway: runway, footnoteIDs: marks)
+    }
+
+    /// An approach that serves no single runway: a CIRCLING approach named by letter ("RNAV (GPS)-B",
+    /// "VOR-A") or a RADAR approach named by number ("RADAR-1"). Both are published entries.
+    ///
+    /// ⚠️ THE FOOTNOTE MARKER GLUES ON HERE TOO, and anchoring the letter to end-of-line missed it:
+    /// North Adams publishes only "RNAV (GPS)-A1" and "RNAV (GPS)-B2", so BOTH its entries were
+    /// unrecognised and the airport parsed as having no alternate minima at all — the failure looks
+    /// exactly like "standard minima apply", which is the opposite of what the booklet says. Youngstown
+    /// (RADAR-1 only) failed the same way. 11 airports in the cycle had no readable entry; these two
+    /// forms were 8 of them.
+    private static func runwayLessEntry(from line: String) -> AlternateMinima.Entry? {
+        let u = line.uppercased()
+        guard u.range(of: "\\(GPS\\)|\\(RNAV\\)|VOR|NDB|LOC|ILS|LDA|SDF|TACAN|RADAR",
+                      options: .regularExpression) != nil else { return nil }
+        // "-A" / "-B" is the circling letter; "RADAR-1" names the radar approach. Anything after is a
+        // run of footnote markers.
+        let patterns = ["-[A-Z][0-9]*$", "RADAR-[0-9][0-9]*$"]
+        for p in patterns {                                                  // bounded (rule 2)
+            guard let m = u.range(of: p, options: .regularExpression) else { continue }
+            let tail = String(u[m])
+            // Keep the designator (letter, or the radar number) with the name; the rest are markers.
+            let keep = p.hasPrefix("RADAR") ? tail.prefix(7) : tail.prefix(2)
+            let name = cleanedName(String(u[..<m.lowerBound])) + String(keep)
+            let trimmed = name.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty else { return nil }
+            return AlternateMinima.Entry(name: trimmed, runway: "",
+                                         footnoteIDs: marks(String(tail.dropFirst(keep.count))))
+        }
+        return nil
     }
 
     /// ⚠️ THE CENTRAL PROBLEM. Superscript footnote markers CONCATENATE onto the runway number, and the

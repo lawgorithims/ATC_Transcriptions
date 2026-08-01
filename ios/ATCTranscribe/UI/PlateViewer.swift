@@ -217,9 +217,33 @@ struct PlateViewer: View {
                                                    procedureName: m.name, kind: "IAP",
                                                    runwayThresholds: thresholds)
             return chart.extent.count >= 2 ? chart : nil
+        case .departure, .arrival:
+            // ⚠️ THIS CASE WAS `default: return nil`, so the SID/STAR framing had no way to be reached
+            // from the app at all — the terminal-end fit was written, tested and unreachable.
+            let want = current.category == .departure ? "SID" : "STAR"
+            return terminalChart(kind: want)
         default:
             return nil
         }
+    }
+
+    /// A departure or arrival drawn from its coded legs.
+    ///
+    /// Matched to the plate by NAME rather than by the approach scorer: a SID plate is titled with the
+    /// procedure's own name ("PATRIOT THREE"), which is exactly the `ident`/`name` CIFP carries, so the
+    /// fuzzy runway-aware matching an approach needs would only add ways to be wrong.
+    private func terminalChart(kind: String) -> VectorProcedureChart? {
+        let plate = current.name.uppercased()
+        let procs = CIFP.procedures(airport: airport).prefix(2048).filter { $0.kind == kind }
+        guard let m = procs.first(where: { plate.contains($0.name.uppercased()) && !$0.name.isEmpty })
+                ?? procs.first(where: { plate.contains($0.ident.uppercased()) && !$0.ident.isEmpty })
+        else { return nil }
+        let legs = Array(CIFP.legs(procedureID: m.id).prefix(512))       // bounded (rule 2)
+        guard legs.count >= 2 else { return nil }
+        let chart = VectorProcedureChart.build(legs: legs, airport: airport,
+                                               procedureName: m.name.isEmpty ? m.ident : m.name,
+                                               kind: kind, runwayThresholds: nil)
+        return chart.extent.count >= 2 ? chart : nil
     }
     private var trafficMarkers: [PlateTraffic] {
         model.aircraft.compactMap { ac in ac.coordinate.map { PlateTraffic(coord: $0, track: ac.trackDeg) } }
@@ -238,8 +262,13 @@ struct PlateViewer: View {
         NavigationStack {
             Group {
                 if showingVector, let chart = vectorChart {
+                    // The FIELD is what makes a SID or STAR readable: fitting one to its whole extent
+                    // gives a ~200 NM chart (STAR median 96.1 NM to its furthest leg, p90 200.6) on
+                    // which the terminal end — the part actually flown — is a dot. Passing it lets the
+                    // view open on `.terminal`; an approach ignores it and frames whole.
                     VectorProcedureView(chart: chart, palette: palette,
-                                        theme: MapTheme.forLayer(model.chartLayer, theme: model.theme))
+                                        theme: MapTheme.forLayer(model.chartLayer, theme: model.theme),
+                                        field: ProcedureRoute.fieldPosition(airport))
                         .ignoresSafeArea(edges: .bottom)
                 } else if let url {
                     PDFKitView(url: url, georef: georef,

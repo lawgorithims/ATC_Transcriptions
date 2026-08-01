@@ -154,4 +154,122 @@ final class AlternateMinimaTests: XCTestCase {
                        .notAuthorised("control tower closed"))
         XCTAssertTrue(m.usability(m.entries[0], localWeatherAvailable: true, towerOpen: true).isAuthorised)
     }
+
+    // MARK: what the REAL booklets look like (all 27 in the 2607 cycle were measured)
+
+    /// The booklet is two columns and PDFKit reads them y-then-x, so the raw line order interleaves
+    /// them. Left-in-full then right-in-full is the only order in which a block is contiguous.
+    func testTheTwoColumnsAreReadOneAtATime() {
+        let lines = [
+            AlternateMinimaReader.Placed(x: 21, width: 95, y: 271, text: "AUBURN/LEWISTON, ME"),
+            AlternateMinimaReader.Placed(x: 200, width: 71, y: 271, text: "BAR HARBOR, ME"),
+            AlternateMinimaReader.Placed(x: 26, width: 156, y: 286, text: "MUNI (LEW)....ILS or LOC Rwy 4"),
+            AlternateMinimaReader.Placed(x: 208, width: 153, y: 286, text: "BAR HARBOR (BHB)....ILS Rwy 22"),
+        ]
+        let out = AlternateMinimaReader.ordered(lines, pageWidth: 387)
+        XCTAssertEqual(out, ["AUBURN/LEWISTON, ME", "MUNI (LEW)....ILS or LOC Rwy 4",
+                             "BAR HARBOR, ME", "BAR HARBOR (BHB)....ILS Rwy 22"],
+                       "interleaved columns end every block at its own first line")
+    }
+
+    /// A full-width line spans both columns and belongs where it sits, ahead of the airport blocks.
+    func testAFullWidthPreambleLineStaysAhead() {
+        let lines = [
+            AlternateMinimaReader.Placed(x: 200, width: 71, y: 271, text: "RIGHT COLUMN"),
+            AlternateMinimaReader.Placed(x: 25, width: 335, y: 60, text: "Pilots must review the notes."),
+        ]
+        XCTAssertEqual(AlternateMinimaReader.ordered(lines, pageWidth: 387).first,
+                       "Pilots must review the notes.")
+    }
+
+    /// ⚠️ THE REGRESSION THAT MOTIVATED THE ORDERING FIX. A city block holds several airports, and the
+    /// next one's first line is BOTH a boundary and a valid entry.
+    func testACityBlockWithTwoAirportsDoesNotBleed() throws {
+        let text = """
+        DETROIT, MI
+        COLEMAN A YOUNG
+        MUNI (DET)......ILS or LOC Rwy 151
+        RNAV (GPS) Rwy 332
+        1LOC Cat D 900-2.
+        WILLOW RUN (YIP).......ILS or LOC Rwy 51
+        RNAV (GPS) Rwy 92
+        """
+        let m = try XCTUnwrap(AlternateMinimaParser.parse(text: text, ident: "DET",
+                                                          publishedRunways: ["15", "33"]))
+        XCTAssertEqual(m.entries.count, 2, "Willow Run's approaches are not Coleman A Young's")
+        XCTAssertEqual(m.entries.map(\.runway), ["15", "33"])
+    }
+
+    /// The boundary line usually names an approach type too, so a blanket "contains (GPS)" test never
+    /// fired on it.
+    func testABoundaryLineMayAlsoNameAnApproachType() {
+        XCTAssertTrue(AlternateMinimaParser.isBlockBoundary("FLD (ANJ).....RNAV (GPS) Rwy 14",
+                                                            ident: "CIU"))
+        XCTAssertFalse(AlternateMinimaParser.isBlockBoundary("RNAV (GPS) Rwy 14", ident: "CIU"))
+    }
+
+    /// The block's OWN opening line carries its own parenthetical and must not end it.
+    func testTheBlocksOwnIdentIsNotABoundary() {
+        XCTAssertFalse(AlternateMinimaParser.isBlockBoundary("MUNI (DET)......ILS Rwy 15", ident: "DET"))
+        XCTAssertFalse(AlternateMinimaParser.isBlockBoundary("MUNI (DET)......ILS Rwy 15", ident: "KDET"),
+                       "the booklet prints the bare FAA code; the app may hold the ICAO one")
+    }
+
+    /// PDFKit keeps a superscript on its text's baseline, so the marker arrives glued to the front.
+    func testAnInlineFootnoteMarkerIsRead() throws {
+        let f = try XCTUnwrap(AlternateMinimaParser.inlineFootnote("1LOC Cat C 800-2, Cat D 900-2."))
+        XCTAssertEqual(f.id, 1)
+        XCTAssertEqual(f.text, "LOC Cat C 800-2, Cat D 900-2.")
+    }
+
+    /// ⚠️ An identifier begins digit-then-letter too. Only footnote PROSE is accepted.
+    func testAnIdentifierIsNotMistakenForAFootnote() {
+        XCTAssertNil(AlternateMinimaParser.inlineFootnote("9G3 SOMEWHERE MUNI"))
+        XCTAssertNil(AlternateMinimaParser.inlineFootnote("1000 PALMS, CA"))
+    }
+
+    /// North Adams publishes ONLY circling approaches, each with a marker glued to the letter. Failing
+    /// to read them made the airport look unlisted, which means the opposite of what the booklet says.
+    func testACirclingOnlyAirportWithGluedMarkersParses() throws {
+        let text = """
+        NORTH ADAMS, MA
+        HARRIMAN-AND-
+        WEST (AQW)..........RNAV (GPS)-A1
+        RNAV (GPS)-B2
+        1Cat A, B 2100-2, Cat C 2200-3.
+        """
+        let m = try XCTUnwrap(AlternateMinimaParser.parse(text: text, ident: "AQW",
+                                                          publishedRunways: ["11", "29"]))
+        XCTAssertEqual(m.entries.count, 2)
+        XCTAssertEqual(m.entries[0].name, "RNAV (GPS)-A")
+        XCTAssertEqual(m.entries[0].footnoteIDs, [1])
+        XCTAssertTrue(m.entries.allSatisfy { $0.runway.isEmpty }, "a circling approach serves no runway")
+    }
+
+    /// Youngstown publishes only RADAR-1, which names a number rather than a runway or a letter.
+    func testARadarOnlyAirportParses() throws {
+        let text = """
+        YOUNGSTOWN/WARREN, OH
+        RGNL (YNG)............RADAR-1
+        NA when local weather not available.
+        """
+        let m = try XCTUnwrap(AlternateMinimaParser.parse(text: text, ident: "YNG",
+                                                          publishedRunways: ["14", "32"]))
+        XCTAssertEqual(m.entries.count, 1)
+        XCTAssertEqual(m.entries[0].name, "RADAR-1")
+    }
+
+    /// ⚠️ The preamble names "RNAV (RNP)" and Owosso's identifier IS RNP, so the first match was prose.
+    func testThePreambleDoesNotStealAnIdentifier() throws {
+        let text = """
+        Non-Precision approach operations include: NDB, VOR, LOC, TACAN, LDA, SDF, ASR, RNAV
+        (GPS) and RNAV (RNP).
+        OWOSSO, MI
+        OWOSSO COMMUNITY (RNP).......RNAV (GPS) Rwy 11
+        """
+        let m = try XCTUnwrap(AlternateMinimaParser.parse(text: text, ident: "RNP",
+                                                          publishedRunways: ["11", "29"]))
+        XCTAssertEqual(m.entries.count, 1)
+        XCTAssertEqual(m.entries[0].runway, "11")
+    }
 }
