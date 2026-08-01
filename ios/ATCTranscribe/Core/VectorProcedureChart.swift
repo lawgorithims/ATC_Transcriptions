@@ -70,8 +70,23 @@ struct VectorProcedureChart: Equatable {
         var extent: [Coord] = []
         var fixes: [Fix] = []
 
+        // ⚠️ THE TRACK BREAKS AT EVERY GAP. One continuous polyline bridged straight across any leg the
+        // builder could not place — and the missed-approach-point leg has NO coordinate on 9,119 of
+        // 10,243 approach-proper rows (89%), all TF or CF. So the chart drew a solid stroke from the
+        // last placed fix to the first placed missed fix: a median 14.2 NM, up to 48.6, in the same
+        // weight and colour as the approach. A line the procedure does not contain is worse than a gap.
+        func flushTrack() {
+            if track.count >= 2 { primitives.append(.track(track)) }
+            track = []
+        }
         for leg in legs.prefix(512) {                                     // bounded (rule 2)
-            guard let c = leg.coord else {
+            // THE RUNWAY PSEUDO-FIX IS THE THRESHOLD. `build_cifp.py` never adds RW* idents to its fix
+            // table, so these carry a NULL coordinate — and the final approach segment simply stopped at
+            // the FAF with the runway drawn separately and nothing joining them. No inference is
+            // involved: the threshold position is already in hand, and it is definitionally where that
+            // leg is. The same recovery ApproachProfile makes for the identical reason.
+            let placed = leg.coord ?? (CIFP.isRunwayPseudoFix(leg.fix) ? runwayThresholds?.from : nil)
+            guard let c = placed else {
                 // ⚠️ ONLY AN INSTRUCTION IS DRAWN AS ONE. An altitude- or heading-terminated leg
                 // legitimately has no endpoint — "climb on 037 to 700" is the whole leg. But a TF, DF or
                 // IF leg is a track TO A FIX, so a missing coordinate there is MISSING DATA, not an
@@ -82,6 +97,7 @@ struct VectorProcedureChart: Equatable {
                     primitives.append(.unplacedLeg(from: from, courseMag: leg.course,
                                                    text: Self.unplacedText(leg)))
                 }
+                flushTrack()               // the path is interrupted here; do not bridge it
                 continue
             }
             // Curves: the arc interior goes in BEFORE the endpoint, exactly as on the map.
@@ -95,7 +111,7 @@ struct VectorProcedureChart: Equatable {
             guard !leg.fix.isEmpty, !CIFP.isRunwayPseudoFix(leg.fix) else { continue }
             fixes.append(Fix(ident: leg.fix, coord: c, role: leg.role, constraint: leg.constraint))
         }
-        if track.count >= 2 { primitives.append(.track(track)) }
+        flushTrack()
         primitives += fixes.map { .fix($0) }
         if let r = runwayThresholds {
             primitives.append(.runway(from: r.from, to: r.to, designator: r.designator))
