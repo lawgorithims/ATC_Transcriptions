@@ -32,6 +32,15 @@ struct ResolvedLeg: Identifiable, Equatable {
 /// so the line connects the fixes on either side. Idents that resolve to nothing are reported so the
 /// map can note "N waypoints not located".
 enum RouteResolver {
+
+    /// How many interior airway fixes one resolve may add, in total.
+    ///
+    /// Reserves the rest of `ProcedureRoute.maxLegs` for the arrival, approach and destination, which
+    /// are appended AFTER the enroute portion and are the part a pilot cannot afford to lose. 200 covers
+    /// any realistic filed route — the longest single US airway carries 124 interior fixes — while
+    /// leaving two thirds of the budget for the tail.
+    static let maxAirwayExpansion = 200
+
     /// `seed` primes the "nearest to the previous point" disambiguation for the FIRST leg — pass the last
     /// already-resolved coordinate when resolving a route SLICE (e.g. the enroute middle after a departure
     /// or SID), so an ambiguous first ident resolves to the instance nearest the chain, not an arbitrary
@@ -40,6 +49,7 @@ enum RouteResolver {
         var points: [ResolvedLeg] = []
         var unresolved: [String] = []
         var previous: Coord? = seed
+        var expanded = 0                       // interior airway points spent against maxAirwayExpansion
         for (i, leg) in legs.enumerated() {
             if let c = UserPoint.parse(leg.ident) {   // a dropped lat/lon user waypoint
                 points.append(ResolvedLeg(ident: leg.ident, kind: .waypoint, coord: c))
@@ -61,8 +71,21 @@ enum RouteResolver {
                 guard !before.isEmpty, !after.isEmpty else { continue }
                 let seg = Airways.segment(of: leg.ident, from: before, to: after)
                 guard seg.count > 2 else { continue }          // ends only → nothing to add
-                // Drop both ENDS: they are the bracketing fixes, which the loop resolves on their own.
-                for p in seg.dropFirst().dropLast().prefix(400) {         // bounded (rule 2)
+                // ⚠️ BUDGETED. `ProcedureRoute.resolve` appends the enroute portion BEFORE the arrival,
+                // the approach and the destination, so points spent here come out of the same 600-leg
+                // cap those need — and the tail is the safety-critical part. The longest US airways
+                // carry 124, 118 and 110 interior fixes (V16, V4, T224), so six filed end to end is 631
+                // points and would truncate the approach off the end of the route. Before this feature
+                // an airway token contributed nothing, so the cap could not be reached this way.
+                //
+                // The cap is per-RESOLVE, not per-airway: a route may file many. Exceeding it drops the
+                // airway's interior and leaves the direct line, which is the pre-existing behaviour and
+                // visibly a straight line — never a silently truncated approach.
+                let room = maxAirwayExpansion - expanded
+                let interior = seg.dropFirst().dropLast()
+                guard interior.count <= room else { continue }
+                expanded += interior.count
+                for p in interior.prefix(400) {                           // bounded (rule 2)
                     points.append(ResolvedLeg(ident: p.fix, kind: .waypoint, coord: p.coord))
                     previous = p.coord
                 }

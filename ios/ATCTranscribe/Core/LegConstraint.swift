@@ -136,6 +136,17 @@ struct LegConstraint: Equatable {
                                  rnpNm: rnpNm ?? other.rnpNm, altUnmodelled: true,
                                  glidepathAltFt: glidepathAltFt ?? other.glidepathAltFt)
         }
+        // ⚠️ "STATES NOTHING" IS NOT "PERMITS EVERYTHING". `CIFPLeg.constraint` is non-optional, so a leg
+        // with a blank altitude still arrives here as a fully-formed LegConstraint whose `alt` is nil.
+        // Unioning that as an open band wiped the OTHER leg's real rule: measured over every adjacent
+        // same-fix pair in the cycle, 1,006 legs lost a published crossing altitude and 560 a published
+        // speed limit — 925 of them on STARs, which directly undid the fix that put the common
+        // segment's restrictions back into constraintRoute in the first place.
+        //
+        // A side that states nothing is absent, not permissive. Coalesce to the other side, exactly as
+        // verticalAngleDeg and rnpNm already do, and only union when BOTH sides actually state a rule.
+        guard alt != nil else { return other.carryingExtras(from: self) }
+        guard other.alt != nil else { return carryingExtras(from: other) }
         let a = band, b = other.band
         // An OPEN end stays open: if either rule permits arbitrarily high, so does the union.
         let floor: Int? = (a.floor == nil || b.floor == nil) ? nil : min(a.floor!, b.floor!)
@@ -154,12 +165,34 @@ struct LegConstraint: Equatable {
                "unioned: floor rose above one of its inputs")
         assert(ceiling == nil || (ceiling! >= (a.ceiling ?? ceiling!) && ceiling! >= (b.ceiling ?? ceiling!)),
                "unioned: ceiling fell below one of its inputs")
-        // A speed LIMIT is a ceiling, so the union is the more permissive of the two.
-        let spd: Int? = (speedLimitKt == nil || other.speedLimitKt == nil)
-            ? nil : max(speedLimitKt!, other.speedLimitKt!)
+        // A speed LIMIT is a ceiling, so the union is the more permissive of the two — but only when
+        // both state one; an absent limit is silence, not permission (same trap as the altitude above).
+        let spd: Int?
+        switch (speedLimitKt, other.speedLimitKt) {
+        case (let x?, let y?): spd = max(x, y)
+        case (let x?, nil):    spd = x
+        case (nil, let y?):    spd = y
+        case (nil, nil):       spd = nil
+        }
         return LegConstraint(alt: rule, speedLimitKt: spd,
                              verticalAngleDeg: verticalAngleDeg ?? other.verticalAngleDeg,
                              rnpNm: rnpNm ?? other.rnpNm, altUnmodelled: false,
+                             glidepathAltFt: glidepathAltFt ?? other.glidepathAltFt)
+    }
+
+    /// This constraint, keeping any non-altitude detail the other side has and it lacks. Used when the
+    /// other side states no altitude rule at all, so there is nothing to union — see `unioned(with:)`.
+    private func carryingExtras(from other: LegConstraint) -> LegConstraint {
+        let spd: Int?
+        switch (speedLimitKt, other.speedLimitKt) {
+        case (let x?, let y?): spd = max(x, y)
+        case (let x?, nil):    spd = x
+        case (nil, let y?):    spd = y
+        case (nil, nil):       spd = nil
+        }
+        return LegConstraint(alt: alt, speedLimitKt: spd,
+                             verticalAngleDeg: verticalAngleDeg ?? other.verticalAngleDeg,
+                             rnpNm: rnpNm ?? other.rnpNm, altUnmodelled: altUnmodelled,
                              glidepathAltFt: glidepathAltFt ?? other.glidepathAltFt)
     }
 

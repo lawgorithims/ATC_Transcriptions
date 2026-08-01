@@ -95,6 +95,35 @@ enum AirportSymbolData {
         return looked
     }
 
+    /// ⚠️ NASR AND THE CURATED TABLE SPEAK DIFFERENT VOCABULARIES, and `AirportSymbol.classifyKind`
+    /// reads the curated one. Feeding it NASR's raw codes made every fallback airport classify as a
+    /// plain airport: 254 CLOSED fields drew as usable, and 74 heliports, 87 ultralight strips, 31
+    /// gliderports and 4 seaplane bases all drew as private airstrips — worse than the honest circled
+    /// "U" they had before, because the app was now affirmatively drawing a usable airfield on a closed
+    /// one. Translate, do not pass through.
+    ///
+    /// CLOSURE IS NOT IN `site_type`. It is `status` (CI/CP), which the first version never read at all.
+    /// It is checked FIRST because a closed heliport is closed before it is a heliport.
+    static func curatedTypeCode(_ a: AirportData.Airport) -> String? {
+        if !a.isOperational, !a.status.isEmpty { return "CLS" }
+        switch a.siteType.uppercased() {
+        case "H":            return "HEL"
+        case "C":            return "SPB"
+        case "U":            return "ULT"
+        case "G", "B":       return "ULT"      // gliderport / balloonport: not an airplane field
+        case "A":            return nil        // a plain airport — let shape and owner classify it
+        default:             return nil        // unknown/absent: say nothing rather than guess
+        }
+    }
+
+    /// NASR ownership → the single letter `classifyKind` tests. MA/MN/MR are the military codes; the
+    /// curated table's "M" is what the classifier looks for, and passing "MA" through missed all 21.
+    static func curatedOwner(_ ownership: String) -> String? {
+        let o = ownership.uppercased()
+        guard !o.isEmpty else { return nil }
+        return o.hasPrefix("M") ? "M" : o
+    }
+
     /// The symbol attributes an airport's NASR record supports, for the 8,907 fields the curated table
     /// does not cover. Returns the plain unverified attributes when NASR has nothing either — which is
     /// then a true statement rather than a gap.
@@ -113,8 +142,8 @@ enum AirportSymbolData {
             hasFuel: a.hasFuel,
             hasBeacon: nil,                                       // not carried on this row
             hardSurface: Self.hardSurface(nasr),
-            owner: a.ownership.isEmpty ? nil : a.ownership,
-            typeCode: a.siteType.isEmpty ? nil : a.siteType,
+            owner: Self.curatedOwner(a.ownership),
+            typeCode: Self.curatedTypeCode(a),
             name: name ?? (a.name.isEmpty ? nil : a.name))
     }
 
