@@ -147,4 +147,43 @@ final class CodedDataAuditFixTests: XCTestCase {
         // procedures at every airport missing from the coordinate table.
         XCTAssertTrue(ProcedureRoute.isPlausibleApproachLeg(Coord(lat: 0, lon: 0), field: nil))
     }
+
+    // MARK: - the chart outranks the title
+
+    func testParsedChartEvidenceOverridesTheNameHeuristic() {
+        // The point of the whole exercise: when the app has actually READ the plate, it must believe the
+        // plate. "RNAV (GPS) RWY 17" reads as non-precision from its title alone (correctly, because the
+        // title cannot tell) — but a chart that publishes an LPV line IS flown to a decision altitude.
+        let legs = [
+            CIFPLeg(seq: 10, fix: "FAFIX", coord: Coord(lat: 42.5, lon: -71.0), legType: "TF",
+                    course: nil, altitude: "02000", wpDesc: "   F", altDesc: "+"),
+            CIFPLeg(seq: 20, fix: "RW17", coord: nil, legType: "TF", course: nil, altitude: "00250",
+                    wpDesc: "   M", altDesc: "", verticalAngleDeg: -3.0),
+        ]
+        let th = Coord(lat: 42.36, lon: -71.0)
+        let byTitle = ApproachProfile.build(legs: legs, threshold: th, thresholdElevFt: 200,
+                                            airport: "KTST", approachName: "RNAV (GPS) RWY 17",
+                                            codedRunway: "17")
+        XCTAssertFalse(byTitle.hasVerticalGuidance, "the title alone must stay conservative")
+
+        let byChart = ApproachProfile.build(legs: legs, threshold: th, thresholdElevFt: 200,
+                                            airport: "KTST", approachName: "RNAV (GPS) RWY 17",
+                                            codedRunway: "17", publishedVerticalGuidance: true)
+        XCTAssertTrue(byChart.hasVerticalGuidance, "a parsed LPV line must restore the glidepath picture")
+    }
+
+    func testChartEvidenceCanAlsoOverrideAnOptimisticTitle() {
+        // And in the other direction: an ILS-titled chart whose parsed block publishes only an MDA.
+        let legs = [
+            CIFPLeg(seq: 10, fix: "FAFIX", coord: Coord(lat: 42.5, lon: -71.0), legType: "TF",
+                    course: nil, altitude: "02000", wpDesc: "   F", altDesc: "+"),
+            CIFPLeg(seq: 20, fix: "RW04", coord: nil, legType: "TF", course: nil, altitude: "00250",
+                    wpDesc: "   M", altDesc: "", verticalAngleDeg: -3.0),
+        ]
+        let p = ApproachProfile.build(legs: legs, threshold: Coord(lat: 42.36, lon: -71.0),
+                                      thresholdElevFt: 200, airport: "KTST",
+                                      approachName: "ILS OR LOC RWY 04", codedRunway: "04",
+                                      publishedVerticalGuidance: false)
+        XCTAssertFalse(p.hasVerticalGuidance, "read evidence must win over the title in both directions")
+    }
 }

@@ -136,8 +136,17 @@ struct ApproachProfile: Equatable {
     /// the rest of the activation path uses, passed in rather than re-derived so the two cannot disagree.
     /// `threshold` is the landing runway's coordinate; distances are measured to it, because that is what
     /// the geometry is anchored on and an airport reference point can be a mile from the touchdown zone.
+    /// `publishedVerticalGuidance` is EVIDENCE from the chart itself — whether the plate's minima block
+    /// actually prints a line flown to a decision altitude. Pass it whenever the plate has been parsed;
+    /// pass nil when it has not, and the conservative name test below stands in.
+    ///
+    /// This is the distinction the coded data cannot make. "RNAV (GPS) RWY 17" is the title whether the
+    /// chart publishes an LPV line, an LNAV/VNAV line, or an LNAV MDA and nothing else, and the ARINC
+    /// FAS block that would settle it lives on continuation records the builder drops. The plate is the
+    /// authority, so when the app has read the plate it should believe the plate rather than the title.
     static func build(legs: [CIFPLeg], threshold: Coord?, thresholdElevFt: Double?,
-                      airport: String, approachName: String, codedRunway: String = "-") -> ApproachProfile {
+                      airport: String, approachName: String, codedRunway: String = "-",
+                      publishedVerticalGuidance: Bool? = nil) -> ApproachProfile {
         assert(legs.count <= 512, "ApproachProfile: leg list bound")
         var stations: [Station] = []
         var angle: Double?
@@ -177,7 +186,9 @@ struct ApproachProfile: Equatable {
         // glidepath; on one that has not, the identical field is an ADVISORY descent angle. CIFP does not
         // label which, so the approach TYPE decides — and the distinction changes both the rendering
         // (DA on the slope vs MDA as a floor) and what the app is entitled to claim.
-        let guided = Self.impliesVerticalGuidance(approachName, codedRunway: codedRunway)
+        // The chart wins when it has been read; the title is only the fallback.
+        let guided = publishedVerticalGuidance
+            ?? Self.impliesVerticalGuidance(approachName, codedRunway: codedRunway)
         // The farthest leg that has a coordinate, in the same order the stations were sorted into.
         let outer = stations.first.flatMap { st in
             legs.first { $0.fix == st.fix && $0.coord != nil }?.coord
