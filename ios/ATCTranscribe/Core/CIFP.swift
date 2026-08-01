@@ -383,7 +383,13 @@ enum CIFP {
 
     // MARK: helpers
 
+    /// Every airport-keyed read goes through here, so widening it to BOTH identifier forms fixes the
+    /// K00R-vs-00R namespace split once rather than at each call site. See `AirportKey`.
     private static func query<T>(_ sql: String, _ airport: String, _ row: (OpaquePointer?) -> T) -> [T] {
+        AirportKey.resolving(airport) { bind(sql, $0, row) }
+    }
+
+    private static func bind<T>(_ sql: String, _ airport: String, _ row: (OpaquePointer?) -> T) -> [T] {
         guard let db else { return [] }
         var st: OpaquePointer?
         guard sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK else { return [] }
