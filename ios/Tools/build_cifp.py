@@ -172,22 +172,29 @@ def main():
     def add_terminal(apt, ident, c):
         if apt and ident and c:
             terminal_fixes.setdefault((apt, ident), c)
+    # ⚠️ SECTION P HAS TWO SUBSECTION POSITIONS. On a PROCEDURE record the subsection sits at 0-based 12
+    # ("SUSAP KSJTK4F..." — F = approach); on a terminal NAVAID or WAYPOINT record it sits at 5
+    # ("SUSAPNKBRDK3 BR" — N = NDB, airport KBRD at 6-10, region K3 at 10-12). Reading only position 12
+    # meant the terminal-NDB branch NEVER FIRED, so airport scoping silently collected nothing for them.
     for l in lines:
         if len(l) < 40:
             continue
-        sec, sub = l[4], (l[12] if len(l) > 12 else " ")
-        if sec == "E" and l[5] == "A":                          # enroute waypoint
+        sec = l[4]
+        sub12 = l[12] if len(l) > 12 else " "
+        sub5 = l[5]
+        if sec == "E" and sub5 == "A":                          # enroute waypoint
             add_fix(l[13:18].strip(), coord(l))
-        elif sec == "P" and sub == "C":                         # terminal waypoint
+        elif sec == "P" and (sub5 == "C" or sub12 == "C"):      # terminal waypoint
             add_terminal(l[6:10].strip(), l[13:18].strip(), coord(l))
             add_fix(l[13:18].strip(), coord(l))
         elif sec == "D":                                        # VHF navaid (VOR/DME/TACAN) and NDB
             add_region(l[13:17].strip(), l[19:21].strip(), coord(l))
             add_fix(l[13:17].strip(), coord(l))
-        elif sec == "P" and sub == "N":                         # terminal NDB
+        elif sec == "P" and (sub5 == "N" or sub12 == "N"):      # terminal NDB
             add_terminal(l[6:10].strip(), l[13:17].strip(), coord(l))
+            add_region(l[13:17].strip(), l[10:12].strip(), coord(l))
             add_fix(l[13:17].strip(), coord(l))
-        elif sec == "P" and sub == "A":                         # airport reference point
+        elif sec == "P" and (sub5 == "A" or sub12 == "A"):      # airport reference point
             add_fix(l[6:10].strip(), coord(l))
     nrf = 0
     print(f"fixes: {len(fixes)} global, {len(terminal_fixes)} airport-scoped, "
@@ -338,13 +345,23 @@ def main():
             # terminal waypoint or NDB with the same ident elsewhere is a different point entirely —
             # see the note in pass 1. Falling back to the global table keeps enroute fixes and VHF
             # navaids, which are genuinely global, resolving exactly as before.
-            # Most specific first: the REGION the leg itself names, then this airport's own terminal
-            # fix, then the global table. The global fallback keeps every unambiguous enroute fix and
-            # navaid resolving exactly as before.
+            # ⚠️ THE LEG TELLS YOU WHICH TABLE TO LOOK IN. Columns 34-36 are the fix's region and 36-37
+            # its SECTION: "P" means a TERMINAL fix, which belongs to one airport, and "D"/"E" mean an
+            # enroute navaid or waypoint, which is regional. Looking in the region table first got KBRD
+            # wrong — three airports publish a terminal NDB called "BR" and two of them are in region
+            # K3, so the region alone does not disambiguate and it picked Burlington's, 369 NM from
+            # Brainerd. When the leg says the fix is terminal, the AIRPORT is the more specific key.
             fix_region = l[34:36].strip() if len(l) > 36 else ""
-            c = (region_fixes.get((fix, fix_region))
-                 or terminal_fixes.get((apt, fix))
-                 or fixes.get(fix)) if fix else None
+            fix_sec = l[36] if len(l) > 36 else " "
+            if fix:
+                if fix_sec == "P":                              # terminal: airport, then region
+                    c = (terminal_fixes.get((apt, fix)) or region_fixes.get((fix, fix_region))
+                         or fixes.get(fix))
+                else:                                           # enroute: region, then airport
+                    c = (region_fixes.get((fix, fix_region)) or terminal_fixes.get((apt, fix))
+                         or fixes.get(fix))
+            else:
+                c = None
             # RF arc centre: the fix named at 106-111, resolved through the same most-specific-first
             # tables as the leg's own fix. Only RF legs carry one.
             rf = None

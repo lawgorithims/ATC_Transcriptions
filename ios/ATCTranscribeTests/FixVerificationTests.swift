@@ -100,4 +100,47 @@ final class FixVerificationTests: XCTestCase {
         XCTAssertLessThan(RouteResolver.maxAirwayExpansion, ProcedureRoute.maxLegs / 2,
                           "the tail must keep most of the budget")
     }
+
+    // MARK: - no approach leg is misplaced any more
+
+    func testNoApproachLegSitsImplausiblyFarFromItsField() throws {
+        try XCTSkipUnless(CIFP.available, "cifp.sqlite not present")
+        // The end state of the whole misplaced-fix investigation. Sampled across the airports that were
+        // affected plus a spread of ordinary ones; every leg must now be within the bound of its own
+        // field. The single largest distance in the cycle is 172 NM at PMDY (Midway Atoll), a genuinely
+        // remote Pacific approach — which is why the bound is 250 and not 150.
+        var worst = 0.0, worstAt = ""
+        for apt in ["KBRD", "KSJT", "KRUQ", "KABI", "KBRO", "KHQU", "KJNX", "KMFD", "KPKB", "KSLN",
+                    "KBOS", "KDEN", "KSEA"] {
+            guard let field = ProcedureRoute.fieldPosition(apt) else { continue }
+            for p in CIFP.procedures(airport: apt) where p.kind == "IAP" {
+                for leg in CIFP.legs(procedureID: p.id).prefix(80) {
+                    guard let c = leg.coord else { continue }
+                    let d = Geo.nmBetween(field, c)
+                    if d > worst { worst = d; worstAt = "\(apt) \(p.ident) \(leg.fix)" }
+                    XCTAssertTrue(ProcedureRoute.isPlausibleApproachLeg(c, field: field),
+                                  "\(apt) \(p.ident) fix \(leg.fix) is \(Int(d)) NM from its field")
+                }
+            }
+        }
+        XCTAssertLessThan(worst, 100.0, "worst sampled leg was \(worstAt) at \(Int(worst)) NM")
+    }
+
+    func testBrainerdsTerminalNDBResolvesToBrainerd() throws {
+        try XCTSkipUnless(CIFP.available, "cifp.sqlite not present")
+        // Three airports publish a terminal NDB called "BR" and TWO of them are in region K3, so the
+        // region alone does not disambiguate — it picked Burlington's, 369 NM away. The leg declares
+        // the fix is TERMINAL (section P), which makes the airport the more specific key.
+        let field = try XCTUnwrap(ProcedureRoute.fieldPosition("KBRD"))
+        var found = false
+        for p in CIFP.procedures(airport: "KBRD") where p.kind == "IAP" {
+            for leg in CIFP.legs(procedureID: p.id) where leg.fix == "BR" {
+                let c = try XCTUnwrap(leg.coord)
+                found = true
+                XCTAssertLessThan(Geo.nmBetween(field, c), 15.0,
+                                  "KBRD's own NDB must be at Brainerd, not Burlington")
+            }
+        }
+        XCTAssertTrue(found, "KBRD publishes approaches using the BR NDB")
+    }
 }
