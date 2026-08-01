@@ -2676,8 +2676,55 @@ final class AppModel: ObservableObject {
                                             approachName: appr.name, codedRunway: appr.runway,
                                             publishedVerticalGuidance: chartVerticalGuidance(for: appr))
         approachProfile = profile.isDrawable ? profile : nil
+        rebuildApproachBrief()
         approachProfileTerrain = profile.isDrawable
             ? Self.sampleApproachTerrain(profile: profile, threshold: rwy?.coord) : []
+    }
+
+    /// The approach brief for the ACTIVE approach — assembled once when it is activated and when its
+    /// plate finishes parsing, never per render. Nil when no approach is active.
+    @Published private(set) var approachBrief: ApproachBrief?
+
+    /// Build the brief from what is already on the device. All reads are local; nothing is fetched.
+    private func rebuildApproachBrief() {
+        guard let appr = activeApproach else { approachBrief = nil; return }
+        let ends = AirportData.runwayEnds(airport: appr.airport)
+        let end = ends.first { $0.end.caseInsensitiveCompare(appr.runway) == .orderedSame }
+        let rwy = AirportData.runways(airport: appr.airport)
+            .first { $0.designator.uppercased().split(separator: "/").contains(where: {
+                $0.compare(appr.runway, options: .caseInsensitive) == .orderedSame }) }
+        // The published minimum, but ONLY from the row this approach is actually flown to — the same
+        // rule chartVerticalGuidance uses, and for the same reason: a shared ILS/LOC plate carries both.
+        var minimum: ApproachBrief.Minimum?
+        for chart in Procedures.forAirport(appr.airport).prefix(64)          // bounded (rule 2)
+        where chart.category == .approach {
+            guard !ApproachActivation.matchPlate(plateName: chart.name, runway: appr.runway,
+                                                 candidates: [(ident: appr.ident, name: appr.name,
+                                                               runway: appr.runway)]).isEmpty,
+                  let m = minima.result(for: chart)?.minima else { continue }
+            let mine = m.rows.filter { Self.minimaKindApplies($0.kind, toApproachNamed: appr.name) }
+            // The LOWEST category the chart publishes, named — not an assumed one. A pilot whose
+            // aircraft is a higher category sees which figure they are looking at and can open the
+            // Minima panel, which is still the authority.
+            if let row = mine.first,
+               let cat = PlateMinima.Category.allCases.first(where: { row.values[$0]?.altitudeFtMSL != nil }),
+               let alt = row.values[cat]?.altitudeFtMSL {
+                minimum = ApproachBrief.Minimum(category: cat, altitudeFtMSL: alt,
+                                                isDecisionAltitude: row.kind.usesDecisionAltitude,
+                                                lineLabel: row.kind.shortLabel)
+            }
+            break
+        }
+        approachBrief = ApproachBrief(
+            inboundCourseMag: nil,        // see ApproachProfile — published on only 40% of rows
+
+            minimum: minimum,
+            runway: appr.runway,
+            runwayLengthFt: rwy?.lengthFt,
+            touchdownZoneElevFt: end?.touchdownZoneElevationFt,
+            approachLights: end?.approachLights ?? "",
+            vgsi: end?.vgsi ?? "",
+            edgeLights: rwy?.lights ?? "")
     }
 
     /// Parse the ACTIVE approach's own plate, from disk, so the vertical-guidance question is answered

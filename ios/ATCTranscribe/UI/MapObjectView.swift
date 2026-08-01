@@ -597,6 +597,52 @@ struct MapObjectView: View {
     }
 
     /// Procedure = ForeFlight-style sub-tabs. Airport/Departure/Arrival/Approach map to plate categories
+    /// The obstacle departure and takeoff-minimums charts for this field, as direct buttons.
+    ///
+    /// ⚠️ THEY DO NOT LIVE IN THE SAME TAB. An ODP is chart code `ODP` and buckets under Departure with
+    /// the named SIDs; takeoff minimums are a `MIN` chart whose NAME carries "TAKEOFF" and bucket under
+    /// Other. Reading the code alone finds one and misses the other, which is why this matches on both.
+    ///
+    /// VCOA (visual climb over airport) is NOT a separate chart — measured, ZERO of the 24,078 charts in
+    /// the bundled index name it. It is a paragraph inside the takeoff-minimums booklet, so the honest
+    /// way to surface it is to put that booklet one tap away, which is exactly what this does. Claiming
+    /// a "VCOA" button that opened the same PDF would imply a chart that does not exist.
+    @ViewBuilder private func departureEssentials(_ ident: String) -> some View {
+        let all = Procedures.forAirport(ident)
+        let odp = all.first { $0.code == "ODP" }
+        let takeoff = all.first { $0.code == "MIN" && $0.name.uppercased().contains("TAKEOFF") }
+        if odp != nil || takeoff != nil {
+            Section("Before you go") {
+                if let odp { essentialRow(odp, title: "Obstacle departure", icon: "arrow.up.right") }
+                if let takeoff {
+                    essentialRow(takeoff, title: "Takeoff minimums", icon: "cloud.fog",
+                                 note: "Includes any VCOA for this field")
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private func essentialRow(_ proc: AirportProcedure, title: String,
+                                           icon: String, note: String? = nil) -> some View {
+        let p = model.palette
+        Button { Haptics.impact(.light); plate = proc } label: {
+            HStack(spacing: 9) {
+                Image(systemName: icon).font(.dsLabel).foregroundStyle(p.accent).frame(width: 20)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title).font(.dsLabelBold).foregroundStyle(p.text)
+                    Text(note ?? proc.name).font(.dsLabelS).foregroundStyle(p.textDim).lineLimit(2)
+                }
+                Spacer(minLength: 4)
+                if PlateStore.isCached(proc) {
+                    Image(systemName: "arrow.down.circle.fill").font(.dsLabelS).foregroundStyle(p.good)
+                }
+                Image(systemName: "chevron.right").font(.dsLabelS).foregroundStyle(p.textDim)
+            }
+        }
+        .buttonStyle(.plainHaptic)
+        .accessibilityIdentifier("departure-essential-\(proc.code)")
+    }
+
     /// (each row shows saved state + a "Map" send-to-map button + tap-to-open). Other = the misc plate
     /// charts (DVA, hot spots, takeoff/alternate minimums, LAHSO).
     @ViewBuilder private func procedureTab(_ ident: String) -> some View {
@@ -607,6 +653,12 @@ struct MapObjectView: View {
             .pickerStyle(.segmented)
             .listRowInsets(EdgeInsets(top: 6, leading: 8, bottom: 6, trailing: 8))
         }
+        // BEFORE DEPARTING, the two charts a pilot must have looked at are the obstacle departure and
+        // the takeoff minimums — and they were buried: an ODP files under "Departure" among the named
+        // SIDs, and takeoff minimums under "Other" among hot spots and alternate minima. 3,137 of the
+        // 3,197 charted airports (98%) publish at least one of them, so promoting them is not a
+        // special case, it is the common one.
+        if procTab == .departure { departureEssentials(ident) }
         let items = Procedures.forAirport(ident).filter { $0.category == procTab.category }
         if items.isEmpty {
             Section { emptyRow("No charts", "No \(procTab.label.lowercased()) charts for \(ident) this cycle.") }
