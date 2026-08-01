@@ -96,4 +96,47 @@ final class DMEArcTests: XCTestCase {
         }
         XCTAssertGreaterThan(seen, 0, "no AF legs found — the fixture airports should publish arcs")
     }
+
+    func testRFArcCentresAreNowInTheDatabase() throws {
+        try XCTSkipUnless(CIFP.available, "cifp.sqlite not present")
+        // ARINC publishes the RF centre fix at columns 106-111; the builder never extracted it, so all
+        // 1,439 radius-to-fix legs drew as chords. RNP AR approaches exist precisely because the arc
+        // keeps the aircraft in a narrow terrain-contained corridor.
+        var rf = 0, withCentre = 0
+        for apt in ["KYKM", "KGUC", "KGPI", "KSDL", "PANC"] {
+            for p in CIFP.procedures(airport: apt) where p.kind == "IAP" {
+                for leg in CIFP.legs(procedureID: p.id).prefix(80) where leg.legType == "RF" {
+                    rf += 1
+                    if leg.arcCentre != nil { withCentre += 1 }
+                }
+            }
+        }
+        try XCTSkipIf(rf == 0, "no RF legs at the fixture airports in this cycle")
+        XCTAssertEqual(withCentre, rf, "every RF leg must carry its arc centre")
+    }
+
+    func testAnRFCentreIsAPlausibleDistanceFromItsOwnLeg() throws {
+        try XCTSkipUnless(CIFP.available, "cifp.sqlite not present")
+        // A centre resolved to the wrong record would sit absurdly far away — the same failure mode as
+        // the SJ collision. RF radii are small by design (these are terminal turns).
+        for apt in ["KYKM", "KGUC", "KGPI", "KSDL"] {
+            for p in CIFP.procedures(airport: apt) where p.kind == "IAP" {
+                for leg in CIFP.legs(procedureID: p.id).prefix(80) {
+                    guard leg.legType == "RF", let c = leg.arcCentre, let at = leg.coord else { continue }
+                    let r = Geo.nmBetween(c, at)
+                    XCTAssertLessThan(r, 30.0, "\(apt) \(p.ident) RF radius \(r) NM is not a terminal turn")
+                    XCTAssertGreaterThan(r, 0.05, "\(apt) \(p.ident) RF centre sits on its own fix")
+                }
+            }
+        }
+    }
+
+    func testOnlyRFLegsClaimACentre() throws {
+        try XCTSkipUnless(CIFP.available, "cifp.sqlite not present")
+        for p in CIFP.procedures(airport: "KBOS") where p.kind == "IAP" {
+            for leg in CIFP.legs(procedureID: p.id).prefix(80) where leg.legType != "RF" {
+                XCTAssertNil(leg.arcCentre, "a \(leg.legType) leg must not claim an arc centre")
+            }
+        }
+    }
 }

@@ -74,6 +74,12 @@ struct CIFPLeg: Identifiable {
     /// published track by a median of 1.54 NM and by up to 13 NM at KPDT, where the drawn path runs
     /// directly over the VOR instead of arcing around it at 20 DME.
     var recommendedNavaid: String = ""
+    /// The centre of an `RF` (radius-to-fix) arc, resolved at build time. nil on every other leg type.
+    ///
+    /// RNP AR approaches exist because the RF arc keeps the aircraft inside a narrow terrain-contained
+    /// corridor — KYKM, KGUC, KGPI and KSDL are all mountain-valley procedures — and without a centre
+    /// the arc could only be drawn as a chord that leaves that corridor by up to 5.7 NM.
+    var arcCentre: Coord? = nil
 
     /// The published role of this leg, if the source marks one.
     var role: LegRole { LegRole(wpDesc: wpDesc) }
@@ -195,7 +201,7 @@ enum CIFP {
         guard sqlite3_prepare_v2(db, """
               SELECT seq,fix,lat,lon,leg_type,course_mag,alt,COALESCE(wp_desc,''),
                      COALESCE(alt_desc,''),COALESCE(alt2,''),speed_limit,vertical_angle,rnp,
-                     COALESCE(turn,''),COALESCE(recd_navaid,'')
+                     COALESCE(turn,''),COALESCE(recd_navaid,''),rf_lat,rf_lon
               FROM leg WHERE procedure_id=?1 ORDER BY seq
               """, -1, &st, nil) == SQLITE_OK else { return [] }
         defer { sqlite3_finalize(st) }
@@ -213,7 +219,10 @@ enum CIFP {
                                verticalAngleDeg: doubleOrNil(st, 11),
                                rnpNm: doubleOrNil(st, 12),
                                turnDirection: text(st, 13),
-                               recommendedNavaid: text(st, 14)))
+                               recommendedNavaid: text(st, 14),
+                               arcCentre: sqlite3_column_type(st, 15) != SQLITE_NULL
+                                   ? Coord(lat: sqlite3_column_double(st, 15),
+                                           lon: sqlite3_column_double(st, 16)) : nil))
         }
         return out
     }

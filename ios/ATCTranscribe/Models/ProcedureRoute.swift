@@ -88,8 +88,12 @@ enum ProcedureRoute {
             }
             // A DME ARC is a curve, not a chord. Emit the intermediate points BEFORE the leg's own end
             // fix so the drawn path follows the published track.
-            if leg.legType == "AF", let from = out.last?.coord,
-               let centre = NavDatabase.resolve(leg.recommendedNavaid, near: coord) {
+            // Both published curve types: `AF` is a DME arc about a navaid, `RF` a radius-to-fix arc
+            // about a centre the source names outright. Same geometry, different way of naming it.
+            let centre: Coord? = leg.legType == "RF"
+                ? leg.arcCentre
+                : (leg.legType == "AF" ? NavDatabase.resolve(leg.recommendedNavaid, near: coord) : nil)
+            if let from = out.last?.coord, let centre {
                 // Appended DIRECTLY, not through appendDeduped: these carry no ident, and that guard
                 // would drop them — while its consecutive-ident collapse would fold them into one.
                 for p in arcPoints(from: from, to: coord, centre: centre) where out.count < maxLegs {
