@@ -2559,6 +2559,17 @@ final class AppModel: ObservableObject {
         // content is built with its enclosing body — the same trap this file already documents for
         // `approachProfile` and PlatesTabView documents for its binder rows.
         approachEntryOptions = CIFP.entryOptions(airport: proc.airport, ident: proc.ident)
+        // READ THE CHART. Whether this approach is flown to a decision altitude or levelled at an MDA is
+        // printed in the plate's minima block and is not derivable from the coded data, so the profile
+        // falls back to a conservative reading of the TITLE until the plate has been parsed. Kick that
+        // parse off now, for THIS approach's plate only.
+        //
+        // Costs nothing a pilot would notice and — deliberately — downloads nothing. `MinimaStore.ensure`
+        // refuses unless the PDF is already on disk, which it usually is: `autoPackFlightBag` defaults on
+        // and PlateBag has already pulled every chart for the filed route's airports. Measured, the parse
+        // is ~50 ms on a Mac and runs detached at userInitiated, and roughly 7 approaches in 10 yield a
+        // readable minima block; the rest correctly stay on the conservative fallback.
+        ensureMinimaForActiveApproach()
         previewedProcedure = nil
         Haptics.impact(.medium)
         NSLog("CommSight: approach ACTIVATED %@ %@ entry=%@ legs=%d missed=%d",
@@ -2667,6 +2678,36 @@ final class AppModel: ObservableObject {
         approachProfile = profile.isDrawable ? profile : nil
         approachProfileTerrain = profile.isDrawable
             ? Self.sampleApproachTerrain(profile: profile, threshold: rwy?.coord) : []
+    }
+
+    /// Parse the ACTIVE approach's own plate, from disk, so the vertical-guidance question is answered
+    /// from the chart rather than from its title. One plate, never a fan-out over the airport.
+    ///
+    /// Rebuilds the profile when the parse lands, because the answer can flip `hasVerticalGuidance` and
+    /// the strip is already on screen by then. Observing `minima.objectWillChange` is how the store's
+    /// completion becomes visible here — it is a nested ObservableObject, so a change inside it does not
+    /// otherwise redraw or recompute anything owned by AppModel.
+    private func ensureMinimaForActiveApproach() {
+        guard let appr = activeApproach else { return }
+        let want = [(ident: appr.ident, name: appr.name, runway: appr.runway)]
+        for chart in Procedures.forAirport(appr.airport).prefix(64)      // bounded (rule 2)
+        where chart.category == .approach {
+            guard !ApproachActivation.matchPlate(plateName: chart.name, runway: appr.runway,
+                                                 candidates: want).isEmpty else { continue }
+            guard minima.result(for: chart) == nil else { return }       // already known
+            minima.ensure(chart, airport: appr.airport)
+            // The store publishes when the detached parse finishes; re-derive the profile then. Bounded
+            // by a single retry so a plate that yields nothing cannot spin.
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                for _ in 0..<40 {                                        // bounded (rule 2) — ~4 s
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                    guard self.activeApproach?.id == appr.id else { return }   // approach changed
+                    if self.minima.result(for: chart) != nil { self.rebuildApproachProfile(); return }
+                }
+            }
+            return
+        }
     }
 
     /// Is this minima row the one the named approach is actually flown to?
