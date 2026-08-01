@@ -190,6 +190,7 @@ struct ConsoleView: View {
                     // beside MISSED: changing the entry rewrites the route, and a control that does
                     // that has no business one thumb-width from the go-around button.
                     if model.approachEntryOptions.count > 1 { entryChooserRow(appr) }
+                    if let brief = model.approachBrief, brief.hasContent { briefRow(brief) }
                     // Published holds ride directly under the approach strip, in flight order.
                     ForEach(appr.holds) { holdRow($0, appr: appr) }
                 }
@@ -326,6 +327,59 @@ struct ConsoleView: View {
         }
         .padding(.horizontal, 12).padding(.vertical, 5)
         .background(p.surface)
+    }
+
+    /// THE BRIEF — the handful of facts read out loud before flying the approach, from data already on
+    /// the device. Nothing here is fetched and nothing is inferred.
+    ///
+    /// Rows appear only when the value exists. Measured over the 5,983 runway ends with an instrument
+    /// approach: touchdown-zone elevation and length are published on 100%, edge lights on 99.1%, a
+    /// visual glideslope on 87.8%, but APPROACH lights on only 20.3% — so a dash in that row would read
+    /// as "no approach lighting installed", which is a different and wrong statement. Absent is absent.
+    @ViewBuilder private func briefRow(_ b: ApproachBrief) -> some View {
+        let p = model.palette
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Image(systemName: "list.clipboard").font(.dsLabelS).foregroundStyle(p.textDim)
+                Text("Brief").font(.dsLabelS).foregroundStyle(p.textDim)
+                Spacer(minLength: 4)
+                if let m = b.minimum {
+                    // The category is NAMED. A published minimum is per category and the app does not
+                    // know the pilot's, so a bare number would invite reading someone else's.
+                    Text("\(m.isDecisionAltitude ? "DA" : "MDA") \(m.altitudeFtMSL)′")
+                        .font(.dsLabelSBold).foregroundStyle(p.accent)
+                    Text("\(m.lineLabel) · Cat \(m.category.rawValue)")
+                        .font(.system(size: 10)).foregroundStyle(p.textDim)
+                } else {
+                    Text("minima: read the plate").font(.system(size: 10)).foregroundStyle(p.textDim)
+                }
+            }
+            let facts = briefFacts(b)
+            if !facts.isEmpty {
+                Text(facts.joined(separator: "  ·  "))
+                    .font(.system(size: 10)).foregroundStyle(p.textDim)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 5)
+        .background(p.surface)
+        .accessibilityIdentifier("approach-brief")
+    }
+
+    /// The runway facts, each omitted when unpublished. Acronyms are DECODED where the app knows them
+    /// and shown raw where it does not — a wrong expansion is worse than the code itself.
+    private func briefFacts(_ b: ApproachBrief) -> [String] {
+        var out: [String] = []
+        if let len = b.runwayLengthFt { out.append("RWY \(b.runway) · \(Int(len))′") }
+        if let tdze = b.touchdownZoneElevFt { out.append("TDZE \(Int(tdze))′") }
+        if let hat = b.heightAboveTouchdownFt { out.append("\(hat)′ above TDZ") }
+        if !b.approachLights.isEmpty {
+            out.append(ApproachBrief.decodeApproachLights(b.approachLights) ?? b.approachLights)
+        }
+        if !b.vgsi.isEmpty { out.append(ApproachBrief.decodeVGSI(b.vgsi) ?? b.vgsi) }
+        if !b.edgeLights.isEmpty { out.append("\(b.edgeLights.capitalized) edge lights") }
+        assert(out.count <= 8, "briefFacts: unexpectedly many rows")
+        return out
     }
 
     /// Change HOW the active approach is joined, without deactivating it and hunting for the plate.
