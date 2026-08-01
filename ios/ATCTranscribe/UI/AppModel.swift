@@ -2739,7 +2739,12 @@ final class AppModel: ObservableObject {
               let proper = CIFP.approachProper(airport: appr.airport, ident: appr.ident) else {
             approachVectorChart = nil; return
         }
-        let legs = Array(CIFP.legs(procedureID: proper.id).prefix(256))     // bounded (rule 2)
+        // The FLOWN approach only — the raw row is 47.4% missed-approach legs. Same rule as the map.
+        let all = Array(CIFP.legs(procedureID: proper.id).prefix(256))     // bounded (rule 2)
+        let split = ApproachActivation.splitMissed(
+            all.map { (seq: $0.seq, fix: $0.fix, legType: $0.legType) }, roles: all.map(\.role))
+        let missedSeqs = Set(split.missed)
+        let legs = all.filter { !missedSeqs.contains($0.seq) }
         // The landing runway, from its own coded thresholds, so it draws at its real length.
         let rwys = CIFP.runways(airport: appr.airport)
         let end = rwys.first { $0.designator.uppercased() == "RW" + appr.runway.uppercased() }

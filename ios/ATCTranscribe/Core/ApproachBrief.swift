@@ -74,14 +74,21 @@ extension ApproachBrief {
     static func decodeVGSI(_ code: String) -> String? {
         let c = code.trimmingCharacters(in: .whitespaces).uppercased()
         guard c.count >= 2, !c.hasPrefix("NSTD") else { return nil }
+        // ⚠️ MATCH THE SYSTEM PREFIX, NOT THE FIRST LETTER. Taking `c.first` made every P-coded value a
+        // "PAPI" — but PSIL/PSIR (69 rows) are the PVASI, a pulsating/steady SINGLE unit, and PNIL/PNIR
+        // (13) are the panel system. Neither is a PAPI, and telling a pilot to expect a four-box PAPI
+        // where there is one pulsating light is a description of something they will not see. Enumerated
+        // against every distinct value in the table, so an unlisted code returns nil and shows raw.
         let system: String
-        switch c.first {
-        case "P": system = "PAPI"
-        case "V": system = "VASI"
-        case "S": system = "SAVASI"
-        case "T": system = "Tri-colour VASI"
-        case "R": system = "Pulsating"
-        default:  return nil
+        switch true {
+        case c.hasPrefix("PSI"): system = "PVASI (pulsating)"
+        case c.hasPrefix("PNI"): system = "Panel system"
+        case c.hasPrefix("TRI"): system = "Tri-colour VASI"
+        case c.hasPrefix("VAS"): return "VASI"                    // unspecified configuration
+        case c.hasPrefix("P"):   system = "PAPI"
+        case c.hasPrefix("V"):   system = "VASI"
+        case c.hasPrefix("S"):   system = "SAVASI"
+        default: return nil                                       // incl. PVT — unspecified
         }
         let digits = c.dropFirst().prefix { $0.isASCIIDigit }
         let side: String?

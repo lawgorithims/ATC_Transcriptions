@@ -104,7 +104,12 @@ struct VectorProcedureView: View {
                 // A leg with no endpoint is drawn as a DASHED ray in its published direction, stopping
                 // short — it must not look like a path to a fix, because there is no fix.
                 let a = g.point(from)
-                let brg = (courseMag ?? 0) * .pi / 180
+                // ⚠️ MAGNETIC → TRUE. The published course is MAGNETIC and the chart's y-axis is true
+                // north, so plotting it raw rotates the ray by the local variation — a median 5.0 deg
+                // over the bundled navaids and 10 deg or more at 27% of them. Without the variation the
+                // ray is not drawn at all rather than drawn wrong.
+                guard let mag = courseMag, let variation = MagneticVariation.at(from) else { continue }
+                let brg = (mag + variation) * .pi / 180
                 let b = CGPoint(x: a.x + sin(brg) * 46, y: a.y - cos(brg) * 46)
                 var path = Path(); path.move(to: a); path.addLine(to: b)
                 ctx.stroke(path, with: .color(Color(theme.route).opacity(0.6)),

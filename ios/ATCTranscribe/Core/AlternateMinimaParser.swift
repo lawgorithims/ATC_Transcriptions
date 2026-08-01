@@ -51,8 +51,13 @@ enum AlternateMinimaParser {
                 entries.append(e)
                 continue
             }
-            // Another airport's block began — stop. A city header (ends ", XX") or a new "(IDENT)".
-            if entries.count > 0, isBlockBoundary(line, ident: ident) { break }
+            // ⚠️ TESTED EVEN BEFORE THE FIRST ENTRY. Gating this on `entries.count > 0` meant an airport
+            // whose FIRST line is circling-only ("CHATHAM MUNI (CQX)…RNAV (GPS)-B", which has no "Rwy"
+            // and so is not recognised as an entry) walked straight through the next city header and
+            // adopted the NEXT airport's approaches as its own. Measured over all 26 real booklets: 526
+            // of 2,047 airports (25.7%) picked up a runway their field does not publish — KCQX was
+            // credited with Chester's "RNAV (GPS) Rwy 17" while Chatham's runways are 6/24.
+            if isBlockBoundary(line, ident: ident) { break }
             // An unnumbered condition line ("NA when local weather not available." with no marker)
             // applies to the whole airport. Keyed 0, which no printed marker uses.
             if isConditionLine(line) {
@@ -96,11 +101,21 @@ enum AlternateMinimaParser {
     private static func entry(from line: String, publishedRunways: [String]) -> AlternateMinima.Entry? {
         // The name runs to "Rwy"; everything after is the runway plus any footnote markers. Leader dots
         // and the airport name precede it on the first line of a block.
-        guard let r = line.range(of: "RWY", options: [.caseInsensitive]) else { return nil }
+        // A circling-only approach names a LETTER, not a runway — "RNAV (GPS)-B", "VOR-A" — and is a
+        // published entry like any other. Recognising it also stops the block walking into the next
+        // airport looking for a "Rwy" that will never come.
+        guard let r = line.range(of: "RWY", options: [.caseInsensitive]) else {
+            guard line.range(of: "[A-Z]{3,}.*-[A-Z]$", options: [.regularExpression]) != nil,
+                  line.uppercased().range(of: "(GPS)|(RNAV)|VOR|NDB|LOC|ILS|LDA|SDF|TACAN",
+                                          options: .regularExpression) != nil else { return nil }
+            let name = cleanedName(line)
+            return name.isEmpty ? nil
+                : AlternateMinima.Entry(name: name, runway: "", footnoteIDs: [])
+        }
         let head = String(line[..<r.lowerBound])
         let tail = String(line[r.upperBound...]).trimmingCharacters(in: .whitespaces)
         let (runway, marks) = split(tail, publishedRunways: publishedRunways)
-        guard !runway.isEmpty else { return nil }
+        guard !runway.isEmpty else { return nil }        // a "Rwy" line with no readable number
         // Strip the leader dots and any airport name preceding the approach type.
         let name = cleanedName(head) + " Rwy " + runway
         return AlternateMinima.Entry(name: name, runway: runway, footnoteIDs: marks)
@@ -122,10 +137,19 @@ enum AlternateMinimaParser {
         let t = s.uppercased().trimmingCharacters(in: .whitespaces)
         guard !t.isEmpty else { return ("", []) }
         // Longest first so "22" wins over "2" at an airport with both.
-        let candidates = publishedRunways
+        // ⚠️ BOTH SIDES UNPADDED. CIFP designators are zero-padded ("RW08") and the booklet prints
+        // "Rwy 8" — so hasPrefix("08") failed and the fallback regex took "81" from "8" plus its
+        // footnote digit. Measured: 790 entries at 438 airports (21.4%) got a runway number with a
+        // footnote marker glued on, e.g. Astoria "Rwy 81". Both the padded and unpadded forms are
+        // offered so a booklet that DOES pad still matches.
+        var candidates = publishedRunways
             .map { $0.uppercased().replacingOccurrences(of: "RW", with: "") }
             .filter { !$0.isEmpty }
-            .sorted { $0.count > $1.count }
+        candidates += candidates.compactMap { d -> String? in
+            guard d.hasPrefix("0") else { return nil }
+            return String(d.dropFirst())
+        }
+        candidates.sort { $0.count > $1.count }
         for rw in candidates.prefix(64) where t.hasPrefix(rw) {              // bounded (rule 2)
             return (rw, marks(String(t.dropFirst(rw.count))))
         }

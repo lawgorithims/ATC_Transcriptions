@@ -191,9 +191,31 @@ struct PlateViewer: View {
             guard let m = ApproachActivation.matchPlate(plateName: current.name, runway: nil,
                                                         candidates: candidates).first,
                   let proper = CIFP.approachProper(airport: airport, ident: m.ident) else { return nil }
-            let legs = Array(CIFP.legs(procedureID: proper.id).prefix(256))
+            // ⚠️ THE FLOWN APPROACH ONLY. The raw approach-proper row is 47.4% MISSED-APPROACH legs, and
+            // drawing them in the same weight and colour showed one continuous magenta line through the
+            // field and out the other side — the exact failure ProcedureRoute.approachLegs was written
+            // to fix on the map ("the missed-approach hold appeared as a normal enroute leg of an
+            // approach nobody had gone missed on"). It also framed the chart to a shape a median 2.59x
+            // wider than the approach, so the part being flown was squeezed into a corner.
+            let all = Array(CIFP.legs(procedureID: proper.id).prefix(256))
+            let split = ApproachActivation.splitMissed(
+                all.map { (seq: $0.seq, fix: $0.fix, legType: $0.legType) }, roles: all.map(\.role))
+            let missed = Set(split.missed)
+            let legs = all.filter { !missed.contains($0.seq) }
+            // The runway, from its own thresholds, so the chart has the thing the approach ends at.
+            let rwys = CIFP.runways(airport: airport)
+            var thresholds: (from: Coord, to: Coord, designator: String)?
+            if !m.runway.isEmpty,
+               let end = rwys.first(where: { $0.designator.uppercased() == "RW" + m.runway.uppercased() }),
+               let opp = VectorProcedureChart.reciprocal(of: m.runway),
+               let far = rwys.first(where: {
+                   $0.designator.uppercased().replacingOccurrences(of: "RW", with: "") == opp }),
+               Geo.nmBetween(end.coord, far.coord) < 5 {
+                thresholds = (from: end.coord, to: far.coord, designator: m.runway)
+            }
             let chart = VectorProcedureChart.build(legs: legs, airport: airport,
-                                                   procedureName: m.name, kind: "IAP")
+                                                   procedureName: m.name, kind: "IAP",
+                                                   runwayThresholds: thresholds)
             return chart.extent.count >= 2 ? chart : nil
         default:
             return nil
