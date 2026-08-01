@@ -1149,7 +1149,7 @@ struct MapLibreChartView: UIViewRepresentable {
             var out: [MLNPointFeature] = []
             var seen = Set<String>()
             var indexOf: [String: Int] = [:]                             // key → its feature, for role promotion
-            for leg in legs.prefix(maxRouteWpts) {                       // bounded (rule 2)
+            for leg in legs.prefix(maxRouteWpts) where !leg.isPathOnly {  // bounded (rule 2)
                 let key = "\(leg.ident)@\(q(leg.coord.lat)),\(q(leg.coord.lon))"
                 guard seen.insert(key).inserted else {
                     // A course reversal or a hold can bring the route back through a fix it already

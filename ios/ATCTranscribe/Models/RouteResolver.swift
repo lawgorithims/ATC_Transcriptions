@@ -18,6 +18,10 @@ struct ResolvedLeg: Identifiable, Equatable {
     /// legs sit on IAP rows and SID/STAR rows carry none, so a departure or arrival waypoint has no
     /// published role to colour and inferring one would be a guess.
     var role: LegRole = .none
+    /// A point that SHAPES the drawn line but is not a waypoint — the interpolated interior of a DME
+    /// arc. It has no ident, no restriction and nothing to label; it exists so the magenta line follows
+    /// the published curve instead of cutting the chord. Excluded from the waypoint symbol layers.
+    var isPathOnly: Bool = false
     var id: String { ident + "\(kind)" }
 }
 

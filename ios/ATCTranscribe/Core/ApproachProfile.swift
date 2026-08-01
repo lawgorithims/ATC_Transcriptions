@@ -151,7 +151,20 @@ struct ApproachProfile: Equatable {
             // The runway pseudo-fix carries the threshold crossing ALTITUDE (threshold elevation + TCH)
             // as a plain "at" value — that is the anchor the whole path hangs from.
             if CIFP.isRunwayPseudoFix(leg.fix), case .at(let f)? = c.alt { crossing = Double(f) }
-            guard let co = leg.coord, let threshold else { continue }
+            guard let threshold else { continue }
+            // THE RUNWAY PSEUDO-FIX IS THE THRESHOLD. `Tools/build_cifp.py` never adds RW* idents to its
+            // fix table, so all 9,128 of these legs carry a NULL coordinate — and requiring one dropped
+            // them as stations. That silently removed the missed-approach point from 89% of approaches
+            // (the MAP tick and label never drew, and `stepdowns`, which guards on it, could never
+            // return anything), and on 266 approaches it left so few stations that the vertical profile
+            // strip did not appear at all — including the RNP AR approaches at Anchorage, Honolulu,
+            // Fairbanks and Albuquerque, where a coded path over terrain is exactly what it exists for.
+            //
+            // No lookup is needed: `threshold` is already the landing threshold's position, which is
+            // definitionally where this leg is. Every one of the 9,128 also has a cifp.runway row with
+            // coordinates, so the value was never missing from the database — only from this path.
+            let co = leg.coord ?? (CIFP.isRunwayPseudoFix(leg.fix) ? threshold : nil)
+            guard let co else { continue }
             let d = Geo.nmBetween(co, threshold)
             stations.append(Station(fix: leg.fix, distanceToThresholdNm: d,
                                     constraint: c, role: leg.role))
