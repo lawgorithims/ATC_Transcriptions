@@ -12,6 +12,32 @@ struct CIFPProcedure: Identifiable, Equatable {
     let name: String       // readable, e.g. "RNAV (GPS) RWY 33L"
     let runway: String     // "33L" (approaches)
     let transition: String // enroute transition, e.g. "BBOGG"
+    /// ARINC route type — WHICH SEGMENT of a multi-row procedure this is. The column exists precisely so
+    /// segmentation does not have to be inferred downstream, and it went unread for a long time, which
+    /// is how a departure came to be drawn from whichever of its rows sorted first alphabetically.
+    ///
+    /// Departures and arrivals are MIRRORED, because you exit via one and enter via the other:
+    ///   SID   1/4/T = runway transition · 2/5 = common route · 3/6/V = enroute transition
+    ///   STAR  1/4/F = enroute transition · 2/5 = common route · 3/6   = runway transition
+    /// On approaches it is the approach-TYPE letter (I = ILS, R = RNAV…), not a segment — do not read it
+    /// as a role there. Empty when the source published none.
+    var routeType: String = ""
+
+    /// Is this the COMMON segment of a SID or STAR — the part flown regardless of which runway or which
+    /// enroute transition? Read from `routeType`, never from the transition name: 1,469 STAR and 990 SID
+    /// common rows are named "ALL" rather than left blank, and testing `transition.isEmpty` silently
+    /// dropped the entire common segment of 1,423 arrivals.
+    var isCommonSegment: Bool { routeType == "2" || routeType == "5" }
+    /// The enroute end of a SID (the exit) or a STAR (the entry).
+    var isEnrouteTransition: Bool {
+        kind == "SID" ? (routeType == "3" || routeType == "6" || routeType == "V")
+                      : (routeType == "1" || routeType == "4" || routeType == "F")
+    }
+    /// The runway end of a SID (the departure) or a STAR (the arrival).
+    var isRunwayTransition: Bool {
+        kind == "SID" ? (routeType == "1" || routeType == "4" || routeType == "T")
+                      : (routeType == "3" || routeType == "6")
+    }
 }
 
 /// One sequenced leg of a procedure — a fix with (usually) a georeferenced coordinate, so the path
@@ -144,10 +170,13 @@ enum CIFP {
 
     /// All coded procedures for an airport (every approach/SID/STAR + each transition).
     static func procedures(airport: String) -> [CIFPProcedure] {
-        query("SELECT id,airport,kind,ident,name,runway,transition FROM procedure WHERE airport=?1 ORDER BY kind,ident,transition",
-              airport) { st in
+        query("""
+              SELECT id,airport,kind,ident,name,runway,transition,COALESCE(route_type,'')
+              FROM procedure WHERE airport=?1 ORDER BY kind,ident,transition
+              """, airport) { st in
             CIFPProcedure(id: Int(sqlite3_column_int64(st, 0)), airport: text(st, 1), kind: text(st, 2),
-                          ident: text(st, 3), name: text(st, 4), runway: text(st, 5), transition: text(st, 6))
+                          ident: text(st, 3), name: text(st, 4), runway: text(st, 5), transition: text(st, 6),
+                          routeType: text(st, 7))
         }
     }
 

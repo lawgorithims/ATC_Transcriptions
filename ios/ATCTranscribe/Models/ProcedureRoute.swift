@@ -21,7 +21,10 @@ enum ProcedureRoute {
         var out: [ResolvedLeg] = []
         out.reserveCapacity(maxLegs)
         appendAirport(plan.departure, to: &out)
-        appendProcedure(plan.departureProcedure, to: &out)   // SID / ODP
+        // The SID's connecting fix is the FIRST enroute fix — where the departure hands off to the route
+        // — which is the mirror of the STAR's, and the departure runway is not modelled on FlightPlan,
+        // so the runway transition is simply not selected rather than guessed.
+        appendProcedure(plan.departureProcedure, to: &out, connectingFix: plan.route.first)   // SID / ODP
         // When the departure didn't resolve (empty or unknown), the first enroute fix has no predecessor
         // to disambiguate against, and NavDatabase.resolve(near: nil) returns an ARBITRARY worldwide
         // candidate for a non-unique ident — which the greedy nearest-walk then drags the whole route
@@ -69,6 +72,7 @@ enum ProcedureRoute {
         switch proc.kind {
         case "IAP":  legs = approachLegs(proc)
         case "STAR": legs = starLegs(proc, connectingFix: connectingFix, landingRunway: landingRunway)
+        case "SID":  legs = sidLegs(proc, connectingFix: connectingFix, departureRunway: landingRunway)
         default:     legs = CIFP.legs(airport: proc.airport, ident: proc.ident, transition: proc.transition)
         }
         assert(legs.count <= maxProcedureLegs, "procedure has more legs than the cap — tail is truncated")
@@ -141,8 +145,9 @@ enum ProcedureRoute {
         let want = connectingFix.uppercased()
         // ALL rows of this STAR, including the common ("") and runway ("RW…") transitions —
         // CIFP.transitions is IAP-only and excludes both, so it cannot drive a STAR assembly.
-        let transitions = CIFP.procedures(airport: proc.airport)
-            .filter { $0.kind == "STAR" && $0.ident == proc.ident }.map { $0.transition }
+        let rows = CIFP.procedures(airport: proc.airport)
+            .filter { $0.kind == "STAR" && $0.ident == proc.ident }
+        let transitions = rows.map { $0.transition }
         guard transitions.count > 1 else { return single }
         func legs(_ t: String) -> [CIFPLeg] { CIFP.legs(airport: proc.airport, ident: proc.ident, transition: t) }
         // A STAR runway transition is "RW" + two digits + an optional side letter (incl. "B" = both) —
@@ -157,7 +162,12 @@ enum ProcedureRoute {
         }) else { return single }
 
         var assembled = legs(enrName)
-        if transitions.contains(where: { $0.isEmpty }) { assembled += legs("") }   // common junction
+        // THE COMMON JUNCTION, selected by ARINC route type rather than by an empty transition name.
+        // 1,469 STAR common rows are named "ALL" instead of left blank, so the old `transition.isEmpty`
+        // test silently dropped the entire common segment of 1,423 arrivals — 5,819 legs, 1,686 of them
+        // carrying a published crossing altitude. The drawn line stopped at the STAR's junction fix and
+        // jumped straight to the destination, and those restrictions never reached LegConstraintCheck.
+        if let common = rows.first(where: { $0.isCommonSegment }) { assembled += legs(common.transition) }
         if let rw = landingRunway, rw.count >= 2 {
             let u = rw.uppercased()
             let num = u.prefix(2)
@@ -173,6 +183,54 @@ enum ProcedureRoute {
             if let rwName = pick { assembled += legs(rwName) }
         }
         assert(assembled.count <= maxProcedureLegs * 3, "assembled STAR unexpectedly large")
+        return assembled
+    }
+
+    /// The full legs of a SID AS FLOWN, assembled from its several ARINC rows.
+    ///
+    /// The exact mirror of `starLegs`, and it should have been written at the same time: a departure is
+    /// coded as runway transitions (runway → common junction), an optional common row, and enroute
+    /// transitions (junction → the enroute structure). Loading one row drew a median of 20% of a
+    /// departure — 82.5% of every coded SID leg in the cycle never reached the map, and in 563 cases the
+    /// row that happened to sort first was an ENROUTE transition, so the drawn departure began tens of
+    /// miles from the field with nothing touching the runway. KDEN's EMMYS8 drew 2 legs of 67.
+    ///
+    /// ⚠️ THE NAMING CONVENTION IS REVERSED FROM A STAR, so this cannot be `starLegs` with the order
+    /// flipped. A STAR's enroute transition is named by its FIRST leg fix (6,521 of 6,521) because that
+    /// is where the route joins it; a SID's is named by its LAST (5,144 of 5,146) because that is where
+    /// the departure leaves. Matching on the wrong end finds nothing at all.
+    ///
+    /// STRICT, like `starLegs`: assemble only what is positively identified, and fall back to the single
+    /// loaded row otherwise — a visible stub is safer than a guessed connected path. The runway
+    /// transition is appended only when the departure runway is KNOWN and matches exactly; a plan that
+    /// does not state one gets the common route and the enroute exit, which is the part that is certain.
+    static func sidLegs(_ proc: LoadedProcedure, connectingFix: String?, departureRunway: String?) -> [CIFPLeg] {
+        let single = CIFP.legs(airport: proc.airport, ident: proc.ident, transition: proc.transition)
+        let rows = CIFP.procedures(airport: proc.airport)
+            .filter { $0.kind == "SID" && $0.ident == proc.ident }
+        guard rows.count > 1 else { return single }
+        func legs(_ t: String) -> [CIFPLeg] { CIFP.legs(airport: proc.airport, ident: proc.ident, transition: t) }
+
+        var assembled: [CIFPLeg] = []
+        // Runway transition first — it is the part that touches the departure end.
+        if let rw = departureRunway?.uppercased(), rw.count >= 2 {
+            let num = rw.prefix(2)
+            let side = rw.count > 2 ? String(rw[rw.index(rw.startIndex, offsetBy: 2)]) : ""
+            let cands = rows.filter { $0.isRunwayTransition && $0.transition.dropFirst(2).prefix(2) == num }
+            func sideOf(_ t: String) -> String { t.count > 4 ? String(t[t.index(t.startIndex, offsetBy: 4)]) : "" }
+            let pick = cands.first { sideOf($0.transition) == side && !side.isEmpty }
+                ?? cands.first { sideOf($0.transition) == "B" || sideOf($0.transition).isEmpty }
+            if let pick { assembled += legs(pick.transition) }
+        }
+        if let common = rows.first(where: { $0.isCommonSegment }) { assembled += legs(common.transition) }
+        // Enroute exit, matched on the LAST leg fix — see the warning above.
+        if let want = connectingFix?.uppercased(), !want.isEmpty,
+           let exit = rows.first(where: { $0.isEnrouteTransition && legs($0.transition).last?.fix.uppercased() == want }) {
+            assembled += legs(exit.transition)
+        }
+        // Nothing positively identified → the single row, unchanged. Never a guessed path.
+        guard !assembled.isEmpty else { return single }
+        assert(assembled.count <= maxProcedureLegs * 3, "assembled SID unexpectedly large")
         return assembled
     }
 
