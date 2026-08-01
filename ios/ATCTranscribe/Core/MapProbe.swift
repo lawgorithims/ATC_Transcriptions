@@ -14,6 +14,21 @@ enum Geo {
         return 2 * R * asin(min(1, sqrt(h)))
     }
 
+    /// The point `distanceNm` from `from` along TRUE bearing `bearingDeg` — the inverse of `bearing`
+    /// and `nmBetween`, on the same sphere. Used to walk a published DME arc, which is defined by a
+    /// centre and a radius rather than by its endpoints.
+    static func point(from: Coord, bearingDeg: Double, distanceNm: Double) -> Coord {
+        assert(distanceNm >= 0, "Geo.point: negative distance")
+        let R = 3440.065
+        let d = distanceNm / R, brg = bearingDeg * .pi / 180
+        let la1 = from.lat * .pi / 180, lo1 = from.lon * .pi / 180
+        let la2 = asin(sin(la1) * cos(d) + cos(la1) * sin(d) * cos(brg))
+        let lo2 = lo1 + atan2(sin(brg) * sin(d) * cos(la1), cos(d) - sin(la1) * sin(la2))
+        let lon = (lo2 * 180 / .pi + 540).truncatingRemainder(dividingBy: 360) - 180   // normalise
+        assert(la2.isFinite && lon.isFinite, "Geo.point: non-finite result")
+        return Coord(lat: la2 * 180 / .pi, lon: lon)
+    }
+
     /// Initial great-circle TRUE bearing a→b, degrees 0–360.
     static func bearing(_ a: Coord, _ b: Coord) -> Double {
         let la1 = a.lat * .pi / 180, la2 = b.lat * .pi / 180
