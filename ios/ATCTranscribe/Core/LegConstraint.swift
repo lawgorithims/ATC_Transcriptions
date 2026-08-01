@@ -82,8 +82,85 @@ struct LegConstraint: Equatable {
             guard let fl = Int(t.dropFirst(2)), fl > 0 else { return nil }
             return fl * 100
         }
-        guard let v = Int(t), v >= 0 else { return nil }
+        // ⚠️ NEGATIVE ALTITUDES ARE REAL. ARINC's altitude field is signed, and six legs in the shipped
+        // cycle are below sea level — every one of them at a field that is itself below sea level:
+        // KTRM's RNAV (GPS) RWY 30 threshold at -86, KCLR's RWY 08 at -145, KIPL, KBWC. Rejecting them
+        // as malformed blanked the missed-approach point on four approaches and, on the two where the
+        // rejected leg is the runway pseudo-fix that anchors the whole vertical profile, made the
+        // approach profile strip fail to appear at all with no explanation given to the pilot.
+        //
+        // The floor is a plausibility bound, not a sign test: the lowest land on earth is about -1,400
+        // ft, so -2,000 admits every real aerodrome while still rejecting a parse that has gone wrong.
+        guard let v = Int(t), v >= -2_000 else { return nil }
         return v
+    }
+
+    /// Direct init, for deriving one constraint from others. The string-parsing init above is the only
+    /// way a constraint is built from the DATABASE; this exists solely for `unioned(with:)`.
+    private init(alt: AltRule?, speedLimitKt: Int?, verticalAngleDeg: Double?, rnpNm: Double?,
+                 altUnmodelled: Bool, glidepathAltFt: Int?) {
+        self.alt = alt; self.speedLimitKt = speedLimitKt; self.verticalAngleDeg = verticalAngleDeg
+        self.rnpNm = rnpNm; self.altUnmodelled = altUnmodelled; self.glidepathAltFt = glidepathAltFt
+    }
+
+    /// The band this rule permits, as (floor, ceiling). Either end may be open.
+    private var band: (floor: Int?, ceiling: Int?) {
+        switch alt {
+        case .at(let f):                 return (f, f)
+        case .atOrAbove(let f):          return (f, nil)
+        case .atOrBelow(let f):          return (nil, f)
+        case .between(let hi, let lo):   return (lo, hi)
+        case nil:                        return (nil, nil)
+        }
+    }
+
+    /// Merge two rules published at the SAME fix into what they jointly permit.
+    ///
+    /// ⚠️ THE UNION, NOT THE STRICTER OF THE TWO. A procedure can pass the same fix more than once — a
+    /// hold in lieu of procedure turn crosses its own fix inbound and outbound, and the two crossings
+    /// carry different published altitudes. The app cannot tell WHICH pass the aircraft is on, so a rule
+    /// that keeps only one of them raises a confident warning against an altitude the pilot is not on:
+    /// at KAEG's RNAV RWY 22, flying the published hold at its charted 8,600 ft against a retained
+    /// 13,000 ft floor produced "4,400 ft low at EYIPE" while the aircraft was exactly on the chart.
+    /// Measured, 464 collapses had the retained floor more than the 700 ft warning tolerance above the
+    /// discarded one.
+    ///
+    /// Widening under-warns — it will not flag an aircraft below the higher of the two floors — and that
+    /// is the correct direction when the alternative is crying wolf at a pilot who is complying. If
+    /// either side carries a qualifier the app cannot read, the result carries no rule at all, because
+    /// a union with an unknown is not knowable.
+    func unioned(with other: LegConstraint) -> LegConstraint {
+        guard !altUnmodelled, !other.altUnmodelled else {
+            return LegConstraint(alt: nil, speedLimitKt: speedLimitKt ?? other.speedLimitKt,
+                                 verticalAngleDeg: verticalAngleDeg ?? other.verticalAngleDeg,
+                                 rnpNm: rnpNm ?? other.rnpNm, altUnmodelled: true,
+                                 glidepathAltFt: glidepathAltFt ?? other.glidepathAltFt)
+        }
+        let a = band, b = other.band
+        // An OPEN end stays open: if either rule permits arbitrarily high, so does the union.
+        let floor: Int? = (a.floor == nil || b.floor == nil) ? nil : min(a.floor!, b.floor!)
+        let ceiling: Int? = (a.ceiling == nil || b.ceiling == nil) ? nil : max(a.ceiling!, b.ceiling!)
+        let rule: AltRule?
+        switch (floor, ceiling) {
+        case (nil, nil):                   rule = nil
+        case (let f?, nil):                rule = .atOrAbove(f)
+        case (nil, let c?):                rule = .atOrBelow(c)
+        case (let f?, let c?):             rule = f == c ? .at(f) : .between(high: max(f, c), low: min(f, c))
+        }
+        // The invariant that matters is that the union never NARROWS: whatever either side permitted,
+        // the result must still permit. ("Two stated rules collapse to no rule" is a legitimate outcome
+        // — at-or-above 13,000 unioned with at-or-below 8,600 leaves nothing both crossings forbid.)
+        assert(floor == nil || (floor! <= (a.floor ?? floor!) && floor! <= (b.floor ?? floor!)),
+               "unioned: floor rose above one of its inputs")
+        assert(ceiling == nil || (ceiling! >= (a.ceiling ?? ceiling!) && ceiling! >= (b.ceiling ?? ceiling!)),
+               "unioned: ceiling fell below one of its inputs")
+        // A speed LIMIT is a ceiling, so the union is the more permissive of the two.
+        let spd: Int? = (speedLimitKt == nil || other.speedLimitKt == nil)
+            ? nil : max(speedLimitKt!, other.speedLimitKt!)
+        return LegConstraint(alt: rule, speedLimitKt: spd,
+                             verticalAngleDeg: verticalAngleDeg ?? other.verticalAngleDeg,
+                             rnpNm: rnpNm ?? other.rnpNm, altUnmodelled: false,
+                             glidepathAltFt: glidepathAltFt ?? other.glidepathAltFt)
     }
 
     /// A pilot-readable rendering of the altitude rule, for the warning's explanation.

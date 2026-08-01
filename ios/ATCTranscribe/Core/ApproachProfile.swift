@@ -207,9 +207,26 @@ struct ApproachProfile: Equatable {
         if codedRunway.trimmingCharacters(in: .whitespaces).isEmpty { return false }
         if n.contains("LOC") && !n.contains("ILS") { return false }      // LOC-only: no glideslope
         if n.contains("ILS") || n.contains("GLS") || n.contains("JPALS") { return true }
-        // RNAV procedures publish LPV / LNAV+VNAV lines with a real glidepath; an RNAV chart without a
-        // vertical line still codes an advisory angle, which the caller shows as advisory anyway.
-        if n.contains("RNAV") || n.contains("GPS") || n.contains("RNP") { return true }
+        // ⚠️ RNAV / GPS / RNP DELIBERATELY FALLS THROUGH TO FALSE, and the branch that used to return
+        // true here was removed. Its comment claimed "an RNAV chart without a vertical line still codes
+        // an advisory angle, which the caller shows as advisory anyway" — but the caller does not: a
+        // `true` here draws an unbroken glidepath to a DECISION altitude and reports deviation against
+        // it, which is the picture and the wording of an approach flown to a DA.
+        //
+        // The title cannot tell LPV from LNAV-only. "RNAV (GPS) RWY 17" is the name whether the chart
+        // publishes an LPV line, an LNAV/VNAV line, or an LNAV MDA and nothing else. Cross-checking the
+        // 6,775 straight-in RNAV approach rows against OCR'd cycle-2607 plates found 1,335 where the
+        // chart publishes an MDA and NO vertically-guided line at all, and the app drew a glidepath to a
+        // decision altitude on every one. A pilot is required to level at an MDA; a DA picture invites
+        // continuing through it.
+        //
+        // What would settle it is the ARINC FAS data block, which lives on continuation records that
+        // `Tools/build_cifp.py` drops — so it is not in the bundle and cannot be consulted here. Until
+        // it is, this follows the policy stated at the top of this function rather than contradicting
+        // it: unrecognised means non-precision, which renders an MDA-style floor and calls the coded
+        // angle advisory. That understates the guidance on a genuine LPV, which is the safe direction.
+        // The honest upgrade is `PlateMinima.Kind.usesDecisionAltitude` once the plate has been parsed
+        // — real evidence rather than a guess from the title.
         return false
     }
 }
