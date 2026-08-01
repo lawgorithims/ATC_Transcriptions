@@ -143,4 +143,40 @@ final class FixVerificationTests: XCTestCase {
         }
         XCTAssertTrue(found, "KBRD publishes approaches using the BR NDB")
     }
+
+    // MARK: - a shared plate must not answer for the wrong approach
+
+    func testALocalizerApproachDoesNotReadTheILSLine() {
+        // THE bug silent extraction would have activated. "ILS OR LOC RWY 06" is ONE plate carrying an
+        // S-ILS decision altitude AND an S-LOC minimum descent altitude, and matchPlate correctly pairs
+        // the LOC-only coded procedure with it. Measured: 1,259 LOC-only approaches match a plate and
+        // 1,101 (87.5%) would have reported a decision altitude on an approach with no glideslope.
+        XCTAssertFalse(AppModel.minimaKindApplies(.ils, toApproachNamed: "LOC RWY 06"))
+        XCTAssertTrue(AppModel.minimaKindApplies(.localizer, toApproachNamed: "LOC RWY 06"))
+        XCTAssertTrue(AppModel.minimaKindApplies(.ils, toApproachNamed: "ILS OR LOC RWY 06"))
+    }
+
+    func testEachApproachFamilyReadsItsOwnLine() {
+        XCTAssertTrue(AppModel.minimaKindApplies(.lpv, toApproachNamed: "RNAV (GPS) RWY 17"))
+        XCTAssertFalse(AppModel.minimaKindApplies(.lpv, toApproachNamed: "VOR RWY 17"))
+        XCTAssertTrue(AppModel.minimaKindApplies(.vor, toApproachNamed: "VOR RWY 17"))
+        XCTAssertTrue(AppModel.minimaKindApplies(.rnpAR, toApproachNamed: "RNAV (RNP) Z RWY 27"))
+        XCTAssertTrue(AppModel.minimaKindApplies(.ndb, toApproachNamed: "NDB RWY 03"))
+        XCTAssertFalse(AppModel.minimaKindApplies(.ils, toApproachNamed: "NDB RWY 03"))
+    }
+
+    func testCirclingAndSidestepAreNeverTheStraightInAnswer() {
+        for name in ["ILS OR LOC RWY 06", "RNAV (GPS) RWY 17", "VOR-A"] {
+            XCTAssertFalse(AppModel.minimaKindApplies(.circling, toApproachNamed: name))
+            XCTAssertFalse(AppModel.minimaKindApplies(.sidestep, toApproachNamed: name))
+            XCTAssertFalse(AppModel.minimaKindApplies(.other, toApproachNamed: name))
+        }
+    }
+
+    func testAnUnrecognisedNameMatchesNothingAndFallsBack() {
+        // No row applies → the caller returns nil → the conservative title test stands. Never a guess.
+        for k in [PlateMinima.Kind.ils, .lpv, .localizer, .vor, .ndb, .rnpAR] {
+            XCTAssertFalse(AppModel.minimaKindApplies(k, toApproachNamed: "SOMETHING UNRECOGNISED"))
+        }
+    }
 }

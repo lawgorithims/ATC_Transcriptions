@@ -2669,6 +2669,33 @@ final class AppModel: ObservableObject {
             ? Self.sampleApproachTerrain(profile: profile, threshold: rwy?.coord) : []
     }
 
+    /// Is this minima row the one the named approach is actually flown to?
+    ///
+    /// The plate is shared; the procedure is not. A localizer approach reads the LOC line, not the ILS
+    /// line printed above it on the same chart. Deliberately CONSERVATIVE about what it claims: the
+    /// circling and sidestep lines are never the straight-in answer, and an unrecognised name matches
+    /// nothing, which leaves the caller at nil and the conservative title test — not a guess.
+    nonisolated static func minimaKindApplies(_ kind: PlateMinima.Kind,
+                                              toApproachNamed name: String) -> Bool {
+        let n = name.uppercased()
+        switch kind {
+        case .circling, .sidestep, .other:
+            return false                                   // never the straight-in line
+        case .ils, .gls:
+            return n.contains("ILS") || n.contains("GLS") || n.contains("JPALS")
+        case .localizer:
+            return n.contains("LOC") || n.contains("LDA") || n.contains("SDF")
+        case .lpv, .baroVNAV, .lnav, .lp, .gps:
+            return n.contains("RNAV") || n.contains("GPS")
+        case .rnpAR:
+            return n.contains("RNP")
+        case .vor:
+            return n.contains("VOR")
+        case .ndb:
+            return n.contains("NDB")
+        }
+    }
+
     /// Does the PLATE publish a line flown to a decision altitude? nil when the plate has not been
     /// parsed, which is the common case — `MinimaStore` never downloads, so this is real evidence when
     /// it exists and silence when it does not.
@@ -2686,9 +2713,17 @@ final class AppModel: ObservableObject {
             guard !ApproachActivation.matchPlate(plateName: chart.name, runway: appr.runway,
                                                  candidates: want).isEmpty,
                   let m = minima.result(for: chart)?.minima else { continue }
-            let kinds = m.rows.map(\.kind)
-            guard !kinds.isEmpty else { continue }
-            return kinds.contains { $0.usesDecisionAltitude }
+            // ⚠️ ONLY THE ROWS THIS APPROACH IS FLOWN TO. A combined "ILS OR LOC RWY 06" plate carries
+            // BOTH an S-ILS decision altitude AND an S-LOC minimum descent altitude, and matchPlate
+            // pairs the LOC-ONLY coded procedure with that same plate — correctly, it is the right
+            // chart. Asking "does ANY row use a DA" therefore answers about the ILS when the pilot is
+            // flying the localizer: measured, 1,259 LOC-only approaches match a plate and 1,101 of them
+            // (87.5%) would have reported a decision altitude on an approach with no glideslope. That
+            // is the exact error ApproachProfile exists to avoid, and it is the one direction its
+            // comments forbid.
+            let mine = m.rows.filter { Self.minimaKindApplies($0.kind, toApproachNamed: appr.name) }
+            guard !mine.isEmpty else { continue }
+            return mine.contains { $0.kind.usesDecisionAltitude }
         }
         return nil
     }
