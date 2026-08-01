@@ -145,9 +145,33 @@ def main():
 
     # ---- pass 1: fix-coordinate table (ident → coord) from every geo-bearing fix/navaid record ----
     fixes = {}   # ident → (lat, lon)   (procedures reference fixes by ident; first geo record wins)
+    # ⚠️ TERMINAL fixes are AIRPORT-SCOPED and must not go in the global table alone.
+    #
+    # A terminal waypoint or NDB belongs to one airport, and its ident is only unique WITHIN that
+    # airport — "SJ" is the NDB at San Angelo, Texas AND the VOR at San Juan, Puerto Rico. Resolving
+    # both through one first-wins table put 66 legs across 19 published approaches at 10 airports
+    # 369-2,028 NM from their own field: every leg of KSJT's NDB RWY 03 — the IF, the procedure turn,
+    # the final approach fix and the missed-approach hold — was placed in Puerto Rico.
+    #
+    # The ARINC record already states the owner: on a section-P record, 0-based columns 6-10 are the
+    # airport identifier, which pass 2 below already reads as `apt`. So terminal records are keyed by
+    # (airport, ident) as well, and pass 2 prefers that scoped entry over the global one.
+    terminal_fixes = {}   # (airport, ident) → (lat, lon)
+    # ⚠️ AND THE REAL DISAMBIGUATOR IS THE ARINC REGION. A short navaid ident is unique only within its
+    # region: "SJ" is an NDB in region K4 (San Angelo, Texas, N31 16) AND an NDB in region TJ (San Juan,
+    # Puerto Rico, N18 24), both section D subsection B. Airport scoping does not help, because neither
+    # is a terminal record. The LEG record names the region it means — 0-based columns 34-36 — and the
+    # navaid record carries its own at 19-21, so the two can simply be matched.
+    region_fixes = {}     # (ident, region) → (lat, lon)
+    def add_region(ident, region, c):
+        if ident and region and c:
+            region_fixes.setdefault((ident, region), c)
     def add_fix(ident, c):
         if ident and c and ident not in fixes:
             fixes[ident] = c
+    def add_terminal(apt, ident, c):
+        if apt and ident and c:
+            terminal_fixes.setdefault((apt, ident), c)
     for l in lines:
         if len(l) < 40:
             continue
@@ -155,13 +179,18 @@ def main():
         if sec == "E" and l[5] == "A":                          # enroute waypoint
             add_fix(l[13:18].strip(), coord(l))
         elif sec == "P" and sub == "C":                         # terminal waypoint
+            add_terminal(l[6:10].strip(), l[13:18].strip(), coord(l))
             add_fix(l[13:18].strip(), coord(l))
-        elif sec == "D":                                        # VHF navaid (VOR/DME/TACAN)
+        elif sec == "D":                                        # VHF navaid (VOR/DME/TACAN) and NDB
+            add_region(l[13:17].strip(), l[19:21].strip(), coord(l))
             add_fix(l[13:17].strip(), coord(l))
         elif sec == "P" and sub == "N":                         # terminal NDB
+            add_terminal(l[6:10].strip(), l[13:17].strip(), coord(l))
             add_fix(l[13:17].strip(), coord(l))
         elif sec == "P" and sub == "A":                         # airport reference point
             add_fix(l[6:10].strip(), coord(l))
+    print(f"fixes: {len(fixes)} global, {len(terminal_fixes)} airport-scoped, "
+          f"{len(region_fixes)} region-scoped", flush=True)
 
     # ---- pass 2: procedures + legs (subsection D=SID, E=STAR, F=approach), runways (G), ILS (I) ----
     con = sqlite3.connect(args.out if False else ":memory:")
@@ -296,7 +325,17 @@ def main():
             # silently discarded every altitude/heading/intercept-terminated leg (CA VA VI VR CI CD VD),
             # which left 706 SIDs in the database with NO legs at all — a named, selectable procedure
             # with no path. A leg with no fix still has a path terminator and a constraint.
-            c = fixes.get(fix) if fix else None
+            # THE AIRPORT'S OWN fix wins over the global table. `apt` is this procedure's airport, and a
+            # terminal waypoint or NDB with the same ident elsewhere is a different point entirely —
+            # see the note in pass 1. Falling back to the global table keeps enroute fixes and VHF
+            # navaids, which are genuinely global, resolving exactly as before.
+            # Most specific first: the REGION the leg itself names, then this airport's own terminal
+            # fix, then the global table. The global fallback keeps every unambiguous enroute fix and
+            # navaid resolving exactly as before.
+            fix_region = l[34:36].strip() if len(l) > 36 else ""
+            c = (region_fixes.get((fix, fix_region))
+                 or terminal_fixes.get((apt, fix))
+                 or fixes.get(fix)) if fix else None
             con.execute("INSERT INTO leg(procedure_id,seq,fix,lat,lon,leg_type,course_mag,alt,"
                         "alt_desc,alt2,speed_limit,vertical_angle,turn,rnp,wp_desc,recd_navaid) "
                         "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
