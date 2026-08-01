@@ -54,8 +54,11 @@ enum Procedures {
 
     /// Published charts for an airport, in the file's order (FAA groups them by kind already).
     static func forAirport(_ ident: String) -> [AirportProcedure] {
-        let key = ident.trimmingCharacters(in: .whitespaces).uppercased()
-        return (data.airports[key] ?? []).map { AirportProcedure(code: $0.c, name: $0.n, pdf: $0.f) }
+        // Both identifier forms — procedures.json keys 707 charted airports by their bare FAA code
+        // while the UI asks with the ICAO one. See `AirportKey`.
+        AirportKey.resolving(ident) { key in
+            (data.airports[key] ?? []).map { AirportProcedure(code: $0.c, name: $0.n, pdf: $0.f) }
+        }
     }
 
     /// Every distinct FAA chart code in the bundled index. Small (8 in the shipped cycle: IAP, MIN, DP,
@@ -74,8 +77,11 @@ enum Procedures {
     /// Does the airport publish ANY chart? A cheap membership test (no `[AirportProcedure]` allocation) —
     /// used by the hot nearby-airport filters that scan up to 120 candidates per GPS update.
     static func hasAirport(_ ident: String) -> Bool {
-        let key = ident.trimmingCharacters(in: .whitespaces).uppercased()
-        return !(data.airports[key]?.isEmpty ?? true)
+        // Both forms, like forAirport — this gates whether a field is offered at all, so a namespace
+        // miss here hides an airport that publishes 1,271 approach plates across the 707 affected.
+        let (given, alternate) = AirportKey.forms(ident)
+        if !(data.airports[given]?.isEmpty ?? true) { return true }
+        return given == alternate ? false : !(data.airports[alternate]?.isEmpty ?? true)
     }
 
     /// Test seam / lazy-load probe (0 when the resource is missing).
