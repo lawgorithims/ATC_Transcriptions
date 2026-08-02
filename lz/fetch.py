@@ -934,7 +934,10 @@ def main():
     ap.add_argument("--assert-coverage", action="store_true",
                     help="prove each source is readable and covers the cell")
     ap.add_argument("--source", action="append", default=[], help="limit to one source (repeatable)")
+    C.add_cell_argument(ap)
     a = ap.parse_args()
+    C.select_cell(a.cell)          # before ANY path, window or URL is built
+
     sel = _selected(a.source)
     if a.list:
         return cmd_list()

@@ -426,7 +426,10 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--build", action="store_true")
     ap.add_argument("--verify", action="store_true")
+    C.add_cell_argument(ap)
     a = ap.parse_args()
+    C.select_cell(a.cell)          # before ANY path, window or URL is built
+
     rc = 0
     if a.build:
         rc |= cmd_build()

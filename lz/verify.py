@@ -54,12 +54,32 @@ except ImportError:
 APT_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
                       "ios", "ATCTranscribe", "Resources", "nav", "apt.sqlite")
 
-# Sampled from NWI riverine polygons via PointOnSurface (a centroid falls outside a sinuous river).
-RIO_GRANDE = [(-106.6657, 32.1266), (-106.7198, 32.1716), (-106.6387, 32.2757)]
-ORGAN_CREST = (-106.5610, 32.3600)
-I10_I25 = (-106.7700, 32.3100)
-OPEN_DESERT = (-106.3000, 32.7000)
-RANCH_STRIP = ("7NM1", -106.04527777, 32.93527777)
+# GROUND TRUTH IS PER CELL, and there is no way around that: "the Rio Grande must never read as
+# landable" is a fact about one river in one degree square. The structural gates below (round-trip,
+# pyramid monotonicity, ODbL independence, size) are cell-agnostic and run everywhere.
+#
+# A cell with no entry here is NOT silently passed. It reports NO GROUND TRUTH and the final verdict
+# is qualified, because "GATE PASS" on a cell where nothing was checked against reality would make
+# the word meaningless for exactly the cells that have never been looked at.
+GROUND_TRUTH = {
+    "n33w107": {
+        "airport": "KLRU",
+        # Sampled from NWI riverine polygons via PointOnSurface (a centroid falls outside a
+        # sinuous river).
+        "never_landable": [("Rio Grande", -106.6657, 32.1266),
+                           ("Rio Grande", -106.7198, 32.1716),
+                           ("Rio Grande", -106.6387, 32.2757)],
+        "steep": [("Organ crest", -106.5610, 32.3600)],
+        "high_hazard": [("I-10/I-25 interchange", -106.7700, 32.3100)],
+        "low_hazard": [("open desert", -106.3000, 32.7000)],
+        "not_vetoed": [("7NM1 ranch strip", -106.04527777, 32.93527777)],
+    },
+}
+
+
+def ground_truth():
+    """Registered truth for the SELECTED cell, or None."""
+    return GROUND_TRUTH.get(C.CELL_ID)
 
 LANDABLE = (C.CLASS_OPEN_FIRM, C.CLASS_CROP)
 RUNWAY_MAX_SLOPE_DEG = 4.0
@@ -136,57 +156,74 @@ def check(label, ok, detail=""):
 
 
 def gate_ground_truth(pack):
+    """Check the pack against things known to be true on the ground in THIS cell.
+
+    Returns (ok, checked). `checked` is False when no truth is registered for the selected cell —
+    the caller qualifies the verdict rather than reporting a pass nobody earned."""
+    truth = ground_truth()
+    if truth is None:
+        print(f"   -- NO GROUND TRUTH registered for {C.CELL_ID}. Structural gates still apply, but "
+              f"nothing here was checked against reality.")
+        print(f"      Add an entry to GROUND_TRUTH in {os.path.basename(__file__)} once a landmark "
+              f"in this cell is known (a river, a ridge, an interchange, a strip).")
+        return True, False
+
     ok = True
     slope_deg = lambda v: None if v == C.SLOPE_NODATA else v * C.SLOPE_STEP_DEG  # noqa: E731
 
-    # KLRU runways: flat, smooth, low hazard. Not "landable class" — a paved runway maps as
-    # developed in land cover, and asserting otherwise would be testing the wrong property.
-    rw = runway_points()
-    if not rw:
-        ok = check("KLRU runway geometry available", False, "apt.sqlite not readable")
-    else:
+    # Runways: flat, smooth, low hazard. NOT "landable class" — a paved runway maps as developed in
+    # land cover, and asserting otherwise would be testing the wrong property.
+    apt = truth.get("airport")
+    rw = runway_points() if apt else []
+    if apt and not rw:
+        ok = check(f"{apt} runway geometry available", False, "apt.sqlite not readable")
+    elif rw:
         bad = []
         for desig, lon, lat in rw:
-            s = pack.sample(lon, lat)
-            if s is None:
+            smp = pack.sample(lon, lat)
+            if smp is None:
                 bad.append(f"{desig} no tile")
                 continue
-            sd = slope_deg(s["slope"])
-            if sd is None or sd > RUNWAY_MAX_SLOPE_DEG or s["hazard"] > RUNWAY_MAX_HAZARD:
-                bad.append(f"{desig} slope={sd} hz={s['hazard']}")
-        ok &= check(f"KLRU {len(rw)} runway samples flat & low-hazard", not bad,
+            sd = slope_deg(smp["slope"])
+            if sd is None or sd > RUNWAY_MAX_SLOPE_DEG or smp["hazard"] > RUNWAY_MAX_HAZARD:
+                bad.append(f"{desig} slope={sd} hz={smp['hazard']}")
+        ok &= check(f"{apt} {len(rw)} runway samples flat & low-hazard", not bad,
                     "; ".join(bad[:3]) if bad else
                     f"<= {RUNWAY_MAX_SLOPE_DEG} deg, hz <= {RUNWAY_MAX_HAZARD}")
 
-    # A real ranch strip in the cell must not be vetoed outright.
-    ident, lon, lat = RANCH_STRIP
-    s = pack.sample(lon, lat)
-    ok &= check(f"{ident} ranch strip not vetoed", s is not None and s["class"] != C.CLASS_WATER,
-                f"class={C.CLASS_NAMES.get(s['class']) if s else 'no tile'}")
+    for label, lon, lat in truth.get("not_vetoed", []):
+        smp = pack.sample(lon, lat)
+        ok &= check(f"{label} not vetoed",
+                    smp is not None and smp["class"] != C.CLASS_WATER,
+                    f"class={C.CLASS_NAMES.get(smp['class']) if smp else 'no tile'}")
 
-    # The river must stay non-landable at EVERY zoom. An overview that averages it away is the
+    # Water must stay non-landable at EVERY zoom. An overview that averages a river away is the
     # precise failure conservative aggregation exists to prevent.
     bad = []
     for z in range(C.MIN_ZOOM, C.NATIVE_ZOOM + 1):
-        for lon, lat in RIO_GRANDE:
-            s = pack.sample(lon, lat, z)
-            if s and s["class"] in LANDABLE:
-                bad.append(f"z{z} {C.CLASS_NAMES[s['class']]}")
-    ok &= check("Rio Grande never landable, all zooms", not bad, "; ".join(bad[:4]))
+        for label, lon, lat in truth.get("never_landable", []):
+            smp = pack.sample(lon, lat, z)
+            if smp and smp["class"] in LANDABLE:
+                bad.append(f"{label} z{z} {C.CLASS_NAMES[smp['class']]}")
+    if truth.get("never_landable"):
+        ok &= check("water never landable, all zooms", not bad, "; ".join(bad[:4]))
 
-    s = pack.sample(*ORGAN_CREST)
-    sd = slope_deg(s["slope"]) if s else None
-    ok &= check("Organ crest carries slope", sd is not None and sd >= ORGAN_MIN_SLOPE_DEG,
-                f"{sd} deg (need >= {ORGAN_MIN_SLOPE_DEG})")
+    for label, lon, lat in truth.get("steep", []):
+        smp = pack.sample(lon, lat)
+        sd = slope_deg(smp["slope"]) if smp else None
+        ok &= check(f"{label} carries slope", sd is not None and sd >= ORGAN_MIN_SLOPE_DEG,
+                    f"{sd} deg (need >= {ORGAN_MIN_SLOPE_DEG})")
 
-    s = pack.sample(*I10_I25)
-    ok &= check("I-10/I-25 interchange hazard", s is not None and s["hazard"] >= INTERCHANGE_MIN_HAZARD,
-                f"{s['hazard'] if s else '-'}/255")
+    for label, lon, lat in truth.get("high_hazard", []):
+        smp = pack.sample(lon, lat)
+        ok &= check(f"{label} hazard", smp is not None and smp["hazard"] >= INTERCHANGE_MIN_HAZARD,
+                    f"{smp['hazard'] if smp else '-'}/255")
 
-    s = pack.sample(*OPEN_DESERT)
-    ok &= check("open desert stays clean", s is not None and s["hazard"] <= DESERT_MAX_HAZARD,
-                f"{s['hazard'] if s else '-'}/255")
-    return ok
+    for label, lon, lat in truth.get("low_hazard", []):
+        smp = pack.sample(lon, lat)
+        ok &= check(f"{label} stays clean", smp is not None and smp["hazard"] <= DESERT_MAX_HAZARD,
+                    f"{smp['hazard'] if smp else '-'}/255")
+    return ok, True
 
 
 def gate_structure(pack):
@@ -300,17 +337,23 @@ def gate_odbl():
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--pack", default=os.path.join(C.OUT_DIR, f"{C.CELL_ID}.lzpack"))
+    # default resolved AFTER select_cell — at definition time C.CELL_ID is still the
+    # default cell, so a literal default here would verify n33w107's pack for every --cell.
+    ap.add_argument("--pack", default=None)
     ap.add_argument("--skip-odbl", action="store_true", help="skip the (slow) rebuild proof")
+    C.add_cell_argument(ap)
     a = ap.parse_args()
-    if not os.path.exists(a.pack):
-        sys.exit(f"no pack at {a.pack} — run: python3 lz/package.py --build")
-    pack = Pack(a.pack)
-    print(f"verifying {os.path.basename(a.pack)} "
-          f"({os.path.getsize(a.pack)/1e6:.1f} MB, built {pack.meta.get('built_at')})\n")
+    C.select_cell(a.cell)          # before ANY path, window or URL is built
+
+    pack_path = a.pack or os.path.join(C.OUT_DIR, f"{C.CELL_ID}.lzpack")
+    if not os.path.exists(pack_path):
+        sys.exit(f"no pack at {pack_path} — run: python3 lz/package.py --build --cell {C.CELL_ID}")
+    pack = Pack(pack_path)
+    print(f"verifying {os.path.basename(pack_path)} "
+          f"({os.path.getsize(pack_path)/1e6:.1f} MB, built {pack.meta.get('built_at')})\n")
 
     print("-- ground truth --")
-    ok = gate_ground_truth(pack)
+    ok, truth_checked = gate_ground_truth(pack)
     print("\n-- structure --")
     ok &= gate_structure(pack)
     print("\n-- pyramid --")
@@ -321,7 +364,12 @@ def main():
     else:
         ok &= gate_odbl()
 
-    print("\nGATE PASS" if ok else "\nGATE FAIL")
+    if not ok:
+        print("\nGATE FAIL")
+    elif truth_checked:
+        print("\nGATE PASS")
+    else:
+        print(f"\nGATE PASS (STRUCTURE ONLY — no ground truth registered for {C.CELL_ID})")
     return 0 if ok else 1
 
 

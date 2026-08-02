@@ -361,7 +361,10 @@ def main():
     ap.add_argument("--verify", action="store_true", help="Organ / Mesilla oracles")
     ap.add_argument("--limit", type=int, default=0, help="only the first N tiles (smoke test)")
     ap.add_argument("--force", action="store_true", help="rebuild tiles that already exist")
+    C.add_cell_argument(ap)
     a = ap.parse_args()
+    C.select_cell(a.cell)          # before ANY path, window or URL is built
+
     rc = 0
     if a.selftest:
         rc |= cmd_selftest()
