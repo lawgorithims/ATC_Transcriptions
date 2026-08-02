@@ -5,7 +5,7 @@ import MapKit   // MKMapRect — the bounds index in LZPackStore
 /// Reader for `.lzpack` — the offline off-field-landability fact tiles built by `lz/package.py`.
 ///
 /// WHAT A PACK HOLDS
-/// Six `uint8` FACT planes per 256x256 tile, plus the tile's DEM provenance. Facts, never verdicts:
+/// Seven `uint8` FACT planes per 256x256 tile, plus the tile's DEM provenance. Facts, never verdicts:
 /// the pipeline is aircraft-agnostic and position-agnostic, and the score is computed on device so
 /// that changing aircraft re-tints the map without re-downloading anything.
 ///
@@ -27,9 +27,9 @@ enum LZPack {
 
     static let magic: [UInt8] = Array("LZP1".utf8)
     static let version: UInt8 = 1
-    static let schema = 1
+    static let schema = 2      // 2 added `extent`
     static let side = 256
-    static let planeCount = 6
+    static let planeCount = 7
     static let planeBytes = side * side          // 65_536
 
     /// Positional plane order. The device indexes by position, so this must not be reordered.
@@ -39,11 +39,12 @@ enum LZPack {
     static let planeRough = 3
     static let planeHazard = 4
     static let planeFlags = 5
-    static let planeNames = ["class", "conf", "slope", "rough", "hazard", "flags"]
+    static let planeExtent = 6
+    static let planeNames = ["class", "conf", "slope", "rough", "hazard", "flags", "extent"]
 
     /// magic(4) + version(1) + planeCount(1) + side(2) + terrainSource(1) + reserved(1)
     static let headerFixed = 10
-    static let headerBytes = headerFixed + 4 * planeCount   // 34
+    static let headerBytes = headerFixed + 4 * planeCount   // 38
 
     // Quantisation, mirroring lzcommon.
     static let slopeStepDeg = 0.2
@@ -105,9 +106,26 @@ enum LZPack {
     static func roughMetres(_ raw: UInt8) -> Double? {
         raw == roughNoData ? nil : Double(raw) / 100.0
     }
+
+    /// Longest open run through this cell, in metres. 10 m per step — exactly one analysis cell, so
+    /// there is no quantisation error — mirroring `lzcommon.EXTENT_STEP_M`.
+    static let extentStepM = 10.0
+
+    /// 255 does NOT mean 2550 m. It means "at least 2550 m", which is more room than any light
+    /// aeroplane can use, so it is a complete answer rather than a truncated one. Callers comparing
+    /// against a required landing distance must treat it as sufficient, never as an exact length.
+    static let extentSaturated: UInt8 = 255
+
+    static func extentMetres(_ raw: UInt8) -> Double { Double(raw) * extentStepM }
+
+    /// Whether this cell has room for a run of `metres`. Zero means no open ground here at all —
+    /// which is a real answer, not missing data.
+    static func extentAdmits(_ raw: UInt8, metres: Double) -> Bool {
+        raw == extentSaturated || extentMetres(raw) >= metres
+    }
 }
 
-/// One decoded tile: six planes of `side * side` bytes plus the tile's DEM provenance.
+/// One decoded tile: every plane as `side * side` bytes, plus the tile's DEM provenance.
 struct LZTilePlanes {
     let planes: [[UInt8]]
     let terrainSource: UInt8
@@ -130,7 +148,8 @@ enum LZPackBlob {
     /// Decode one tile blob. Returns nil for ANY anomaly — wrong magic, unknown version, a length
     /// that overruns the buffer, a stream that inflates to the wrong size. Never throws, never traps.
     static func decode(_ data: Data) -> LZTilePlanes? {
-        assert(LZPack.headerBytes == 34, "LZPack header layout drifted from the packer")
+        assert(LZPack.headerBytes == LZPack.headerFixed + 4 * LZPack.planeCount,
+               "LZPack header layout drifted from the packer")
         guard data.count >= LZPack.headerBytes else { return nil }
 
         let bytes = [UInt8](data)

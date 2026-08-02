@@ -134,8 +134,12 @@ final class LZPackTests: XCTestCase {
         XCTAssertNil(LZPackBlob.decode(bad))
         bad = full; bad[4] = LZPack.version &+ 1        // version
         XCTAssertNil(LZPackBlob.decode(bad), "an unknown version must be refused, not guessed")
-        bad = full; bad[5] = 7                          // plane count
-        XCTAssertNil(LZPackBlob.decode(bad))
+        // DERIVED, not the literal 7 — which is what this was, and became the CORRECT plane count
+        // when the extent plane landed, so the test started asserting that a valid blob is refused.
+        bad = full; bad[5] = UInt8(LZPack.planeCount &+ 1)
+        XCTAssertNil(LZPackBlob.decode(bad), "a blob claiming more planes than we know must be refused")
+        bad = full; bad[5] = UInt8(LZPack.planeCount &- 1)
+        XCTAssertNil(LZPackBlob.decode(bad), "a blob claiming fewer planes must be refused too")
         bad = full; bad[6] = 0x80; bad[7] = 0x00        // side = 128
         XCTAssertNil(LZPackBlob.decode(bad))
         bad = full; bad[8] = 9                          // impossible terrain source
