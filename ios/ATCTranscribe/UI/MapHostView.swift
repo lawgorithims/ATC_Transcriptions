@@ -278,6 +278,14 @@ struct MapHostView: View {
         // it, so a copy made at the end of each pass would always report the previous sweep's render.
         .onReceive(lzController.$energyStatus) { model.lzEnergyStatus = $0 }
         .onReceive(lzController.$status) { model.lzPackStatus = $0 }
+        // A pack finished downloading (or was removed) while the map was open. Nothing else
+        // republishes here — the .task above keys on aircraft/theme/layer state, none of which
+        // changes when a transfer completes — so without this the pilot watches an 88 MB download
+        // finish and the map not change, which is indistinguishable from a broken layer.
+        .onReceive(LZPackLibrary.shared.packsChanged) { _ in
+            guard model.showLZRisk else { return }
+            lzController.packsChangedOnDisk(aircraft: model.selectedAircraft, theme: model.theme)
+        }
         // Publish reported flight categories to the symbol builder, so an airport's glyph carries the
         // conditions there. The builders run off the main actor and can't read the store directly.
         .onReceive(metars.$metars) { publishCategories($0) }
@@ -530,12 +538,47 @@ struct MapHostView: View {
             VStack(spacing: 6) {
                 chartStatusPill
                 trafficStatusPill
+                lzCoveragePill
             }
             // MEASURED chrome, not a guess: with the input strip expanded the chrome is ~280pt, so the
             // old constant 150 buried these pills behind the bars in exactly the states where a "chart
             // feed down" warning matters most.
             .padding(.top, mapTopInset)
         }
+    }
+
+    /// The landability layer is ON but there is no pack for where the pilot is looking.
+    ///
+    /// AN OFFER, NOT A DOWNLOAD. The chart layer quietly fetches coverage as you pan, which is fine
+    /// for a few megabytes; a landability cell is ~88 MB and that is not a decision to make on
+    /// someone's behalf. So this states the position and routes to Downloads — and it appears only
+    /// when the layer is on, because an offer to fill a gap in a layer nobody switched on is noise.
+    ///
+    /// Distinguishes "no coverage published here" from "published, just not downloaded". They look
+    /// identical on the map (nothing drawn) and are completely different problems.
+    @ViewBuilder private var lzCoveragePill: some View {
+        if model.showLZRisk, !lzController.packAvailable || lzMissingHere > 0 {
+            if lzMissingHere > 0 {
+                Button {
+                    Haptics.impact(.light)
+                    model.showDownloads = true
+                } label: {
+                    statusPill("Landability data available here — tap to download", "square.grid.3x3.square")
+                }
+                .buttonStyle(.plainHaptic)
+                .accessibilityIdentifier("lz-coverage-offer")
+            } else if !lzController.packAvailable {
+                statusPill("No landability data for this area", "square.grid.3x3.square")
+                    .accessibilityIdentifier("lz-coverage-none")
+            }
+        }
+    }
+
+    /// Published-but-not-installed cells under the current view. Cheap: a rect test over the
+    /// catalog, which is a handful of entries.
+    private var lzMissingHere: Int {
+        guard let c = model.lastMapCamera else { return 0 }
+        return LZPackLibrary.shared.missingCells(around: c.center, radiusNM: 40).count
     }
 
     /// Chart download state — engine-agnostic (`store.phase` is set by ChartStore for both engines).

@@ -862,6 +862,11 @@ final class AppModel: ObservableObject {
     /// pilot who switches the layer on with no `.lzpack` installed sees an unchanged map and no
     /// explanation — the identical symptom to a layer that is broken.
     @Published var lzPackStatus: String = ""
+    /// How many published landability cells the FILED ROUTE crosses that are not installed. Counted
+    /// when a plan is filed or edited, alongside the chart prefetch, and used only to OFFER the
+    /// download — never to start one. A cell is ~88 MB; the charts' silent prefetch is defensible
+    /// because its packs are small, and this one would not be.
+    @Published var lzRouteCoverageGap = 0
 
     /// True while everything the emergency button turns on is in fact on. DERIVED, never stored: the
     /// button reports the world rather than remembering what it did, so closing NRST or switching a
@@ -3837,6 +3842,15 @@ final class AppModel: ObservableObject {
             let rects = ChartGeo.routeRects(points)
             guard !rects.isEmpty else { return }
             await ChartLibrary.shared.prefetch(rects: rects, layers: layers, cap: 12)
+
+            // Landability coverage for the same route is OFFERED, never fetched. Chart packs are
+            // small enough that pulling them silently on Wi-Fi is a kindness; a landability cell is
+            // ~88 MB, so the most this may do is count what is missing and let the Downloads screen
+            // say so. Nothing here starts a transfer.
+            await MainActor.run {
+                let lib = LZPackLibrary.shared
+                self.lzRouteCoverageGap = lib.missingCells(covering: rects).count
+            }
         }
     }
 
