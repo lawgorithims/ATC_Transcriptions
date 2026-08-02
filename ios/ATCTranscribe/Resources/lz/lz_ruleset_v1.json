@@ -1,6 +1,6 @@
 {
   "id": "fw_ambient",
-  "version": "2026.08.3",
+  "version": "2026.08.4",
   "requires_facts_schema": 2,
   "title": "Fixed-wing ambient landability",
   "note": "Facts come from the pack; ALL judgment lives here. Versioned separately from the tiles and from the app so a weight change ships as a small file, not a rebuild. Advisory only.",
@@ -217,5 +217,38 @@
       "open_soft": 1.9,
       "brush": 2.2
     }
+  },
+  "extent_model": {
+    "note": "ROOM TO USE THE GROUND. The extent plane publishes the longest open run through a cell, aircraft-agnostic; this turns it into a verdict against the aeroplane actually flying. It is a CAP and a VETO rather than a weighted term, because 'how good is this ground' and 'can you use it at all' are different questions \u2014 a field that is beautiful and 80 m long should not average out to mediocre, it should be excluded. Expressed as a ratio of available run to required, so the ruleset states the SHAPE and the aircraft sets the scale, exactly as slope tolerance does.",
+    "unprepared_factor": 1.5,
+    "cap_by_ratio": [
+      [
+        0.0,
+        0
+      ],
+      [
+        0.6,
+        15
+      ],
+      [
+        0.8,
+        45
+      ],
+      [
+        1.0,
+        80
+      ],
+      [
+        1.3,
+        100
+      ],
+      [
+        2.0,
+        100
+      ]
+    ],
+    "veto_below_ratio": 0.5,
+    "veto_card_text": "Not enough room \u2014 the open run here is far shorter than your landing distance",
+    "cap_card_text": "Tight \u2014 the open run here is close to your landing distance"
   }
 }

@@ -55,6 +55,17 @@ struct LZCompiledRuleset: Sendable {
     let vetoOnSlopeNoData: Bool
     let slopeVetoAbove: UInt8          // raw slope byte above which the cell is vetoed
 
+    /// Cap per raw extent byte, 0...100. 255 (saturated) always maps to 100 — "more room than any
+    /// light aeroplane can use" must never cap anything. Empty when the ruleset has no extent model.
+    let extentCap: [Int]
+    /// Raw extent byte at or below which the cell is VETOED, or nil for no extent veto. Zero is
+    /// excluded from this: a cell with no open ground at all is already handled by its class.
+    let extentVetoAtOrBelow: UInt8?
+    let extentVetoText: String
+    let extentCapText: String
+    /// What the aeroplane actually needs, in metres, for the card to explain the number.
+    let requiredRunM: Double
+
     /// Caps, as 0...100 ceilings.
     let capCoarseTerrain: Int
     let capFlag: [UInt8: Int]
@@ -114,6 +125,14 @@ enum LZRulesetCompiler {
             let multiplier_max: Double
             let surface_distance_factor: [String: Double]
         }
+        /// Turns the aircraft-agnostic extent plane into a verdict for THIS aeroplane.
+        struct ExtentModel: Decodable {
+            let unprepared_factor: Double
+            let cap_by_ratio: [[Double]]
+            let veto_below_ratio: Double
+            let veto_card_text: String
+            let cap_card_text: String
+        }
         struct Energy: Decodable {
             let applies_to: [String]
             let multiplier_min: Double
@@ -132,6 +151,9 @@ enum LZRulesetCompiler {
         let energy_model: Energy
         /// Optional: a ruleset without it behaves exactly as before the distance model existed.
         let distance_model: DistanceModel?
+        /// Optional for the same reason, and additionally inert on a schema-1 pack that has no
+        /// extent plane to read.
+        let extent_model: ExtentModel?
     }
 
     // MARK: - Loading
@@ -239,6 +261,38 @@ enum LZRulesetCompiler {
             surfaceLUT[code] = quantise(u)
         }
 
+        // EXTENT: room to use the ground, compiled against this aeroplane's landing distance.
+        //
+        // A cap and a veto rather than a weighted term, because "how good is this ground" and "can
+        // you use it at all" are different questions. A beautiful 80 m field must not average out
+        // to mediocre — it must be excluded, and say why.
+        let requiredRunM = bookDistanceFt * 0.3048 * (doc.extent_model?.unprepared_factor ?? 1.5)
+        var extentCap = [Int]()
+        var extentVetoAtOrBelow: UInt8?
+        if let em = doc.extent_model, requiredRunM > 1 {
+            extentCap = (0...255).map { raw -> Int in
+                // SATURATION IS NOT A LENGTH. 255 means "at least 2550 m", which is more room than
+                // any light aeroplane can use, so it can never cap — reading it as exactly 2550 m
+                // would penalise an aeroplane needing more than that on ground that is effectively
+                // unbounded.
+                if UInt8(raw) == LZPack.extentSaturated { return LZCompiledRuleset.scoreMax }
+                let ratio = LZPack.extentMetres(UInt8(raw)) / requiredRunM
+                // `cap_by_ratio` is already in CAP units (0...100), matching every other cap in the
+                // ruleset — `{"id": "coarse_terrain", "cap": 55}`. Scaling it by scoreMax as though
+                // it were a 0...1 utility produced caps of 131, 350, 437... which never bind against
+                // a score that tops out at 100, so the graded ceiling silently did NOTHING and only
+                // the veto worked. Clamped as well as unscaled, so a bad ruleset cannot resurrect it.
+                let cap = interpolate(em.cap_by_ratio, at: ratio)
+                return max(0, min(LZCompiledRuleset.scoreMax, Int(cap.rounded())))
+            }
+            // Everything strictly below the veto ratio, EXCEPT zero. Zero means the cell carries no
+            // open ground at all, which its surface class already excludes; vetoing on it here would
+            // double-report the same fact and hide the real reason on the card.
+            let vetoM = requiredRunM * em.veto_below_ratio
+            let steps = Int((vetoM / LZPack.extentStepM).rounded(.down))
+            if steps >= 1 { extentVetoAtOrBelow = UInt8(min(254, max(1, steps))) }
+        }
+
         // Vetoes.
         var vetoClass = [Bool](repeating: false, count: 256)
         var vetoNoData = false
@@ -287,6 +341,7 @@ enum LZRulesetCompiler {
         for r in doc.vetoes where r.card_text.isEmpty { return nil }
         for r in doc.caps where r.card_text.isEmpty { return nil }
 
+        assert(extentCap.isEmpty || extentCap.count == 256, "extent cap table must be full or absent")
         let sig = signature(rulesetID: doc.id, version: doc.version, vref: vref, glide: glide,
                             slopeScale: slopeScale, energyMul: energyMul,
                             bookDistanceFt: bookDistanceFt,
@@ -297,6 +352,10 @@ enum LZRulesetCompiler {
             wSurface: Int((w[0] * 255).rounded()), wSlope: Int((w[1] * 255).rounded()),
             wRough: Int((w[2] * 255).rounded()), wHazard: Int((w[3] * 255).rounded()),
             vetoClass: vetoClass, vetoOnSlopeNoData: vetoNoData, slopeVetoAbove: slopeVetoAbove,
+            extentCap: extentCap, extentVetoAtOrBelow: extentVetoAtOrBelow,
+            extentVetoText: doc.extent_model?.veto_card_text ?? "",
+            extentCapText: doc.extent_model?.cap_card_text ?? "",
+            requiredRunM: requiredRunM,
             capCoarseTerrain: capCoarse, capFlag: capFlag,
             capLowConfidenceBelow: capLowConfBelow, capLowConfidenceValue: capLowConfValue,
             vetoText: vetoText, capText: capText, flagText: flagText, alwaysText: alwaysText,

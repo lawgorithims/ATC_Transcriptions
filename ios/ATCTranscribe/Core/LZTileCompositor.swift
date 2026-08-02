@@ -148,12 +148,25 @@ final class LZTileCompositor {
     /// must come back `excluded` so it gets painted. Treating them alike is what made the Organ
     /// Mountains invisible.
     @inline(__always)
+    /// `extent` is OPTIONAL: nil on a schema-1 pack, which predates the plane.
+    ///
+    /// ⚠️ NIL IS NOT ZERO. Nil means the run was never measured, and the cell must then score
+    /// exactly as it did before the plane existed. Zero means the cell carries no open ground at
+    /// all, which is a measurement. Collapsing those would turn every pack published so far into a
+    /// map of unusable terrain the moment this build shipped.
     private func verdict(cls: UInt8, conf: UInt8, slope: UInt8, rough: UInt8,
-                         hazard: UInt8, flags: UInt8, coarse: Bool) -> Verdict {
+                         hazard: UInt8, flags: UInt8, coarse: Bool,
+                         extent: UInt8?) -> Verdict {
         if cls == LZPack.classUnknown { return .unknown }
         if rules.vetoOnSlopeNoData && slope == LZPack.slopeNoData { return .unknown }
         if rules.vetoClass[Int(cls)] { return .excluded }
         if slope != LZPack.slopeNoData && slope > rules.slopeVetoAbove { return .excluded }
+        // Not enough room is an EXCLUSION, not a low score. A field that is beautiful and far too
+        // short is not mediocre ground — it is ground you cannot use, and saying so plainly beats a
+        // number the pilot has to interpret under load.
+        if let e = extent, e > 0, let vetoAt = rules.extentVetoAtOrBelow, e <= vetoAt {
+            return .excluded
+        }
 
         let sum = rules.wSurface * Int(rules.surfaceLUT[Int(cls)])
                 + rules.wSlope * Int(rules.slopeLUT[Int(slope)])
@@ -168,6 +181,11 @@ final class LZTileCompositor {
         }
         if conf != LZPack.confUnknown && Int(conf) < rules.capLowConfidenceBelow {
             s = min(s, rules.capLowConfidenceValue)
+        }
+        // Room, as a ceiling. Only when the plane exists AND the ruleset compiled a table for it —
+        // an absent measurement leaves the score untouched.
+        if let e = extent, e > 0, !rules.extentCap.isEmpty {
+            s = min(s, rules.extentCap[Int(e)])
         }
         return .scored(max(0, min(LZCompiledRuleset.scoreMax, s)))
     }
@@ -207,13 +225,18 @@ final class LZTileCompositor {
         let hazard = tile.planes[LZPack.planeHazard]
         let flags = tile.planes[LZPack.planeFlags]
         let coarse = tile.isCoarseTerrain
+        // nil for a schema-1 tile. Resolved once per tile rather than per pixel: the branch is the
+        // same for all 65,536 of them.
+        let extent: [UInt8]? = tile.planes.count > LZPack.planeExtent
+            ? tile.planes[LZPack.planeExtent] : nil
 
         var pixels = [UInt32](repeating: 0, count: n)
         var painted = 0
         for i in 0..<n {
             let c: UInt32
             switch verdict(cls: cls[i], conf: conf[i], slope: slope[i], rough: rough[i],
-                           hazard: hazard[i], flags: flags[i], coarse: coarse) {
+                           hazard: hazard[i], flags: flags[i], coarse: coarse,
+                           extent: extent?[i]) {
             case .unknown:  continue                  // the ONLY state that renders as nothing
             case .excluded: c = excludedColor         // known unlandable — say so
             case .scored(let s): c = ramp[s]
@@ -262,12 +285,16 @@ final class LZTileCompositor {
               let hazardRaw = tile.value(plane: LZPack.planeHazard, x: px, y: py),
               let flagsRaw = tile.value(plane: LZPack.planeFlags, x: px, y: py) else { return nil }
 
+        // Deliberately NOT in the guard above: a schema-1 tile has no extent plane, and treating
+        // its absence as a decode failure would make every older pack un-tappable.
+        let extentRaw = tile.extentRaw(x: px, y: py)
         let v = verdict(cls: cls, conf: confRaw, slope: slopeRaw, rough: roughRaw,
-                        hazard: hazardRaw, flags: flagsRaw, coarse: tile.isCoarseTerrain)
+                        hazard: hazardRaw, flags: flagsRaw, coarse: tile.isCoarseTerrain,
+                        extent: extentRaw)
         let s = scoreValue(v)
         let excluded: Bool = { if case .excluded = v { return true }; return false }()
         let fired = firedRules(cls: cls, conf: confRaw, slope: slopeRaw, flags: flagsRaw,
-                               coarse: tile.isCoarseTerrain)
+                               coarse: tile.isCoarseTerrain, extent: extentRaw)
         return LZSampleInfo(score: s ?? 0, vetoed: excluded, surfaceClass: cls,
                             slopeDeg: LZPack.slopeDegrees(slopeRaw),
                             roughM: LZPack.roughMetres(roughRaw),
@@ -277,8 +304,18 @@ final class LZTileCompositor {
     }
 
     private func firedRules(cls: UInt8, conf: UInt8, slope: UInt8,
-                            flags: UInt8, coarse: Bool) -> [LZFiredRule] {
+                            flags: UInt8, coarse: Bool, extent: UInt8?) -> [LZFiredRule] {
         var out = [LZFiredRule]()
+        // Named FIRST among the vetoes when it fires, because "not enough room" is the reason a
+        // pilot most needs to see at the top of a card — the surface may be perfect, and without
+        // this the exclusion looks unexplained.
+        if let e = extent, e > 0, let vetoAt = rules.extentVetoAtOrBelow, e <= vetoAt {
+            out.append(.init(kind: .veto, id: "extent_too_short",
+                             text: rules.extentVetoText.isEmpty
+                                 ? "Not enough room for your landing distance"
+                                 : rules.extentVetoText,
+                             cap: nil))
+        }
         if rules.vetoClass[Int(cls)] {
             let id = vetoIDForClass(cls)
             out.append(.init(kind: .veto, id: id, text: rules.vetoText[id] ?? id, cap: nil))
