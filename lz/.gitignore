@@ -11,3 +11,6 @@ data/
 work/
 out/
 __pycache__/
+
+# Publish checkpoint — machine-local record of what this box has already uploaded.
+.published.json
