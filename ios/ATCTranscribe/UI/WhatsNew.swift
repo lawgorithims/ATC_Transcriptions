@@ -54,6 +54,18 @@ enum WhatsNew {
                     icon: "ruler",
                     title: "Glidepath angles and runway detail from the source",
                     detail: "The runway database was being read for 15 of the 80 fields it publishes. Recovered: the visual glidepath angle for 7,463 runway ends, threshold crossing heights, runway markings, the controlling obstacle for 15,224 ends, weight-bearing capacity, and the hold-short line positions the FAA publishes coordinates for."),
+                WhatsNewHighlight(
+                    icon: "exclamationmark.triangle.fill",
+                    title: "One press for an engine failure",
+                    detail: "A red button beside the logo, on screen on every tab. One press brings up the nearest-airport panel and lights the off-field layers below. It only ever arms — pressing it again re-arms rather than undoing it, because the outcome of pressing this in an emergency must never be that it went away. Press and hold to stand down."),
+                WhatsNewHighlight(
+                    icon: "scope",
+                    title: "Where you can reach from where you are",
+                    detail: "A live glide footprint swept against the terrain grid, shaded by how you would arrive: reachable, marginal, blocked by rising ground — and ground you would arrive at with more height than you can shed, which is a different problem from not reaching it at all. It is drawn from your present altitude and updates as you fly; with no trusted position or altitude it draws nothing and says why, rather than leaving a footprint on screen that describes a situation that has passed."),
+                WhatsNewHighlight(
+                    icon: "square.grid.3x3.square",
+                    title: "Off-field landability, scored for your aeroplane (preview)",
+                    detail: "An early look at a terrain layer that scores open ground the way a forced landing would care about: surface, slope, roughness, and a hazard field built from towers, roads and transmission corridors. The data is aircraft-agnostic and the scoring is not — your glide ratio and best-glide speed re-tint the same ground, so switching aircraft visibly changes the map. Tapping a cell lists the rules behind its score by name. ADVISORY ONLY: it scores candidate ground, never a landing recommendation, and surface condition, fences, livestock and current obstructions are not modelled. Requires a downloaded data pack; coverage is one region so far."),
             ]),
         ReleaseNote(
             build: 103, version: "1.0", headline: "Data the app had all along, finally reaching the chart",
