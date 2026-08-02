@@ -54,6 +54,7 @@ import argparse
 import json
 import math
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -89,9 +90,56 @@ def require_numpy():
 # spans lat 32..33 N and lon -107..-106 W. The v1 pilot cell is Las Cruces, New Mexico: it holds
 # KLRU, the irrigated Mesilla Valley (good fields), the Organ Mountains (the energy-layer terrain
 # case), the Rio Grande (the water veto) and open Chihuahuan desert scrub.
-CELL_ID = "n33w107"
+#
+# THESE ARE THE CURRENTLY SELECTED CELL, not constants. Every stage takes `--cell` and calls
+# `select_cell()` before doing any work; the pipeline builds ONE cell per process, which is why
+# module-level state is the right shape here rather than threading a cell object through forty-odd
+# call sites. Nothing at import time is derived from them — every read is inside a function — so
+# rebinding is safe. (The four `cell=None` defaults below exist for the same reason: a
+# `cell=CELL_ID` default argument would bind at def time and silently ignore the selection.)
+DEFAULT_CELL_ID = "n33w107"
+CELL_ID = DEFAULT_CELL_ID
 CELL_LAT_MIN, CELL_LAT_MAX = 32.0, 33.0
 CELL_LON_MIN, CELL_LON_MAX = -107.0, -106.0
+
+
+def parse_cell_id(cell_id):
+    """`"n33w107"` -> `(lat_min, lat_max, lon_min, lon_max)`.
+
+    The USGS 3DEP convention: the name is the cell's NORTH-WEST corner, and the cell extends one
+    degree SOUTH and one degree EAST of it. Getting that backwards puts every fetch window one cell
+    away from the data it wants — and the DEM URLs `fetch.py` builds from this id would still
+    resolve, so the failure would look like bad data rather than bad geometry.
+    """
+    m = re.fullmatch(r"([ns])(\d{2})([ew])(\d{3})", cell_id.strip().lower())
+    if not m:
+        raise ValueError(f"cell id {cell_id!r} is not USGS nXXwYYY form (e.g. n33w107)")
+    ns, lat_s, ew, lon_s = m.groups()
+    lat = int(lat_s) * (1 if ns == "n" else -1)
+    lon = int(lon_s) * (-1 if ew == "w" else 1)
+    if not (-90 <= lat <= 90) or not (-180 <= lon <= 180):
+        raise ValueError(f"cell id {cell_id!r} is out of range")
+    # NW corner -> the degree square south and east of it.
+    return (float(lat - 1), float(lat), float(lon), float(lon + 1))
+
+
+def select_cell(cell_id):
+    """Point the pipeline at a cell. Call once, early, before any stage does work."""
+    global CELL_ID, CELL_LAT_MIN, CELL_LAT_MAX, CELL_LON_MIN, CELL_LON_MAX
+    lat_min, lat_max, lon_min, lon_max = parse_cell_id(cell_id)
+    CELL_ID = cell_id.strip().lower()
+    CELL_LAT_MIN, CELL_LAT_MAX = lat_min, lat_max
+    CELL_LON_MIN, CELL_LON_MAX = lon_min, lon_max
+    assert CELL_LAT_MAX - CELL_LAT_MIN == 1.0, "select_cell: cells are one degree"
+    assert CELL_LON_MAX - CELL_LON_MIN == 1.0, "select_cell: cells are one degree"
+    return CELL_ID
+
+
+def add_cell_argument(ap):
+    """The `--cell` flag, identical on every stage so the pipeline reads the same at each step."""
+    ap.add_argument("--cell", default=DEFAULT_CELL_ID,
+                    help=f"1x1 degree cell to build, USGS nXXwYYY (default {DEFAULT_CELL_ID})")
+    return ap
 
 # Analysis margin. Every windowed operation in the pipeline (relief windows, distance transforms,
 # road/field-edge buffers) reads neighbours, so the master grid is built OVERSIZE and the margin is
@@ -499,27 +547,31 @@ OUT_DIR = os.path.join(LZ_ROOT, "out")
 STATIC_DIR = os.path.join(LZ_ROOT, "static")
 
 
-def cell_dir(base, cell=CELL_ID):
-    d = os.path.join(base, cell)
+def cell_dir(base, cell=None):
+    """Per-cell working directory. `cell=None` means THE SELECTED CELL, resolved now — a
+    `cell=CELL_ID` default argument would bind at import and quietly write every cell's output into
+    n33w107's directory, which is the worst possible failure here: the build succeeds and the data
+    is wrong."""
+    d = os.path.join(base, cell or CELL_ID)
     os.makedirs(d, exist_ok=True)
     return d
 
 
-def manifest_path(cell=CELL_ID):
+def manifest_path(cell=None):
     return os.path.join(cell_dir(DATA_DIR, cell), "manifest.json")
 
 
-def load_manifest(cell=CELL_ID):
+def load_manifest(cell=None):
     """Manifest schema: {cell, sources: {name: {url, sha256, bytes, vintage, coverage_pct,
     status, fetched_at}}}. Absent file = empty manifest, so --fetch is resumable from nothing."""
     p = manifest_path(cell)
     if not os.path.exists(p):
-        return {"cell": cell, "sources": {}}
+        return {"cell": cell or CELL_ID, "sources": {}}
     with open(p) as f:
         return json.load(f)
 
 
-def save_manifest(m, cell=CELL_ID):
+def save_manifest(m, cell=None):
     assert "sources" in m, "save_manifest: malformed manifest"
     with open(manifest_path(cell), "w") as f:
         json.dump(m, f, indent=2, sort_keys=True)
