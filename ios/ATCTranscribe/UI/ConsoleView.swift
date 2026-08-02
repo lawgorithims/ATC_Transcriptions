@@ -2096,6 +2096,7 @@ struct FloatingCanvas: View {
         case .diagnostics: SidebarWidget.diagnostics.card
         case .gps:         GPSReadoutCard()
         case .nrst:        NRSTPanelView()
+        case .landable:    LandableGroundPanelView(controller: LZRiskController.shared)
         }
     }
 }

@@ -186,6 +186,62 @@ final class LZSiteFinderTests: XCTestCase {
         }
     }
 
+    /// ⚠️ REGRESSION. The selection loop used to look only at the top 20 scored samples. The
+    /// highest-scoring ground is CONTIGUOUS, so that window sat entirely inside one field, the
+    /// separation filter threw it away as duplicates, and the search finished with most of the
+    /// footprint never examined — two offers over southern New Mexico, which is close to a
+    /// best-case for this layer. Nothing was wrong on screen; the list was simply short.
+    func testOneStrongFieldDoesNotStarveTheRestOfTheFootprint() {
+        // A small blob of the best ground right on the aircraft, everything else merely good. Every
+        // sample in the blob outscores every sample outside it, so a score-ordered window fills with
+        // the blob alone — and the blob is narrower than the separation radius, so it is worth
+        // exactly ONE candidate.
+        let sampler: LZSiteFinder.Sampler = { c in
+            let blob = Geo.nmBetween(c, self.here) < 0.4
+            return Self.info(score: blob ? 95 : 70)
+        }
+        let out = LZSiteFinder.find(input(), field: discField(radiusNm: 15), sample: sampler)
+        XCTAssertEqual(out.count, LZSiteFinder.maxCandidates,
+                       "one strong field consumed the search; \(out.count) offered")
+        XCTAssertEqual(out.first?.score, 95, "the best ground must still rank first")
+    }
+
+    /// The walk budget must be spent on DISTINCT ground. Ground that fails the run test never enters
+    /// the result list, so testing separation against accepted candidates alone would let one large
+    /// too-short patch be re-measured by every one of its samples until the budget was gone.
+    func testALargeTooShortPatchDoesNotConsumeTheSearch() {
+        // Inside 3 NM: high-scoring ground broken into ~120 m islands on a 150 m lattice, so no run
+        // through it can reach what the aeroplane needs FROM ANY HEADING. (Stripes would not do —
+        // a stripe is unbounded along its own axis and measures perfectly long.) Outside: ordinary
+        // open ground.
+        let lattice = 0.00135                        // ~150 m of latitude at 32°N
+        let metresPerDegLat = 111_320.0
+        let metresPerDegLon = metresPerDegLat * cos(32.0 * .pi / 180)
+        let sampler: LZSiteFinder.Sampler = { c in
+            let r = Geo.nmBetween(c, self.here)
+            if r < 2.9 {
+                let dLat = (c.lat / lattice - (c.lat / lattice).rounded()) * lattice * metresPerDegLat
+                let dLon = (c.lon / lattice - (c.lon / lattice).rounded()) * lattice * metresPerDegLon
+                let island = (dLat * dLat + dLon * dLon).squareRoot() < 60.0
+                return Self.info(score: island ? 90 : 10)
+            }
+            // An unusable moat, so no run can bridge the patch to the ground beyond it. Without one,
+            // a chance corridor of islands near the edge lets a walk escape outward and measure the
+            // outside ground — a real run over this synthetic surface, and the test would then be
+            // asserting something its own terrain does not guarantee.
+            if r < 3.0 { return Self.info(score: 10) }
+            return Self.info(score: 70)
+        }
+        let out = LZSiteFinder.find(input(required: 600), field: discField(radiusNm: 12),
+                                    sample: sampler)
+        XCTAssertFalse(out.isEmpty, "the too-short patch swallowed the whole search")
+        for c in out {
+            XCTAssertGreaterThanOrEqual(Geo.nmBetween(c.centre, here), 2.99,
+                                        "offered ground inside the too-short patch")
+            XCTAssertGreaterThanOrEqual(c.runMetres, 600)
+        }
+    }
+
     // MARK: - bounds
 
     func testTheCandidateCountIsCapped() {
@@ -218,5 +274,39 @@ final class LZSiteFinderTests: XCTestCase {
         _ = LZSiteFinder.find(input(), field: field, sample: sampler)
         let ms = (CFAbsoluteTimeGetCurrent() - t0) * 1000
         XCTAssertLessThan(ms, 800, "a sweep took \(Int(ms)) ms — too slow to run on a tap")
+    }
+
+    // MARK: - agreement with the shading
+
+    /// THE LIST AND THE MAP MUST MEAN THE SAME THING BY "too short". The finder's required run and
+    /// the shading's extent cap are computed in different files from the same POH number, and if
+    /// they drift a pilot gets a candidate the map is simultaneously excluding.
+    func testTheFinderAndTheShadingAgreeOnWhatTheAeroplaneNeeds() throws {
+        let doc = try XCTUnwrap(LZRulesetCompiler.loadDocument())
+        var a = AircraftProfile(); a.vRefKts = 62; a.glideRatio = 9; a.landingOver50Ft = 1250
+        let compiled = try XCTUnwrap(LZRulesetCompiler.compile(document: doc, aircraft: a,
+                                                               themeKey: "day", packStamp: "t"))
+        XCTAssertEqual(LZSiteFinder.requiredRunMetres(for: a), compiled.requiredRunM, accuracy: 1.0,
+                       "the ranked list and the shading disagree about the required run")
+    }
+
+    /// The unprepared factor is duplicated as a Swift constant so the finder works without a
+    /// compiled ruleset. Pinned equal here so the duplication cannot rot.
+    func testTheUnpreparedFactorMatchesTheRuleset() throws {
+        let doc = try XCTUnwrap(LZRulesetCompiler.loadDocument())
+        let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: doc) as? [String: Any])
+        let model = try XCTUnwrap(json["extent_model"] as? [String: Any])
+        let factor = try XCTUnwrap(model["unprepared_factor"] as? Double)
+        XCTAssertEqual(LZSiteFinder.unpreparedFactor, factor, accuracy: 0.0001,
+                       "LZSiteFinder.unpreparedFactor drifted from the ruleset")
+    }
+
+    /// A profile with no landing figures still yields a usable requirement rather than zero — which
+    /// would make every scrap of ground qualify.
+    func testAProfileWithoutLandingFiguresStillHasARequirement() {
+        XCTAssertGreaterThan(LZSiteFinder.requiredRunMetres(for: nil), 100)
+        var bare = AircraftProfile(); bare.callsign = "N1"
+        XCTAssertEqual(LZSiteFinder.requiredRunMetres(for: bare),
+                       LZSiteFinder.requiredRunMetres(for: nil), accuracy: 0.001)
     }
 }

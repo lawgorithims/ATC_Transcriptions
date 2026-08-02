@@ -5,7 +5,7 @@ import SwiftUI
 /// Every panel that can float over the home map. Superset of `SidebarWidget` (the diagnostic/info
 /// cards) plus the operational panels that used to be top bars or the always-on transcript.
 enum FloatingWidgetKind: String, Codable, CaseIterable, Identifiable {
-    case transcript, flightPlan, objectInfo, proofOfLife, stratux, host, latency, diagnostics, gps, nrst
+    case transcript, flightPlan, objectInfo, proofOfLife, stratux, host, latency, diagnostics, gps, nrst, landable
     var id: String { rawValue }
 
     var title: String {
@@ -20,6 +20,7 @@ enum FloatingWidgetKind: String, Codable, CaseIterable, Identifiable {
         case .diagnostics: return "Diagnostics"
         case .gps:         return "GPS"
         case .nrst:        return "Nearest airports"
+        case .landable:    return "Landable ground"
         }
     }
 
@@ -35,6 +36,7 @@ enum FloatingWidgetKind: String, Codable, CaseIterable, Identifiable {
         case .diagnostics: return "gauge.with.dots.needle.bottom.50percent"
         case .gps:         return "location.north.line.fill"
         case .nrst:        return "cross.circle"
+        case .landable:    return "square.grid.3x3.square"
         }
     }
 
@@ -44,7 +46,12 @@ enum FloatingWidgetKind: String, Codable, CaseIterable, Identifiable {
     /// `objectInfo` isn't user-addable — it appears only when a map object is tapped; `nrst` is
     /// opened by the map's NRST button (an emergency control must not depend on a menu). Retired
     /// kinds are hidden from the Widgets menu too.
-    var userManageable: Bool { self != .objectInfo && self != .nrst && !retired }
+    /// `landable` joins objectInfo and nrst as opened-by-a-control rather than by the Widgets menu:
+    /// it is meaningless without a position, an altitude and a pack, so offering it as a checkbox
+    /// would mostly offer an empty box.
+    var userManageable: Bool {
+        self != .objectInfo && self != .nrst && self != .landable && !retired
+    }
 
     /// Kinds that no longer exist as widgets. `.flightPlan` moved to the flight-plan STRIP under
     /// the top bar (the briefcase toggle). The enum case must STAY — `WidgetLayout` decodes its
@@ -142,6 +149,7 @@ struct WidgetLayout: Codable, Equatable {
             // Offset off the trailing centre so it does not land exactly on top of the object card
             // (which shares that anchor) — belt to the z-lift's braces.
             WidgetFrame(kind: .nrst,        anchor: .topTrailing,   offset: CGSize(width: 0, height: 0.12), size: CGSize(width: 400, height: 520), opacity: 0.95, visible: false, pinned: false, z: 9),
+            WidgetFrame(kind: .landable,    anchor: .trailing,      offset: CGSize(width: 0, height: 0.06), size: CGSize(width: 400, height: 500), opacity: 0.95, visible: false, pinned: false, z: 10),
         ])
     }
 

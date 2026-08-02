@@ -17,6 +17,13 @@ import SwiftUI
 @MainActor
 final class LZRiskController: ObservableObject {
 
+    /// Shared, because two views now need the SAME instance: the map, which owns the render loop
+    /// and the energy sweep, and the landable-ground panel, which asks what that sweep found. A
+    /// second instance would run its own sweep and answer from a different footprint than the one
+    /// on screen — the list and the map disagreeing about what is reachable.
+    static let shared = LZRiskController()
+
+
     /// True when at least one `.lzpack` is mounted and a ruleset compiled.
     @Published private(set) var packAvailable = false
     /// Nil until everything needed to render exists. The map passes this straight into the tile
@@ -76,6 +83,7 @@ final class LZRiskController: ObservableObject {
         }
         let c = LZTileCompositor(store: store, rules: rules, night: night)
         compositor = c
+        compositorForSampling = c
         signature = c.signature
         packAvailable = true
         status = "\(store.readers.count) pack(s), ruleset \(rules.rulesetVersion)"
@@ -210,6 +218,7 @@ final class LZRiskController: ObservableObject {
             return
         }
         energyBands = field.bands
+        energyFieldSnapshot = field
         var parts = [String]()
         parts.append(field.usedWind ? "wind applied" : "still air")
         if field.isDefaultGlideRatio { parts.append("default \(Int(ratio)):1 — set your glide ratio") }
@@ -222,12 +231,27 @@ final class LZRiskController: ObservableObject {
     func clearEnergy(reason: String) {
         guard !energyBands.isEmpty || energyStatus != reason else { return }
         energyBands = []
+        energyFieldSnapshot = nil
         // A reason is a whole answer, not a base to append a polygon count to — "layer off · 0 drawn"
         // reads as a fault report about a layer nobody asked to draw.
         energyStatusBase = ""
         energyRendered = -1
         energyStatus = reason
     }
+
+    /// The last computed footprint, kept so the site search can ask "what can I reach" without
+    /// re-running a 64-ray sweep the energy layer has already done this second.
+    private(set) var energyFieldSnapshot: LZEnergyField?
+
+    /// A `Sendable` closure over the immutable compositor, for scoring ground off the main actor.
+    /// Handing out the compositor itself would invite a caller to hold it past a recompile.
+    nonisolated var sampler: @Sendable (Coord) -> LZSampleInfo? {
+        let c = compositorForSampling
+        return { coord in c?.sample(lon: coord.lon, lat: coord.lat) }
+    }
+
+    /// Snapshot of the compositor reference, safe to capture. Nil until a pack and ruleset exist.
+    private nonisolated(unsafe) var compositorForSampling: LZTileCompositor?
 
     /// Data vintages for the card's provenance line.
     var vintages: [String: String] { store?.vintages ?? [:] }

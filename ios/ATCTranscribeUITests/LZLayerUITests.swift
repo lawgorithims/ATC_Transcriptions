@@ -412,6 +412,113 @@ final class LZLayerUITests: XCTestCase {
                       + Self.visibleLabels(app))
     }
 
+    // MARK: - the ranked list
+
+    /// An element by identifier WHATEVER its type. `.accessibilityElement(children: .combine)`
+    /// leaves it to SwiftUI whether the merged row surfaces as a static text or a plain container,
+    /// and a query pinned to the wrong one reports "the panel listed nothing" for a panel that is
+    /// plainly full of ground.
+    private func el(_ app: XCUIApplication, _ id: String) -> XCUIElement {
+        app.descendants(matching: .any).matching(identifier: id).firstMatch
+    }
+
+    /// Open the ranked-ground panel from the layers menu and hand it back.
+    private func openLandablePanel(_ app: XCUIApplication) throws {
+        openLayersPanel(app)
+        let packLine = app.staticTexts["layers-lz-status"]
+        XCTAssertTrue(packLine.waitForExistence(timeout: 30))
+        try XCTSkipIf(packLine.label.contains("no .lzpack"),
+                      "no .lzpack installed in this Simulator — nothing to rank")
+        let open = app.buttons["layer-lz-list"]
+        XCTAssertTrue(open.waitForExistence(timeout: 8), "no control opens the ranked list")
+        open.tap()
+        XCTAssertTrue(app.staticTexts["Reachable ground, best first"].waitForExistence(timeout: 10),
+                      "the panel never opened. On screen: " + Self.visibleLabels(app))
+    }
+
+    /// The list must NAME ground, and it must name several distinct places.
+    ///
+    /// ⚠️ The number matters. A windowed selection loop once offered two over southern New Mexico —
+    /// desert and cropland, close to a best case for this layer — because the top-scoring samples all
+    /// sat inside one field and the search finished before looking anywhere else. Nothing looked
+    /// wrong; the list was just short, which is indistinguishable from "there is not much here".
+    func testTheRankedListNamesSeveralDistinctPlaces() throws {
+        let app = launchHeldOverKLRU()
+        try openLandablePanel(app)
+
+        // Row 1 is the weakest real signal — wait on it, then read how far the list goes.
+        XCTAssertTrue(el(app, "landable-row-1").waitForExistence(timeout: 40)
+                      || app.staticTexts["landable-notice"].exists
+                      || app.staticTexts["landable-empty"].exists,
+                      "the panel neither listed ground nor said why not: " + Self.visibleLabels(app))
+        try XCTSkipIf(app.staticTexts["landable-notice"].exists,
+                      "the search could not run: \(app.staticTexts["landable-notice"].label)")
+
+        var rows = 0
+        for i in 1...5 where el(app, "landable-row-\(i)").exists { rows = i }        // bounded
+        XCTAssertGreaterThanOrEqual(rows, 3,
+                                    "only \(rows) candidate(s) over ground this open — the search "
+                                    + "is finishing early")
+    }
+
+    /// Every listed candidate carries what is NOT known. A bearing and a run length read as survey
+    /// data unless something on screen says otherwise, and this panel is the one place a pilot meets
+    /// those numbers without the map's shading around them.
+    func testTheListSaysWhatItDoesNotKnow() throws {
+        let app = launchHeldOverKLRU()
+        try openLandablePanel(app)
+        guard el(app, "landable-row-1").waitForExistence(timeout: 40) else {
+            throw XCTSkip("nothing was listed here: " + Self.visibleLabels(app))
+        }
+        let unknowns = el(app, "landable-unknowns")
+        XCTAssertTrue(unknowns.waitForExistence(timeout: 5),
+                      "the list named ground with no statement of what is unknown about it")
+        // The two claims that must never be dropped: it is inferred, and it is not a recommendation.
+        // Read off the footer's OWN label, not a sweep of the screen — a match found anywhere else
+        // would pass this test while the panel itself said nothing.
+        XCTAssertTrue(unknowns.label.localizedCaseInsensitiveContains("not surveyed"),
+                      "the list does not say the ground was never surveyed: \"\(unknowns.label)\"")
+        XCTAssertTrue(unknowns.label.localizedCaseInsensitiveContains("not a recommendation to land"),
+                      "the list does not disclaim being a recommendation: \"\(unknowns.label)\"")
+    }
+
+    /// A NOTICE MUST NOT LATCH. Opened before the first fix or the first glide sweep, the panel
+    /// correctly says it cannot answer yet — but it has to answer on its own once it can. This was
+    /// real: at launch the panel printed "no trusted position" and held it while the aircraft symbol
+    /// sat on the map behind it, recoverable only by a refresh button a pilot has no reason to press.
+    ///
+    /// The startup race is TIMING, so waiting for it would make this test vacuous whenever the fix
+    /// happens to land first. It is provoked instead: open the panel with the glide footprint
+    /// genuinely absent, confirm the notice, then supply the missing piece and watch the panel
+    /// answer with nothing touched but the layer switch.
+    func testAnEarlyNoticeClearsItselfOnceTheSearchCanRun() throws {
+        let app = launch(["-atc.diagnosticsEnabled", "YES",
+                          "-atc.map.lz", "YES",
+                          "-atc.map.lzEnergy", "NO",           // no footprint → the panel cannot answer
+                          "--hold-ownship", klruLat, klruLon, klruAlt])
+        try openLandablePanel(app)
+
+        let notice = app.staticTexts["landable-notice"]
+        XCTAssertTrue(notice.waitForExistence(timeout: 20),
+                      "with no glide footprint the panel must say so, not sit blank")
+        XCTAssertTrue(notice.label.contains("footprint"),
+                      "the panel blamed the wrong thing: \"\(notice.label)\"")
+
+        // Supply it. NOTHING else is touched — in particular not the panel's refresh button, which
+        // is the whole point: the answer must arrive without the pilot knowing to ask again.
+        let energy = app.switches["layer-lz-energy"]
+        XCTAssertTrue(energy.waitForExistence(timeout: 8), "no glide-energy switch to turn on")
+        energy.tap()
+
+        let cleared = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == false"), object: notice)
+        XCTAssertEqual(XCTWaiter().wait(for: [cleared], timeout: 60), .completed,
+                       "the panel latched \"\(notice.label)\" and never retried")
+        XCTAssertTrue(el(app, "landable-row-1").waitForExistence(timeout: 30)
+                      || app.staticTexts["landable-empty"].exists,
+                      "after clearing the notice the panel showed neither ground nor an empty answer")
+    }
+
     /// A digest of what is on screen, for failure messages. Without it a probe that opened the WRONG
     /// card and a probe that opened no card fail identically.
     static func visibleLabels(_ app: XCUIApplication) -> String {
