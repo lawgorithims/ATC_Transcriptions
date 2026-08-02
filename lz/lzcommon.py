@@ -353,9 +353,15 @@ BLOB_VERSION = 1
 LZ_SCHEMA = 2      # 2 added the `extent` plane (lz/extent.py)
 
 # Plane order is load-bearing: the device indexes planes positionally.
-PLANE_CLASS, PLANE_CONF, PLANE_SLOPE, PLANE_ROUGH, PLANE_HAZARD, PLANE_FLAGS = range(6)
+#
+# ⚠️ DERIVED FROM THE NAMES, never hand-numbered. These were a literal `range(6)` while PLANE_NAMES
+# had grown to seven, so `PLANE_EXTENT` simply did not exist — any code reaching for it got an
+# AttributeError, and any code that had hand-counted the index would have been reading `flags` as
+# `extent` with no complaint from anything.
 PLANE_NAMES = ["class", "conf", "slope", "rough", "hazard", "flags", "extent"]
 PLANE_COUNT = len(PLANE_NAMES)
+(PLANE_CLASS, PLANE_CONF, PLANE_SLOPE, PLANE_ROUGH,
+ PLANE_HAZARD, PLANE_FLAGS, PLANE_EXTENT) = range(PLANE_COUNT)
 
 # --- quantisation ---------------------------------------------------------------------------
 # slope: MAGNITUDE in 0.2 deg steps, u8 0..254 <-> 0..50.8 degrees; 255 = nodata.

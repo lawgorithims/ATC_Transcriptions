@@ -268,6 +268,30 @@ def gate_structure(pack):
             bad += 1
     ok &= check(f"{len(picks)} random tiles round-trip decode", bad == 0, f"{bad} bad")
 
+    # ⚠️ A PACK THAT MEASURED NOTHING PASSES EVERY CHECK ABOVE. Right tile count, right schema,
+    # right plane order, clean round-trip, comfortably under the ceiling — and every fact byte the
+    # same "unknown". n35w108 shipped exactly that: a failed DEM stream became an all-nodata slope
+    # plane, no cell could pass the extent scan, and the pack asserted that a whole 1-degree cell of
+    # New Mexico has nowhere with room to land. It gated green at 11 MB beside 55 MB neighbours.
+    #
+    # Structural validity is not the same as having measured anything, and only the second one is
+    # worth shipping. A cell with genuinely zero open ground anywhere does not occur at this scale.
+    scanned, measured, open_cells = 0, 0, 0
+    for i in picks:                                                  # bounded: the same sample
+        x, y = keys[int(i)]
+        got = pack.tile(C.NATIVE_ZOOM, x, y)
+        if got is None:
+            continue
+        planes = got[0]
+        scanned += planes[C.PLANE_SLOPE].size
+        measured += int((planes[C.PLANE_SLOPE] != C.SLOPE_NODATA).sum())
+        if C.PLANE_EXTENT < len(planes):
+            open_cells += int((planes[C.PLANE_EXTENT] > 0).sum())
+    ok &= check("the pack actually measured slope", scanned > 0 and measured > scanned // 10,
+                f"{100.0 * measured / max(1, scanned):.1f}% of sampled cells carry a slope")
+    ok &= check("some ground in the cell has room to land", open_cells > 0,
+                f"{open_cells} sampled cells with any open run")
+
     size = os.path.getsize(pack.path)
     ok &= check("pack under the size ceiling", size <= 200 << 20, f"{size/1e6:.1f} MB")
     return ok
