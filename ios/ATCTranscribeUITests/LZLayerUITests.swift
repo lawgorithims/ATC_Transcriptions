@@ -218,6 +218,36 @@ final class LZLayerUITests: XCTestCase {
         XCTAssertFalse(isOn(risk), "the row would not switch the layer off")
     }
 
+    /// Both layers are ORDINARY now — no developer flag anywhere in this launch. They were gated
+    /// while there was no way to obtain a pack, which was honest then: a switch that cannot work is
+    /// worse than an absent one. The Downloads screen made packs obtainable, so the gate went with
+    /// its reason. A pilot who downloads 89 MB must be able to find the layer it feeds.
+    func testTheLayersAreOfferedWithoutDeveloperDiagnostics() {
+        let app = launch()                                 // no -atc.diagnosticsEnabled at all
+        openLayersPanel(app)
+        XCTAssertTrue(app.switches["layer-lz"].waitForExistence(timeout: 8),
+                      "off-field landability is still hidden behind developer diagnostics")
+        XCTAssertTrue(app.switches["layer-lz-energy"].exists,
+                      "the glide energy layer is still hidden behind developer diagnostics")
+    }
+
+    /// The advisory framing is what a NON-developer now meets, so it must carry the limits, not just
+    /// the label. Each clause here is a specific thing the data does not know.
+    func testTheAdvisoryNoteNamesWhatIsNotModelled() {
+        let app = launch()
+        openLayersPanel(app)
+        let note = app.staticTexts["layers-lz-note"].label
+        XCTAssertTrue(note.contains("ADVISORY ONLY"), note)
+        XCTAssertTrue(note.lowercased().contains("candidate ground"), note)
+        XCTAssertTrue(note.lowercased().contains("never a landing recommendation"), note)
+        for missing in ["fences", "livestock", "surface condition", "obstructions"] {
+            XCTAssertTrue(note.lowercased().contains(missing),
+                          "the note no longer says \(missing) is unmodelled: \(note)")
+        }
+        XCTAssertTrue(note.lowercased().contains("absence of a depicted hazard"),
+                      "the note dropped the strongest clause it has: \(note)")
+    }
+
     // MARK: - the energy layer, actually drawing
 
     /// THE case this suite was written for. An aeroplane held at 16,000 ft over Las Cruces, both
