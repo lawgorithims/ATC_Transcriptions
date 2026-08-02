@@ -47,6 +47,13 @@ struct LZPackCatalog: Decodable {
         let sha256: String?
         let bounds: [Double]            // [west, south, east, north] — same order as ChartCatalog
         let builtAt: String?
+        /// Pack format. Absent on catalogs published before it was recorded, which were all
+        /// schema 1 — so the default is the honest reading rather than an optimistic one.
+        let schemaRaw: Int?
+        var schema: Int { schemaRaw ?? 1 }
+        /// Whether THIS build can read the pack. Checked before offering the download, because
+        /// finding out afterwards costs the pilot 90 MB and tells them nothing useful.
+        var isReadable: Bool { LZPack.readableSchemas.contains(schema) }
         /// How many tiles in this cell had only 10 m elevation, where the ditch- and berm-scale
         /// checks CANNOT run and the score is capped instead. Surfaced before the download, so
         /// "this region is partly coarse" is knowable without spending the bytes.
@@ -55,6 +62,7 @@ struct LZPackCatalog: Decodable {
         private enum CodingKeys: String, CodingKey {
             case id, path, bytes, sha256, bounds
             case builtAt = "built_at"
+            case schemaRaw = "schema"
             case coarseTerrainTiles = "coarse_terrain_tiles"
         }
 
@@ -92,7 +100,7 @@ struct LZPackCatalog: Decodable {
     func cells(intersecting rects: [MKMapRect]) -> [Cell] {
         guard !rects.isEmpty else { return [] }
         return cells.filter { c in
-            guard let r = c.mapRect else { return false }
+            guard c.isReadable, let r = c.mapRect else { return false }
             return rects.contains { $0.intersects(r) }
         }
     }
@@ -102,7 +110,7 @@ struct LZPackCatalog: Decodable {
     /// Cells a region names AND the catalog actually publishes, in the region's order. A region
     /// listing a cell that does not exist yet is normal — coverage grows one build at a time.
     func cells(in region: Region) -> [Cell] {
-        region.cells.compactMap { id in cells.first { $0.id == id } }
+        region.cells.compactMap { id in cells.first { $0.id == id && $0.isReadable } }
     }
 
     var totalBytes: Int { cells.reduce(0) { $0 + $1.bytes } }

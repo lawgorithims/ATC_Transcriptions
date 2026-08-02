@@ -161,4 +161,54 @@ final class LZPackCatalogTests: XCTestCase {
         XCTAssertNil(LZPackLibrary.packID(".hidden.lzpack"))
         XCTAssertEqual(LZPackLibrary.packID("n33w107.lzpack"), "n33w107")
     }
+
+    // MARK: - schema compatibility
+
+    /// THE ASYMMETRY. Backward compatibility lets a NEW app read an OLD pack; it never lets an old
+    /// app read a new one. Build 106 shipped reading schema 1 only, so a schema-2 pack published
+    /// while it was current would have been refused at mount by every tester — 90 MB spent to break
+    /// the feature. The catalog therefore carries each cell's schema and the app declines what it
+    /// cannot read BEFORE downloading.
+    func testACellIsOnlyOfferedIfThisBuildCanReadIt() throws {
+        let json = """
+        {"schema":1,"regions":[{"id":"r","title":"R","cells":["old","current","future"]}],
+         "cells":[
+          {"id":"old","path":"cells/old.lzpack","bytes":1,"bounds":[-107,32,-106,33],"schema":1},
+          {"id":"current","path":"cells/current.lzpack","bytes":1,"bounds":[-107,32,-106,33],"schema":2},
+          {"id":"future","path":"cells/future.lzpack","bytes":1,"bounds":[-107,32,-106,33],"schema":99}]}
+        """
+        let c = try XCTUnwrap(LZPackCatalog.decode(Data(json.utf8)))
+        let region = try XCTUnwrap(c.regions.first)
+        let offered = c.cells(in: region).map(\.id)
+        XCTAssertEqual(offered, ["old", "current"],
+                       "a pack from a newer pipeline must not be offered — it would be refused at mount")
+
+        // The same filter guards the coverage offers, or the map would invite a doomed download.
+        let overCell = ChartGeo.rect(around: Coord(lat: 32.5, lon: -106.5), radiusNM: 5)
+        XCTAssertFalse(c.cells(intersecting: [overCell]).contains { $0.id == "future" })
+    }
+
+    /// A catalog published before the schema field existed described schema-1 packs, so its absence
+    /// must read as 1 — the honest default, not an optimistic one.
+    func testAMissingSchemaFieldMeansSchemaOne() throws {
+        let json = """
+        {"schema":1,"regions":[],"cells":[
+          {"id":"legacy","path":"cells/legacy.lzpack","bytes":1,"bounds":[-107,32,-106,33]}]}
+        """
+        let cell = try XCTUnwrap(LZPackCatalog.decode(Data(json.utf8))?.cells.first)
+        XCTAssertEqual(cell.schema, 1)
+        XCTAssertTrue(cell.isReadable, "a legacy pack must stay readable")
+    }
+
+    /// Both schemas this build claims to read must actually be readable, or the claim is a lie the
+    /// catalog filter would act on.
+    func testEveryClaimedReadableSchemaHasAKnownPlaneCount() {
+        for s in LZPack.readableSchemas {
+            let n = LZPack.planeCount(forSchema: s)
+            XCTAssertGreaterThan(n, 0)
+            XCTAssertEqual(LZPack.planeNames(forSchema: s).count, n)
+        }
+        XCTAssertTrue(LZPack.readableSchemas.contains(LZPack.schema),
+                      "this build cannot read the schema it writes")
+    }
 }
