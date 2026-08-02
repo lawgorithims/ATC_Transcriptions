@@ -111,10 +111,12 @@ private struct ActiveRecording: Codable {
 
     private func startSampler() {
         guard samplerTask == nil, foregrounded, state == .recording else { return }
+        // ⚠️ `Task {}` INHERITS this @MainActor context, so `tick()` is a plain main-actor call — the sleep is
+        // the loop's only suspension point. An `await` on it is inert (and warns); it never bought a hop.
         samplerTask = Task { [weak self] in
             while !Task.isCancelled {                                 // bounded by cancellation (rule 2)
                 try? await Task.sleep(nanoseconds: (self?.tickSeconds ?? 2) * 1_000_000_000)
-                await self?.tick()
+                self?.tick()
             }
         }
     }
@@ -168,7 +170,7 @@ private struct ActiveRecording: Codable {
                 if let i = openStopIndex, stops.indices.contains(i) {
                     stops[i].durationSec = now.timeIntervalSince(since)
                 } else {
-                    var stop = FlightStop(id: UUID(), lat: point.lat, lon: point.lon, arrivedAt: since,
+                    let stop = FlightStop(id: UUID(), lat: point.lat, lon: point.lon, arrivedAt: since,
                                           durationSec: now.timeIntervalSince(since), airport: nil)
                     if stops.count >= maxStops { stops.removeFirst() }
                     stops.append(stop); openStopIndex = stops.count - 1

@@ -152,14 +152,16 @@ struct BatteryActivitySnapshot {
         guard samplerTask == nil, foregrounded else { return }
         UIDevice.current.isBatteryMonitoringEnabled = true
         resetAccumulators(renderCount: snapshotProvider?().renderCount ?? 0)
+        // ⚠️ `Task {}` INHERITS this @MainActor context, so the two calls below are plain main-actor calls —
+        // the sleep is the loop's only suspension point. An `await` on them is inert (and warns).
         samplerTask = Task { [weak self] in
             var elapsed: UInt64 = 0
             while !Task.isCancelled {                                 // bounded by cancellation (rule 2)
                 try? await Task.sleep(nanoseconds: Self.tickSeconds * 1_000_000_000)
                 guard let self else { return }
-                await self.accumulate()
+                self.accumulate()
                 elapsed += Self.tickSeconds
-                if elapsed >= 60 { elapsed = 0; await self.takeSample() }   // one persisted sample per 60 s
+                if elapsed >= 60 { elapsed = 0; self.takeSample() }   // one persisted sample per 60 s
             }
         }
     }

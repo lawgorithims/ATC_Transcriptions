@@ -111,7 +111,9 @@ struct RadarRegion: Equatable {
         refreshTask = Task { [weak self] in
             while !Task.isCancelled {                            // bounded by cancellation (rule 2)
                 await self?.refresh()
-                let interval = await (self?.tileTemplate == nil) ? Self.retrySeconds : Self.refreshSeconds
+                // No `await`: `Task {}` inherits this @MainActor context, so reading a published property
+                // is synchronous here. (`refresh()` above IS async and keeps its await.)
+                let interval = (self?.tileTemplate == nil) ? Self.retrySeconds : Self.refreshSeconds
                 try? await Task.sleep(nanoseconds: interval * 1_000_000_000)
             }
         }
@@ -164,10 +166,10 @@ struct RadarRegion: Equatable {
         var i = 0
         animTask = Task { [weak self] in
             while !Task.isCancelled {                              // bounded by cancellation (rule 2)
-                guard let n = await self?.frames.count, n >= 2 else { return }
+                guard let n = self?.frames.count, n >= 2 else { return }   // inherited @MainActor: sync read
                 let idx = i % n
                 await MainActor.run { self?.apply(index: idx) }
-                let hold = await (self?.nowIndex == idx) ? Self.holdNanos : Self.frameNanos
+                let hold = (self?.nowIndex == idx) ? Self.holdNanos : Self.frameNanos
                 try? await Task.sleep(nanoseconds: hold)
                 i = (i + 1) % max(n, 1)
             }
@@ -277,7 +279,11 @@ struct RadarRegion: Equatable {
 
     /// RainViewer's free tier serves a "Zoom Level Not Supported" placeholder past z7 (the raster layer
     /// caps there too and overzooms), so tiles are never requested deeper than this.
-    static let maxRadarZoom = 7
+    ///
+    /// `nonisolated` because the pure tile math below is nonisolated (and unit-tested off the main actor).
+    /// Safe: an immutable `let` of a Sendable value type — there is nothing to race on, and marking it
+    /// nonisolated changes no timing (an actor hop to read a constant would).
+    nonisolated static let maxRadarZoom = 7
 
     /// The tiles covering `region`, **nearest-to-center first** and bounded — the tiles the pilot is
     /// actually looking at, in the order they matter. Zoom is chosen so the cover stays small: start at

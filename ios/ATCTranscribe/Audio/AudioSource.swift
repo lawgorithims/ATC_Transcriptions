@@ -262,13 +262,16 @@ final class DeviceAudioSource: AudioSource {
                 guard let self else { return }
                 AudioSessionManager.activate(recording: true, preferUSB: preferUSB)
                 if self.startEngine() == nil {
-                    self.lock.lock(); self.interrupted = false; self.recovery = nil; self.lock.unlock()
+                    // ⚠️ Scoped `withLock`, not a bare lock/unlock pair: NSLock is `noasync`, so inside
+                    // this Task the bare form is a Swift 6 error. The body cannot suspend — which is
+                    // the invariant that matters here: never hold this lock across an await.
+                    self.lock.withLock { self.interrupted = false; self.recovery = nil }
                     self.onNotice?("Microphone resumed.")
                     return
                 }
             }
             guard let self else { return }
-            self.lock.lock(); self.recovery = nil; self.lock.unlock()
+            self.lock.withLock { self.recovery = nil }
             self.onFailure?("Audio didn't recover after \(reason). Press Start to retry.")
             self.stop()
         }
@@ -308,9 +311,7 @@ final class DeviceAudioSource: AudioSource {
                 if Task.isCancelled { return }
                 guard let self else { return }
                 let seen = buffersSeen.withLock { $0 }
-                self.lock.lock()
-                let paused = self.interrupted || self.recovery != nil
-                self.lock.unlock()
+                let paused = self.lock.withLock { self.interrupted || self.recovery != nil }
                 if seen == previous, !paused { self.scheduleRestart(reason: "the audio went silent") }
                 previous = seen
             }

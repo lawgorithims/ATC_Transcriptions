@@ -84,11 +84,13 @@ final class ModelDownloadManager: ObservableObject {
                     guard let url = e.directURL else { throw ModelDownloadError.unsupported }
                     try await downloader.downloadFile(from: url, to: ModelStore.localURL(for: e), progress: report)
                 }
-                await self?.finish(e.id, .ready, entry: e)
+                // ⚠️ The transfer above is nonisolated async so it runs OFF main, but this closure inherits
+                // the manager's @MainActor context — we're back on main here, so `finish` needs no `await`.
+                self?.finish(e.id, .ready, entry: e)
             } catch is CancellationError {
-                await self?.finish(e.id, ModelStore.isReady(e) ? .ready : .notDownloaded, entry: nil)
+                self?.finish(e.id, ModelStore.isReady(e) ? .ready : .notDownloaded, entry: nil)
             } catch {
-                await self?.finish(e.id, .failed(error.localizedDescription), entry: nil)
+                self?.finish(e.id, .failed(error.localizedDescription), entry: nil)
             }
         }
         tasks[e.id] = task

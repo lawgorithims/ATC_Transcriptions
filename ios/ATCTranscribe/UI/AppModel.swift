@@ -3222,7 +3222,9 @@ final class AppModel: ObservableObject {
 
     /// Past this almanac age the predicted geometry is too drifted to base an interference accusation on,
     /// so the threat classifier is handed nil geometry. Matches the Satellites page's staleness warning.
-    static let almanacThreatMaxAgeDays = 90.0
+    /// `nonisolated` because it is an immutable constant with nothing to race on, and the test target
+    /// reads it from an `XCTAssert` autoclosure — a nonisolated context, which is an error in Swift 6.
+    nonisolated static let almanacThreatMaxAgeDays = 90.0
 
     /// Mask angle for "in view". 5° is the usual aviation receiver mask: below it a signal is skimming
     /// too much atmosphere to contribute usefully, and counting those satellites would flatter the
