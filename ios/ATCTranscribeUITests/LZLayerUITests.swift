@@ -237,8 +237,11 @@ final class LZLayerUITests: XCTestCase {
         let text = awaitStatus(status, containing: "drawn")
 
         XCTAssertTrue(text.contains("nm"), "status carries no footprint radius: \(text)")
-        XCTAssertFalse(text.contains("0 drawn"),
-                       "the footprint computed but the map drew NOTHING: \(text)")
+        // PARSED, not substring-matched. `text.contains("0 drawn")` reads "150 drawn" as a failure —
+        // it caught this suite red on a run where 150 polygons had in fact been drawn, and would
+        // have false-failed on any count ending in zero while quietly passing the case it was for.
+        let drawn = try XCTUnwrap(Self.parseDrawn(text), "no drawn count in: \(text)")
+        XCTAssertGreaterThan(drawn, 0, "the footprint computed but the map drew NOTHING: \(text)")
         XCTAssertFalse(text.contains("no altitude"),
                        "the held ownship did not reach the energy layer: \(text)")
     }
@@ -275,6 +278,16 @@ final class LZLayerUITests: XCTestCase {
         let low = try reachNm("9000")
         let high = try reachNm("16000")
         XCTAssertGreaterThan(high, low, "climbing 7,000 ft did not extend the footprint")
+    }
+
+    /// "still air · 24 nm · 137 drawn" → 137.
+    static func parseDrawn(_ s: String) -> Int? {
+        for part in s.components(separatedBy: "·") {
+            let t = part.trimmingCharacters(in: .whitespaces)
+            guard t.hasSuffix("drawn") else { continue }
+            return Int(t.dropLast("drawn".count).trimmingCharacters(in: .whitespaces))
+        }
+        return nil
     }
 
     /// "still air · 24 nm · 137 drawn" → 24.
