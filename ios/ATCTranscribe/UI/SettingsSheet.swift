@@ -452,6 +452,20 @@ struct SettingsSheet: View {
                         }
                     }
                     .accessibilityIdentifier("settings-flight-simulator")
+                    // Parks a hypothetical aeroplane over ground with landability data so the
+                    // emergency path can be shown at a desk. Also publishes a FAKE position, and
+                    // sits here for the same reason the simulator does.
+                    NavigationLink {
+                        DemoFlightView(deviceLocation: model.deviceLocation).environmentObject(model)
+                    } label: {
+                        HStack {
+                            Label("Demo flight", systemImage: "dice")
+                                .font(.dsLabel).foregroundStyle(p.text)
+                            Spacer()
+                            Image(systemName: "chevron.right").font(.dsLabelS).foregroundStyle(p.textDim)
+                        }
+                    }
+                    .accessibilityIdentifier("settings-demo-flight")
                 }
                 NavigationLink {
                     NotamCredentialView(store: model.notams, palette: p)

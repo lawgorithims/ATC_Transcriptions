@@ -2568,6 +2568,14 @@ final class AppModel: ObservableObject {
 
     // MARK: Active approach (activate → fly it → missed)
 
+    /// Whether the app WINDOW is compact-width, recorded by the console.
+    ///
+    /// ⚠️ Not the same as reading `\.horizontalSizeClass` wherever you happen to be. A presented
+    /// sheet has its own compact environment on an iPad, so a control inside one that asks the
+    /// environment gets "compact" for a regular-width app and takes the phone path — which is how
+    /// the demo screen armed the emergency into a modal NRST sheet instead of the docked panel.
+    @Published var isCompactWindow = false
+
     /// The off-field glide the pilot has armed after rehearsing it, if any.
     ///
     /// ⚠️ DELIBERATELY NOT AN `ActiveApproach`. That type is CIFP-shaped — airport, ARINC ident,
