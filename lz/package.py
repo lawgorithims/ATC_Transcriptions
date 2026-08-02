@@ -94,16 +94,29 @@ def tile_extent_3857(x, y, z):
 
 
 def _ensure_extent(workdir):
-    """Build the extent plane if it is not there.
+    """Build the extent plane if it is not there, OR if it is older than what it was derived from.
 
     Deliberately self-healing rather than a hard requirement. This plane arrived after the cell
     queue was already running, and an orchestration script that predates it should produce a
     CORRECT pack, not a malformed one or a failed stage 40 minutes into a cell. It costs 8 seconds
-    over an already-mosaicked cell, so there is no reason to make anyone remember it."""
+    over an already-mosaicked cell, so there is no reason to make anyone remember it.
+
+    ⚠️ EXISTENCE IS NOT FRESHNESS. Checking only `os.path.exists` made this cache a liar the moment
+    a cell was rebuilt: n35w108's terrain was rebuilt after a failed DEM stream, and the packer
+    happily reused the extent plane derived from the BROKEN slope — so the corrected pack still
+    said the whole cell had nowhere to land, at the right file size, with nothing in the log but a
+    line saying the plane was already present. Rebuild whenever an input is newer."""
     path = os.path.join(workdir, "extent.npy")
+    inputs = [os.path.join(workdir, n) for n in ("class.npy", "slope.npy")]
     if os.path.exists(path):
-        return
-    print("   extent.npy absent — building it (8s)")
+        mine = os.path.getmtime(path)
+        stale = [p for p in inputs if os.path.exists(p) and os.path.getmtime(p) > mine]
+        if not stale:
+            return
+        print("   extent.npy is older than "
+              + ", ".join(os.path.basename(p) for p in stale) + " — rebuilding it (8s)")
+    else:
+        print("   extent.npy absent — building it (8s)")
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import extent as _extent
     rc = _extent.build(workdir)
