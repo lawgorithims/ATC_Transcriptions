@@ -336,7 +336,12 @@ class Dem3DEP(Source):
                      projects=sorted(projects), vintage=sorted(vintages),
                      coverage_pct=round(cov, 2), fallback_13=sorted(set(fb)),
                      note="streamed via /vsicurl; never materialised")
-        return {"tiles": len(tiles), "coverage_pct": round(cov, 2), "projects": len(projects)}
+        # `fallback_13` is REPORTED, not just recorded. Without it the caller sees coverage_pct 0
+        # and concludes the cell is empty — but a cell with no 1 m lidar and a working 1/3
+        # arc-second tile is entirely buildable, just coarse throughout, which is precisely what the
+        # terrain_source cap exists for. Large parts of the rural west have no lidar at all.
+        return {"tiles": len(tiles), "coverage_pct": round(cov, 2), "projects": len(projects),
+                "fallback_13": len(fb)}
 
     @staticmethod
     def _coverage_pct(tiles, n=600):
@@ -941,14 +946,24 @@ def cmd_fetch(sources):
             # coverage gate does catch it later and exits non-zero, so nothing unsafe shipped, but
             # a stage that says "ok" for an empty result sends you looking for the fault in the
             # wrong place. Say it here, where it was learned.
+            # EMPTY means nothing usable resolved AT ALL — not merely that the best source was
+            # absent. A cell with 0% 1 m lidar but a 1/3 arc-second fallback is buildable and
+            # coarse, and failing it here would reject much of the rural west. `assert_coverage`
+            # remains the authority: it OPENS the data rather than trusting a count.
+            has_fallback = isinstance(r, dict) and (r.get("fallback_13") or 0) > 0
             empty = (isinstance(r, dict)
                      and (r.get("coverage_pct") == 0 or r.get("tiles") == 0)
+                     and not has_fallback
                      and r.get("status") != STATUS_STALE_FROZEN)
-            tag = "EMPTY" if empty else "ok  "
+            coarse_only = (isinstance(r, dict) and r.get("coverage_pct") == 0 and has_fallback)
+            tag = "EMPTY" if empty else ("coarse" if coarse_only else "ok  ")
             print(f"{tag} {s.name:<14}{json.dumps(r, default=str)[:110]}  ({time.time()-t0:.0f}s)")
+            if coarse_only:
+                print(f"     ^ no 1 m lidar over {C.CELL_ID}; building from 1/3 arc-second. The whole "
+                      f"cell will read as coarse terrain and be capped accordingly.")
             if empty and s.required:
-                print(f"     ^ nothing resolved for {C.CELL_ID}. If this cell is outside the United "
-                      f"States, no US federal source will ever cover it.")
+                print(f"     ^ nothing resolved for {C.CELL_ID}, not even a 1/3 arc-second fallback. "
+                      f"If this cell is outside the United States, no US federal source covers it.")
                 rc = 1
         except Exception as e:
             print(f"{'FAIL' if s.required else 'warn'} {s.name:<14}{str(e)[:140]}")
