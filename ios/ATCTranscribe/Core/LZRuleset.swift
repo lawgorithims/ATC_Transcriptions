@@ -153,7 +153,10 @@ enum LZRulesetCompiler {
                         themeKey: String,
                         packStamp: String) -> LZCompiledRuleset? {
         guard let doc = try? JSONDecoder().decode(Doc.self, from: document) else { return nil }
-        guard doc.requires_facts_schema == LZPack.schema else { return nil }
+        // The ruleset states the OLDEST schema it needs, and this build may read newer packs than
+        // that. Requiring equality meant bumping the pack schema silently invalidated the shipped
+        // ruleset and the compiler returned nil — every tile blank, no error anywhere.
+        guard LZPack.readableSchemas.contains(doc.requires_facts_schema) else { return nil }
 
         // Weights must be a partition of unity, or the score is not on the scale the caps assume.
         let names = ["surface", "slope", "rough", "hazard"]

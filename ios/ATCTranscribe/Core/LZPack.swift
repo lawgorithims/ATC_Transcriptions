@@ -27,8 +27,21 @@ enum LZPack {
 
     static let magic: [UInt8] = Array("LZP1".utf8)
     static let version: UInt8 = 1
+    /// The schema this build WRITES against and prefers.
     static let schema = 2      // 2 added `extent`
+
+    /// Schemas this build can READ.
+    ///
+    /// ⚠️ THE ASYMMETRY THAT MATTERS: backward compatibility lets a NEW app read an OLD pack. It
+    /// does NOT let an old app read a new one. Build 106 shipped reading schema 1 only, so
+    /// publishing a schema-2 pack would make every tester's app refuse it — the feature breaking
+    /// for everyone who has not updated. A pack's schema must therefore never move ahead of the
+    /// oldest build still expected to download it, and the catalog carries each cell's schema so
+    /// the app can decline what it cannot read instead of downloading 90 MB and rejecting it.
+    static let readableSchemas: Set<Int> = [1, 2]
+
     static let side = 256
+    /// Planes in the CURRENT schema. A schema-1 pack has six; see `planeCount(forSchema:)`.
     static let planeCount = 7
     static let planeBytes = side * side          // 65_536
 
@@ -41,6 +54,12 @@ enum LZPack {
     static let planeFlags = 5
     static let planeExtent = 6
     static let planeNames = ["class", "conf", "slope", "rough", "hazard", "flags", "extent"]
+
+    /// Schema 1 predates `extent` and carries six planes.
+    static func planeCount(forSchema s: Int) -> Int { s >= 2 ? 7 : 6 }
+    static func planeNames(forSchema s: Int) -> [String] {
+        Array(planeNames.prefix(planeCount(forSchema: s)))
+    }
 
     /// magic(4) + version(1) + planeCount(1) + side(2) + terrainSource(1) + reserved(1)
     static let headerFixed = 10
@@ -140,6 +159,17 @@ struct LZTilePlanes {
     }
 
     var isCoarseTerrain: Bool { terrainSource != LZPack.terrainFine }
+
+    /// Raw extent byte, or nil on a schema-1 pack that predates the plane.
+    ///
+    /// NIL MEANS "NOT MEASURED", AND MUST NOT BE READ AS "NO ROOM". A schema-1 pack simply does not
+    /// carry this dimension, and scoring it as though the ground were tiny would turn every older
+    /// pack into a map of unusable terrain. Absent the measurement, the score falls back to exactly
+    /// what it was before the plane existed.
+    func extentRaw(x: Int, y: Int) -> UInt8? {
+        guard planes.count > LZPack.planeExtent else { return nil }
+        return value(plane: LZPack.planeExtent, x: x, y: y)
+    }
 }
 
 /// Blob (de)serialisation. Decode-only on device; `lz/package.py` owns the writer.
@@ -148,22 +178,26 @@ enum LZPackBlob {
     /// Decode one tile blob. Returns nil for ANY anomaly — wrong magic, unknown version, a length
     /// that overruns the buffer, a stream that inflates to the wrong size. Never throws, never traps.
     static func decode(_ data: Data) -> LZTilePlanes? {
-        assert(LZPack.headerBytes == LZPack.headerFixed + 4 * LZPack.planeCount,
-               "LZPack header layout drifted from the packer")
-        guard data.count >= LZPack.headerBytes else { return nil }
-
+        // The blob declares its own plane count; a schema-1 pack has six, schema 2 has seven. Any
+        // other number is corruption, not a format we might grow into.
+        guard data.count >= LZPack.headerFixed else { return nil }
         let bytes = [UInt8](data)
         guard Array(bytes[0..<4]) == LZPack.magic else { return nil }
         guard bytes[4] == LZPack.version else { return nil }
-        guard Int(bytes[5]) == LZPack.planeCount else { return nil }
+        let declaredPlanes = Int(bytes[5])
+        guard LZPack.readableSchemas.contains(where: {
+            LZPack.planeCount(forSchema: $0) == declaredPlanes
+        }) else { return nil }
+        let headerBytes = LZPack.headerFixed + 4 * declaredPlanes
+        guard data.count >= headerBytes else { return nil }
         let side = Int(bytes[6]) | (Int(bytes[7]) << 8)
         guard side == LZPack.side else { return nil }
         let terrainSource = bytes[8]
         guard terrainSource <= LZPack.terrainCoarse else { return nil }
 
         var lengths = [Int]()
-        lengths.reserveCapacity(LZPack.planeCount)
-        for i in 0..<LZPack.planeCount {
+        lengths.reserveCapacity(declaredPlanes)
+        for i in 0..<declaredPlanes {
             let o = LZPack.headerFixed + 4 * i
             let n = Int(bytes[o]) | (Int(bytes[o + 1]) << 8)
                   | (Int(bytes[o + 2]) << 16) | (Int(bytes[o + 3]) << 24)
@@ -173,8 +207,8 @@ enum LZPackBlob {
         }
 
         var planes = [[UInt8]]()
-        planes.reserveCapacity(LZPack.planeCount)
-        var offset = LZPack.headerBytes
+        planes.reserveCapacity(declaredPlanes)
+        var offset = headerBytes
         for n in lengths {
             guard offset + n <= bytes.count else { return nil }
             guard let raw = inflate(Array(bytes[offset..<(offset + n)])) else { return nil }
@@ -182,7 +216,7 @@ enum LZPackBlob {
             planes.append(raw)
             offset += n
         }
-        assert(planes.count == LZPack.planeCount, "decoded plane count must be fixed")
+        assert(planes.count == declaredPlanes, "decoded plane count must match the header")
         return LZTilePlanes(planes: planes, terrainSource: terrainSource)
     }
 
@@ -273,12 +307,16 @@ final class LZPackStore {
                 continue
             }
             let declared = Int(r.metadata["lz_schema"] ?? "") ?? -1
-            guard declared == LZPack.schema else {
-                rejected.append("\(url.lastPathComponent): schema \(declared) != \(LZPack.schema)")
+            guard LZPack.readableSchemas.contains(declared) else {
+                rejected.append("\(url.lastPathComponent): schema \(declared), this build reads "
+                                + LZPack.readableSchemas.sorted().map(String.init).joined(separator: "/"))
                 continue
             }
-            guard r.metadata["lz_planes"] == LZPack.planeNames.joined(separator: ",") else {
-                rejected.append("\(url.lastPathComponent): plane order mismatch")
+            // Plane ORDER is positional and must match exactly for the schema claimed — a pack that
+            // reordered its planes would decode as garbage rather than fail, which is the one
+            // outcome worth being strict about.
+            guard r.metadata["lz_planes"] == LZPack.planeNames(forSchema: declared).joined(separator: ",") else {
+                rejected.append("\(url.lastPathComponent): plane order mismatch for schema \(declared)")
                 continue
             }
             mounted.append(Mounted(reader: r, rect: Self.coveredRect(r)))

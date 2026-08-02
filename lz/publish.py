@@ -161,8 +161,10 @@ def catalog_entry(path):
     # Refuse at PUBLISH time what the device would refuse at MOUNT time. A pack that ships and then
     # silently fails to mount is the worst outcome: the pilot pays 88 MB for nothing and the layer
     # looks broken rather than absent. LZPackStore.reload() checks exactly these two.
-    if m.get("lz_schema") != str(C.LZ_SCHEMA):
-        _fail(f"{cell}: lz_schema {m.get('lz_schema')!r} != {C.LZ_SCHEMA} — the app would reject it")
+    schema = int(m.get("lz_schema", 0))
+    if schema != C.LZ_SCHEMA:
+        _fail(f"{cell}: built at schema {schema}, this pipeline is at {C.LZ_SCHEMA}. "
+              f"Re-run: python3 lz/package.py --cell {cell} --build  (~2 min, terrain is cached)")
     if m.get("lz_planes") != ",".join(C.PLANE_NAMES):
         _fail(f"{cell}: lz_planes {m.get('lz_planes')!r} != {','.join(C.PLANE_NAMES)}")
 
@@ -179,6 +181,11 @@ def catalog_entry(path):
     return {
         "id": cell,
         "path": f"{CELL_PREFIX}/{cell}.lzpack",
+        # Published so an app can decline a pack it cannot read INSTEAD of downloading 90 MB and
+        # rejecting it at mount. Backward compatibility only runs one way — a new app reads an old
+        # pack, never the reverse — so a build that predates a schema must be able to see that a
+        # cell is out of reach before it spends the bytes.
+        "schema": int(m.get("lz_schema", 1)),
         "bytes": os.path.getsize(path),
         "sha256": sha256_of(path),
         # [west, south, east, north] — the SAME order the chart catalog uses, so the app's
