@@ -30,7 +30,31 @@ enum WhatsNew {
     /// Newest build first. Keep each new shipped build's notes at the top; the gate shows everything a
     /// tester hasn't seen since their last build, so a tester who skips builds still gets a full
     /// catch-up. Builds need not be contiguous.
+    ///
+    /// 105 IS ABSENT ON PURPOSE. It was 104 plus one Swift 6 compiler fix and changed nothing a
+    /// tester can see, so it has no entry rather than a manufactured one. The gap is what "builds
+    /// need not be contiguous" is for.
     static let releaseNotes: [ReleaseNote] = [
+        ReleaseNote(
+            build: 106, version: "1.0", headline: "Off-field landability, now something you can actually download",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "square.grid.3x3.square",
+                    title: "The landability layer works now",
+                    detail: "Last build shipped this layer dark — there was no way to get the data it needs. Downloads now has an Off-field landability section: pick your region, watch it come down with real progress, and the map paints without a restart. Southern New Mexico is up first (Las Cruces, the Mesilla Valley, the Organ and San Andres ranges); more regions follow as they are built. Each pack is around 90 MB and stays until you remove it — nothing evicts it behind your back."),
+                WhatsNewHighlight(
+                    icon: "airplane.departure",
+                    title: "Your landing numbers now change the map",
+                    detail: "The aircraft editor takes your approach speed and your POH landing distance over a 50 ft obstacle. Give it those and the same ground scores differently: an aeroplane needing 2,600 ft cannot use rough or soft ground the way one needing 900 ft can, and the shading says so. Firm open ground scores the same for everything that flies, so the top of the scale stays put — what changes is how much of the marginal ground below it is worth considering. Ask for the total over a 50 ft obstacle rather than the ground roll, because an unprepared field usually has a fence or trees at the approach end."),
+                WhatsNewHighlight(
+                    icon: "speedometer",
+                    title: "A correction: approach speed was being read from best glide",
+                    detail: "The landability scoring took your best-glide speed and used it as your approach speed. They are different numbers — best glide is flown well above the speed you cross a fence at — so the ground was scored as though you touched down faster than you do. The error was in the cautious direction, and it is now its own field."),
+                WhatsNewHighlight(
+                    icon: "map",
+                    title: "Coverage for where you fly, offered rather than assumed",
+                    detail: "File a route and the Downloads screen tells you how many landability cells it crosses that you do not have. Pan the map somewhere covered and it offers the download. It never starts one on its own — 90 MB is not something to spend on your data plan because you moved the map."),
+            ]),
         ReleaseNote(
             build: 104, version: "1.0", headline: "The plate and the procedure now agree on the runway",
             highlights: [
