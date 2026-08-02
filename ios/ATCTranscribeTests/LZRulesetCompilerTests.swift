@@ -150,9 +150,14 @@ final class LZRulesetCompilerTests: XCTestCase {
 
     /// The murphy contract: aircraft changes the CURVE, not a scalar. A slower aeroplane must see
     /// at least as much slope tolerance as a faster one, everywhere.
+    ///
+    /// ⚠️ These used to be distinguished by `bestGlideKts`, back when the compiler read best glide
+    /// AS the approach speed. They are different speeds, so this test was quietly asserting the bug
+    /// — and it broke the moment the compiler started reading `vRefKts`, which is what a test
+    /// encoding a defect should do.
     func testSlowerAircraftNeverSeesLessSlopeToleranceThanFaster() throws {
-        var slow = AircraftProfile(); slow.bestGlideKts = 45; slow.glideRatio = 9
-        var fast = AircraftProfile(); fast.bestGlideKts = 110; fast.glideRatio = 12
+        var slow = AircraftProfile(); slow.vRefKts = 45; slow.glideRatio = 9
+        var fast = AircraftProfile(); fast.vRefKts = 110; fast.glideRatio = 12
         let s = try XCTUnwrap(compiled(aircraft: slow))
         let f = try XCTUnwrap(compiled(aircraft: fast))
         for raw in 0...254 {
@@ -166,7 +171,7 @@ final class LZRulesetCompilerTests: XCTestCase {
     /// genuinely good ground. Invariant 1: a bonus never beats a better class.
     func testEnergyModifierNeverLiftsMarginalAboveOpenField() throws {
         for kts in [40, 55, 65, 90, 130] {
-            var p = AircraftProfile(); p.bestGlideKts = kts
+            var p = AircraftProfile(); p.vRefKts = kts
             let r = try XCTUnwrap(compiled(aircraft: p))
             XCTAssertGreaterThan(r.surfaceLUT[Int(LZPack.classOpenFirm)],
                                  r.surfaceLUT[Int(LZPack.classBrush)],
@@ -176,8 +181,10 @@ final class LZRulesetCompilerTests: XCTestCase {
     }
 
     func testHazardUtilityIsIdenticalAcrossAircraft() throws {
-        var slow = AircraftProfile(); slow.bestGlideKts = 40
-        var fast = AircraftProfile(); fast.bestGlideKts = 140
+        // Must vary inputs the compiler READS. Distinguishing these by bestGlideKts would make
+        // them identical aeroplanes and the assertion below would hold vacuously.
+        var slow = AircraftProfile(); slow.vRefKts = 40; slow.landingOver50Ft = 700
+        var fast = AircraftProfile(); fast.vRefKts = 140; fast.landingOver50Ft = 4200
         let s = try XCTUnwrap(compiled(aircraft: slow))
         let f = try XCTUnwrap(compiled(aircraft: fast))
         // A wire does not care what you fly. The energy model must never touch the hazard term.
@@ -202,7 +209,7 @@ final class LZRulesetCompilerTests: XCTestCase {
     }
 
     func testSignatureChangesWithAircraftThemeAndPack() throws {
-        var p = AircraftProfile(); p.glideRatio = 11; p.bestGlideKts = 70
+        var p = AircraftProfile(); p.glideRatio = 11; p.vRefKts = 70
         let base = try XCTUnwrap(compiled())
         let byAircraft = try XCTUnwrap(compiled(aircraft: p))
         let byTheme = try XCTUnwrap(compiled(theme: "night"))

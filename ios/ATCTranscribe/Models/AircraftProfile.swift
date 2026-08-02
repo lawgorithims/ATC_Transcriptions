@@ -17,6 +17,24 @@ struct AircraftProfile: Codable, Equatable, Identifiable {
     var glideRatio: Double?  // best-glide L/D, e.g. 9.0 for a C172 (POH figure, still air)
     var bestGlideKts: Int?   // best-glide speed — display only, the ratio does the math
 
+    // Landing performance, for the off-field landability layer. Optional on the same back-compat
+    // rule as the glide fields above: a profile saved before these existed must still decode.
+    //
+    // WHY THESE AND NOT bestGlideKts. The landability compiler was reading `bestGlideKts` AS Vref,
+    // and they are different numbers — best glide is flown well above approach speed, and the gap
+    // widens with the aeroplane. It errs safe (a faster assumed touchdown is less tolerant of
+    // surface and slope), but "less wrong in the safe direction" is not the same as right, and it
+    // meant a pilot who entered their real numbers still got a borrowed one.
+    /// Approach/threshold speed, knots — what the aeroplane actually crosses the fence at.
+    var vRefKts: Int?
+    /// Total landing distance over a 50 ft obstacle, feet, at max landing weight on a dry paved
+    /// runway at sea level (the POH's book number).
+    ///
+    /// OVER-50-FT, NOT GROUND ROLL, on purpose. An unprepared field has a fence, a berm or trees at
+    /// the approach end far more often than it has a clear threshold, and ground roll silently omits
+    /// the part of the landing that the obstruction governs.
+    var landingOver50Ft: Double?
+
     /// True when there's nothing worth keeping (drives add-sheet validation).
     var isEmpty: Bool { callsign.isEmpty && type.isEmpty }
 

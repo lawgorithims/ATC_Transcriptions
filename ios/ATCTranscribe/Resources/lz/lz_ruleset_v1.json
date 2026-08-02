@@ -1,10 +1,9 @@
 {
   "id": "fw_ambient",
-  "version": "2026.08.1",
+  "version": "2026.08.2",
   "requires_facts_schema": 1,
   "title": "Fixed-wing ambient landability",
   "note": "Facts come from the pack; ALL judgment lives here. Versioned separately from the tiles and from the app so a weight change ships as a small file, not a rebuild. Advisory only.",
-
   "vetoes": [
     {
       "id": "water",
@@ -14,7 +13,7 @@
     {
       "id": "built_up",
       "when": "class == developed_dense",
-      "card_text": "Built-up area — structures and wires throughout"
+      "card_text": "Built-up area \u2014 structures and wires throughout"
     },
     {
       "id": "forest",
@@ -29,16 +28,15 @@
     {
       "id": "no_terrain_data",
       "when": "slope == nodata",
-      "card_text": "No elevation data here — nothing is claimed"
+      "card_text": "No elevation data here \u2014 nothing is claimed"
     }
   ],
-
   "caps": [
     {
       "id": "coarse_terrain",
       "when": "terrain_source != fine",
       "cap": 55,
-      "card_text": "10 m elevation source — the ditch and berm checks cannot run here"
+      "card_text": "10 m elevation source \u2014 the ditch and berm checks cannot run here"
     },
     {
       "id": "wire_corridor",
@@ -50,49 +48,116 @@
       "id": "assumed_road_wires",
       "when": "flag road_buffer",
       "cap": 60,
-      "card_text": "Road alongside — assume wires, mapped or not"
+      "card_text": "Road alongside \u2014 assume wires, mapped or not"
     },
     {
       "id": "deceptive_wet",
       "when": "flag wetland",
       "cap": 45,
-      "card_text": "Wet or soft ground — looks firmer from altitude than it is"
+      "card_text": "Wet or soft ground \u2014 looks firmer from altitude than it is"
     },
     {
       "id": "low_confidence",
       "when": "conf < 40",
       "cap": 70,
       "card_text": "Low-confidence land cover"
+    },
+    {
+      "id": "long_landing_marginal",
+      "when": "aircraft required_distance_ft > 3000 and class in marginal",
+      "cap": 50,
+      "card_text": "Your landing distance leaves little margin on unprepared ground"
     }
   ],
-
   "weights": {
-    "surface": 0.40,
-    "slope": 0.20,
+    "surface": 0.4,
+    "slope": 0.2,
     "rough": 0.15,
     "hazard": 0.25
   },
-
   "utilities": {
     "slope_deg": {
-      "breakpoints": [[0.0, 1.0], [2.0, 1.0], [5.0, 0.45], [9.0, 0.1], [12.0, 0.0]]
+      "breakpoints": [
+        [
+          0.0,
+          1.0
+        ],
+        [
+          2.0,
+          1.0
+        ],
+        [
+          5.0,
+          0.45
+        ],
+        [
+          9.0,
+          0.1
+        ],
+        [
+          12.0,
+          0.0
+        ]
+      ]
     },
     "rough_m": {
-      "breakpoints": [[0.0, 1.0], [0.15, 0.9], [0.25, 0.6], [0.60, 0.1], [1.20, 0.0]]
+      "breakpoints": [
+        [
+          0.0,
+          1.0
+        ],
+        [
+          0.15,
+          0.9
+        ],
+        [
+          0.25,
+          0.6
+        ],
+        [
+          0.6,
+          0.1
+        ],
+        [
+          1.2,
+          0.0
+        ]
+      ]
     },
     "hazard": {
-      "breakpoints": [[0.0, 1.0], [0.2, 0.75], [0.5, 0.35], [0.8, 0.05], [1.0, 0.0]]
+      "breakpoints": [
+        [
+          0.0,
+          1.0
+        ],
+        [
+          0.2,
+          0.75
+        ],
+        [
+          0.5,
+          0.35
+        ],
+        [
+          0.8,
+          0.05
+        ],
+        [
+          1.0,
+          0.0
+        ]
+      ]
     },
     "surface_class": {
       "table": {
         "open_firm": 1.0,
-        "crop": 0.80,
+        "crop": 0.8,
         "developed_open": 0.55,
         "barren_rough": 0.45,
-        "open_soft": 0.30,
+        "open_soft": 0.3,
         "brush": 0.25,
-        "wetland": 0.10,
-        "snow_ice": 0.20,
+        "wetland": 0.1,
+        "snow_ice": 0.2,
         "forest": 0.0,
         "developed_dense": 0.0,
         "water": 0.0,
@@ -100,7 +165,6 @@
       }
     }
   },
-
   "flags": [
     {
       "id": "dof_obstacle",
@@ -113,20 +177,45 @@
       "card_text": "Distribution wires are largely unmapped nationally. Absence of a wire here is not evidence there is none."
     }
   ],
-
   "aircraft_defaults": {
-    "note": "AircraftProfile carries no class discriminator today, so v1 uses ONE conservative fixed-wing table and lets the two real fields (glideRatio, bestGlideKts) modulate it. Class-differentiated murphy factors wait for a profile field rather than being guessed from a free-text type string.",
+    "note": "AircraftProfile carries no class discriminator today, so v1 uses ONE conservative fixed-wing table and lets the REAL fields modulate it: glideRatio, vRefKts and landingOver50Ft. Class-differentiated murphy factors wait for a profile field rather than being guessed from a free-text type string. NOTE: vref_kt used to be taken from bestGlideKts, which is a different speed \u2014 best glide is flown well above approach speed. vRefKts is now its own field.",
     "vref_kt": 65.0,
     "glide_ratio": 8.0,
     "surface_tolerance_ref_kt": 60.0,
-    "slope_tolerance_scale": 1.0
+    "slope_tolerance_scale": 1.0,
+    "landing_over_50ft": 1600.0
   },
-
   "energy_model": {
     "note": "Touchdown energy scales the MARGINAL surfaces only, never the hazard term, and is bounded so it can reorder marginal ground but never lift it above genuinely good ground.",
-    "applies_to": ["brush", "crop", "open_soft", "barren_rough"],
+    "applies_to": [
+      "brush",
+      "crop",
+      "open_soft",
+      "barren_rough"
+    ],
     "multiplier_min": 0.4,
     "multiplier_max": 1.1,
     "reference_kt": 75.0
+  },
+  "distance_model": {
+    "note": "WHAT LANDING DISTANCE CAN AND CANNOT SAY AT PIXEL LEVEL. A 10 m cell does not know how LONG the field is, so 'will it fit' is not answerable here \u2014 that belongs to the candidate site finder, which searches for runs of usable ground. What distance legitimately says here is how much MARGINAL ground is usable at all: an aeroplane needing 2,600 ft over a 50 ft obstacle cannot use brush or soft ground the way one needing 900 ft can, because the surface penalty is paid over a longer roll and there is less margin to give away. So it scales the marginal surfaces and stretches the slope curve, and never touches the hazard term \u2014 a tower is equally lethal to everything. NOTE ON THE ACTIVE SET: `surface_distance_factor` is reference data about SURFACES and lists open_firm too, but `applies_to` is what the compiler actually scales and deliberately excludes it. Firm open ground is the best ground there is, and keeping it aircraft-independent means the top of the scale does not move underneath a pilot when they switch aeroplanes \u2014 what changes is how much of the MARGINAL ground below it they can still use.",
+    "reference_over_50ft": 1600.0,
+    "applies_to": [
+      "brush",
+      "crop",
+      "open_soft",
+      "barren_rough",
+      "developed_open"
+    ],
+    "multiplier_min": 0.35,
+    "multiplier_max": 1.15,
+    "surface_distance_factor": {
+      "open_firm": 1.2,
+      "crop": 1.5,
+      "developed_open": 1.15,
+      "barren_rough": 1.6,
+      "open_soft": 1.9,
+      "brush": 2.2
+    }
   }
 }
