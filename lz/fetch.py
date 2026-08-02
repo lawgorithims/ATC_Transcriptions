@@ -55,6 +55,7 @@ USAGE
 """
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -144,6 +145,25 @@ def http_json(url):
                 print(f"     retry {attempt} in {delay:.0f}s ({left/60:.0f} min patience left): {e}",
                       flush=True)
             time.sleep(delay)
+
+
+@contextlib.contextmanager
+def _impatient(when=True):
+    """Run a block with the retry budget cut to a single fast attempt.
+
+    For lookups whose failure is RECOVERABLE — a catalogue probe when the artifact it would name is
+    already on disk. Riding out a federal API outage is right when the answer is the only way to get
+    the data, and wrong when it is merely a way to confirm what we already hold."""
+    global PATIENCE_S, MAX_RETRIES                        # noqa: PLW0603 - module-level knobs
+    if not when:
+        yield
+        return
+    patience, retries = PATIENCE_S, MAX_RETRIES
+    PATIENCE_S, MAX_RETRIES = 0.0, 1
+    try:
+        yield
+    finally:
+        PATIENCE_S, MAX_RETRIES = patience, retries
 
 
 def http_version_token(url):
@@ -368,8 +388,24 @@ class Dem3DEP(Source):
         with open(p) as f:
             d = json.load(f)
         tiles = d.get("tiles", [])
+        fb = d.get("fallback_13") or []
+        # ⚠️ ZERO 1 m TILES IS NOT THE SAME AS NO ELEVATION. 1 m lidar is not universal even inside
+        # the United States; roughly a fifth of CONUS has only 1/3 arc-second, and this pipeline
+        # already resolves that fallback and reports the cell as `coarse`. This check used to fail
+        # out on an empty 1 m list BEFORE reading `fallback_13`, which made the fallback branch below
+        # unreachable in exactly the case it was written for — every non-lidar cell was rejected with
+        # "no 1 m tiles resolved" while a perfectly good 10 m DEM sat resolved beside it. Two cells
+        # were abandoned that way.
+        if not tiles and not fb:
+            return False, "no 1 m tiles and no 1/3 arc-second fallback resolved"
         if not tiles:
-            return False, "no 1 m tiles resolved"
+            # Still open it for real: an unreadable fallback is the same 42-byte-stub failure wearing
+            # a third hat, and it must not reach terrain.py as an empty grid.
+            ok, why = gdal_can_open("/vsicurl/" + fb[0])
+            if not ok:
+                return False, f"1/3 arc-second fallback unreadable: {why}"
+            return True, ("no 1 m lidar — whole cell from 1/3 arc-second "
+                          f"({len(fb)} tile(s)); tiles will be COARSE and capped")
         cov = self._coverage_pct(tiles)
         # Open the first and last tile for real. A resolved URL list that cannot be READ is the
         # 42-byte-stub failure wearing a different hat.
@@ -378,7 +414,6 @@ class Dem3DEP(Source):
             if not ok:
                 return False, f"stream read failed ({probe_tile['project']}): {why}"
         if cov < 99.0:
-            fb = d.get("fallback_13") or []
             if not fb:
                 return False, f"1 m covers {cov:.1f}% and no 1/3 arc-second fallback resolved"
             return True, f"1 m {cov:.1f}% + 1/3 arc-second fallback (tiles will be MIXED/COARSE)"
@@ -395,6 +430,31 @@ class AnnualNLCD(Source):
     # CONUS-wide, so cached OUTSIDE the per-cell dir — one download serves every future cell.
     SHARED = os.path.join(C.DATA_DIR, "_shared")
     MIN_BYTES = 100 << 20
+
+    def _cached(self):
+        """The newest Annual NLCD archive already in `_shared`, or None.
+
+        WHY THIS EXISTS. This product is CONUS-wide: one 1.4 GB download serves every cell that will
+        ever be built. But `fetch` resolved through ScienceBase's item API on EVERY cell, so when
+        that API began returning HTTP 500 the pipeline spent its full 45-minute patience retrying a
+        METADATA lookup for a file already sitting on this disk, then failed the whole cell — losing
+        the DEM, canopy, roads and wetlands work that had already succeeded alongside it. Two cells
+        and about two hours went that way before anyone looked.
+
+        A source outage must not be able to cost a cell that needs nothing from that source."""
+        import glob
+        best = None
+        for p in glob.glob(os.path.join(self.SHARED, "Annual_NLCD_LndCov_*.zip")):
+            if os.path.getsize(p) < self.MIN_BYTES:
+                continue
+            nm = os.path.basename(p)
+            try:
+                year = int(nm.split("_")[3])
+            except (IndexError, ValueError):
+                continue
+            if best is None or year > best[0]:
+                best = (year, nm, p)
+        return best
 
     def _resolve(self):
         """Find the newest Collection-1.x CONUS 'Land Cover' item and its most recent year zip.
@@ -446,9 +506,49 @@ class AnnualNLCD(Source):
                 "file": r["file"], "bytes": r["bytes"]}
 
     def fetch(self):
-        r = self._resolve()
+        # Resolve, but never let resolution alone decide the cell's fate. The lookup only picks
+        # WHICH archive is newest; if the answer is one already on disk, or the service is down and
+        # a good archive is on disk, there is nothing to download and no reason to fail.
+        cached = self._cached()
+        try:
+            # ⚠️ THE PATIENCE WINDOW IS INSIDE `http_json`, NOT AROUND IT. Wrapping this call in a
+            # try/except is not enough on its own: `_resolve` does not raise until the FULL patience
+            # window has elapsed, so a cell still stalls 45 minutes before reaching the fallback
+            # below. When an archive is already on disk, freshness is worth one quick probe and
+            # nothing more — so the resolve runs impatient, and only an empty cache gets the long
+            # wait the operator asked for.
+            with _impatient(when=cached is not None):
+                r = self._resolve()
+        except Exception as exc:                        # noqa: BLE001 - any transport fault
+            if not cached:
+                raise
+            r = None
+            resolve_error = str(exc)
+        else:
+            resolve_error = None
+
+        if r and cached and r["file"] == cached[1]:
+            # Already have exactly what the catalogue names. Skip the 1.4 GB re-download AND the
+            # size/readability re-checks it would trigger.
+            self._record(status=STATUS_OK, url=r["url"], file=cached[1], vintage=str(r["year"]),
+                         collection=r["collection"], bytes=os.path.getsize(cached[2]),
+                         sha256=sha256_of(cached[2]), local=cached[2],
+                         note="CONUS-wide, already cached in data/_shared and clipped per cell")
+            return {"file": cached[1], "downloaded": False}
+
         if not r:
-            raise RuntimeError("Annual NLCD: no resolvable CONUS Land Cover product")
+            # The service is unwell and we hold a usable archive. Build on it, and say plainly that
+            # the vintage was NOT re-checked against the catalogue this run — a stale land-cover
+            # year is a real risk with this product (1.0 -> 1.2 in two years) and it must not be
+            # hidden behind an ordinary "ok".
+            year, nm, path = cached
+            self._record(status=STATUS_STALE_FROZEN, url=None, file=nm, vintage=str(year),
+                         collection="not re-resolved", bytes=os.path.getsize(path),
+                         sha256=sha256_of(path), local=path,
+                         note=f"catalogue unreachable ({resolve_error}); built from the cached "
+                              f"{year} archive without confirming a newer release exists")
+            return {"file": nm, "downloaded": False, "vintage_unverified": True}
+
         os.makedirs(self.SHARED, exist_ok=True)
         dest = os.path.join(self.SHARED, r["file"])
         path, did = download(r["url"], dest, expect_min_bytes=self.MIN_BYTES)

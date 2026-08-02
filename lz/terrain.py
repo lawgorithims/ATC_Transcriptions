@@ -59,6 +59,7 @@ USAGE
 
 import argparse
 import json
+import math
 import os
 import sys
 import warnings
@@ -195,6 +196,54 @@ def build_tile(url, out_path, force=False):
     return "built"
 
 
+def build_coarse_tile(url, out_path, force=False):
+    """Build a 10 m product from a 1/3 arc-second (~10 m) DEM, for ground with no 1 m lidar.
+
+    ⚠️ SLOPE SURVIVES THE DOWNGRADE. ROUGHNESS AND MICRO-RELIEF DO NOT, AND MUST STAY UNKNOWN.
+    `rough` and `micro` are measurements of variation WITHIN a 10 m cell — the plough furrow, the
+    irrigation ditch, the berm. A 1/3 arc-second source has one sample per cell, so that variation is
+    not attenuated here, it is absent. Computing them anyway would yield ~0, and zero roughness is
+    the single most dangerous value this pipeline can emit: it reads as "smooth", it is what the
+    ditch veto tests, and it would make unsurveyed ground score BETTER than ground we measured
+    properly. They are written as NaN — "not known" — and the coarse cap on the device is what keeps
+    the resulting score honest.
+
+    Slope is computed on the native 10 m grid, which is a real measurement at this scale: a 3 deg
+    field still reads as 3 deg. It is only the sub-cell detail that is gone."""
+    assert url.endswith(".tif"), "build_coarse_tile: expected a GeoTIFF url"
+    if os.path.exists(out_path) and not force:
+        return "skip"
+    try:
+        ds = gdal.Open("/vsicurl/" + url)
+    except RuntimeError:
+        return "unreadable"
+    if ds is None:
+        return "unreadable"
+    band = ds.GetRasterBand(1)
+    nodata = band.GetNoDataValue()
+    gt, wkt = ds.GetGeoTransform(), ds.GetProjection()
+    z = band.ReadAsArray()
+    ds = None
+    if z is None:
+        return "read-failed"
+    z = z.astype(np.float64)
+    if nodata is not None:
+        z = np.where(z == nodata, np.nan, z)
+
+    # Horn 3x3 on the native grid. The cell is not square in metres at this latitude — the source is
+    # geographic — so each axis gets its own spacing or the slope is wrong by the cosine of latitude.
+    lat = gt[3] + gt[5] * (z.shape[0] / 2.0)
+    dy_m = abs(gt[5]) * 111_320.0
+    dx_m = abs(gt[1]) * 111_320.0 * math.cos(math.radians(lat))
+    assert dx_m > 0 and dy_m > 0, "build_coarse_tile: degenerate pixel size"
+    with np.errstate(all="ignore"):
+        gy, gx = np.gradient(z, dy_m, dx_m)
+        slope = np.degrees(np.arctan(np.hypot(gx, gy))).astype(np.float32)
+    unknown = np.full(slope.shape, np.nan, np.float32)
+    _write_stack(out_path, np.stack([slope, unknown, unknown]), gt, wkt)
+    return "built"
+
+
 def _write_stack(path, stack, geotransform, wkt):
     assert stack.ndim == 3, "_write_stack: expected (bands, rows, cols)"
     nb, h, w = stack.shape
@@ -224,21 +273,36 @@ def cmd_build(limit, force):
         res = build_tile(t["url"], os.path.join(outdir, name), force=force)
         tally[res] = tally.get(res, 0) + 1
         print(f"[{i}/{len(tiles)}] {res:<12} {name[:66]}", flush=True)
+
+    # The 1/3 arc-second fallback, for the part of the cell 1 m lidar does not reach. Kept in a
+    # SEPARATE directory so the mosaic can tell the two apart — which is the whole basis of the
+    # coarse cap, and cannot be recovered later by looking at the pixels.
+    #
+    # ⚠️ This used to be skipped entirely. `--build` iterated the 1 m list, found it empty on a
+    # non-lidar cell, printed "{}" and exited 0 — a stage returning success having produced nothing —
+    # and the failure surfaced one step later as "no per-tile products". Every cell outside 1 m
+    # coverage died there, which is roughly a fifth of CONUS.
+    fb = d.get("fallback_13") or []
+    coarsedir = os.path.join(C.WORK_DIR, C.CELL_ID, "tiles10m_coarse")
+    if fb:
+        os.makedirs(coarsedir, exist_ok=True)
+        for i, url in enumerate(fb, 1):
+            name = os.path.basename(url)
+            res = build_coarse_tile(url, os.path.join(coarsedir, name), force=force)
+            tally[f"coarse:{res}"] = tally.get(f"coarse:{res}", 0) + 1
+            print(f"[coarse {i}/{len(fb)}] {res:<12} {name[:60]}", flush=True)
+
     print("\n" + json.dumps(tally))
-    bad = tally.get("read-failed", 0) + tally.get("unreadable", 0)
+    bad = sum(v for k, v in tally.items() if k.endswith(("read-failed", "unreadable")))
+    if not tiles and not fb:
+        print("no 1 m tiles and no 1/3 arc-second fallback — nothing to build", file=sys.stderr)
+        return 1
     return 1 if bad else 0
 
 
-def cmd_mosaic():
-    g = C.master_grid()
-    workdir = os.path.join(C.WORK_DIR, C.CELL_ID)
-    outdir = os.path.join(workdir, "tiles10m")
-    tifs = sorted(os.path.join(outdir, f) for f in os.listdir(outdir) if f.endswith(".tif"))
-    if not tifs:
-        sys.exit("no per-tile products — run --build first")
-    vrt = os.path.join(workdir, "terrain10m.vrt")
+def _warp_to_grid(tifs, vrt, warped, g):
+    """VRT + warp a set of per-tile products onto the master grid. Returns (bands, rows, cols)."""
     gdal.BuildVRT(vrt, tifs)
-    warped = os.path.join(workdir, "terrain10m_5070.tif")
     srs = osr.SpatialReference()
     srs.ImportFromEPSG(C.ANALYSIS_EPSG)
     # Nearest, not bilinear: these are already at 10 m, so the warp is a near-identity
@@ -247,25 +311,77 @@ def cmd_mosaic():
               outputBounds=(g["x_min"], g["y_min"], g["x_max"], g["y_max"]),
               xRes=C.CELL_SIZE_M, yRes=C.CELL_SIZE_M, dstNodata=NODATA_OUT,
               creationOptions=["COMPRESS=DEFLATE", "TILED=YES", "BIGTIFF=IF_SAFER"])
-
     ds = gdal.Open(warped)
-    raw = ds.ReadAsArray().astype(np.float32)
+    arr = ds.ReadAsArray().astype(np.float32)
     ds = None
-    assert raw.shape[0] == 3, "mosaic: expected three bands"
+    assert arr.shape[0] == 3, "mosaic: expected three bands"
+    return arr
+
+
+def _list_products(d):
+    if not os.path.isdir(d):
+        return []
+    return sorted(os.path.join(d, f) for f in os.listdir(d) if f.endswith(".tif"))
+
+
+def cmd_mosaic():
+    g = C.master_grid()
+    workdir = os.path.join(C.WORK_DIR, C.CELL_ID)
+    tifs = _list_products(os.path.join(workdir, "tiles10m"))
+    coarse_tifs = _list_products(os.path.join(workdir, "tiles10m_coarse"))
+    if not tifs and not coarse_tifs:
+        sys.exit("no per-tile products — run --build first")
+
+    raw = (_warp_to_grid(tifs, os.path.join(workdir, "terrain10m.vrt"),
+                         os.path.join(workdir, "terrain10m_5070.tif"), g)
+           if tifs else None)
+
+    # WHERE THE 1 m DATA ACTUALLY LANDED is the only honest basis for the source label. Deriving it
+    # from "slope is finite" was correct only while every cell was 100% lidar: on a fallback cell the
+    # coarse DEM also yields finite slope everywhere, so that test would have stamped the whole cell
+    # FINE and quietly disabled the coarse cap — unsurveyed ground scoring as if it had been
+    # measured, which is the exact failure this plane exists to prevent.
+    fine_ok = np.isfinite(raw[0]) if raw is not None else None
+    if coarse_tifs:
+        coarse = _warp_to_grid(coarse_tifs, os.path.join(workdir, "terrain10m_coarse.vrt"),
+                               os.path.join(workdir, "terrain10m_coarse_5070.tif"), g)
+        if raw is None:
+            raw, fine_ok = coarse, np.zeros(coarse.shape[1:], bool)
+        else:
+            # Fine wins wherever it exists; coarse fills the rest. Band-wise, so a coarse cell keeps
+            # its NaN roughness rather than inheriting a neighbouring fine cell's.
+            raw = np.where(fine_ok[None, :, :], raw, coarse)
+        src = np.where(fine_ok, C.TERRAIN_SRC_FINE, C.TERRAIN_SRC_COARSE).astype(np.uint8)
+    else:
+        src = np.where(fine_ok, C.TERRAIN_SRC_FINE, C.TERRAIN_SRC_COARSE).astype(np.uint8)
+
     np.save(os.path.join(workdir, "slope.npy"), raw[0])
     np.save(os.path.join(workdir, "rough.npy"), raw[1])
     np.save(os.path.join(workdir, "micro.npy"), raw[2])
-    src = np.where(np.isfinite(raw[0]), C.TERRAIN_SRC_FINE, C.TERRAIN_SRC_COARSE).astype(np.uint8)
     np.save(os.path.join(workdir, "terrain_src.npy"), src)
+    coarse_pct = float((src == C.TERRAIN_SRC_COARSE).mean() * 100.0)
+    print(f"terrain source: {100.0 - coarse_pct:.2f}% from 1 m lidar, {coarse_pct:.2f}% coarse "
+          "(1/3 arc-second — roughness and micro-relief are UNKNOWN there, not zero)")
 
-    fin = np.isfinite(raw[0])
     print(f"mosaic {raw.shape[2]}x{raw.shape[1]} on the master grid; "
-          f"1 m-derived coverage {fin.mean()*100:.2f}% of the bbox "
+          f"1 m-derived coverage {fine_ok.mean()*100:.2f}% of the bbox "
           f"(the cell fills ~82% of it — see lzcommon.cone_convergence_rad)")
-    with np.errstate(all="ignore"):
-        print(f"  slope  median {np.nanmedian(raw[0]):.2f} deg   p99 {np.nanpercentile(raw[0],99):.1f} deg")
-        print(f"  rough  median {np.nanmedian(raw[1]):.3f} m     p99 {np.nanpercentile(raw[1],99):.2f} m")
-        print(f"  micro  median {np.nanmedian(raw[2]):.3f} m     p99 {np.nanpercentile(raw[2],99):.2f} m")
+
+    def _stat(a, fmt, unit):
+        """Summarise a band, saying so plainly when it holds no measurement at all.
+
+        On a fallback-only cell `rough` and `micro` are entirely NaN by design. Printing "nan" there
+        reads like a fault; it is the correct answer and the line should say which."""
+        with np.errstate(all="ignore"), warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="All-NaN slice encountered")
+            warnings.filterwarnings("ignore", message="All-NaN axis encountered")
+            if not np.isfinite(a).any():
+                return "not measured anywhere (coarse DEM)"
+            return (f"median {np.nanmedian(a):{fmt}} {unit}"
+                    f"   p99 {np.nanpercentile(a, 99):{fmt}} {unit}")
+    print(f"  slope  {_stat(raw[0], '.2f', 'deg')}")
+    print(f"  rough  {_stat(raw[1], '.3f', 'm')}")
+    print(f"  micro  {_stat(raw[2], '.3f', 'm')}")
     return 0
 
 
