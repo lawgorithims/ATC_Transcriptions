@@ -1,0 +1,455 @@
+#!/usr/bin/env python3
+"""publish.py — upload built .lzpack cells to HuggingFace and regenerate the catalog.
+
+WHAT THIS PUBLISHES
+    lz/out/<cell>.lzpack  ->  https://huggingface.co/datasets/<REPO>/resolve/main/cells/<cell>.lzpack
+    a generated index.json at the repo root, which the app reads to know what exists.
+
+    Its own dataset repo, not a folder inside faa-charts: house style is one repo per content class
+    (charts / models / this), and a separate repo lets the public-domain sourcing and the ODbL
+    quarantine be stated once, in one README, next to the only files they govern.
+
+=================================================================================================
+THE XET TRAP — READ THIS BEFORE CHANGING ANY UPLOAD CODE
+=================================================================================================
+HuggingFace migrated large-file storage to Xet, which serves files ONLY via a chunk-reconstruction
+protocol. The app fetches packs with a plain anonymous `GET /resolve/main/<path>` (ChartLibrary's
+`URLSession.shared.download(from:)`, which requires a hard 200) and CANNOT speak that protocol, so
+a Xet-backed file answers **403** and the layer silently has no data.
+
+This already happened once to the FAA chart packs and cost a full re-host of every pack
+(charts/rehost_classic_lfs.sh). Worse, it is not simply repairable by re-uploading: Xet dedups by
+CONTENT HASH, so pushing identical bytes with Xet disabled just re-links the existing Xet object.
+The rehost script has to mutate every file with a junk metadata row first to break the hash.
+
+    => The ONLY cheap fix is to never create the Xet object in the first place.
+    => HF_HUB_DISABLE_XET must be set BEFORE huggingface_hub is imported, because the library
+       decides its storage backend at import time.
+    => It is FORCED here, not defaulted. An inherited `HF_HUB_DISABLE_XET=0` would silently
+       reintroduce the bug, and the symptom appears days later as "the layer stopped working".
+
+`charts/build_all_packs.sh` still does NOT set it. Do not copy that script's upload path.
+
+=================================================================================================
+WHY THIS SCRIPT IS NOISY ON FAILURE
+=================================================================================================
+The chart uploader is `up(){ ... "$HF" upload ... >/dev/null 2>&1 && echo "  up $2"; }` under
+`set -uo pipefail` with no `-e`: every error is discarded, only successes print, and a whole run
+can report success having uploaded nothing at all. Here every failure raises, and the run ends with
+an INDEPENDENT verification pass that fetches what was published the way the app would.
+
+USAGE
+    python3 lz/publish.py --list                     # what is built locally vs what is hosted
+    python3 lz/publish.py --dry-run                  # build the catalog, upload nothing
+    python3 lz/publish.py --publish                  # upload packs + index.json, then verify
+    python3 lz/publish.py --publish --cell n33w107   # just one cell
+    python3 lz/publish.py --verify                   # verification pass alone, against what is live
+
+    HF_TOKEN is read from the environment, else ~/.hf_token (mode 600). A WRITE token is needed to
+    publish; verification is anonymous and needs none.
+"""
+
+# ---------------------------------------------------------------------------------------------
+# THE ONE LINE THAT MATTERS. Must precede the huggingface_hub import — see the header.
+# ---------------------------------------------------------------------------------------------
+import os
+
+os.environ["HF_HUB_DISABLE_XET"] = "1"          # FORCED, not setdefault (see header)
+
+import argparse
+import hashlib
+import json
+import sqlite3
+import sys
+import urllib.error
+import urllib.request
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import lzcommon as C  # noqa: E402
+
+# ---------------------------------------------------------------------------------------------
+# 1. WHERE THINGS LIVE
+# ---------------------------------------------------------------------------------------------
+
+REPO = os.environ.get("LZ_HF_REPO", "SingularityUS/commsight-lz")
+REPO_TYPE = "dataset"
+BASE_URL = f"https://huggingface.co/datasets/{REPO}/resolve/main"
+CELL_PREFIX = "cells"                    # mirrors the charts' sectional/ ifr/ ifrhigh/ convention
+INDEX_NAME = "index.json"
+CATALOG_SCHEMA = 1
+
+OUT_DIR = os.path.join(HERE, "out")
+DONE_PATH = os.path.join(OUT_DIR, ".published.json")
+
+# Named groupings the Downloads UI offers as a unit. A pilot does not think in degree cells; they
+# think "the area I fly in". Cells stay the download UNIT (they are what the pipeline emits and what
+# the app mounts) — a region is only a label over a set of them.
+REGIONS = [
+    {
+        "id": "southern-nm",
+        "title": "Southern New Mexico",
+        "note": "Las Cruces, the Mesilla Valley, the Organ and San Andres ranges, and the "
+                "Tularosa Basin.",
+        # USGS 3DEP naming: nXXwYYY is the cell whose NORTH-WEST corner is XX N, YYY W, so
+        # n33w107 covers lat 32-33, lon -107..-106. The 3x3 ring around Las Cruces:
+        "cells": ["n32w106", "n32w107", "n32w108",
+                  "n33w106", "n33w107", "n33w108",
+                  "n34w106", "n34w107", "n34w108"],
+    },
+]
+
+VERIFY_RANGE_BYTES = 1 << 20             # first MiB is plenty to prove the transport works
+
+
+def _fail(msg):
+    """Every failure path in this script ends here. Loud, non-zero, no partial-success illusion."""
+    print(f"ERROR: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def hf_token():
+    """WRITE token for publishing. Same idiom as every other uploader in this repo."""
+    tok = os.environ.get("HF_TOKEN")
+    if tok:
+        return tok.strip()
+    path = os.path.expanduser("~/.hf_token")
+    if os.path.exists(path):
+        with open(path) as fh:
+            return fh.read().strip()
+    return None
+
+
+# ---------------------------------------------------------------------------------------------
+# 2. READING A BUILT PACK — the catalog is DERIVED, never hand-maintained
+# ---------------------------------------------------------------------------------------------
+
+def pack_metadata(path):
+    """The pack's own MBTiles metadata table. Everything the catalog needs is already in here,
+    written by package.py — so the catalog cannot drift from the artifact it describes."""
+    try:
+        db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        rows = dict(db.execute("SELECT name, value FROM metadata").fetchall())
+        db.close()
+        return rows
+    except sqlite3.Error as e:
+        _fail(f"{os.path.basename(path)}: not readable as MBTiles ({e})")
+
+
+def sha256_of(path):
+    """Streamed so an 88 MB pack does not land in memory."""
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):   # bounded (rule 2)
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def catalog_entry(path):
+    """One `cells[]` record. Fails rather than publishing a pack the app would refuse to mount."""
+    m = pack_metadata(path)
+    cell = m.get("lz_cell")
+    if not cell:
+        _fail(f"{os.path.basename(path)}: no lz_cell in metadata — not an lzpack")
+    # Refuse at PUBLISH time what the device would refuse at MOUNT time. A pack that ships and then
+    # silently fails to mount is the worst outcome: the pilot pays 88 MB for nothing and the layer
+    # looks broken rather than absent. LZPackStore.reload() checks exactly these two.
+    if m.get("lz_schema") != str(C.LZ_SCHEMA):
+        _fail(f"{cell}: lz_schema {m.get('lz_schema')!r} != {C.LZ_SCHEMA} — the app would reject it")
+    if m.get("lz_planes") != ",".join(C.PLANE_NAMES):
+        _fail(f"{cell}: lz_planes {m.get('lz_planes')!r} != {','.join(C.PLANE_NAMES)}")
+
+    try:
+        west, south, east, north = [float(x) for x in m["bounds"].split(",")]
+    except (KeyError, ValueError):
+        _fail(f"{cell}: unusable bounds {m.get('bounds')!r}")
+
+    try:
+        vintages = json.loads(m.get("lz_vintages", "{}"))
+    except json.JSONDecodeError:
+        vintages = {}
+
+    return {
+        "id": cell,
+        "path": f"{CELL_PREFIX}/{cell}.lzpack",
+        "bytes": os.path.getsize(path),
+        "sha256": sha256_of(path),
+        # [west, south, east, north] — the SAME order the chart catalog uses, so the app's
+        # ChartCatalog.Entry.mapRect geometry and its rect-intersection selection port verbatim.
+        "bounds": [west, south, east, north],
+        "minzoom": int(m.get("minzoom", C.MIN_ZOOM)),
+        "maxzoom": int(m.get("maxzoom", C.NATIVE_ZOOM)),
+        "built_at": m.get("built_at", ""),
+        # How much of this cell could NOT have its ditch/berm checks run, because only 10 m
+        # elevation was available there. Published so the app can tell a pilot where the layer is
+        # working with less than it wants, rather than hiding it.
+        "coarse_terrain_tiles": int(m.get("lz_terrain_source_coarse_tiles", 0)),
+        "vintages": vintages,
+        "attribution": m.get("attribution", ""),
+    }
+
+
+def local_packs(only=None):
+    """Built packs on disk, id -> path."""
+    if not os.path.isdir(OUT_DIR):
+        return {}
+    found = {}
+    for name in sorted(os.listdir(OUT_DIR)):            # bounded by the directory (rule 2)
+        if not name.endswith(".lzpack"):
+            continue
+        # The fixture is a 4-tile toy for XCTest, never a publishable cell.
+        if name.startswith("lz_fixture"):
+            continue
+        cell = name[: -len(".lzpack")]
+        if only and cell not in only:
+            continue
+        found[cell] = os.path.join(OUT_DIR, name)
+    return found
+
+
+# ---------------------------------------------------------------------------------------------
+# 3. THE HOSTED SIDE
+# ---------------------------------------------------------------------------------------------
+
+def fetch_hosted_index():
+    """The live catalog, or None when there isn't one yet. Anonymous — the same request the app
+    makes, so a failure here is also a signal about what the app would see."""
+    try:
+        with urllib.request.urlopen(f"{BASE_URL}/{INDEX_NAME}", timeout=30) as r:
+            return json.loads(r.read().decode())
+    except (urllib.error.URLError, json.JSONDecodeError, OSError):
+        return None
+
+
+def merged_catalog(entries, hosted):
+    """New entries win; hosted-only cells are CARRIED FORWARD.
+
+    Publishing one cell must never delete the others from the catalog. The chart pipeline learned
+    this the hard way in build_ifr_high_conus.sh, which refuses to publish an index at all when its
+    build produced zero packs — because overwriting the catalog with a partial one takes the data
+    away from every pilot who already downloaded it."""
+    by_id = {}
+    if hosted:
+        for e in hosted.get("cells", []):
+            if isinstance(e, dict) and "id" in e:
+                by_id[e["id"]] = e
+    for e in entries:
+        by_id[e["id"]] = e
+    cells = [by_id[k] for k in sorted(by_id)]
+
+    have = {e["id"] for e in cells}
+    regions = []
+    for r in REGIONS:
+        present = [c for c in r["cells"] if c in have]
+        if present:                     # a region with nothing published yet is not offered
+            regions.append({**r, "cells": present})
+    return {"schema": CATALOG_SCHEMA, "regions": regions, "cells": cells}
+
+
+# ---------------------------------------------------------------------------------------------
+# 4. UPLOAD
+# ---------------------------------------------------------------------------------------------
+
+def upload(api, local_path, path_in_repo, token):
+    """One file. Raises on failure — deliberately unlike the chart uploader."""
+    api.upload_file(path_or_fileobj=local_path, path_in_repo=path_in_repo,
+                    repo_id=REPO, repo_type=REPO_TYPE, token=token)
+
+
+def load_done():
+    if os.path.exists(DONE_PATH):
+        try:
+            with open(DONE_PATH) as fh:
+                return json.load(fh)
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
+def save_done(done):
+    os.makedirs(OUT_DIR, exist_ok=True)
+    tmp = DONE_PATH + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(done, fh, indent=2, sort_keys=True)
+    os.replace(tmp, DONE_PATH)
+
+
+def do_publish(cells, token, force):
+    """Upload each pack, then the catalog, then verify. Resumable: a cell whose sha256 matches what
+    was published last run is skipped, so an interrupted 9-cell push resumes instead of re-sending
+    800 MB."""
+    from huggingface_hub import HfApi, create_repo     # imported AFTER the Xet export
+
+    if not token:
+        _fail("no HF_TOKEN and no ~/.hf_token — a WRITE token is required to publish")
+
+    api = HfApi()
+    try:
+        create_repo(REPO, repo_type=REPO_TYPE, token=token, exist_ok=True)
+    except Exception as e:                              # noqa: BLE001 — report and stop
+        _fail(f"could not create/open {REPO}: {e}")
+
+    done = load_done()
+    entries, uploaded, skipped = [], [], []
+    for cell, path in sorted(cells.items()):
+        e = catalog_entry(path)
+        entries.append(e)
+        if not force and done.get(cell, {}).get("sha256") == e["sha256"]:
+            skipped.append(cell)
+            print(f"  = {cell}  already published ({e['bytes']/1e6:.1f} MB)")
+            continue
+        print(f"  ^ {cell}  uploading {e['bytes']/1e6:.1f} MB ...", flush=True)
+        try:
+            upload(api, path, e["path"], token)
+        except Exception as ex:                         # noqa: BLE001
+            _fail(f"{cell}: upload failed: {ex}")
+        done[cell] = {"sha256": e["sha256"], "bytes": e["bytes"], "path": e["path"]}
+        save_done(done)                                 # checkpoint after EVERY file
+        uploaded.append(cell)
+
+    # The repo README carries the CC-BY attribution the canopy source REQUIRES, plus the advisory
+    # framing. Publishing the data without it would be a licence problem, not just untidy.
+    readme = os.path.join(HERE, "HF_README.md")
+    if os.path.exists(readme):
+        print("  ^ README.md")
+        try:
+            upload(api, readme, "README.md", token)
+        except Exception as ex:                         # noqa: BLE001
+            _fail(f"README upload failed: {ex}")
+
+    catalog = merged_catalog(entries, fetch_hosted_index())
+    idx_tmp = os.path.join(OUT_DIR, INDEX_NAME)
+    with open(idx_tmp, "w") as fh:
+        json.dump(catalog, fh, indent=2, sort_keys=True)
+    print(f"  ^ {INDEX_NAME}  {len(catalog['cells'])} cells, {len(catalog['regions'])} region(s)")
+    try:
+        upload(api, idx_tmp, INDEX_NAME, token)
+    except Exception as ex:                             # noqa: BLE001
+        _fail(f"index.json upload failed: {ex}")
+
+    print(f"\nuploaded {len(uploaded)}, skipped {len(skipped)}")
+    return catalog
+
+
+# ---------------------------------------------------------------------------------------------
+# 5. VERIFY — the step that would have caught the Xet outage
+# ---------------------------------------------------------------------------------------------
+
+def do_verify(expect_cells=None):
+    """Fetch what was published THE WAY THE APP DOES: anonymous, plain HTTP, no HF client.
+
+    urllib sends no Authorization header, so this is genuinely the app's request and not a
+    privileged one that happens to work. A Xet-backed object answers 403 here — which is exactly
+    the failure that shipped silently once and cost a re-host of every chart pack."""
+    catalog = fetch_hosted_index()
+    if catalog is None:
+        _fail(f"{BASE_URL}/{INDEX_NAME} is not anonymously readable — the app cannot see the catalog")
+    cells = catalog.get("cells", [])
+    if expect_cells:
+        missing = sorted(set(expect_cells) - {c["id"] for c in cells})
+        if missing:
+            _fail(f"published but absent from the hosted catalog: {', '.join(missing)}")
+    print(f"index.json OK — {len(cells)} cell(s)")
+
+    bad = []
+    for e in cells:                                     # bounded by the catalog (rule 2)
+        url = f"{BASE_URL}/{e['path']}"
+        req = urllib.request.Request(url)
+        req.add_header("Range", f"bytes=0-{VERIFY_RANGE_BYTES - 1}")
+        try:
+            with urllib.request.urlopen(req, timeout=60) as r:
+                code, body = r.status, r.read()
+        except urllib.error.HTTPError as ex:
+            hint = "  <-- XET: re-upload with HF_HUB_DISABLE_XET=1" if ex.code == 403 else ""
+            bad.append(f"{e['id']}: HTTP {ex.code}{hint}")
+            continue
+        except (urllib.error.URLError, OSError) as ex:
+            bad.append(f"{e['id']}: {ex}")
+            continue
+        # A range request must be answered with 206 and the bytes asked for. A 200 here means the
+        # server ignored Range and is streaming the whole file — workable, but worth knowing.
+        if code not in (200, 206):
+            bad.append(f"{e['id']}: HTTP {code}")
+        elif body[:4] != b"SQLi":
+            # MBTiles is SQLite; the header is "SQLite format 3\0". Anything else means we are
+            # reading a Xet pointer, an LFS stub or an HTML error page rather than a pack.
+            bad.append(f"{e['id']}: first bytes {body[:16]!r} — not a SQLite file")
+        else:
+            print(f"  ok {e['id']}  HTTP {code}  {len(body)} bytes")
+
+    if bad:
+        for b in bad:
+            print(f"  FAIL {b}", file=sys.stderr)
+        _fail(f"{len(bad)} of {len(cells)} packs are not fetchable the way the app fetches them")
+    print(f"\nall {len(cells)} pack(s) anonymously fetchable — classic LFS confirmed")
+
+
+# ---------------------------------------------------------------------------------------------
+# 6. CLI
+# ---------------------------------------------------------------------------------------------
+
+def do_list(cells):
+    hosted = fetch_hosted_index()
+    hosted_ids = {c["id"] for c in hosted.get("cells", [])} if hosted else set()
+    print(f"repo   {REPO}")
+    print(f"local  {OUT_DIR}")
+    print(f"hosted {len(hosted_ids)} cell(s)" if hosted else "hosted (no catalog yet)")
+    print()
+    ids = sorted(set(cells) | hosted_ids)
+    if not ids:
+        print("  nothing built and nothing hosted")
+        return
+    for cell in ids:
+        where = []
+        if cell in cells:
+            where.append(f"local {os.path.getsize(cells[cell])/1e6:.1f} MB")
+        if cell in hosted_ids:
+            where.append("hosted")
+        print(f"  {cell:10} {' + '.join(where)}")
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Publish LZ fact-tile packs to HuggingFace.")
+    ap.add_argument("--list", action="store_true", help="what is built locally vs hosted")
+    ap.add_argument("--dry-run", action="store_true", help="build the catalog, upload nothing")
+    ap.add_argument("--publish", action="store_true", help="upload packs + index.json, then verify")
+    ap.add_argument("--verify", action="store_true", help="verification pass alone, against live")
+    ap.add_argument("--cell", action="append", default=None, help="limit to this cell (repeatable)")
+    ap.add_argument("--force", action="store_true", help="re-upload even if unchanged")
+    args = ap.parse_args()
+
+    if not any([args.list, args.dry_run, args.publish, args.verify]):
+        ap.print_help()
+        return 0
+
+    cells = local_packs(only=set(args.cell) if args.cell else None)
+
+    if args.list:
+        do_list(cells)
+        return 0
+
+    if args.dry_run:
+        if not cells:
+            _fail("no packs in lz/out — build one first (see lz/README.md)")
+        catalog = merged_catalog([catalog_entry(p) for p in cells.values()], fetch_hosted_index())
+        print(json.dumps(catalog, indent=2, sort_keys=True))
+        return 0
+
+    if args.publish:
+        if not cells:
+            _fail("no packs in lz/out — build one first (see lz/README.md)")
+        print(f"publishing {len(cells)} pack(s) to {REPO}  (Xet DISABLED — see the header)\n")
+        catalog = do_publish(cells, hf_token(), args.force)
+        print("\nverifying as the app would (anonymous, plain HTTP) ...")
+        do_verify(expect_cells=list(cells))
+        return 0
+
+    if args.verify:
+        do_verify()
+        return 0
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

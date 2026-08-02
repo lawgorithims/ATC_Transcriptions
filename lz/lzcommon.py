@@ -60,10 +60,26 @@ import subprocess
 import sys
 import zlib
 
+# numpy is required to BUILD, but not to READ. Only three functions here touch it (pack_blob,
+# unpack_blob, selftest); everything else is geometry, constants and the wire contract — and those
+# have to be importable from an interpreter that has no numerical stack.
+#
+# This module exiting on import was blocking exactly that: `publish.py` runs under ~/chartenv (the
+# HuggingFace venv, which has huggingface_hub and no numpy) while the pipeline stages run under the
+# system interpreter (numpy + GDAL, no huggingface_hub). Neither has both, and nothing needs both.
+# A hard `sys.exit` at import time made the split unresolvable for a script that only wanted to read
+# LZ_SCHEMA and PLANE_NAMES.
 try:
     import numpy as np
-except ImportError:
-    sys.exit("numpy is required: python3 -m pip install numpy")
+except ImportError:                                     # pragma: no cover — env-dependent
+    np = None
+
+
+def require_numpy():
+    """Call at the top of anything that builds or decodes tile bytes. Fails with the same message
+    the import guard used to, but only when numpy is actually needed."""
+    if np is None:
+        sys.exit("numpy is required for this stage: python3 -m pip install numpy")
 
 # ---------------------------------------------------------------------------------------------
 # 1. CELL GEOMETRY
@@ -429,6 +445,7 @@ def pack_blob(planes, terrain_source):
 
     Planes are RAW DEFLATE (wbits=-15) because Apple's COMPRESSION_ZLIB expects no zlib wrapper.
     See the module docstring — getting this wrong produces a silently transparent layer."""
+    require_numpy()
     assert len(planes) == PLANE_COUNT, "pack_blob: wrong plane count"
     assert terrain_source in TERRAIN_SRC_NAMES, "pack_blob: unknown terrain_source"
     streams = []
@@ -446,6 +463,7 @@ def pack_blob(planes, terrain_source):
 def unpack_blob(data):
     """Inverse of pack_blob. Returns (planes, terrain_source) or None — never raises, so a corrupt
     tile degrades to 'no data here' exactly as it does on device."""
+    require_numpy()
     if len(data) < HEADER_BYTES:
         return None
     magic, version, count, side, tsrc, _ = _HEADER_FIXED.unpack_from(data, 0)
