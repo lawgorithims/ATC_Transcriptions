@@ -1,0 +1,132 @@
+{
+  "id": "fw_ambient",
+  "version": "2026.08.1",
+  "requires_facts_schema": 1,
+  "title": "Fixed-wing ambient landability",
+  "note": "Facts come from the pack; ALL judgment lives here. Versioned separately from the tiles and from the app so a weight change ships as a small file, not a rebuild. Advisory only.",
+
+  "vetoes": [
+    {
+      "id": "water",
+      "when": "class == water",
+      "card_text": "Open water"
+    },
+    {
+      "id": "built_up",
+      "when": "class == developed_dense",
+      "card_text": "Built-up area — structures and wires throughout"
+    },
+    {
+      "id": "forest",
+      "when": "class == forest",
+      "card_text": "Forest canopy"
+    },
+    {
+      "id": "slope_extreme",
+      "when": "slope_deg > 12",
+      "card_text": "Slope beyond any landing attempt"
+    },
+    {
+      "id": "no_terrain_data",
+      "when": "slope == nodata",
+      "card_text": "No elevation data here — nothing is claimed"
+    }
+  ],
+
+  "caps": [
+    {
+      "id": "coarse_terrain",
+      "when": "terrain_source != fine",
+      "cap": 55,
+      "card_text": "10 m elevation source — the ditch and berm checks cannot run here"
+    },
+    {
+      "id": "wire_corridor",
+      "when": "flag tx_corridor",
+      "cap": 40,
+      "card_text": "Charted powerline corridor"
+    },
+    {
+      "id": "assumed_road_wires",
+      "when": "flag road_buffer",
+      "cap": 60,
+      "card_text": "Road alongside — assume wires, mapped or not"
+    },
+    {
+      "id": "deceptive_wet",
+      "when": "flag wetland",
+      "cap": 45,
+      "card_text": "Wet or soft ground — looks firmer from altitude than it is"
+    },
+    {
+      "id": "low_confidence",
+      "when": "conf < 40",
+      "cap": 70,
+      "card_text": "Low-confidence land cover"
+    }
+  ],
+
+  "weights": {
+    "surface": 0.40,
+    "slope": 0.20,
+    "rough": 0.15,
+    "hazard": 0.25
+  },
+
+  "utilities": {
+    "slope_deg": {
+      "breakpoints": [[0.0, 1.0], [2.0, 1.0], [5.0, 0.45], [9.0, 0.1], [12.0, 0.0]]
+    },
+    "rough_m": {
+      "breakpoints": [[0.0, 1.0], [0.15, 0.9], [0.25, 0.6], [0.60, 0.1], [1.20, 0.0]]
+    },
+    "hazard": {
+      "breakpoints": [[0.0, 1.0], [0.2, 0.75], [0.5, 0.35], [0.8, 0.05], [1.0, 0.0]]
+    },
+    "surface_class": {
+      "table": {
+        "open_firm": 1.0,
+        "crop": 0.80,
+        "developed_open": 0.55,
+        "barren_rough": 0.45,
+        "open_soft": 0.30,
+        "brush": 0.25,
+        "wetland": 0.10,
+        "snow_ice": 0.20,
+        "forest": 0.0,
+        "developed_dense": 0.0,
+        "water": 0.0,
+        "unknown": 0.0
+      }
+    }
+  },
+
+  "flags": [
+    {
+      "id": "dof_obstacle",
+      "when": "flag dof_tower",
+      "card_text": "Charted obstacle nearby (FAA DOF)"
+    },
+    {
+      "id": "unmapped_wires",
+      "when": "always",
+      "card_text": "Distribution wires are largely unmapped nationally. Absence of a wire here is not evidence there is none."
+    }
+  ],
+
+  "aircraft_defaults": {
+    "note": "AircraftProfile carries no class discriminator today, so v1 uses ONE conservative fixed-wing table and lets the two real fields (glideRatio, bestGlideKts) modulate it. Class-differentiated murphy factors wait for a profile field rather than being guessed from a free-text type string.",
+    "vref_kt": 65.0,
+    "glide_ratio": 8.0,
+    "surface_tolerance_ref_kt": 60.0,
+    "slope_tolerance_scale": 1.0
+  },
+
+  "energy_model": {
+    "note": "Touchdown energy scales the MARGINAL surfaces only, never the hazard term, and is bounded so it can reorder marginal ground but never lift it above genuinely good ground.",
+    "applies_to": ["brush", "crop", "open_soft", "barren_rough"],
+    "multiplier_min": 0.4,
+    "multiplier_max": 1.1,
+    "reference_kt": 75.0
+  }
+}

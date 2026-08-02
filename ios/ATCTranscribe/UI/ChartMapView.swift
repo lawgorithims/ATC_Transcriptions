@@ -20,6 +20,12 @@ final class MBTilesReader {
     /// Stable per-pack id (the .mbtiles filename) — the shared tile cache keys on this, so a pack
     /// that is evicted and later re-opened reuses its already-decoded tiles instead of re-fetching.
     let packID: String
+    /// The pack's whole `metadata` table. Chart packs only need format/zoom/bounds, which are
+    /// promoted to their own properties above, but a pack can carry its own keys — the LZ fact
+    /// packs record `lz_schema`, the plane order and per-source vintages there, and refusing to
+    /// mount a pack whose schema the decoder does not know is what stops a future format change
+    /// from being read as garbage.
+    let metadata: [String: String]
 
     init?(path: String) {
         packID = (path as NSString).lastPathComponent
@@ -37,6 +43,7 @@ final class MBTilesReader {
             }
         }
         sqlite3_finalize(st)
+        metadata = meta
         format = (meta["format"] ?? "png").lowercased()
         minZoom = Int(meta["minzoom"] ?? "") ?? 0
         maxZoom = Int(meta["maxzoom"] ?? "") ?? 16

@@ -62,7 +62,7 @@ enum Geo {
 /// What kind of thing the user tapped. Point features (airport/vor/fix/traffic/hazard) rank above
 /// the area feature (airspace) in a disambiguation list.
 enum MapObjectKind: String {
-    case airport, vor, fix, airspace, traffic, userPoint, hazard, tfr, airway
+    case airport, vor, fix, airspace, traffic, userPoint, hazard, tfr, airway, lzRisk
 
     /// Lower sorts first: point features, then line features (airways), then a live TFR, then the
     /// containing areas. A TFR outranks airspace because it is a LIVE restriction with a reason and an
@@ -74,6 +74,9 @@ enum MapObjectKind: String {
         case .airway:   return 1
         case .tfr:      return 2
         case .airspace: return 3
+        // Below the chart furniture: the landability read is AMBIENT ground truth about the spot,
+        // never the thing the pilot meant to tap. It should be available, not in the way.
+        case .lzRisk:   return 4
         default:        return 0
         }
     }
@@ -89,6 +92,7 @@ enum MapObjectKind: String {
         case .hazard:    return "Hazard"
         case .tfr:       return "TFR"
         case .airway:    return "Airway"
+        case .lzRisk:    return "Off-field"
         }
     }
 
@@ -104,7 +108,10 @@ enum MapObjectKind: String {
     /// Anything with a location can be filed into the route; areas/lines/traffic cannot (an AIRWAY is
     /// filed by TYPING it between two fixes, not by tapping a spot on it).
     var isRoutable: Bool {
-        self != .airspace && self != .traffic && self != .hazard && self != .tfr && self != .airway
+        // .lzRisk is a reading about a patch of GROUND, not a navigable point — filing it into a
+        // route would turn an advisory surface note into a waypoint the aircraft flies to.
+        self != .airspace && self != .traffic && self != .hazard && self != .tfr
+            && self != .airway && self != .lzRisk
     }
 }
 
@@ -141,6 +148,7 @@ struct IdentifiedObject: Identifiable {
     var hazard: EONETEvent? = nil     // populated when kind == .hazard
     var tfr: TFR? = nil               // populated when kind == .tfr
     var airwayArea: String? = nil     // populated when kind == .airway — the ARINC area for the MEA lookup
+    var lzSample: LZSampleInfo? = nil // populated when kind == .lzRisk — score + the rules that made it
 
     /// Stable across a single probe so `.sheet(item:)` / `ForEach` are well-behaved.
     ///
