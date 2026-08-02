@@ -65,20 +65,27 @@ struct MapLayersPanel: View {
                     layerToggle($model.showWxRadar, "Weather radar (precip)", "cloud.rain", p, id: "layer-radar")
                     layerToggle($model.showWindAloft, "Winds aloft (animated)", "wind", p, id: "layer-wind")
 
-                    // Off-field landability. Dev-gated while the data model settles: it is advisory
-                    // only, and the wording below is deliberate — "candidate ground", never "safe".
+                    // Off-field landability. NO LONGER DEV-GATED: the data is downloadable from the
+                    // Downloads screen, so hiding the switch behind a developer flag would only mean
+                    // a pilot could fetch 89 MB and then not find the layer it feeds.
                     //
-                    // ...but the rows also appear whenever either layer is ON, however it got there.
-                    // The emergency button arms both for any pilot, dev switch or not, and a layer a
-                    // pilot can turn on but cannot find to turn off is a trap door. Discovery is
-                    // gated; retreat never is.
-                    if model.diagnosticsEnabled || model.showLZRisk || model.showLZEnergy {
-                        layerToggle($model.showLZRisk, "Off-field landability (dev)",
+                    // It stayed gated while there was no way to get a pack, which was the honest
+                    // position then — an ordinary switch that cannot work is worse than an absent
+                    // one. The gate went away with the reason for it.
+                    //
+                    // The wording below is deliberate and gets STRONGER here, not weaker, because a
+                    // non-developer now meets it: "candidate ground", never "safe", never "landing
+                    // site". The layer describes terrain; it does not recommend anything.
+                    Group {
+                        layerToggle($model.showLZRisk, "Off-field landability",
                                     "square.grid.3x3.square", p, id: "layer-lz")
-                        layerToggle($model.showLZEnergy, "Glide energy bands (dev)",
+                        layerToggle($model.showLZEnergy, "Glide energy bands",
                                     "scope", p, id: "layer-lz-energy")
-                        Text("Advisory only — scored candidate ground, not a landing recommendation. "
-                             + "Needs an .lzpack installed; MapLibre engine only.")
+                        Text("ADVISORY ONLY — scored candidate ground, never a landing "
+                             + "recommendation. Surface condition, fences, livestock, crops in season "
+                             + "and current obstructions are not modelled, and the absence of a "
+                             + "depicted hazard is not evidence that none is there. Needs a "
+                             + "landability pack from Downloads; MapLibre engine only.")
                             .font(.dsLabelS).foregroundStyle(p.textDim)
                             .fixedSize(horizontal: false, vertical: true)
                             .accessibilityIdentifier("layers-lz-note")
