@@ -89,6 +89,25 @@ struct MapLayersPanel: View {
                             .font(.dsLabelS).foregroundStyle(p.textDim)
                             .fixedSize(horizontal: false, vertical: true)
                             .accessibilityIdentifier("layers-lz-note")
+                        // Opens the ranked list. DELIBERATELY NOT on the emergency button: that
+                        // already raises NRST, and a runway beats a field every time — stacking a
+                        // second floating panel over it in the worst moment of a flight would bury
+                        // the better answer under the fallback one.
+                        if model.showLZRisk {
+                            Button {
+                                Haptics.impact(.light)
+                                model.widgetStore.reveal(.landable)
+                            } label: {
+                                HStack(spacing: 7) {
+                                    Image(systemName: "list.number").font(.dsLabelS)
+                                    Text("Show reachable ground, ranked").font(.dsLabel)
+                                    Spacer(minLength: 0)
+                                }
+                                .foregroundStyle(p.accent)
+                            }
+                            .buttonStyle(.plainHaptic)
+                            .accessibilityIdentifier("layer-lz-list")
+                        }
                         // Which packs answered, or why none did. Switching the heatmap on with no
                         // pack installed leaves the map looking exactly as it did — identical to the
                         // layer being broken — and this line is the only thing that tells them apart.

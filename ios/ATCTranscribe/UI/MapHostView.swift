@@ -71,7 +71,8 @@ struct MapHostView: View {
     @State private var windFields: WindFieldSet?
     /// Owns the LZ pack store + the aircraft-compiled ruleset. A nested ObservableObject, like
     /// `deviceLocation` and `windAloft`, so recompiling does not republish AppModel to every view.
-    @StateObject private var lzController = LZRiskController()
+    /// The SHARED controller — the landable-ground panel reads the same sweep this drives.
+    @ObservedObject private var lzController = LZRiskController.shared
     /// Screen-point of the search-result highlight (streamed from the active engine, like the plate anchors),
     /// so the SwiftUI pulsing marker rides the map. nil when there's no highlight or it's off-screen-computed.
     @State private var searchPoint: CGPoint?

@@ -52,6 +52,19 @@ enum LZSiteFinder {
     static let runStepM = 30.0                // ~3 fact cells; finer than this measures noise
     static let maxRunSteps = 200              // 6 km — beyond any light-aircraft need
     static let maxCandidates = 5
+    /// How many times the expensive directional walk may run in one search.
+    ///
+    /// ⚠️ This is NOT a window over the sorted samples, and it must never become one again. It was,
+    /// and the effect was that the list under-delivered in exactly the terrain it should do best in:
+    /// the highest-scoring ground is CONTIGUOUS, so the top-scoring samples all sit inside one or
+    /// two fields, the separation filter rejects them as duplicates, and the search ran out of
+    /// window with most of the footprint never examined. Over southern New Mexico — desert and
+    /// cropland, some of the most landable ground in the country — it offered two.
+    ///
+    /// The separation test is a handful of distance comparisons, so it is cheap enough to apply to
+    /// every scored sample; only the walk is metered. That way the cluster is thinned first and the
+    /// budget is spent on genuinely distinct ground.
+    static let maxRunWalks = 40
 
     /// Ground this scores below is not worth naming, whatever else is true of it. A candidate the
     /// pilot would reject on sight costs trust in the ones that are good.
@@ -85,6 +98,18 @@ enum LZSiteFinder {
             + "ditches, standing crop, wires and livestock are not modelled."
         }
     }
+
+    /// What this aeroplane needs on unprepared ground, in metres — the same figure the shading's
+    /// extent cap uses, so the list and the map cannot disagree about what "too short" means.
+    static func requiredRunMetres(for aircraft: AircraftProfile?) -> Double {
+        let bookFt = max(300.0, min(12_000.0, aircraft?.landingOver50Ft ?? 1600.0))
+        return bookFt * 0.3048 * unpreparedFactor
+    }
+
+    /// Mirrors `extent_model.unprepared_factor` in the ruleset. Duplicated as a constant rather than
+    /// re-read here because this type must stay usable without a compiled ruleset; the two are
+    /// pinned equal by a test.
+    static let unpreparedFactor = 1.5
 
     struct Input {
         let coord: Coord
@@ -145,14 +170,26 @@ enum LZSiteFinder {
         scored.sort { rank($0.info.score, $0.arrival) > rank($1.info.score, $1.arrival) }
 
         var out: [Candidate] = []
-        for cand in scored.prefix(maxCandidates * 4) {               // bounded (rule 2)
-            guard out.count < maxCandidates else { break }
-            // Keep candidates apart: five names for one field is not five options.
-            // Keep candidates apart, but scale the separation to the footprint: a fixed 1 NM
-            // radius inside a 2 NM footprint collapses every distinct field into one offer.
-            let apartNm = min(1.0, max(0.2, field.maxRangeNm / 5.0))
-            if out.contains(where: { Geo.nmBetween($0.centre, cand.coord) < apartNm }) { continue }
+        // Every point already measured, accepted or not. Testing separation against ACCEPTED
+        // candidates alone is not enough: ground that fails the run test never enters `out`, so a
+        // large contiguous patch that is merely too short would be re-measured by every one of its
+        // samples and could spend the entire walk budget on one rejected field.
+        var probed: [Coord] = []
+        var walks = 0
+        // Keep candidates apart, but scale the separation to the footprint: a fixed 1 NM radius
+        // inside a 2 NM footprint collapses every distinct field into one offer.
+        let apartNm = min(1.0, max(0.2, field.maxRangeNm / 5.0))
+        // Walks the WHOLE sorted list — its length is already capped by the scan budget, so this is
+        // bounded (rule 2) without a second window over it. The two `break`s below are the real
+        // limits: enough candidates, or the walk budget spent.
+        for cand in scored {                                         // bounded (rule 2)
+            guard out.count < maxCandidates, walks < maxRunWalks else { break }
+            // Cheap first: five names for one field is not five options, and rejecting a duplicate
+            // here costs a few distance comparisons instead of a 12-heading walk.
+            if probed.contains(where: { Geo.nmBetween($0, cand.coord) < apartNm }) { continue }
 
+            probed.append(cand.coord)
+            walks += 1
             let (runM, runHdg) = longestRun(through: cand.coord,
                                             preferInto: input.windFromDeg,
                                             sample: sample)
