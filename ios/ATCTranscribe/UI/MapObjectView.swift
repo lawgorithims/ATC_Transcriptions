@@ -171,6 +171,7 @@ struct MapObjectView: View {
         case .hazard:    return o.hazard?.category.label ?? "Hazard"
         case .tfr:       return o.tfr?.type.label ?? "TFR"
         case .airway:    return "Enroute airway"
+        case .lzRisk:    return "Off-field landability"
         }
     }
 
@@ -202,6 +203,7 @@ struct MapObjectView: View {
             infoSection(o)
             if o.kind == .hazard { hazardFooter }
             if o.kind == .tfr { tfrFooter }
+            if o.kind == .lzRisk, let lz = o.lzSample { lzSection(lz) }
             actionSection(o)
         }
         .scrollContentBackground(.hidden)
@@ -906,6 +908,7 @@ struct MapObjectView: View {
         case .hazard:    return "Satellite-observed — NASA EONET"
         case .tfr:       return "Temporary Flight Restriction — FAA"
         case .airway:    return "Enroute airway — file it between two of its fixes"
+        case .lzRisk:    return "Advisory ground assessment — not a landing recommendation"
         }
     }
 
@@ -1013,6 +1016,11 @@ struct MapObjectView: View {
                 Text("To file it, type the airway between two of its fixes in the route — e.g. “GDM \(o.ident) ORW”.")
                     .font(.dsLabel).foregroundStyle(p.textDim)
                     .fixedSize(horizontal: false, vertical: true)
+            case .lzRisk:
+                // The numbers and the reasoning both live in `lzSection`, which is rendered as its
+                // own Section below the identity block — this case only carries the position.
+                KV("Position", coordText(o.coord))
+                bearingRow(o.coord)
             }
         }
         .foregroundStyle(p.text)
@@ -1031,6 +1039,57 @@ struct MapObjectView: View {
     }
 
     /// EONET events are satellite observations — awareness context, not a briefing product.
+    /// The off-field landability read for one spot, and — the point of the whole exercise — the
+    /// RULES that produced it, in evaluation order.
+    ///
+    /// A score a pilot cannot interrogate is a score they cannot calibrate against, so every veto
+    /// and cap here names itself. The wording is deliberate throughout: "candidate ground", never
+    /// "safe"; "excluded", not "unlandable" as though we had surveyed it.
+    @ViewBuilder private func lzSection(_ lz: LZSampleInfo) -> some View {
+        Section("Off-field landability") {
+            if lz.vetoed {
+                KV("Assessment", "Excluded")
+            } else {
+                KV("Candidate score", "\(lz.score) / 100")
+            }
+            KV("Surface", LZPack.className(lz.surfaceClass))
+            if let s = lz.slopeDeg { KV("Slope", String(format: "%.1f°", s)) }
+            else { KV("Slope", "no elevation data") }
+            if let r = lz.roughM { KV("Roughness", String(format: "%.2f m", r)) }
+            KV("Hazard field", String(format: "%.0f%%", lz.hazard * 100))
+            if let c = lz.confidence { KV("Land-cover confidence", "\(c)%") }
+            if lz.coarseTerrain {
+                KV("Elevation source", "10 m — ditch checks cannot run")
+            }
+        }
+
+        if !lz.rules.isEmpty {
+            Section("Why") {
+                ForEach(Array(lz.rules.enumerated()), id: \.offset) { _, r in
+                    HStack(alignment: .top, spacing: 8) {
+                        Text(r.kind == .veto ? "EXCLUDED" : (r.kind == .cap ? "CAP" : "NOTE"))
+                            .font(.dsLabelS.monospaced())
+                            .foregroundStyle(r.kind == .flag ? model.palette.textDim
+                                                             : model.palette.text)
+                            .frame(width: 74, alignment: .leading)
+                        Text(r.cap.map { "\(r.text) (max \($0))" } ?? r.text)
+                            .font(.dsLabelS)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        }
+
+        Section {
+        } footer: {
+            Text("ADVISORY ONLY — scored candidate ground, not a landing recommendation. Surface "
+                 + "condition, fences, livestock and current obstructions are not modelled. Absence "
+                 + "of a depicted hazard is not evidence that none is there. PIC judgment is final.")
+                .font(.dsLabelS)
+                .foregroundStyle(model.palette.textDim)
+        }
+    }
+
     private var hazardFooter: some View {
         Section {
         } footer: {
@@ -1215,6 +1274,7 @@ struct MapObjectView: View {
         case .hazard:    return "flame"
         case .tfr:       return "exclamationmark.octagon"
         case .airway:    return "point.topleft.down.to.point.bottomright.curvepath"
+        case .lzRisk:    return "square.grid.3x3.square"
         }
     }
 }

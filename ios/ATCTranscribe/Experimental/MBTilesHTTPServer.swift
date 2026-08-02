@@ -63,6 +63,22 @@ final class MBTilesHTTPServer {
         lock.lock(); defer { lock.unlock() }; return baseReaders[name]
     }
 
+    // The LZ (off-field landability) risk raster, served on "/lz/<signature>/{z}/{x}/{y}". Unlike
+    // every other path here it is not a stored tile: the provider composites fact planes through
+    // the aircraft-compiled ruleset on demand, and caches inside itself.
+    //
+    // The SIGNATURE rides in the PATH, never as a query string, for two reasons: this parser splits
+    // on "/" and ".", so "?v=..." would corrupt the y component; and putting it in the path means a
+    // changed aircraft or theme produces a different URL, so MapLibre's own tile cache cannot serve
+    // a pixel scored for the previous aircraft. A stale signature 404s and draws as nothing.
+    private var lzProvider: ((String, Int, Int, Int) -> Data?)?
+    func setLZProvider(_ p: ((String, Int, Int, Int) -> Data?)?) {
+        lock.lock(); lzProvider = p; lock.unlock()
+    }
+    private func currentLZProvider() -> ((String, Int, Int, Int) -> Data?)? {
+        lock.lock(); defer { lock.unlock() }; return lzProvider
+    }
+
     /// Start the loopback listener WITHOUT blocking the caller. `onReady` is invoked on the MAIN queue with
     /// the bound port once the listener reaches `.ready` (or 0 on failure) — the caller installs the MapLibre
     /// style then. This replaces the old synchronous `DispatchSemaphore.wait(timeout: 2)`, which parked the
@@ -118,6 +134,12 @@ final class MBTilesHTTPServer {
                 } else {
                     self.respond(conn, status: "404 Not Found", body: nil)
                 }
+            } else if path.hasPrefix("/lz/") {
+                if let png = self.lzTile(forPath: path) {
+                    self.respond(conn, status: "200 OK", contentType: "image/png", body: png)
+                } else {
+                    self.respond(conn, status: "404 Not Found", body: nil)  // no pack / stale sig
+                }
             } else if let (tile, mime) = self.tile(forPath: path) {
                 self.respond(conn, status: "200 OK", contentType: mime, body: tile)
             } else {
@@ -136,6 +158,30 @@ final class MBTilesHTTPServer {
         case "jpg", "jpeg": return "image/jpeg"
         default: return MBTilesTileOverlay.webpNativePassthrough ? "image/webp" : "image/png"
         }
+    }
+
+    /// "/lz/<sig>/13/1661/3299" → the composited risk raster, or nil.
+    ///
+    /// Deliberately does NOT go through `tile(forPath:)` or the shared `pngCache`: the bytes depend
+    /// on the aircraft as well as the address, and the compositor owns a cache keyed on both.
+    private func lzTile(forPath path: String) -> Data? {
+        guard let (sig, z, x, y) = Self.lzPath(path) else { return nil }
+        guard let provider = currentLZProvider() else { return nil }
+        return provider(sig, z, x, y)
+    }
+
+    /// Pure parser for the LZ path, factored out so it is testable without opening a socket.
+    /// Returns nil unless the shape is exactly ["lz", signature, z, x, y] with a plausible zoom.
+    static func lzPath(_ path: String) -> (String, Int, Int, Int)? {
+        let comps = path.split(separator: "/").map(String.init)
+        guard comps.count >= 5, comps[0] == "lz" else { return nil }
+        let sig = comps[1]
+        guard !sig.isEmpty, sig.allSatisfy({ $0.isHexDigit && !$0.isUppercase }) else { return nil }
+        let tail = comps.suffix(3).map { $0.split(separator: ".").first.map(String.init) ?? $0 }
+        guard let z = Int(tail[0]), let x = Int(tail[1]), let y = Int(tail[2]) else { return nil }
+        guard z >= 0, z <= 24, x >= 0, y >= 0 else { return nil }
+        guard x < (1 << z), y < (1 << z) else { return nil }
+        return (sig, z, x, y)
     }
 
     /// "/8/74/97" or "/8/74/97.png" → tile bytes + MIME from the first pack that has it. Bounded scan.

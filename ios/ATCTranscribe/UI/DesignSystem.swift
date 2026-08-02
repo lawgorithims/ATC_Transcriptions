@@ -116,6 +116,9 @@ enum EntityTint {
         case .hazard:    return .hex(0xF97316)
         case .tfr:       return .hex(0xF71433)
         case .airway:    return .hex(0x6B94DB)
+        // Earth tone, deliberately outside the navigation-symbol families: this is ground
+        // assessment, not a chart entity the pilot can navigate to.
+        case .lzRisk:    return .hex(0x8D9B6A)
         }
     }
     private static func nightColor(_ kind: MapObjectKind) -> Color {
@@ -129,6 +132,7 @@ enum EntityTint {
         case .hazard:    return .hex(0xE06018)
         case .tfr:       return .hex(0xFF3B30)
         case .airway:    return .hex(0xB0521E)
+        case .lzRisk:    return .hex(0x8A6A34)
         }
     }
     /// Route-leg chip color (flight-plan strip / route editor).
