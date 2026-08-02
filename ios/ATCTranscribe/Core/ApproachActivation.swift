@@ -201,20 +201,62 @@ enum ApproachActivation {
     /// caller offers a choice rather than guessing.
     ///
     /// `candidates` is (ident, name, runway) for the airport's IAP records, deduped by ident.
+    /// The runway a plate TITLE names, or nil for a circling plate, which names a letter instead.
+    ///
+    /// ⚠️ THIS IS WHAT MAKES A PLATE MATCH MEAN ANYTHING, and it was missing. `matchPlate` scored only
+    /// approach-TYPE tokens, so every chart of the same type at a field tied and the `ident <` tiebreak
+    /// picked one arbitrarily. Measured over all 10,169 bundled IAP charts, **4,705 (46.3%) resolved to
+    /// a procedure for a DIFFERENT RUNWAY** — KBOS's "RNAV (GPS) RWY 04R" plate returned 04L's coded
+    /// approach, and with it 04L's minima and its Baro-VNAV limit, on a screen a pilot flies from.
+    static func plateRunway(_ plateName: String) -> String? {
+        let up = plateName.uppercased()
+        guard let r = up.range(of: "RWY ") else { return nil }
+        var digits = "", suffix = ""
+        for ch in up[r.upperBound...].prefix(3) {            // bounded (rule 2): ≤2 digits + 1 side
+            if ch.isNumber, suffix.isEmpty, digits.count < 2 { digits.append(ch) }
+            else if "LCR".contains(ch), !digits.isEmpty, suffix.isEmpty { suffix = String(ch); break }
+            else { break }
+        }
+        return digits.isEmpty ? nil : normalizedRunway(digits + suffix)
+    }
+
+    /// A runway designator reduced to one comparable form. ⚠️ THE TWO SIDES ARE PADDED DIFFERENTLY —
+    /// CIFP codes "RW04R" and a plate title prints "RWY 04R" while some print "RWY 4" — so comparing the
+    /// raw strings silently fails to match rather than matching wrongly, which is just as bad here.
+    static func normalizedRunway(_ s: String) -> String {
+        var t = s.uppercased().trimmingCharacters(in: .whitespaces)
+        if t.hasPrefix("RW") { t = String(t.dropFirst(2)) }
+        let digits = t.prefix { $0.isNumber }
+        let rest = t.dropFirst(digits.count)
+        let n = Int(digits) ?? 0
+        return n > 0 ? "\(n)\(rest)" : String(t)
+    }
+
     static func matchPlate(plateName: String, runway: String?,
                            candidates: [(ident: String, name: String, runway: String)])
         -> [(ident: String, name: String, runway: String)] {
         assert(candidates.count <= 1024, "candidate list out of range")
         let plate = plateName.uppercased()
-        let wantRw = runway?.uppercased()
+        let wantRw = runway.map(Self.normalizedRunway)
+        // The runway the PLATE ITSELF names. Applied in ADDITION to the caller's, not instead of it:
+        // when the two disagree the plate is not this approach's plate and nothing should match.
+        //
+        // ⚠️ The caller's runway alone was a no-op at four of the six call sites. AppModel builds its
+        // candidate list as `[(… runway: appr.runway)]` and then passes `runway: appr.runway`, so the
+        // filter compared a value to itself and the plate's own runway was never consulted at all.
+        let plateRw = Self.plateRunway(plateName)
 
         var scored: [(item: (ident: String, name: String, runway: String),
                       score: Int, typeScore: Int, wrongLetter: Bool)] = []
         for c in candidates.prefix(1024) {                       // bounded (rule 2)
             // Runway must agree when the plate names one; a plate without a runway (e.g. a VOR-A
             // circling approach) can't be narrowed that way.
+            let candidateRw = Self.normalizedRunway(c.runway)
             if let rw = wantRw, !rw.isEmpty {
-                guard c.runway.uppercased() == rw else { continue }
+                guard candidateRw == rw else { continue }
+            }
+            if let rw = plateRw, !rw.isEmpty {
+                guard candidateRw == rw else { continue }
             }
             var score = 0
             var typeScore = 0

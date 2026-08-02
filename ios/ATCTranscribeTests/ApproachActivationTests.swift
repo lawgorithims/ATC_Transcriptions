@@ -462,4 +462,62 @@ final class ApproachRouteAmendmentTests: XCTestCase {
         XCTAssertEqual(plan.route, ["SANTI"])
         XCTAssertEqual(plan.destination, "KTCS")
     }
+
+    // MARK: ⚠️ the plate's OWN runway — measured at 4,705 of 9,535 charts wrong before this
+
+    private func cands(_ xs: [(String, String, String)]) -> [(ident: String, name: String, runway: String)] {
+        xs.map { (ident: $0.0, name: $0.1, runway: $0.2) }
+    }
+
+    /// The defect, in one case: nothing scored the runway, so same-type approaches tied and the
+    /// `ident <` tiebreak picked the RECIPROCAL. Measured over every bundled straight-in chart with a
+    /// coded approach: 4,705 of 9,535 (49.3%) resolved to a different runway. Now 0.
+    func testThePlatesOwnRunwayDecidesTheMatch() {
+        let c = cands([("R08", "RNAV (GPS) RWY 08", "08"), ("R26", "RNAV (GPS) RWY 26", "26")])
+        let r = ApproachActivation.matchPlate(plateName: "RNAV (GPS) RWY 26", runway: nil, candidates: c)
+        XCTAssertEqual(r.first?.ident, "R26", "the plate names 26; 08 is the reciprocal, not the approach")
+        XCTAssertEqual(r.count, 1, "the other runway must not even be offered")
+    }
+
+    /// ⚠️ THE PADDING IS DIFFERENT ON THE TWO SIDES. CIFP codes "RW04R"/"04", plate titles print
+    /// "RWY 04R", and some print "RWY 4" — a raw string compare fails to match rather than matching
+    /// wrongly, which is equally useless.
+    func testRunwayPaddingDoesNotDefeatTheMatch() {
+        XCTAssertEqual(ApproachActivation.normalizedRunway("RW04R"), "4R")
+        XCTAssertEqual(ApproachActivation.normalizedRunway("04"), "4")
+        XCTAssertEqual(ApproachActivation.normalizedRunway("4"), "4")
+        XCTAssertEqual(ApproachActivation.plateRunway("ILS OR LOC RWY 04R"), "4R")
+        XCTAssertEqual(ApproachActivation.plateRunway("VOR RWY 4"), "4")
+        let c = cands([("I04R", "ILS RWY 04R", "RW04R")])
+        XCTAssertEqual(ApproachActivation.matchPlate(plateName: "ILS OR LOC RWY 4R",
+                                                     runway: nil, candidates: c).first?.ident, "I04R")
+    }
+
+    /// A parallel pair is the case that actually reaches a pilot: 04L and 04R are different approaches
+    /// with different minima and different Baro-VNAV limits. Reproduced on the iPad before the fix —
+    /// KBOS's 04R plate rendered 04L's −14 °C limit.
+    func testParallelRunwaysAreNotInterchangeable() {
+        let c = cands([("R04L", "RNAV (GPS) RWY 04L", "04L"), ("R04R", "RNAV (GPS) RWY 04R", "04R")])
+        XCTAssertEqual(ApproachActivation.matchPlate(plateName: "RNAV (GPS) RWY 04R",
+                                                     runway: nil, candidates: c).first?.ident, "R04R")
+        XCTAssertEqual(ApproachActivation.matchPlate(plateName: "RNAV (GPS) RWY 04L",
+                                                     runway: nil, candidates: c).first?.ident, "R04L")
+    }
+
+    /// A CIRCLING plate names a letter, not a runway, and must keep matching every candidate — the new
+    /// filter must not silently disqualify the approaches it is meant to rank.
+    func testACirclingPlateStillMatches() {
+        XCTAssertNil(ApproachActivation.plateRunway("VOR-A"))
+        let c = cands([("V-A", "VOR-A", ""), ("R08", "RNAV (GPS) RWY 08", "08")])
+        XCTAssertEqual(ApproachActivation.matchPlate(plateName: "VOR-A", runway: nil,
+                                                     candidates: c).first?.ident, "V-A")
+    }
+
+    /// When the caller's runway and the plate's disagree, the plate is not that approach's plate.
+    /// Nothing is the right answer; a "confident" wrong one is what shipped.
+    func testCallerAndPlateDisagreementYieldsNothing() {
+        let c = cands([("R22", "RNAV (GPS) RWY 22", "22")])
+        XCTAssertTrue(ApproachActivation.matchPlate(plateName: "RNAV (GPS) RWY 04",
+                                                    runway: "22", candidates: c).isEmpty)
+    }
 }

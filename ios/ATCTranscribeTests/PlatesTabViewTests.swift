@@ -12,7 +12,10 @@ final class PlatesTabViewTests: XCTestCase {
         XCTAssertEqual(PlatesTabView.runway(of: "RNAV (GPS) RWY 22L"), "22L")
         XCTAssertEqual(PlatesTabView.runway(of: "VOR RWY 15"), "15")
         XCTAssertEqual(PlatesTabView.runway(of: "RNAV (GPS) Z RWY 33L"), "33L")
-        XCTAssertEqual(PlatesTabView.runway(of: "ILS RWY 4R"), "4R")          // single-digit runway
+        // ⚠️ DELIBERATE CHANGE: this used to echo the title's own padding, so a field printing both
+        // "RWY 4R" and "RWY 04R" produced TWO groups for ONE runway. The key is now normalised and
+        // re-padded, so both land in "04R" — which is also how a pilot reads it.
+        XCTAssertEqual(PlatesTabView.runway(of: "ILS RWY 4R"), "04R")
     }
 
     func testCirclingApproachesHaveNoRunway() {
