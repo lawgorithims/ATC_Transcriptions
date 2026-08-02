@@ -519,6 +519,10 @@ struct MapHostView: View {
             lzProvider: lzController.provider,
             lzProbe: { [lzController] c in lzController.sample(lon: c.lon, lat: c.lat) },
             lzEnergyBands: model.showLZEnergy ? lzController.energyBands : [],
+            // NOT gated on the layer toggles. The pilot armed this deliberately after rehearsing
+            // it; switching the shading off is a decluttering decision and must not silently
+            // delete the plan they intend to fly.
+            lzGlidePlan: model.armedGlidePlan,
             // Hopped OFF the current view-update pass on purpose. This callback fires from inside
             // `updateUIView`, and publishing to an observed object during a view update is the
             // classic dropped update — SwiftUI is free to coalesce it away. Here that loss is

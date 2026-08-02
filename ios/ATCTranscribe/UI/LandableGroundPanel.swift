@@ -25,6 +25,15 @@ struct LandableGroundPanelView: View {
     @State private var candidates: [LZSiteFinder.Candidate] = []
     @State private var searching = false
     @State private var notice: String?
+    @State private var rehearsal: Rehearsal?
+
+    /// A plan and which row it came from — one `Identifiable` so the sheet cannot be presented for
+    /// a candidate the list has since re-ranked out from under it.
+    private struct Rehearsal: Identifiable {
+        let plan: LZGlidePlan
+        let rank: Int
+        var id: Int { rank }
+    }
 
     var body: some View {
         let p = model.palette
@@ -66,6 +75,34 @@ struct LandableGroundPanelView: View {
             Spacer(minLength: 0)
         }
         .task(id: readiness) { await search() }
+        .sheet(item: $rehearsal) { r in
+            LZGlidePlanSheet(plan: r.plan, rank: r.rank).environmentObject(model)
+        }
+    }
+
+    /// Build the plan for one candidate and present it.
+    ///
+    /// The OTHER candidates go in as alternatives, which is what makes the commit point mean
+    /// anything: "the last place you could still change your mind" is a statement about this list,
+    /// not about the world.
+    private func rehearse(_ c: LZSiteFinder.Candidate, rank: Int) {
+        guard let here = model.presentPosition else { return }
+        let readout = GPSReadout.merge(stratux: model.freshStratuxGPS, device: model.deviceLocation.fix)
+        guard let alt = readout.altitudeFtMSL, alt.isFinite else { return }
+        let wind = model.windAloft.wind(at: here.lat, lon: here.lon,
+                                        level: WindLevel.at(index: model.windLevelIndex))
+        let others = candidates.filter { $0 != c }
+        let plan = LZGlidePlanner.plan(
+            from: here, altitudeFtMSL: alt,
+            groundElevationFt: controller.energyFieldSnapshot != nil
+                ? TerrainElevation.shared.sampleElevationFt(at: c.centre) : nil,
+            candidate: c, alternatives: others,
+            glideRatio: model.selectedAircraft?.glideRatio ?? NearestAirports.defaultGlideRatio,
+            bestGlideKts: Double(model.selectedAircraft?.bestGlideKts ?? 65),
+            windFromDeg: wind.map { Double($0.fromDeg) },
+            windKts: wind.map { Double($0.kt) })
+        guard let plan else { return }
+        rehearsal = Rehearsal(plan: plan, rank: rank)
     }
 
     /// The three things the search needs, as a small discrete token.
@@ -133,8 +170,19 @@ struct LandableGroundPanelView: View {
             ForEach(Array(c.rules.prefix(3).enumerated()), id: \.offset) { _, r in
                 Text("• \(r.text)").font(.dsLabelS).foregroundStyle(p.textDim)
             }
-            // NOT YET WIRED. The button is absent rather than present-and-dead: a control that does
-            // nothing in an emergency panel is worse than no control.
+            Button {
+                Haptics.impact(.light)
+                rehearse(c, rank: rank)
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "play.circle").font(.dsLabelS)
+                    Text("Rehearse the glide").font(.dsLabelS)
+                }
+                .foregroundStyle(p.accent)
+            }
+            .buttonStyle(.plainHaptic)
+            .accessibilityIdentifier("landable-rehearse-\(rank)")
+            .padding(.top, 2)
         }
         .padding(.horizontal, 12).padding(.vertical, 9)
         .frame(maxWidth: .infinity, alignment: .leading)

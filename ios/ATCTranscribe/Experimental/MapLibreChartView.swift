@@ -80,6 +80,7 @@ struct MapLibreChartView: UIViewRepresentable {
     /// Live arrival-energy bands. Empty whenever the fix is untrusted — a stale footprint is a
     /// claim about a situation that no longer exists.
     var lzEnergyBands: [LZEnergyBand] = []
+    var lzGlidePlan: LZGlidePlan?
     /// How many energy polygons were actually installed into the shape source, reported after each
     /// change. The band LIST reaching the view proves the maths ran; only this proves the map got it,
     /// and those two failed separately during development (a ring of three points draws nothing).
@@ -127,6 +128,7 @@ struct MapLibreChartView: UIViewRepresentable {
         c.setLZProvider(lzProvider, signature: lzSignature)
         c.inLZProbe = lzProbe
         c.inLZEnergyBands = lzEnergyBands
+        c.inLZGlidePlan = lzGlidePlan
         c.onLZEnergyRendered = onLZEnergyRendered
         c.cacheInputs(layer: layer, routeCoords: routeCoords, breadcrumbCoords: breadcrumbCoords,
                       radarTemplate: radarTemplate, holds: holds, ownship: ownship, ownshipCourse: ownshipCourse,
@@ -180,6 +182,7 @@ struct MapLibreChartView: UIViewRepresentable {
         var inLZProvider: ((String, Int, Int, Int) -> Data?)?
         var inLZProbe: ((Coord) -> LZSampleInfo?)?     // the tap-card sampler; nil when the layer is off
         var inLZEnergyBands: [LZEnergyBand] = []      // live arrival-energy footprint; [] = nothing to draw
+        var inLZGlidePlan: LZGlidePlan?               // the rehearsed glide the pilot ARMED; nil = none
         var onLZEnergyRendered: ((Int) -> Void)? = nil
         private var installedLZSignature: String??   // double-optional: distinguishes "never installed"
         private var appliedWindStamp: String?        // (validTime, level, enabled, theme) last pushed
@@ -346,6 +349,7 @@ struct MapLibreChartView: UIViewRepresentable {
             updateRadar(inRadarTemplate, on: map)
             updateLZ(inLZSignature, on: map)
             updateLZEnergy(inLZEnergyBands, on: map)
+            updateLZGlidePlan(inLZGlidePlan, on: map)
             emitSearchPoint(map)               // keep the pulsing search marker glued to its spot
             applyNorthLock(map)                // chart north-up lock (rotate gesture + bearing)
             applyMapCommand(map)               // one-shot side-bar zoom / center-on-ownship
@@ -777,7 +781,8 @@ struct MapLibreChartView: UIViewRepresentable {
             let layers = ["plate-raster", "ownship-sym", "accuracy-fill", "accuracy-line", "traffic-sym",
                           "route-wpt-spd", "route-wpt-alt", "route-wpt-sym",
                           "hold-line", "route-line", "track-line",
-                          "wxradar-layer", "lz-layer", "lz-energy-line", "lz-energy-fill",
+                          "wxradar-layer", "lz-glide-line", "lz-layer",
+                          "lz-energy-line", "lz-energy-fill",
                           "tfr-label", "tfr-outline", "tfr-fill", "nav-sym",
                           "airspace-label", "airways-label", "airspace-outline", "airspace-fill",
                           "airways-line", "night-veil-fill", "coastline", "land-fill"]
@@ -785,7 +790,7 @@ struct MapLibreChartView: UIViewRepresentable {
                 if let l = style.layer(withIdentifier: id) { style.removeLayer(l) }
             }
             let sources = ["plate", "ownship", "accuracy", "traffic", "route-wpt", "holds", "route", "track",
-                           "wxradar", "lz", "lz-energy", "tfr-labels", "tfr",
+                           "wxradar", "lz", "lz-glide", "lz-energy", "tfr-labels", "tfr",
                            "nav", "airspace-labels", "airspace", "airways", "night-veil", "land"]
             for id in sources where style.source(withIdentifier: id) != nil {        // bounded (rule 2)
                 if let s = style.source(withIdentifier: id) { style.removeSource(s) }
@@ -995,6 +1000,24 @@ struct MapLibreChartView: UIViewRepresentable {
             energyLine.lineWidth = NSExpression(forConstantValue: 0.6)
             energyLine.lineOpacity = NSExpression(forConstantValue: 0.35)
             style.addLayer(energyLine)
+
+            // THE ARMED GLIDE, if the pilot rehearsed one and armed it. Added here — above the
+            // energy shading, below the operational overlays — because it is neither: the shading is
+            // ambient and this is a decision the pilot took, but it is still a plan to unsurveyed
+            // ground and must not outrank a TFR or the traffic that could hit you on the way.
+            //
+            // Dashed on purpose. Every other track on this map is a published or filed route; a
+            // dashed line is the cheapest way to say at a glance that this one is neither.
+            let glideSrc = MLNShapeSource(identifier: "lz-glide", shape: nil, options: nil)
+            style.addSource(glideSrc)
+            let glideLine = MLNLineStyleLayer(identifier: "lz-glide-line", source: glideSrc)
+            glideLine.lineColor = NSExpression(forConstantValue: UIColor(red: 1.0, green: 0.72,
+                                                                        blue: 0.10, alpha: 1.0))
+            glideLine.lineWidth = NSExpression(forConstantValue: 2.6)
+            glideLine.lineDashPattern = NSExpression(forConstantValue: [2.0, 1.6])
+            glideLine.lineCap = NSExpression(forConstantValue: "round")
+            glideLine.lineJoin = NSExpression(forConstantValue: "round")
+            style.addLayer(glideLine)
 
             let red = ChartMapView.Coordinator.airspaceColor("TFR")     // #F71433 — reuse, no hand-typed hex
             let tfrSrc = MLNShapeSource(identifier: "tfr", shape: nil, options: nil); style.addSource(tfrSrc)
@@ -1617,6 +1640,36 @@ struct MapLibreChartView: UIViewRepresentable {
         /// Hard cap per class. A 64-ray sweep yields a few hundred sectors; anything beyond this is
         /// a bug, not a big footprint.
         static let maxEnergySectors = 512
+
+        /// The armed glide, as a single dashed track. Nil clears it.
+        ///
+        /// The energy-dump leg is skipped: it is flown overhead, so it has distance but no
+        /// displacement, and feeding its coincident endpoints to the line source would either draw
+        /// nothing or draw a degenerate segment depending on the renderer's mood.
+        func updateLZGlidePlan(_ plan: LZGlidePlan?, on map: MLNMapView) {
+            guard let src = map.style?.source(withIdentifier: "lz-glide") as? MLNShapeSource else {
+                return
+            }
+            let sig = plan.map { p in
+                String(format: "%.5f,%.5f|%.0f|%d", p.touchdownArea.lat, p.touchdownArea.lon,
+                       p.startAltitudeFtMSL, p.legs.count)
+            } ?? ""
+            guard sig != appliedLZGlideSig else { return }
+            appliedLZGlideSig = sig
+            guard let plan else { src.shape = nil; return }
+
+            var pts = [CLLocationCoordinate2D]()
+            for leg in plan.legs where leg.kind != .energyDump {         // bounded: <= 5 legs
+                let a = CLLocationCoordinate2D(latitude: leg.from.lat, longitude: leg.from.lon)
+                if pts.last.map({ $0.latitude != a.latitude || $0.longitude != a.longitude }) ?? true {
+                    pts.append(a)
+                }
+                pts.append(CLLocationCoordinate2D(latitude: leg.to.lat, longitude: leg.to.lon))
+            }
+            guard pts.count >= 2 else { src.shape = nil; return }
+            src.shape = MLNPolylineFeature(coordinates: &pts, count: UInt(pts.count))
+        }
+        private var appliedLZGlideSig = ""
 
         private static func aspColorExpr() -> NSExpression {
             NSExpression(mglJSONObject: ["match", ["get", "cls"],
