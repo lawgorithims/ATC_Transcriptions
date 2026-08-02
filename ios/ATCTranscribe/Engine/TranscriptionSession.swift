@@ -62,7 +62,13 @@ final class TranscriptionSession: ObservableObject {
                 // COMPLETES on the main actor before the next emit — FIFO order, and run()
                 // cannot return (and flip status below) until every append has landed, so the
                 // final drained record can never be dropped on a natural stream end.
-                await MainActor.run { self?.append(record) }
+                // ⚠️ The inner `[weak self]` is NOT redundant: `MainActor.run`'s body is
+                // NON-escaping, so without it the block captures this closure's weak `self`
+                // VARIABLE by reference — a mutable capture in @Sendable code (Swift 6 error).
+                // Re-capturing weakly is ownership-identical: no strong reference held across the
+                // hop, still a no-op if the session died. The `Task {}` siblings below escape, so
+                // they copy the capture and don't need it.
+                await MainActor.run { [weak self] in self?.append(record) }
             } onRefined: { [weak self] id, outcome in
                 Task { @MainActor in self?.applyRefinement(id: id, outcome: outcome) }
             } onLevel: { [weak self] level in

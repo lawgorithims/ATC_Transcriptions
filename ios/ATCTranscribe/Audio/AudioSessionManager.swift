@@ -17,8 +17,11 @@ enum AudioSessionManager {
         #if os(iOS)
         let session = AVAudioSession.sharedInstance()
         if recording {
+            // ⚠️ `.allowBluetoothHFP` is a pure RENAME of the deprecated `.allowBluetooth` — same
+            // option bit (0x4) and still API_AVAILABLE(ios(1.0)), so this needs no #available guard
+            // at our iOS 17 floor and selects the identical hands-free route as before.
             try? session.setCategory(.playAndRecord, mode: .measurement,
-                                     options: [.allowBluetooth, .defaultToSpeaker])
+                                     options: [.allowBluetoothHFP, .defaultToSpeaker])
         } else {
             try? session.setCategory(.playback, mode: .default)
         }

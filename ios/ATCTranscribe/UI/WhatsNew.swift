@@ -32,6 +32,30 @@ enum WhatsNew {
     /// catch-up. Builds need not be contiguous.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 104, version: "1.0", headline: "The plate and the procedure now agree on the runway",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "arrow.triangle.branch",
+                    title: "An approach plate now loads its own runway's procedure",
+                    detail: "Matching a plate to its coded procedure looked at the approach type and never at the runway, so every ILS at a field looked alike and the app picked whichever sorted first — usually the opposite end. Measured across every charted approach in the cycle, 4,705 of 9,535 loaded a different runway's procedure, taking its crossing altitudes, its published minimum and its temperature limits with it. Boston's RNAV to 04R was showing 04L's numbers. All of them now match on the runway the plate names."),
+                WhatsNewHighlight(
+                    icon: "arrow.uturn.down.circle",
+                    title: "Alternate minimums, read for the field you are looking at",
+                    detail: "The IFR alternate minimums booklet is one document covering up to 145 airports, so finding your field in it in the air is a page hunt. The Arrival tab now reads your airport's block out of it and lists each approach with the ceiling and visibility it needs, and whether it is usable at all — tell it whether local weather is reporting and whether the tower is open, and approaches that are not authorised are marked. An airport the booklet does not list is stated as standard 600-2 / 800-2, which is a real answer rather than a blank."),
+                WhatsNewHighlight(
+                    icon: "thermometer.snowflake",
+                    title: "Cold-temperature limits shown where they begin",
+                    detail: "An LNAV/VNAV line is not authorised below the temperature its plate publishes, and the limitation starts at the final approach fix. When the field is reporting colder than that, the vertical profile now marks the fix and shades the segment it applies to, rather than leaving it to be remembered. It is stated only when the temperature is known to be below the limit — an unknown temperature shows nothing."),
+                WhatsNewHighlight(
+                    icon: "airplane.circle",
+                    title: "Alaska and Hawaii get their runway data back",
+                    detail: "Runways, runway ends and frequencies were looked up by stripping the ICAO prefix, which only works in the lower 48: Bethel is PABE but its data is filed under BET, Adak PADK under ADK. 307 airports — 258 in Alaska, 20 in Hawaii, the rest in Puerto Rico, Guam, Samoa, the Marianas and the Virgin Islands — returned nothing at all, so the approach brief, the airport card and the runway diagram were blank for them."),
+                WhatsNewHighlight(
+                    icon: "ruler",
+                    title: "Glidepath angles and runway detail from the source",
+                    detail: "The runway database was being read for 15 of the 80 fields it publishes. Recovered: the visual glidepath angle for 7,463 runway ends, threshold crossing heights, runway markings, the controlling obstacle for 15,224 ends, weight-bearing capacity, and the hold-short line positions the FAA publishes coordinates for."),
+            ]),
+        ReleaseNote(
             build: 103, version: "1.0", headline: "Data the app had all along, finally reaching the chart",
             highlights: [
                 WhatsNewHighlight(

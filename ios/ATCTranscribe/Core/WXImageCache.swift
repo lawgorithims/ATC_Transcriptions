@@ -115,13 +115,19 @@ struct WXCachedImage {
         guard let header, !header.isEmpty else { return nil }
         return lastModifiedFormatter.date(from: header)
     }
-    private static let lastModifiedFormatter: DateFormatter = {
+    /// ⚠️ A FRESH formatter per call, not a shared `static let`. `DateFormatter` is not `Sendable`, and this
+    /// parse is nonisolated (it runs wherever the download finished, and the tests call it off the main
+    /// actor) — a single shared instance is exactly the object you must not hand across isolation domains.
+    /// The cost is irrelevant here: this runs once per completed HTTP image download, behind ~100 ms of
+    /// network. Same locale/zone/format as before, so the parse result is bit-for-bit identical.
+    /// en_US_POSIX + a fixed pattern is mandatory — RFC 1123 dates are English regardless of device locale.
+    private nonisolated static var lastModifiedFormatter: DateFormatter {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")
         f.timeZone = TimeZone(identifier: "GMT")
         f.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
         return f
-    }()
+    }
 
     /// Drop the LEAST-RECENTLY-ACCESSED entries past the cap, but NEVER a favorited (protected) URL — the
     /// pilot staged those for offline use and they must not age out. Bounded (index is bounded by cap + 1).

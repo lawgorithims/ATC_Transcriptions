@@ -199,6 +199,8 @@ enum WindFetchPlan {
     private var enabled = false
     private var region: RadarRegion?
     private var fetchTask: Task<Void, Never>?
+    /// Monotonic stamp of the CURRENT fetch — see `maybeFetch`. Only ever read/written on the main actor.
+    private var fetchGeneration: UInt64 = 0
     private var heartbeatTask: Task<Void, Never>?
     private var failureStreak = 0
     private var lastAttemptAt: Date?
@@ -225,6 +227,13 @@ enum WindFetchPlan {
             maybeFetch()
         } else {
             fetchTask?.cancel(); fetchTask = nil
+            // ⚠️ RETIRE THE IN-FLIGHT FETCH'S STAMP. The generation replaced a captured task handle to
+            // clear a Swift 6 capture warning, and the two are NOT equivalent here: without this bump a
+            // fetch already running passes its own staleness guard and re-publishes `fetching = false`
+            // on the way out. `fetching` is `@Published`, which fires on every set regardless of value,
+            // so that is one spurious SwiftUI invalidation per disable-while-fetching. With the bump the
+            // stamp scheme matches the old handle-identity scheme in every path.
+            fetchGeneration &+= 1
             heartbeatTask?.cancel(); heartbeatTask = nil
             fetching = false
         }
@@ -274,14 +283,20 @@ enum WindFetchPlan {
         // which `maybeFetch`'s `fetchTask == nil` guard admits a second concurrent download of the same
         // box, and `fetching` flickers off while one is still running (the chip stops showing progress
         // that is still happening).
-        var task: Task<Void, Never>?
-        task = Task { [weak self] in
+        //
+        // ⚠️ "Still this task's" is asked with a GENERATION STAMP, not the `Task` handle. Comparing against
+        // the handle forces the closure to capture the very `var` it is being assigned to — a mutation
+        // after capture, correct only because `Task {}` inherits this actor and so cannot begin before
+        // `maybeFetch` returns. That is far too subtle a thing for the single-flight lock to rest on. The
+        // stamp is captured by value and answers the identical question: am I still the current fetch?
+        fetchGeneration &+= 1                       // &+ so a long session can never trap on overflow
+        let generation = fetchGeneration
+        fetchTask = Task { [weak self] in
             await self?.run(box: box)
-            guard let self, self.fetchTask == task else { return }
+            guard let self, self.fetchGeneration == generation else { return }
             self.fetchTask = nil
             self.fetching = false
         }
-        fetchTask = task
     }
 
     /// Walk candidate cycles newest-first until one yields a decodable payload. A 404 is a miss (that
