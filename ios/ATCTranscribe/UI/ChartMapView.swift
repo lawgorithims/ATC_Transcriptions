@@ -93,6 +93,33 @@ final class MBTilesReader {
         return Int(sqlite3_column_int(st, 0))
     }
 
+    /// The tile-address extent actually stored at one zoom, as XYZ (`minX, maxX, minY, maxY`), or
+    /// nil when the pack holds nothing there.
+    ///
+    /// WHY THIS EXISTS RATHER THAN JUST READING `bounds`: the metadata `bounds` is a CLAIM, and a
+    /// pack whose claim disagrees with its contents makes any bounds-based skip silently drop real
+    /// data. The stored addresses are the ground truth. One indexed MIN/MAX query, run once at
+    /// mount. Rows come back in TMS (the MBTiles spec) and are flipped to XYZ here, matching
+    /// `tileData` above — getting that backwards mirrors the extent north-for-south, which is
+    /// exactly the class of silent error the packer's own docs warn about.
+    func tileExtent(z: Int) -> (minX: Int, maxX: Int, minY: Int, maxY: Int)? {
+        assert(z >= 0 && z <= 24, "tileExtent: out-of-range zoom")
+        var st: OpaquePointer?
+        guard sqlite3_prepare_v2(db, """
+              select min(tile_column), max(tile_column), min(tile_row), max(tile_row)
+              from tiles where zoom_level=?
+              """, -1, &st, nil) == SQLITE_OK else { return nil }
+        defer { sqlite3_finalize(st) }
+        sqlite3_bind_int(st, 1, Int32(z))
+        guard sqlite3_step(st) == SQLITE_ROW else { return nil }
+        guard sqlite3_column_type(st, 0) != SQLITE_NULL else { return nil }   // no rows at this zoom
+        let minX = Int(sqlite3_column_int(st, 0)), maxX = Int(sqlite3_column_int(st, 1))
+        let minRow = Int(sqlite3_column_int(st, 2)), maxRow = Int(sqlite3_column_int(st, 3))
+        let top = (1 << z) - 1
+        assert(minX <= maxX && minRow <= maxRow, "tileExtent: inverted extent")
+        return (minX: minX, maxX: maxX, minY: top - maxRow, maxY: top - minRow)
+    }
+
     deinit { if db != nil { sqlite3_close(db) } }
 }
 
