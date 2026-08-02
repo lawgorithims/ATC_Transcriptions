@@ -74,8 +74,12 @@ WEBMERC_HALF = 20037508.342789244
 PACK_MAX_BYTES = 200 << 20          # hard fail: a pack this big is a bug, not a big cell
 
 # Per-plane resampling from the 10 m analysis grid to the z13 web-mercator grid.
+# How each plane resamples from the 10 m analysis grid onto Web-Mercator z13. Every rule here is
+# the CONSERVATIVE direction for that plane — which for extent is `min`, because less room is the
+# bad news, exactly inverting the `max` that slope, roughness and hazard use.
 PLANE_RESAMPLE = {"class": "mode", "conf": "min", "slope": "max",
-                  "rough": "max", "hazard": "max", "flags": "bitwise_or"}
+                  "rough": "max", "hazard": "max", "flags": "bitwise_or",
+                  "extent": "min"}
 
 
 def _wd():
@@ -89,9 +93,27 @@ def tile_extent_3857(x, y, z):
             -WEBMERC_HALF + (x + 1) * size, WEBMERC_HALF - y * size)
 
 
+def _ensure_extent(workdir):
+    """Build the extent plane if it is not there.
+
+    Deliberately self-healing rather than a hard requirement. This plane arrived after the cell
+    queue was already running, and an orchestration script that predates it should produce a
+    CORRECT pack, not a malformed one or a failed stage 40 minutes into a cell. It costs 8 seconds
+    over an already-mosaicked cell, so there is no reason to make anyone remember it."""
+    path = os.path.join(workdir, "extent.npy")
+    if os.path.exists(path):
+        return
+    print("   extent.npy absent — building it (8s)")
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import extent as _extent
+    rc = _extent.build(workdir)
+    assert rc == 0 and os.path.exists(path), "package: extent plane could not be built"
+
+
 def load_planes():
-    """Assemble the six planes at analysis resolution, quantised per lzcommon."""
+    """Assemble the planes at analysis resolution, quantised per lzcommon."""
     wd = _wd()
+    _ensure_extent(wd)
     need = ["class.npy", "conf.npy", "slope.npy", "rough.npy", "hazard.npy", "flags.npy",
             "terrain_src.npy"]
     for n in need:
@@ -103,6 +125,7 @@ def load_planes():
     hazard = np.load(os.path.join(wd, "hazard.npy"))
     flags = np.load(os.path.join(wd, "flags.npy"))
     tsrc = np.load(os.path.join(wd, "terrain_src.npy"))
+    extent = np.load(os.path.join(wd, "extent.npy"))
 
     slope_f = np.load(os.path.join(wd, "slope.npy"))
     rough_f = np.load(os.path.join(wd, "rough.npy"))
@@ -115,8 +138,13 @@ def load_planes():
         rough = np.where(np.isfinite(rough_f),
                          np.clip(np.rint(rough_f * 100.0), 0, 254),
                          C.ROUGH_NODATA).astype(np.uint8)
-    return {"class": cls, "conf": conf, "slope": slope, "rough": rough,
-            "hazard": hazard, "flags": flags}, tsrc
+    planes = {"class": cls, "conf": conf, "slope": slope, "rough": rough,
+              "hazard": hazard, "flags": flags, "extent": extent}
+    # The dict is indexed by C.PLANE_NAMES downstream, so a plane added to lzcommon and forgotten
+    # here would KeyError at pack time rather than ship a pack missing a plane.
+    missing = [n for n in C.PLANE_NAMES if n not in planes]
+    assert not missing, f"load_planes: no data for plane(s) {missing}"
+    return planes, tsrc
 
 
 def _mem_raster(arr, gt, wkt, dtype=gdal.GDT_Byte):
@@ -217,6 +245,12 @@ def aggregate(children):
             out.append(b.min(axis=2))
         elif rule == "or":
             out.append(np.bitwise_or.reduce(b, axis=2))
+        elif rule == "second_min":
+            # EXTENT's bad direction is DOWN — less room. Runner-up from the bottom, for the same
+            # reason second_max exists above: a plain min compounds down the pyramid until every
+            # parent reports the tightest corner of its sixteen grandchildren and a mile-wide field
+            # reads as unusable at z8.
+            out.append(np.sort(b, axis=2)[:, :, 1])
         elif rule == "second_max":
             # Runner-up of the four: keeps ground that is bad across most of the parent, drops the
             # single outlier. See the AGGREGATION note in lzcommon for the measurements.
@@ -236,12 +270,19 @@ def aggregate(children):
 
 def build_pyramid(tiles):
     """Fold z13 upward to MIN_ZOOM. A missing child contributes 'unknown', not 'good'."""
-    blank = [np.full((C.TILE_SIDE, C.TILE_SIDE), C.CLASS_UNKNOWN, np.uint8),
-             np.full((C.TILE_SIDE, C.TILE_SIDE), C.CONF_UNKNOWN, np.uint8),
-             np.full((C.TILE_SIDE, C.TILE_SIDE), C.SLOPE_NODATA, np.uint8),
-             np.full((C.TILE_SIDE, C.TILE_SIDE), C.ROUGH_NODATA, np.uint8),
-             np.zeros((C.TILE_SIDE, C.TILE_SIDE), np.uint8),
-             np.zeros((C.TILE_SIDE, C.TILE_SIDE), np.uint8)]
+    # DERIVED from PLANE_NAMES, not hand-listed. This was a positional literal of six arrays, so
+    # adding a seventh plane to lzcommon left it one short and the pyramid died with an IndexError
+    # deep in aggregate(). A missing child must contribute the WORST value each plane can hold:
+    # unknown cover, unknown confidence, no slope or roughness reading, no flags — and, for extent,
+    # ZERO room, because "we have no data here" must never fold upward as "there is space".
+    blank_fill = {
+        "class": C.CLASS_UNKNOWN, "conf": C.CONF_UNKNOWN,
+        "slope": C.SLOPE_NODATA, "rough": C.ROUGH_NODATA,
+        "hazard": 0, "flags": 0, "extent": 0,
+    }
+    missing_fill = [n for n in C.PLANE_NAMES if n not in blank_fill]
+    assert not missing_fill, f"build_pyramid: no blank value for plane(s) {missing_fill}"
+    blank = [np.full((C.TILE_SIDE, C.TILE_SIDE), blank_fill[n], np.uint8) for n in C.PLANE_NAMES]
     for z in range(C.NATIVE_ZOOM, C.MIN_ZOOM, -1):
         parents = {}
         for (tz, tx, ty) in [k for k in tiles if k[0] == z]:
@@ -337,13 +378,19 @@ def cmd_fixture():
     tiles = {}
     base_z, base_x, base_y = 13, 1000, 2000
 
-    def plane_set(cls_val, conf_val, slope_val, rough_val, hz_val, flag_val):
-        return [np.full((side, side), cls_val, np.uint8),
-                np.full((side, side), conf_val, np.uint8),
-                np.full((side, side), slope_val, np.uint8),
-                np.full((side, side), rough_val, np.uint8),
-                np.full((side, side), hz_val, np.uint8),
-                np.full((side, side), flag_val, np.uint8)]
+    def plane_set(cls_val, conf_val, slope_val, rough_val, hz_val, flag_val, extent_val=255):
+        """Built from PLANE_NAMES so a plane added to lzcommon cannot be silently omitted here —
+        the fixture is the CROSS-LANGUAGE contract, and one short of a full set makes every Swift
+        decode test fail with a plane-count error rather than saying what is actually missing.
+
+        `extent_val` defaults to saturated ("more room than anything can use"), so the existing
+        fixtures keep testing what they were written to test: adding a dimension must not silently
+        re-verdict tiles that were about surface, hazard or terrain source."""
+        values = {"class": cls_val, "conf": conf_val, "slope": slope_val, "rough": rough_val,
+                  "hazard": hz_val, "flags": flag_val, "extent": extent_val}
+        missing = [n for n in C.PLANE_NAMES if n not in values]
+        assert not missing, f"fixture plane_set: no value for {missing}"
+        return [np.full((side, side), values[n], np.uint8) for n in C.PLANE_NAMES]
 
     # 1. clean open field, fine terrain — should score well
     tiles[(base_z, base_x, base_y)] = (plane_set(C.CLASS_OPEN_FIRM, 80, 10, 5, 0, 0),
@@ -358,6 +405,14 @@ def cmd_fixture():
     # 4. good ground with a charted wire beside it — hazard must dominate surface
     tiles[(base_z, base_x + 1, base_y + 1)] = (plane_set(C.CLASS_OPEN_FIRM, 80, 10, 5, 220,
                                                          C.FLAG_TX_CORRIDOR), C.TERRAIN_SRC_FINE)
+    # 5. THE EXTENT CASE: ground identical to (1) in every other plane, but only 80 m of open run.
+    #    Same class, same slope, same roughness, same hazard — so before the extent plane existed
+    #    this was indistinguishable from the middle of a mile-wide field. It must now score lower
+    #    for any aeroplane that needs more than 80 m, and identically for one that does not.
+    tiles[(base_z, base_x + 2, base_y)] = (plane_set(C.CLASS_OPEN_FIRM, 80, 10, 5, 0, 0,
+                                                     extent_val=8),      # 8 * 10 m = 80 m
+                                           C.TERRAIN_SRC_FINE)
+
     # a distinctive corner pixel so a decode test can prove orientation survived the TMS flip
     tiles[(base_z, base_x, base_y)][0][C.PLANE_CLASS][0, 0] = C.CLASS_DEVELOPED_OPEN
     tiles[(base_z, base_x, base_y)][0][C.PLANE_CLASS][side - 1, side - 1] = C.CLASS_BRUSH

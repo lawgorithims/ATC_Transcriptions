@@ -1,7 +1,7 @@
 {
   "id": "fw_ambient",
-  "version": "2026.08.2",
-  "requires_facts_schema": 1,
+  "version": "2026.08.3",
+  "requires_facts_schema": 2,
   "title": "Fixed-wing ambient landability",
   "note": "Facts come from the pack; ALL judgment lives here. Versioned separately from the tiles and from the app so a weight change ships as a small file, not a rebuild. Advisory only.",
   "vetoes": [

@@ -350,11 +350,11 @@ def cell_tiles(z):
 
 BLOB_MAGIC = b"LZP1"
 BLOB_VERSION = 1
-LZ_SCHEMA = 1
+LZ_SCHEMA = 2      # 2 added the `extent` plane (lz/extent.py)
 
 # Plane order is load-bearing: the device indexes planes positionally.
 PLANE_CLASS, PLANE_CONF, PLANE_SLOPE, PLANE_ROUGH, PLANE_HAZARD, PLANE_FLAGS = range(6)
-PLANE_NAMES = ["class", "conf", "slope", "rough", "hazard", "flags"]
+PLANE_NAMES = ["class", "conf", "slope", "rough", "hazard", "flags", "extent"]
 PLANE_COUNT = len(PLANE_NAMES)
 
 # --- quantisation ---------------------------------------------------------------------------
@@ -481,7 +481,18 @@ TERRAIN_SRC_NAMES = {TERRAIN_SRC_FINE: "fine_1m", TERRAIN_SRC_MIXED: "mixed",
 AGGREGATION = {
     "class": "worst_severity", "conf": "min", "slope": "second_max",
     "rough": "second_max", "hazard": "max", "flags": "or",
+    # EXTENT'S WORST IS ITS SMALLEST — less room is the bad direction, so where the others take a
+    # max this takes a min. "second_min" for the same reason slope and rough take second_max: a
+    # plain min compounds down the pyramid until every parent reports the tightest corner of its
+    # sixteen grandchildren, and a mile-wide field would read as unusable at z8.
+    "extent": "second_min",
 }
+
+# Longest open run through a cell, 10 m per step (exactly one grid cell, so no quantisation error),
+# saturating at 2550 m. 255 means "more room than any light aeroplane can use" — a complete answer
+# rather than a truncated one. Mirrored by LZPack.extentStepM on the device.
+EXTENT_STEP_M = 10.0
+EXTENT_MAX_M = 255 * EXTENT_STEP_M
 
 # Header: magic(4) version(1) plane_count(1) side(2) terrain_source(1) reserved(1) + u32 x planes.
 _HEADER_FIXED = struct.Struct("<4sBBHBB")
