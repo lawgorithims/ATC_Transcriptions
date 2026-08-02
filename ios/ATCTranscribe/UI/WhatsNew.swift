@@ -36,6 +36,26 @@ enum WhatsNew {
     /// need not be contiguous" is for.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 107, version: "1.0", headline: "Reachable ground, ranked — and a glide you can rehearse",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "list.number",
+                    title: "The strongest ground, named",
+                    detail: "The layers menu has a new control: Show reachable ground, ranked. It lists the best ground within glide, best first, with a bearing, a distance, how much open run it found and which way that run lies. Deliberately a list and not marks on the chart — the shading is what should guide the turn, and a symbol saying \"here\" would borrow the chart's authority for a patch of dirt nobody has seen. Every row carries what is not known about it."),
+                WhatsNewHighlight(
+                    icon: "play.circle",
+                    title: "Rehearse the glide before you commit to it",
+                    detail: "Pick one of those areas and the app flies it: a run-in to a key position, then a normal left-hand circuit onto a final laid along the run and pointed into whatever wind there is. It budgets height leg by leg, tells you whether you arrive with a circuit in hand or short and by how much, and plans the height loss overhead if you arrive high. It also names your commit point — the last place on the run-in from which the next-best area is still reachable. Past that there is one field left, and you should know where that is rather than discover it. Arm it and the track is drawn on the map, dashed, because it is not a published procedure."),
+                WhatsNewHighlight(
+                    icon: "square.grid.3x3.square",
+                    title: "Room to land now changes the colour",
+                    detail: "A 60-metre patch of perfect flat cropland ringed by forest used to score exactly like the middle of a mile-wide field — same surface, same slope, same colour. The packs now measure the longest open run through every point, and your landing distance decides what counts as enough. Ground too short for your aeroplane is excluded outright; ground that is tight is capped. Packs built before this still score exactly as they did."),
+                WhatsNewHighlight(
+                    icon: "dice",
+                    title: "A demo flight, for showing someone",
+                    detail: "Under the developer section: parks a hypothetical aeroplane over ground you actually have data for, at a height with something to glide to, and hands you the emergency button. Everything about it is the real path — a real point checked against the real scoring, and the real button. It refuses to arm if anything is moving, if a Stratux is connected, or while a flight is recording, and the position is marked fabricated on every screen while it is on."),
+            ]),
+        ReleaseNote(
             build: 106, version: "1.0", headline: "Off-field landability, now something you can actually download",
             highlights: [
                 WhatsNewHighlight(
