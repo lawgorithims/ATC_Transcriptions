@@ -110,7 +110,15 @@ struct ConsoleView: View {
         // A rotation or Split View change to REGULAR width brings up the floating canvas, which mounts
         // the panel again behind the still-presented sheet — two live copies, two refresh loops. Drop
         // the sheet; the panel the pilot came for is now on the canvas.
-        .onChange(of: hSize) { _, new in if new == .regular { model.showNRSTSheet = false } }
+        .onChange(of: hSize) { _, new in
+            if new == .regular { model.showNRSTSheet = false }
+            model.isCompactWindow = (new == .compact)
+        }
+        // ⚠️ THE WINDOW'S SIZE CLASS, RECORDED WHERE IT IS TRUE. A view inside a presented SHEET
+        // reads its own compact environment, not the app window's — so a sheet-hosted caller of
+        // `armEmergency(compact:)` on an iPad armed the compact path and raised the NRST sheet
+        // instead of the docked panel. This is the only place the real answer is in scope.
+        .onAppear { model.isCompactWindow = (hSize == .compact) }
         .sheet(item: $model.pendingLoggedFlight) { flight in   // recording stopped → save-to-logbook prompt
             SaveFlightSheet(flight: flight).environmentObject(model)
         }
