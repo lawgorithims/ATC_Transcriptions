@@ -793,6 +793,10 @@ struct ConsoleView: View {
 /// to the logo alone so the larger control icons fit one row; the wordmark returns on iPad.
 struct TopBar: View {
     @EnvironmentObject var model: AppModel
+    /// Observed, not reached through `model`: the emergency button's lit state is derived from
+    /// whether the NRST panel is actually up, and a nested ObservableObject does not republish its
+    /// parent — without this subscription the button would stay lit after the panel's own ✕ closes it.
+    @EnvironmentObject var widgets: WidgetStore
     @Environment(\.horizontalSizeClass) private var hSize
 
     // Centralized sizing so the whole bar scales together (the "bigger + roomier" ask).
@@ -839,7 +843,57 @@ struct TopBar: View {
                     Text("On-device ATC transcription").font(.dsLabelS).foregroundStyle(p.textDim)
                 }
             }
+            emergencyButton(p)
         }
+    }
+
+    /// The one-tap engine-out arm, parked beside the logo because that corner is the only piece of
+    /// chrome that is on screen on every tab and never scrolls, moves or hides behind a menu.
+    ///
+    /// One press: show the map, light the off-field landability + glide-energy layers, and bring the
+    /// nearest-airport panel to the front. It ARMS ONLY — pressing it twice re-arms, it never undoes,
+    /// the same rule the map's NRST button documents. Stand down is a LONG press, a gesture a startled
+    /// hand does not produce by accident.
+    ///
+    /// The lit state is DERIVED from whether those things are actually on, so shutting the panel or a
+    /// layer un-lights the button instead of leaving it claiming a state that has already gone.
+    @ViewBuilder private func emergencyButton(_ p: Palette) -> some View {
+        let compact = hSize == .compact
+        let armed = model.emergencyArmed(compact: compact, widgets: widgets)
+        // `p.bad` rather than a literal red: on the Night theme the whole palette is red-only
+        // emission, and a hardcoded alert colour would be the one thing on screen breaking the dark
+        // adaptation the theme exists to protect.
+        //
+        // NOT a `Button`. A Button still fires its action when a long press ends over it, so the
+        // stand-down below ran and the arm immediately undid it — the control could not be switched
+        // off at all. `onTapGesture` + `onLongPressGesture` resolve exclusively: a long press fires
+        // the long press and nothing else. The button TRAIT is added back for VoiceOver and for the
+        // UI test, both of which should still see this as a button, because it is one.
+        Image(systemName: "exclamationmark.triangle.fill")
+            .font(.system(size: iconSize, weight: .semibold))
+            .foregroundStyle(armed ? p.bg : p.bad)
+            .frame(width: hit.width, height: hit.height)
+            .background(armed ? p.bad : p.bad.opacity(0.14),
+                        in: RoundedRectangle(cornerRadius: DS.Radius.r2))
+            .overlay(RoundedRectangle(cornerRadius: DS.Radius.r2)
+                .stroke(p.bad.opacity(armed ? 0 : 0.55), lineWidth: DS.Stroke.control))
+            .contentShape(Rectangle())
+            .onTapGesture {
+                Haptics.impact(.rigid)
+                model.armEmergency(compact: compact)
+            }
+            .onLongPressGesture(minimumDuration: 0.8) {
+                guard model.emergencyArmed(compact: compact, widgets: widgets) else { return }
+                Haptics.impact(.medium)
+                model.standDownEmergency(compact: compact)
+            }
+            .accessibilityElement()
+            .accessibilityAddTraits(.isButton)
+            .accessibilityIdentifier("emergency-button")
+            .accessibilityLabel("Emergency")
+            .accessibilityValue(armed ? "Armed" : "Off")
+            .accessibilityHint("Shows nearest airports and the off-field landability layers. Press and hold to stand down.")
+            .accessibilityAction { model.armEmergency(compact: compact) }
     }
 
     // MARK: heading buttons

@@ -342,6 +342,17 @@ struct WidgetLayout: Codable, Equatable {
         layout.update(kind) { $0.visible = true }
         layout.bringToFront(kind)
     }
+    /// The exact inverse of `reveal`: put the widget away wherever it currently lives. A widget docked
+    /// into a side pane is `visible = false` already, so clearing the flag alone would leave the pane
+    /// standing — the caller has to close the pane instead, and that is a distinction no caller should
+    /// have to know about. Used by the emergency stand-down.
+    func dismiss(_ kind: FloatingWidgetKind) {
+        if leftPane == kind { closePane(.left) }
+        if rightPane == kind { closePane(.right) }
+        layout.update(kind) { $0.visible = false }
+        assert(!isVisible(kind), "dismiss left the widget visible")
+        assert(leftPane != kind && rightPane != kind, "dismiss left the widget docked")
+    }
     /// Flip a widget's visibility — show+front if hidden, hide if shown (top-bar quick toggles).
     func toggle(_ kind: FloatingWidgetKind) {
         if isVisible(kind) { update(kind) { $0.visible = false } } else { show(kind) }
@@ -597,6 +608,8 @@ struct FloatingWidgetContainer<Content: View>: View {
                 Image(systemName: "xmark").font(.dsLabelS).padding(5).contentShape(Rectangle())
             }
             .buttonStyle(.plainHaptic)
+            .accessibilityIdentifier("widget-close-\(frame.kind.rawValue)")
+            .accessibilityLabel("Close \(frame.kind.title)")
         }
         .foregroundStyle(p.text)
         .padding(.horizontal, 10).padding(.vertical, 7)

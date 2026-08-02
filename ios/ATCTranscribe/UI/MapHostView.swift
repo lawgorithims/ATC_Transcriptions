@@ -69,6 +69,9 @@ struct MapHostView: View {
     /// consumes. The altitude slider's chip observes the service directly (see `WindAltitudeSlider`), so
     /// its fetching/age state needs no bridge here.
     @State private var windFields: WindFieldSet?
+    /// Owns the LZ pack store + the aircraft-compiled ruleset. A nested ObservableObject, like
+    /// `deviceLocation` and `windAloft`, so recompiling does not republish AppModel to every view.
+    @StateObject private var lzController = LZRiskController()
     /// Screen-point of the search-result highlight (streamed from the active engine, like the plate anchors),
     /// so the SwiftUI pulsing marker rides the map. nil when there's no highlight or it's off-screen-computed.
     @State private var searchPoint: CGPoint?
@@ -76,6 +79,21 @@ struct MapHostView: View {
     @AppStorage("atc.map.zoomControls") private var showZoomControls = true
 
     struct PlateAnchors: Equatable { var tl: CGPoint; var tr: CGPoint }
+
+    /// Energy-sweep cadence. 5 s matches the NRST panel: fast enough that the footprint tracks a
+    /// descent, slow enough that a 64-ray terrain sweep is not competing with the render loop.
+    /// The tick cap bounds the loop (rule 2) — 24 h of a layer left switched on.
+    static let lzEnergyPeriodNs: UInt64 = 5_000_000_000
+    static let lzEnergyMaxTicks = 17_280
+
+    /// The inputs that change what the LZ layer renders. `.task(id:)` needs an Equatable key, and
+    /// naming it keeps the modifier readable.
+    struct LZRefreshKey: Equatable {
+        var on: Bool
+        var theme: AppTheme
+        var glide: Double?
+        var vbg: Int?
+    }
 
     /// Chart markers for stations whose weather is going downhill fast. Recomputed when the observation
     /// history changes (not per frame) — placing them needs the nav database, so it's kept off the
@@ -215,6 +233,51 @@ struct MapHostView: View {
         .onReceive(model.flightRecorder.$trail) { breadcrumb = $0.map { Coord(lat: $0.lat, lon: $0.lon) } }
         .onReceive(model.rainViewer.$tileTemplate) { radarTemplate = $0 }   // feed the map engines the current frame
         .onReceive(model.windAloft.$fieldSet) { windFields = $0 }           // and the wind particles their grid
+        // Bind the aircraft-agnostic fact pack to THIS pilot's aeroplane. Recompiling produces a new
+        // signature, hence a new tile URL, hence a clean cache — so switching aircraft visibly re-tints
+        // the map rather than leaving stale scores on screen. Cheap when nothing changed (the controller
+        // gates on a key of aircraft + theme + pack count), and re-mounted when the layer is switched on
+        // so a pack copied in while the app was running is picked up without a relaunch.
+        .task(id: LZRefreshKey(on: model.showLZRisk,
+                               theme: model.theme,
+                               glide: model.selectedAircraft?.glideRatio,
+                               vbg: model.selectedAircraft?.bestGlideKts)) {
+            guard model.showLZRisk else { return }
+            lzController.mount()
+            lzController.refresh(aircraft: model.selectedAircraft, theme: model.theme)
+        }
+        // The LIVE half: where the aircraft can actually reach from here, right now. Same loop shape
+        // as NRSTPanel — bounded ticks, gated inside each pass so a closed layer does no work.
+        .task(id: model.showLZEnergy) {
+            guard model.showLZEnergy else {
+                lzController.clearEnergy(reason: "layer off")
+                return
+            }
+            var ticks = 0
+            while !Task.isCancelled && ticks < Self.lzEnergyMaxTicks {
+                ticks += 1
+                // `presentPosition` IS the integrity gate — nil whenever the monitor has disowned
+                // the fix. No carry-forward altitude: `resolveNRSTAltitude`'s reasoning is private
+                // to AppModel for good reasons, and an ambient layer should hide rather than guess.
+                let readout = GPSReadout.merge(stratux: model.freshStratuxGPS,
+                                               device: model.deviceLocation.fix)
+                let wind = model.windAloft.wind(at: model.presentPosition?.lat ?? 0,
+                                                lon: model.presentPosition?.lon ?? 0,
+                                                level: WindLevel.at(index: model.windLevelIndex))
+                await lzController.refreshEnergy(
+                    coord: model.presentPosition,
+                    altitudeFtMSL: readout.altitudeFtMSL,
+                    aircraft: model.selectedAircraft,
+                    wind: wind.map { (fromDeg: Double($0.fromDeg), kts: Double($0.kt)) },
+                    verticalAccuracyM: model.deviceLocation.fix?.verticalAccuracyM)
+                try? await Task.sleep(nanoseconds: Self.lzEnergyPeriodNs)
+            }
+        }
+        // Mirror the energy line into the model for the layers panel. On the publisher rather than
+        // inside the loop above: the map's drawn-polygon count arrives AFTER the sweep that produced
+        // it, so a copy made at the end of each pass would always report the previous sweep's render.
+        .onReceive(lzController.$energyStatus) { model.lzEnergyStatus = $0 }
+        .onReceive(lzController.$status) { model.lzPackStatus = $0 }
         // Publish reported flight categories to the symbol builder, so an airport's glyph carries the
         // conditions there. The builders run off the main actor and can't read the store directly.
         .onReceive(metars.$metars) { publishCategories($0) }
@@ -437,7 +500,25 @@ struct MapHostView: View {
             windPalette: model.windPalette,   // pilot's sprite-colour choice (contrast)
             // The particle layer is paused unless all of this holds. `live` already covers the tab/route-map/
             // background cases by unmounting the whole engine, so only the toggle and thermal state remain.
-            windEnabled: model.showWindAloft && !model.thermalSerious)
+            windEnabled: model.showWindAloft && !model.thermalSerious,
+            // Off-field landability. A nil signature removes the layer, which is also what happens
+            // when no pack is installed or the ruleset fails to compile — a heatmap that cannot
+            // explain itself must not draw.
+            lzSignature: model.showLZRisk ? lzController.signature : nil,
+            lzMinZoom: lzController.minZoom,
+            lzMaxZoom: lzController.maxZoom,
+            lzProvider: lzController.provider,
+            lzProbe: { [lzController] c in lzController.sample(lon: c.lon, lat: c.lat) },
+            lzEnergyBands: model.showLZEnergy ? lzController.energyBands : [],
+            // Hopped OFF the current view-update pass on purpose. This callback fires from inside
+            // `updateUIView`, and publishing to an observed object during a view update is the
+            // classic dropped update — SwiftUI is free to coalesce it away. Here that loss is
+            // PERMANENT rather than merely late: the shape source latches its signature on install,
+            // so no second callback is ever sent and the count never arrives. It cost two
+            // intermittent failures of the one test written to prove the bands reach the map.
+            onLZEnergyRendered: { [lzController] n in
+                Task { @MainActor in lzController.noteEnergyRendered(n) }
+            })
     }
     #endif
 

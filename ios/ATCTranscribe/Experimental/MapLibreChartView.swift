@@ -67,6 +67,23 @@ struct MapLibreChartView: UIViewRepresentable {
     var windLevel: Int = 0                                        // altitude-slider detent → WindLevel
     var windPalette: WindRamp.Palette = .auto                     // pilot's sprite-colour choice
     var windEnabled: Bool = false                                 // layer toggle ∧ scene active ∧ !thermal
+    /// Off-field landability heatmap. The signature is nil unless the layer is on, a pack is mounted
+    /// AND its ruleset compiled — see LZRiskController. Zoom bounds come from the mounted pack so the
+    /// source declares its TRUE maxzoom and MapLibre magnifies past it on the GPU.
+    var lzSignature: String? = nil
+    var lzMinZoom: Int = 6
+    var lzMaxZoom: Int = 13
+    /// Serves /lz/<sig>/{z}/{x}/{y}. Installed on the tile server once the port binds.
+    var lzProvider: ((String, Int, Int, Int) -> Data?)? = nil
+    /// Samples the fact planes under a tapped coordinate for the object card.
+    var lzProbe: ((Coord) -> LZSampleInfo?)? = nil
+    /// Live arrival-energy bands. Empty whenever the fix is untrusted — a stale footprint is a
+    /// claim about a situation that no longer exists.
+    var lzEnergyBands: [LZEnergyBand] = []
+    /// How many energy polygons were actually installed into the shape source, reported after each
+    /// change. The band LIST reaching the view proves the maths ran; only this proves the map got it,
+    /// and those two failed separately during development (a ring of three points draws nothing).
+    var onLZEnergyRendered: ((Int) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator { Coordinator(store: store, routeCoords: routeCoords) }
 
@@ -104,6 +121,13 @@ struct MapLibreChartView: UIViewRepresentable {
         c.inWindLevel = windLevel
         c.inWindPalette = windPalette
         c.inWindEnabled = windEnabled
+        c.inLZSignature = lzSignature
+        c.inLZMinZoom = lzMinZoom
+        c.inLZMaxZoom = lzMaxZoom
+        c.setLZProvider(lzProvider, signature: lzSignature)
+        c.inLZProbe = lzProbe
+        c.inLZEnergyBands = lzEnergyBands
+        c.onLZEnergyRendered = onLZEnergyRendered
         c.cacheInputs(layer: layer, routeCoords: routeCoords, breadcrumbCoords: breadcrumbCoords,
                       radarTemplate: radarTemplate, holds: holds, ownship: ownship, ownshipCourse: ownshipCourse,
                       ownshipAccuracyM: ownshipAccuracyM, ownshipIntegrity: ownshipIntegrity,
@@ -150,6 +174,14 @@ struct MapLibreChartView: UIViewRepresentable {
         var inWindLevel = 0                          // mirrors model.windLevelIndex
         var inWindPalette: WindRamp.Palette = .auto  // mirrors model.windPalette
         var inWindEnabled = false                    // mirrors the composed wind gate
+        var inLZSignature: String?                   // nil = layer off / no pack / ruleset failed
+        var inLZMinZoom = 6
+        var inLZMaxZoom = 13
+        var inLZProvider: ((String, Int, Int, Int) -> Data?)?
+        var inLZProbe: ((Coord) -> LZSampleInfo?)?     // the tap-card sampler; nil when the layer is off
+        var inLZEnergyBands: [LZEnergyBand] = []      // live arrival-energy footprint; [] = nothing to draw
+        var onLZEnergyRendered: ((Int) -> Void)? = nil
+        private var installedLZSignature: String??   // double-optional: distinguishes "never installed"
         private var appliedWindStamp: String?        // (validTime, level, enabled, theme) last pushed
 
         /// The palette for the CURRENT theme + selected base + pilot brightness — the single source every
@@ -226,6 +258,11 @@ struct MapLibreChartView: UIViewRepresentable {
         private var appliedTrackCount = -1                       // cheap change signature (append-only + reset-to-0)
         private var inRadarTemplate: String?                     // latest radar tile URL from updateUIView
         private var appliedRadarTemplate: String??              // last-applied (double-optional: distinguishes "never applied")
+        /// Last-applied LZ signature (same double-optional idiom). The signature encodes ruleset +
+        /// aircraft + theme + pack, so any of those changing re-keys the tile URL and forces a
+        /// clean remount — no pixel scored for the previous aircraft can survive in MapLibre's cache.
+        private var appliedLZSignature: String??
+        private var appliedLZEnergySig: String?
         private var inOwnship: CLLocationCoordinate2D?
         private var inOwnCourse: Double?
         private var inTraffic: [Aircraft] = []
@@ -307,6 +344,8 @@ struct MapLibreChartView: UIViewRepresentable {
             updateHolds(inHolds, on: map)
             updateTrack(inBreadcrumb, on: map)
             updateRadar(inRadarTemplate, on: map)
+            updateLZ(inLZSignature, on: map)
+            updateLZEnergy(inLZEnergyBands, on: map)
             emitSearchPoint(map)               // keep the pulsing search marker glued to its spot
             applyNorthLock(map)                // chart north-up lock (rotate gesture + bearing)
             applyMapCommand(map)               // one-shot side-bar zoom / center-on-ownship
@@ -610,6 +649,8 @@ struct MapLibreChartView: UIViewRepresentable {
             servedReadersSig = nil               // the faa source is freshly (re)created empty here → force a remount
             appliedTrackCount = -1               // the "track" source is recreated empty → force a re-apply below
             appliedRadarTemplate = nil           // wxradar source gone after reload → force updateRadar to re-add
+            appliedLZSignature = nil             // ditto for the LZ raster — see updateLZ
+            appliedLZEnergySig = nil             // and the energy bands' shape source
             // Same reason, and easy to miss: the map loads TWO styles in its life (MapLibre's default,
             // then the loopback style), so anything applied to the first must be re-applied to the
             // second. Without these the re-apply below hits its own "unchanged → skip" guard against a
@@ -736,14 +777,15 @@ struct MapLibreChartView: UIViewRepresentable {
             let layers = ["plate-raster", "ownship-sym", "accuracy-fill", "accuracy-line", "traffic-sym",
                           "route-wpt-spd", "route-wpt-alt", "route-wpt-sym",
                           "hold-line", "route-line", "track-line",
-                          "wxradar-layer", "tfr-label", "tfr-outline", "tfr-fill", "nav-sym",
+                          "wxradar-layer", "lz-layer", "lz-energy-line", "lz-energy-fill",
+                          "tfr-label", "tfr-outline", "tfr-fill", "nav-sym",
                           "airspace-label", "airways-label", "airspace-outline", "airspace-fill",
                           "airways-line", "night-veil-fill", "coastline", "land-fill"]
             for id in layers where style.layer(withIdentifier: id) != nil {          // bounded (rule 2)
                 if let l = style.layer(withIdentifier: id) { style.removeLayer(l) }
             }
             let sources = ["plate", "ownship", "accuracy", "traffic", "route-wpt", "holds", "route", "track",
-                           "wxradar", "tfr-labels", "tfr",
+                           "wxradar", "lz", "lz-energy", "tfr-labels", "tfr",
                            "nav", "airspace-labels", "airspace", "airways", "night-veil", "land"]
             for id in sources where style.source(withIdentifier: id) != nil {        // bounded (rule 2)
                 if let s = style.source(withIdentifier: id) { style.removeSource(s) }
@@ -939,6 +981,21 @@ struct MapLibreChartView: UIViewRepresentable {
         /// TFR + route + traffic + ownship layers (empty; driven by updateUIView, not by region). Stacked on
         /// top of the static context so the route/traffic/ownship read above everything (as MK annotations do).
         private func setupDynamicLayers(_ style: MLNStyle) {
+            // LIVE ARRIVAL-ENERGY BANDS, added FIRST so every operational overlay (TFRs, the route,
+            // traffic, ownship) stays above them. This is situational shading, not chart furniture:
+            // it must never sit on top of the things a pilot navigates by.
+            let energySrc = MLNShapeSource(identifier: "lz-energy", shape: nil, options: nil)
+            style.addSource(energySrc)
+            let energyFill = MLNFillStyleLayer(identifier: "lz-energy-fill", source: energySrc)
+            energyFill.fillColor = Self.energyColorExpr()
+            energyFill.fillOpacity = Self.energyOpacityExpr()
+            style.addLayer(energyFill)
+            let energyLine = MLNLineStyleLayer(identifier: "lz-energy-line", source: energySrc)
+            energyLine.lineColor = Self.energyColorExpr()
+            energyLine.lineWidth = NSExpression(forConstantValue: 0.6)
+            energyLine.lineOpacity = NSExpression(forConstantValue: 0.35)
+            style.addLayer(energyLine)
+
             let red = ChartMapView.Coordinator.airspaceColor("TFR")     // #F71433 — reuse, no hand-typed hex
             let tfrSrc = MLNShapeSource(identifier: "tfr", shape: nil, options: nil); style.addSource(tfrSrc)
             let tfrFill = MLNFillStyleLayer(identifier: "tfr-fill", source: tfrSrc)   // no minzoom: TFRs show at any zoom
@@ -1508,6 +1565,59 @@ struct MapLibreChartView: UIViewRepresentable {
             return String(format: "#%02X%02X%02X", Int(r * 255), Int(g * 255), Int(bl * 255))
         }
         // Data-driven paint props keyed on the "cls" feature attribute (default covers B & D — chart blue).
+        /// Arrival-energy palette. BLOCKED is the loudest — it is the only band that says "you
+        /// cannot get there" — and COMFORTABLE is the quietest, because a footprint that shouts
+        /// where you CAN go buries the chart under a wash of green.
+        private static func energyColorExpr() -> NSExpression {
+            NSExpression(mglJSONObject: ["match", ["get", "cls"],
+                LZEnergyClass.blocked.rawValue,     "#B00020",
+                LZEnergyClass.marginal.rawValue,    "#E08A1E",
+                LZEnergyClass.excess.rawValue,      "#7A4FBF",   // distinct hue: a DIFFERENT problem
+                LZEnergyClass.comfortable.rawValue, "#2E8B57",
+                "#2E8B57"])
+        }
+
+        private static func energyOpacityExpr() -> NSExpression {
+            NSExpression(mglJSONObject: ["match", ["get", "cls"],
+                LZEnergyClass.blocked.rawValue,     0.26,
+                LZEnergyClass.marginal.rawValue,    0.22,
+                LZEnergyClass.excess.rawValue,      0.20,
+                LZEnergyClass.comfortable.rawValue, 0.10,
+                0.10])
+        }
+
+        /// Push the current bands into the shape source. Signature-gated on band+ring counts and the
+        /// ownship cell, so a stationary aircraft re-tessellates nothing between sweeps.
+        func updateLZEnergy(_ bands: [LZEnergyBand], on map: MLNMapView) {
+            guard let src = map.style?.source(withIdentifier: "lz-energy") as? MLNShapeSource else { return }
+            let sig = bands.map { "\($0.classification.rawValue):\($0.rings.count)" }
+                           .joined(separator: "|")
+                + String(format: "|%.4f,%.4f", bands.first?.rings.first?.first?.lat ?? 0,
+                         bands.first?.rings.first?.first?.lon ?? 0)
+            guard sig != appliedLZEnergySig else { return }
+            appliedLZEnergySig = sig
+            guard !bands.isEmpty else { src.shape = nil; onLZEnergyRendered?(0); return }
+
+            var features: [MLNPolygonFeature] = []
+            for band in bands {                                          // bounded: 4 classes
+                for ring in band.rings.prefix(Self.maxEnergySectors) {   // bounded (rule 2)
+                    var pts = ring.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) }
+                    guard pts.count >= 4 else { continue }
+                    let poly = MLNPolygonFeature(coordinates: &pts, count: UInt(pts.count))
+                    poly.attributes = ["cls": band.classification.rawValue]
+                    features.append(poly)
+                }
+            }
+            src.shape = MLNShapeCollectionFeature(shapes: features)
+            // Report what the SOURCE received, not what arrived — a ring the guard above dropped is
+            // exactly the failure this number exists to catch.
+            onLZEnergyRendered?(features.count)
+        }
+
+        /// Hard cap per class. A 64-ray sweep yields a few hundred sectors; anything beyond this is
+        /// a bug, not a big footprint.
+        static let maxEnergySectors = 512
+
         private static func aspColorExpr() -> NSExpression {
             NSExpression(mglJSONObject: ["match", ["get", "cls"],
                 "C", hex("C"), "TFR", hex("TFR"), "R", hex("R"), "P", hex("P"),
@@ -1635,7 +1745,11 @@ struct MapLibreChartView: UIViewRepresentable {
             assert(style.layers.count < 256, "applyRasterMapTheme: unexpected layer explosion")
             for layer in style.layers {                              // bounded (style layer list)
                 guard let rl = layer as? MLNRasterStyleLayer,
-                      rl.identifier != "wxradar-layer", rl.identifier != "plate-raster" else { continue }
+                      rl.identifier != "wxradar-layer", rl.identifier != "plate-raster",
+                      // The LZ raster is composited with the theme already baked in (the theme is
+                      // part of its signature), so dimming it here would theme it TWICE and distort
+                      // the risk ramp away from the colours the legend documents.
+                      rl.identifier != "lz-layer" else { continue }
                 Self.applyRasterPaint(to: rl, t)
             }
         }
@@ -1860,7 +1974,12 @@ struct MapLibreChartView: UIViewRepresentable {
             // The plate still drew, and its corner gear still tracked it, so nothing looked broken; the
             // sectional simply covered it. It re-fires whenever the pack set changes — a download
             // completing, panning into new coverage, a VFR⇄IFR switch — so a plate could vanish mid-flight.
-            if let radar = style.layer(withIdentifier: "wxradar-layer") { style.insertLayer(faaRaster, below: radar) }
+            // "lz-layer" is checked FIRST so the stack stays faa < lz < radar. Without this line the
+            // chart re-mounts ABOVE the heatmap on the first pan, download or VFR/IFR switch — the same
+            // class of bug the plate comment above documents, and just as invisible (nothing errors;
+            // the layer is simply covered).
+            if let lz = style.layer(withIdentifier: "lz-layer") { style.insertLayer(faaRaster, below: lz) }
+            else if let radar = style.layer(withIdentifier: "wxradar-layer") { style.insertLayer(faaRaster, below: radar) }
             else if let bottom = style.layer(withIdentifier: "airways-line") { style.insertLayer(faaRaster, below: bottom) }
             else if let plate = style.layer(withIdentifier: "plate-raster") { style.insertLayer(faaRaster, below: plate) }
             else { style.addLayer(faaRaster) }
@@ -1939,6 +2058,66 @@ struct MapLibreChartView: UIViewRepresentable {
             layer.rasterOpacity = NSExpression(forConstantValue: 0.6)   // translucent — chart reads underneath
             if let above = style.layer(withIdentifier: "airways-line") {   // above faa, below the vector overlays
                 style.insertLayer(layer, below: above)
+            } else {
+                style.addLayer(layer)
+            }
+        }
+
+        /// Install the LZ tile provider on the loopback server.
+        ///
+        /// Gated on the SIGNATURE, not on whether a closure exists. Each compositor only answers for
+        /// its own signature — that is what stops a tile scored for the previous aircraft being served
+        /// — so keying this on presence alone would leave the stale compositor installed after an
+        /// aircraft change, and it would refuse every request under the new signature: a blank layer
+        /// exactly when the pilot expects it to re-tint. Called every body eval, hence the gate at all:
+        /// the server locks on set, and re-installing on each SwiftUI tick would contend with the
+        /// tile queue mid-pan.
+        func setLZProvider(_ p: ((String, Int, Int, Int) -> Data?)?, signature: String?) {
+            guard installedLZSignature == nil || installedLZSignature! != signature else { return }
+            installedLZSignature = .some(signature)
+            server.setLZProvider(p)
+        }
+
+        /// The off-field landability heatmap: an ORDINARY raster layer fed by the loopback server, which
+        /// composites fact planes through the aircraft-compiled ruleset per request.
+        ///
+        /// Raster, not a custom style layer, for two reasons that both matter here. Z-ORDER: it has to sit
+        /// above the chart and below every vector overlay, which the anchor chain below gives for free.
+        /// GLOBE: only the plain raster path is subdivided for the sphere in our fork — hillshade and
+        /// raster-DEM layers draw as flat quads on the globe — so a bespoke layer would inherit that bug.
+        ///
+        /// `signature` is nil whenever the layer is off, no pack is installed, or the ruleset failed to
+        /// compile; all three remove the layer, because a heatmap that cannot explain itself must not draw.
+        func updateLZ(_ signature: String?, on map: MLNMapView) {
+            guard let style = map.style else { return }
+            guard appliedLZSignature == nil || appliedLZSignature! != signature else { return }
+            // Do NOT latch before the port exists: the server binds asynchronously, and latching a nil
+            // here would leave the layer permanently absent for this style.
+            guard serverPort > 0 || signature == nil else { return }
+            appliedLZSignature = .some(signature)
+            if let l = style.layer(withIdentifier: "lz-layer") { style.removeLayer(l) }
+            if let s = style.source(withIdentifier: "lz") { style.removeSource(s) }
+            guard let signature else { return }
+
+            // Declare the pack's TRUE maxzoom. MapLibre then magnifies on the GPU past it for free;
+            // declaring deeper would drive every close-in tile through a CPU composite that has no more
+            // detail to give.
+            let template = "http://127.0.0.1:\(serverPort)/lz/\(signature)/{z}/{x}/{y}"
+            let src = MLNRasterTileSource(identifier: "lz", tileURLTemplates: [template],
+                                          options: [.tileSize: 256,
+                                                    .minimumZoomLevel: inLZMinZoom,
+                                                    .maximumZoomLevel: inLZMaxZoom])
+            style.addSource(src)
+            let layer = MLNRasterStyleLayer(identifier: "lz-layer", source: src)
+            // Ambient: it annotates the chart, it does not replace it.
+            layer.rasterOpacity = NSExpression(forConstantValue: 0.55)
+            layer.rasterResamplingMode = NSExpression(forConstantValue: "nearest")
+            if let radar = style.layer(withIdentifier: "wxradar-layer") {
+                style.insertLayer(layer, below: radar)       // faa < lz < radar < vectors
+            } else if let above = style.layer(withIdentifier: "airways-line") {
+                style.insertLayer(layer, below: above)
+            } else if let plate = style.layer(withIdentifier: "plate-raster") {
+                style.insertLayer(layer, below: plate)
             } else {
                 style.addLayer(layer)
             }
@@ -2388,6 +2567,13 @@ struct MapLibreChartView: UIViewRepresentable {
             // One ordering policy, shared with the classic engine and unit-tested — see MapProbe.merge.
             var results = MapProbe.merge(ranked: ranked, liveTFRs: liveTFRs, airspaces: aspObjs)
             if userPoint { results.insert(IdentifiedObject(kind: .userPoint, ident: UserPoint.token(here), coord: here, onRoute: false), at: 0) }
+            // Off-field landability for the tapped GROUND. Appended last (see MapObjectKind.priority):
+            // it is ambient context about the spot, never the thing the pilot reached for. Only when
+            // the layer is actually on — an invisible layer must not put rows on the card.
+            if inLZSignature != nil, let lz = inLZProbe?(here) {
+                results.append(IdentifiedObject(kind: .lzRisk, ident: UserPoint.token(here),
+                                                coord: here, onRoute: false, lzSample: lz))
+            }
             guard !results.isEmpty else { return }
             onTapObjects?(results)
         }
