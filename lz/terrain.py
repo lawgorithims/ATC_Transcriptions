@@ -1,0 +1,380 @@
+#!/usr/bin/env python3
+"""terrain.py — Stage 1: slope, roughness and micro-relief, reduced from NATIVE 1 m lidar.
+
+WHAT IT MAKES
+    lz/work/<cell>/tiles10m/<tile>.tif   per-source-tile, 3-band float32 at 10 m in the tile's
+                                         native CRS: [slope_deg, rough_m, micro_m]
+    lz/work/<cell>/slope.npy             \\
+    lz/work/<cell>/rough.npy              |  mosaicked onto the EPSG:5070 master grid
+    lz/work/<cell>/micro.npy              |
+    lz/work/<cell>/terrain_src.npy       /   0=fine(1 m) 1=mixed 2=coarse(1/3")
+
+WHY THE STATISTICS COME FROM 1 m AND NOT FROM A 10 m GRID
+    This is the one ordering mistake that silently produces a confident wrong answer. Detrended
+    roughness and micro-relief are DEFINED as sub-10 m variation. Warp the DEM to 10 m first and
+    that variation is gone — every cell comes back smooth, the roughness veto never fires, and
+    boulder fields score like hayfields. So each source tile is read at its native 1 m posting and
+    REDUCED to 10 m here; resampling happens only afterwards, on the already-computed statistics.
+
+    The corollary is that this stage is I/O-bound on ~30 GB for a single 1x1 degree cell (155
+    tiles x ~198 MB). The tiles are LZW GeoTIFFs on S3 with `Accept-Ranges: bytes`, so they are
+    STREAMED through GDAL's /vsicurl/ and never stored. Peak disk is the 10 m output.
+
+THE THREE METRICS
+    slope_deg  — Horn 3x3 gradient at 1 m, then the MEDIAN over each 10x10 block. Median, not
+                 mean: a single noisy lidar return should not define a cell, but a real bank
+                 must survive. (Same reasoning as the shipped terrain grid's max-aggregation:
+                 pick the statistic that cannot be talked out of a real feature.)
+    rough_m    — sigma of the residuals after a least-squares PLANE is removed from each 10x10
+                 block. This is what separates "steep but smooth" (landable downhill) from
+                 "boulder field" (not landable at any angle). Without detrending, every slope
+                 would read as rough. VERIFIED: flat+noise and a 20-degree plane+the same noise
+                 return sigma identical to four decimals.
+    micro_m    — detrended peak-to-peak inside the same block: max(residual) - min(residual).
+                 A ditch, berm or gully crossing the cell shows up here even when sigma stays
+                 small, because a narrow deep feature moves the extremes far more than the
+                 spread. VERIFIED: a 1 m wide, 1.5 m deep ditch reads micro 1.54 m / sigma 0.45 m.
+                 This is the "hidden ditch" veto input.
+
+    All three share one plane fit per block, computed in closed form (the block's x/y offsets are
+    a fixed centred lattice, so the normal equations collapse to two dot products).
+
+REQUIREMENTS
+    numpy and the GDAL PYTHON BINDINGS (osgeo). The rest of the pipeline is CLI-only, but reading
+    windows out of 155 remote LZW GeoTIFFs through subprocesses meant a temp-file round-trip per
+    strip; the bindings do it in one call with no intermediate file and no parsing.
+
+CELL NOTE — n33w107
+    3DEP 1 m covers 100% of this cell from six projects flown 2014-2020, so terrain_src is FINE
+    everywhere and the coarse-DEM cap is NOT exercised here. That rule still has to be tested:
+    the packaging fixture carries a synthetic coarse tile for exactly that reason.
+
+USAGE
+    python3 lz/terrain.py --selftest              # metric maths against hand-computable surfaces
+    python3 lz/terrain.py --build                 # all tiles, resumable
+    python3 lz/terrain.py --build --limit 4       # smoke test on four tiles
+    python3 lz/terrain.py --mosaic                # per-tile products -> master grid
+    python3 lz/terrain.py --verify                # Organ Mountains / Mesilla Valley oracles
+"""
+
+import argparse
+import json
+import os
+import sys
+import warnings
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import lzcommon as C  # noqa: E402
+
+try:
+    import numpy as np
+except ImportError:
+    sys.exit("numpy is required: python3 -m pip install numpy")
+
+try:
+    from osgeo import gdal, osr
+except ImportError:
+    sys.exit("the GDAL Python bindings are required: python3 -m pip install gdal "
+             "(or use the GDAL that ships with your package manager)")
+
+gdal.UseExceptions()
+gdal.SetConfigOption("GDAL_DISABLE_READDIR_ON_OPEN", "EMPTY_DIR")
+gdal.SetConfigOption("GDAL_HTTP_TIMEOUT", "120")
+gdal.SetConfigOption("VSI_CACHE", "TRUE")
+gdal.SetConfigOption("VSI_CACHE_SIZE", str(64 << 20))
+gdal.SetConfigOption("CPL_VSIL_CURL_CHUNK_SIZE", str(1 << 20))
+
+BLOCK = 10                      # 1 m samples per 10 m output cell
+STRIP_BLOCKS = 200              # output rows per streamed read -> 2000 source rows, ~80 MB
+NODATA_OUT = float("nan")
+
+# Oracle boxes (lon_min, lat_min, lon_max, lat_max). Ground truth for --verify.
+ORACLE_ORGAN_CREST = (-106.58, 32.32, -106.53, 32.40)     # Organ Mountains spine
+ORACLE_MESILLA_FLOOR = (-106.85, 32.22, -106.78, 32.30)   # irrigated valley floor
+ORACLE_ORGAN_MIN_SLOPE_DEG = 15.0
+ORACLE_VALLEY_MAX_SLOPE_DEG = 3.0
+ORACLE_MIN_SEPARATION_DEG = 10.0
+
+
+def _tiles():
+    p = os.path.join(C.DATA_DIR, C.CELL_ID, "dem_3dep", "tiles_1m.json")
+    if not os.path.exists(p):
+        sys.exit("dem_3dep not resolved — run: python3 lz/fetch.py --fetch --source dem_3dep")
+    with open(p) as f:
+        return json.load(f)
+
+
+def block_stats(z, nodata=None):
+    """Reduce a 1 m elevation array to 10 m [slope_deg, rough_m, micro_m].
+
+    One closed-form plane fit per 10x10 block serves all three metrics. Rows/cols arrive trimmed
+    to whole blocks by the caller."""
+    assert z.ndim == 2, "block_stats: expected a 2-D array"
+    assert z.shape[0] % BLOCK == 0 and z.shape[1] % BLOCK == 0, "block_stats: ragged block grid"
+    h, w = z.shape
+    bh, bw = h // BLOCK, w // BLOCK
+    zz = z.astype(np.float64, copy=False)
+    valid = np.isfinite(zz)
+    if nodata is not None:
+        valid &= (zz != nodata)
+    zz = np.where(valid, zz, np.nan)
+
+    # Horn 3x3 slope at NATIVE resolution, before any reduction.
+    gy, gx = np.gradient(zz)
+    slope_1m = np.degrees(np.arctan(np.hypot(gx, gy)))
+
+    # A block that is entirely nodata legitimately reduces to NaN — that is the correct answer
+    # ("we do not know here"), and NaN is what the packer turns into the nodata byte. numpy still
+    # warns on every all-NaN slice, so silence those specifically rather than let real warnings
+    # drown in them.
+    with np.errstate(all="ignore"), warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="All-NaN slice encountered")
+        warnings.filterwarnings("ignore", message="Mean of empty slice")
+        sl = slope_1m.reshape(bh, BLOCK, bw, BLOCK).transpose(0, 2, 1, 3).reshape(bh, bw, -1)
+        slope = np.nanmedian(sl, axis=2)
+
+        # Centred lattice: sum(x)=0, so the normal equations decouple into two dot products.
+        t = np.arange(BLOCK, dtype=np.float64) - (BLOCK - 1) / 2.0
+        X = np.repeat(t[:, None], BLOCK, axis=1).ravel()
+        Y = np.repeat(t[None, :], BLOCK, axis=0).ravel()
+        sxx, syy = (X * X).sum(), (Y * Y).sum()
+
+        blk = zz.reshape(bh, BLOCK, bw, BLOCK).transpose(0, 2, 1, 3).reshape(bh, bw, -1)
+        mean = np.nanmean(blk, axis=2, keepdims=True)
+        d = blk - mean
+        a = np.nansum(d * X, axis=2) / sxx
+        b = np.nansum(d * Y, axis=2) / syy
+        resid = d - (a[..., None] * X + b[..., None] * Y)
+        rough = np.sqrt(np.nanmean(resid * resid, axis=2))
+        micro = np.nanmax(resid, axis=2) - np.nanmin(resid, axis=2)
+    return (slope.astype(np.float32), rough.astype(np.float32), micro.astype(np.float32))
+
+
+def build_tile(url, out_path, force=False):
+    """Stream one 1 m source tile and write its 10 m 3-band product. Resumable."""
+    assert url.endswith(".tif"), "build_tile: expected a GeoTIFF url"
+    if os.path.exists(out_path) and not force:
+        return "skip"
+    try:
+        ds = gdal.Open("/vsicurl/" + url)
+    except RuntimeError:
+        return "unreadable"
+    if ds is None:
+        return "unreadable"
+    w, h = ds.RasterXSize, ds.RasterYSize
+    band = ds.GetRasterBand(1)
+    nodata = band.GetNoDataValue()
+    gt = ds.GetGeoTransform()
+    wkt = ds.GetProjection()
+    bh, bw = h // BLOCK, w // BLOCK
+    if bh < 1 or bw < 1:
+        return "too-small"
+
+    slope = np.full((bh, bw), np.nan, np.float32)
+    rough = np.full((bh, bw), np.nan, np.float32)
+    micro = np.full((bh, bw), np.nan, np.float32)
+
+    for b0 in range(0, bh, STRIP_BLOCKS):
+        nb = min(STRIP_BLOCKS, bh - b0)
+        y0, ny = b0 * BLOCK, nb * BLOCK
+        # One-row halo so the gradient is correct across strip seams.
+        pre = 1 if y0 > 0 else 0
+        post = 1 if y0 + ny < h else 0
+        arr = band.ReadAsArray(0, y0 - pre, bw * BLOCK, ny + pre + post)
+        if arr is None:
+            ds = None
+            return "read-failed"
+        s, ro, mi = block_stats(arr[pre:pre + ny, :].astype(np.float64), nodata)
+        slope[b0:b0 + nb, :] = s
+        rough[b0:b0 + nb, :] = ro
+        micro[b0:b0 + nb, :] = mi
+    ds = None
+
+    gt10 = (gt[0], gt[1] * BLOCK, gt[2], gt[3], gt[4], gt[5] * BLOCK)
+    _write_stack(out_path, np.stack([slope, rough, micro]), gt10, wkt)
+    return "built"
+
+
+def _write_stack(path, stack, geotransform, wkt):
+    assert stack.ndim == 3, "_write_stack: expected (bands, rows, cols)"
+    nb, h, w = stack.shape
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    drv = gdal.GetDriverByName("GTiff")
+    out = drv.Create(path, w, h, nb, gdal.GDT_Float32,
+                     options=["COMPRESS=DEFLATE", "TILED=YES", "BIGTIFF=IF_SAFER"])
+    out.SetGeoTransform(geotransform)
+    if wkt:
+        out.SetProjection(wkt)
+    for i in range(nb):
+        b = out.GetRasterBand(i + 1)
+        b.WriteArray(stack[i])
+        b.SetNoDataValue(NODATA_OUT)
+    out.FlushCache()
+    out = None
+
+
+def cmd_build(limit, force):
+    d = _tiles()
+    tiles = d["tiles"][:limit] if limit else d["tiles"]
+    outdir = os.path.join(C.WORK_DIR, C.CELL_ID, "tiles10m")
+    os.makedirs(outdir, exist_ok=True)
+    tally = {}
+    for i, t in enumerate(tiles, 1):
+        name = os.path.basename(t["url"])
+        res = build_tile(t["url"], os.path.join(outdir, name), force=force)
+        tally[res] = tally.get(res, 0) + 1
+        print(f"[{i}/{len(tiles)}] {res:<12} {name[:66]}", flush=True)
+    print("\n" + json.dumps(tally))
+    bad = tally.get("read-failed", 0) + tally.get("unreadable", 0)
+    return 1 if bad else 0
+
+
+def cmd_mosaic():
+    g = C.master_grid()
+    workdir = os.path.join(C.WORK_DIR, C.CELL_ID)
+    outdir = os.path.join(workdir, "tiles10m")
+    tifs = sorted(os.path.join(outdir, f) for f in os.listdir(outdir) if f.endswith(".tif"))
+    if not tifs:
+        sys.exit("no per-tile products — run --build first")
+    vrt = os.path.join(workdir, "terrain10m.vrt")
+    gdal.BuildVRT(vrt, tifs)
+    warped = os.path.join(workdir, "terrain10m_5070.tif")
+    srs = osr.SpatialReference()
+    srs.ImportFromEPSG(C.ANALYSIS_EPSG)
+    # Nearest, not bilinear: these are already at 10 m, so the warp is a near-identity
+    # reprojection, and smoothing would blunt the very extremes the metrics exist to preserve.
+    gdal.Warp(warped, vrt, dstSRS=srs.ExportToWkt(), resampleAlg="near",
+              outputBounds=(g["x_min"], g["y_min"], g["x_max"], g["y_max"]),
+              xRes=C.CELL_SIZE_M, yRes=C.CELL_SIZE_M, dstNodata=NODATA_OUT,
+              creationOptions=["COMPRESS=DEFLATE", "TILED=YES", "BIGTIFF=IF_SAFER"])
+
+    ds = gdal.Open(warped)
+    raw = ds.ReadAsArray().astype(np.float32)
+    ds = None
+    assert raw.shape[0] == 3, "mosaic: expected three bands"
+    np.save(os.path.join(workdir, "slope.npy"), raw[0])
+    np.save(os.path.join(workdir, "rough.npy"), raw[1])
+    np.save(os.path.join(workdir, "micro.npy"), raw[2])
+    src = np.where(np.isfinite(raw[0]), C.TERRAIN_SRC_FINE, C.TERRAIN_SRC_COARSE).astype(np.uint8)
+    np.save(os.path.join(workdir, "terrain_src.npy"), src)
+
+    fin = np.isfinite(raw[0])
+    print(f"mosaic {raw.shape[2]}x{raw.shape[1]} on the master grid; "
+          f"1 m-derived coverage {fin.mean()*100:.2f}% of the bbox "
+          f"(the cell fills ~82% of it — see lzcommon.cone_convergence_rad)")
+    with np.errstate(all="ignore"):
+        print(f"  slope  median {np.nanmedian(raw[0]):.2f} deg   p99 {np.nanpercentile(raw[0],99):.1f} deg")
+        print(f"  rough  median {np.nanmedian(raw[1]):.3f} m     p99 {np.nanpercentile(raw[1],99):.2f} m")
+        print(f"  micro  median {np.nanmedian(raw[2]):.3f} m     p99 {np.nanpercentile(raw[2],99):.2f} m")
+    return 0
+
+
+def _box(arr, box, g):
+    rc0 = C.lonlat_to_grid(box[0], box[3], g)
+    rc1 = C.lonlat_to_grid(box[2], box[1], g)
+    if not rc0 or not rc1:
+        return None
+    r0, c0 = rc0
+    r1, c1 = rc1
+    sub = arr[min(r0, r1):max(r0, r1) + 1, min(c0, c1):max(c0, c1) + 1]
+    sub = sub[np.isfinite(sub)]
+    return None if sub.size == 0 else sub
+
+
+def cmd_verify():
+    workdir = os.path.join(C.WORK_DIR, C.CELL_ID)
+    p = os.path.join(workdir, "slope.npy")
+    if not os.path.exists(p):
+        sys.exit("no mosaic — run --build then --mosaic")
+    slope = np.load(p)
+    g = C.master_grid()
+    ok = True
+
+    crest = _box(slope, ORACLE_ORGAN_CREST, g)
+    floor = _box(slope, ORACLE_MESILLA_FLOOR, g)
+    if crest is None or floor is None:
+        print("FAIL an oracle box has no finite slope — mosaic is incomplete")
+        return 1
+
+    mc, mf = float(np.median(crest)), float(np.median(floor))
+    for label, got, need, cmp_ok in (
+            ("Organ crest median slope", mc, ORACLE_ORGAN_MIN_SLOPE_DEG, mc >= ORACLE_ORGAN_MIN_SLOPE_DEG),
+            ("Mesilla valley median slope", mf, ORACLE_VALLEY_MAX_SLOPE_DEG, mf <= ORACLE_VALLEY_MAX_SLOPE_DEG),
+            ("crest/valley separation", mc - mf, ORACLE_MIN_SEPARATION_DEG,
+             (mc - mf) >= ORACLE_MIN_SEPARATION_DEG)):
+        print(f"{'ok  ' if cmp_ok else 'FAIL'} {label}: {got:.2f} deg (bound {need})")
+        ok &= cmp_ok
+
+    print("\nVERIFY PASS" if ok else "\nVERIFY FAIL")
+    return 0 if ok else 1
+
+
+def cmd_selftest():
+    """The metric maths, against surfaces whose answers are known by hand."""
+    ok = True
+
+    def chk(name, cond, detail=""):
+        nonlocal ok
+        print(f"{'ok  ' if cond else 'FAIL'} {name} {detail}")
+        ok &= cond
+
+    for tilt in (0.0, 3.0, 20.0):
+        yy, xx = np.mgrid[0:30, 0:30]
+        s, r, mi = block_stats(np.tan(np.radians(tilt)) * xx.astype(float))
+        chk(f"plane {tilt:>4.1f} deg", abs(np.nanmedian(s) - tilt) < 0.05 and np.nanmax(r) < 1e-6,
+            f"slope={np.nanmedian(s):.3f} rough={np.nanmax(r):.1e}")
+
+    rng = np.random.default_rng(3)
+    noise = rng.normal(0, 0.25, (30, 30))
+    _, r_flat, _ = block_stats(noise)
+    yy, xx = np.mgrid[0:30, 0:30]
+    _, r_tilt, _ = block_stats(np.tan(np.radians(20)) * xx + noise)
+    chk("detrending separates tilt from texture",
+        abs(np.nanmedian(r_flat) - np.nanmedian(r_tilt)) < 0.02,
+        f"flat={np.nanmedian(r_flat):.4f} vs 20deg={np.nanmedian(r_tilt):.4f}")
+
+    z = np.zeros((10, 10))
+    z[:, 4] = -1.5
+    s, r, mi = block_stats(z)
+    chk("a ditch reads in micro, not sigma", float(mi[0, 0]) > 1.3 and float(r[0, 0]) < 0.6,
+        f"micro={float(mi[0,0]):.2f} m sigma={float(r[0,0]):.2f} m")
+
+    z = np.full((10, 10), 100.0)
+    z[3:6, 3:6] = np.nan
+    s, r, _ = block_stats(z)
+    chk("nodata does not fabricate flat ground", np.isfinite(s[0, 0]) and float(r[0, 0]) < 1e-6)
+
+    z = np.full((10, 10), 100.0)
+    s, r, _ = block_stats(z, nodata=100.0)
+    chk("an all-nodata block yields nan, not zero", not np.isfinite(s[0, 0]))
+
+    print("\nSELFTEST PASS" if ok else "\nSELFTEST FAIL")
+    return 0 if ok else 1
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--selftest", action="store_true", help="metric maths on known surfaces")
+    ap.add_argument("--build", action="store_true", help="reduce 1 m source tiles to 10 m products")
+    ap.add_argument("--mosaic", action="store_true", help="warp per-tile products to the master grid")
+    ap.add_argument("--verify", action="store_true", help="Organ / Mesilla oracles")
+    ap.add_argument("--limit", type=int, default=0, help="only the first N tiles (smoke test)")
+    ap.add_argument("--force", action="store_true", help="rebuild tiles that already exist")
+    a = ap.parse_args()
+    rc = 0
+    if a.selftest:
+        rc |= cmd_selftest()
+    if a.build:
+        rc |= cmd_build(a.limit, a.force)
+    if a.mosaic:
+        rc |= cmd_mosaic()
+    if a.verify:
+        rc |= cmd_verify()
+    if not (a.selftest or a.build or a.mosaic or a.verify):
+        ap.print_help()
+    return rc
+
+
+if __name__ == "__main__":
+    sys.exit(main())
