@@ -98,16 +98,52 @@ def _req(url, method="GET", headers=None):
     return urllib.request.Request(url, method=method, headers=h)
 
 
+# Statuses worth trying again. Everything else — 400, 403, 404 — is the server telling us something
+# true about the request, and hammering it wastes the retry budget on an answer that will not change.
+RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504}
+
+# How long an UNATTENDED run will ride out a federal API being down, set by --patience. Measured
+# reason for existing: The National Map returned 504 to every query shape for a sustained period
+# mid-build (2026-08-02), after the same queries had succeeded twenty minutes earlier. Eight cells
+# is eight chances to meet that, and a build that aborts at 2 a.m. because a government gateway
+# hiccuped is a build nobody can leave running.
+PATIENCE_S = 0.0
+BACKOFF_CAP_S = 120.0
+
+
+def _retryable(e):
+    if isinstance(e, urllib.error.HTTPError):
+        return e.code in RETRYABLE_STATUS
+    return isinstance(e, (urllib.error.URLError, TimeoutError, ConnectionError, OSError,
+                          json.JSONDecodeError))
+
+
 def http_json(url):
-    for attempt in range(MAX_RETRIES):
+    """GET + parse, retrying transient failures with exponential backoff.
+
+    Retries for at least MAX_RETRIES attempts, and then keeps going until PATIENCE_S has elapsed if
+    the caller asked for patience. A terminal status (4xx that is not 408/425/429) raises at once —
+    waiting out a 404 only delays the truth."""
+    deadline = time.monotonic() + PATIENCE_S
+    attempt = 0
+    while True:
         try:
             with urllib.request.urlopen(_req(url), timeout=HTTP_TIMEOUT) as r:
                 return json.load(r)
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as e:
-            if attempt == MAX_RETRIES - 1:
+        except Exception as e:                                   # noqa: BLE001 — re-raised below
+            attempt += 1
+            if not _retryable(e):
                 raise
-            time.sleep(RETRY_BACKOFF_S * (attempt + 1))
-    return None
+            more = attempt < MAX_RETRIES or time.monotonic() < deadline
+            if not more:
+                raise
+            # Exponential, capped, so a long patience window does not become a tight loop.
+            delay = min(RETRY_BACKOFF_S * (2 ** (attempt - 1)), BACKOFF_CAP_S)
+            if PATIENCE_S > 0:
+                left = max(0.0, deadline - time.monotonic())
+                print(f"     retry {attempt} in {delay:.0f}s ({left/60:.0f} min patience left): {e}",
+                      flush=True)
+            time.sleep(delay)
 
 
 def http_version_token(url):
@@ -934,9 +970,14 @@ def main():
     ap.add_argument("--assert-coverage", action="store_true",
                     help="prove each source is readable and covers the cell")
     ap.add_argument("--source", action="append", default=[], help="limit to one source (repeatable)")
+    ap.add_argument("--patience", type=float, default=0.0, metavar="MIN",
+                    help="keep retrying transient HTTP failures for up to MIN minutes, so an "
+                         "unattended multi-cell build rides out a federal API outage")
     C.add_cell_argument(ap)
     a = ap.parse_args()
     C.select_cell(a.cell)          # before ANY path, window or URL is built
+    global PATIENCE_S
+    PATIENCE_S = max(0.0, a.patience) * 60.0
 
     sel = _selected(a.source)
     if a.list:
