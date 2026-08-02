@@ -89,13 +89,20 @@ REGIONS = [
     {
         "id": "southern-nm",
         "title": "Southern New Mexico",
-        "note": "Las Cruces, the Mesilla Valley, the Organ and San Andres ranges, and the "
-                "Tularosa Basin.",
+        "note": "Las Cruces, the Mesilla Valley, the Organ and San Andres ranges, the "
+                "Tularosa Basin and the Rio Grande corridor north toward Socorro.",
         # USGS 3DEP naming: nXXwYYY is the cell whose NORTH-WEST corner is XX N, YYY W, so
-        # n33w107 covers lat 32-33, lon -107..-106. The 3x3 ring around Las Cruces:
-        "cells": ["n32w106", "n32w107", "n32w108",
+        # n33w107 covers lat 32-33, lon -107..-106.
+        #
+        # ⚠️ THE SOUTHERN ROW OF THE OBVIOUS 3x3 RING IS IN MEXICO. n32w107 and n32w108 span lat
+        # 31-32, which is almost entirely south of the border, and 3DEP is US-only — both resolved
+        # 0.0% DEM coverage and can never be built. n32w106 survives at 94.65% because the border
+        # dips south near El Paso. The ring is therefore shifted NORTH into New Mexico rather than
+        # squared around Las Cruces.
+        "cells": ["n32w106",
                   "n33w106", "n33w107", "n33w108",
-                  "n34w106", "n34w107", "n34w108"],
+                  "n34w106", "n34w107", "n34w108",
+                  "n35w106", "n35w107", "n35w108"],
     },
 ]
 
