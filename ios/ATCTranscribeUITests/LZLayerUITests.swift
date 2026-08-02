@@ -338,9 +338,14 @@ final class LZLayerUITests: XCTestCase {
         let app = launch(["-atc.diagnosticsEnabled", "YES"])
         openLayersPanel(app)
         let text = app.staticTexts["layers-lz-note"].label
-        XCTAssertTrue(text.contains("Advisory only"), "the advisory caption is missing: \(text)")
+        // Case-INSENSITIVE: un-gating the layer raised this to "ADVISORY ONLY", and a test that
+        // pins the casing fails on an edit that strengthened the very thing it guards.
+        XCTAssertTrue(text.lowercased().contains("advisory only"),
+                      "the advisory caption is missing: \(text)")
         XCTAssertTrue(text.lowercased().contains("candidate ground"),
                       "the caption no longer says 'candidate ground': \(text)")
+        // The word "safe" must never appear about this ground. Kept here because the sibling test
+        // checks what the note DOES say; this checks the one thing it must never say.
         XCTAssertFalse(text.lowercased().contains("safe"),
                        "the caption calls ground 'safe' — it must not: \(text)")
     }
