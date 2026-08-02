@@ -102,6 +102,17 @@ enum LZRulesetCompiler {
             let glide_ratio: Double
             let surface_tolerance_ref_kt: Double
             let slope_tolerance_scale: Double
+            /// Optional so a ruleset published before the distance model still decodes.
+            let landing_over_50ft: Double?
+        }
+        /// How far the aeroplane needs, and what unprepared ground costs it. See the model's own
+        /// `note` in the JSON for why this can scale marginal ground but cannot answer "will it fit".
+        struct DistanceModel: Decodable {
+            let reference_over_50ft: Double
+            let applies_to: [String]
+            let multiplier_min: Double
+            let multiplier_max: Double
+            let surface_distance_factor: [String: Double]
         }
         struct Energy: Decodable {
             let applies_to: [String]
@@ -119,6 +130,8 @@ enum LZRulesetCompiler {
         let flags: [Rule]
         let aircraft_defaults: Defaults
         let energy_model: Energy
+        /// Optional: a ruleset without it behaves exactly as before the distance model existed.
+        let distance_model: DistanceModel?
     }
 
     // MARK: - Loading
@@ -152,11 +165,20 @@ enum LZRulesetCompiler {
         let total = w.reduce(0, +)
         guard abs(total - 1.0) < 0.001 else { return nil }
 
-        // Aircraft. Only the two fields AircraftProfile actually carries are honoured; everything
-        // else comes from the conservative default table (see the ruleset's note).
+        // Aircraft. Every value the profile genuinely carries is honoured; the rest comes from the
+        // conservative default table (see the ruleset's note).
         let d = doc.aircraft_defaults
-        let vref = max(30.0, min(200.0, Double(aircraft?.bestGlideKts ?? Int(d.vref_kt))))
+        // ⚠️ vRefKts, NOT bestGlideKts. This used to read the best-glide speed as though it were
+        // the approach speed, and they are different numbers — best glide is flown well above Vref,
+        // and the gap widens with the aeroplane. The error was in the safe direction (a faster
+        // assumed touchdown tolerates less surface and slope), which is exactly why it survived:
+        // nothing looked wrong. A pilot who enters their real numbers now gets their real numbers.
+        let vref = max(30.0, min(200.0, Double(aircraft?.vRefKts ?? Int(d.vref_kt))))
         let glide = max(3.0, min(60.0, aircraft?.glideRatio ?? d.glide_ratio))
+        // Book landing distance over a 50 ft obstacle. Bounded so a data-entry slip (a ground roll
+        // typed in metres, say) cannot invent an aeroplane that lands anywhere.
+        let bookDistanceFt = max(300.0, min(12_000.0,
+            aircraft?.landingOver50Ft ?? d.landing_over_50ft ?? doc.distance_model?.reference_over_50ft ?? 1600.0))
 
         guard let slopeU = doc.utilities["slope_deg"]?.breakpoints,
               let roughU = doc.utilities["rough_m"]?.breakpoints,
@@ -179,15 +201,38 @@ enum LZRulesetCompiler {
             interpolate(hazardU, at: Double(raw) / LZPack.hazardMax)
         }
 
-        // Surface utility, with the bounded touchdown-energy modifier on MARGINAL surfaces only.
+        // Surface utility, with two bounded aircraft modifiers on MARGINAL surfaces only.
+        //
+        //  1. TOUCHDOWN ENERGY (vref) — how hard the arrival is.
+        //  2. LANDING DISTANCE — how much unprepared ground the aeroplane can actually use.
+        //
+        // Both scale the same marginal surfaces and NEITHER touches the hazard term, because a
+        // tower is equally lethal to a Cub and to a Malibu. The distance model can say this much and
+        // no more: a 10 m cell does not know how LONG the field is, so "will it fit" is not
+        // answerable at pixel level and belongs to the site finder, which searches for runs.
         let e = doc.energy_model
         let energyMul = max(e.multiplier_min, min(e.multiplier_max, 1.3 - vref / e.reference_kt))
         let marginal = Set(e.applies_to)
+
+        let dm = doc.distance_model
+        let distanceApplies = Set(dm?.applies_to ?? [])
         var surfaceLUT = [UInt8](repeating: 0, count: 256)
+        var requiredFt = [String: Double]()
         for code in 0...255 {
             let name = className(UInt8(code))
             var u = surfaceT[name] ?? 0.0
             if marginal.contains(name) { u = min(1.0, u * energyMul) }
+            if let dm, distanceApplies.contains(name) {
+                // Required distance on THIS surface = the book number times what the surface costs.
+                let factor = dm.surface_distance_factor[name] ?? 1.0
+                let need = bookDistanceFt * factor
+                requiredFt[name] = need
+                // Ratio against the reference aeroplane: needing more than the reference shrinks the
+                // usable value of marginal ground, needing less lifts it, both bounded. An aeroplane
+                // at the reference distance is unchanged, so the default table stays the default.
+                let ratio = dm.reference_over_50ft / max(1.0, need / factor)
+                u = min(1.0, u * max(dm.multiplier_min, min(dm.multiplier_max, ratio)))
+            }
             surfaceLUT[code] = quantise(u)
         }
 
@@ -241,6 +286,7 @@ enum LZRulesetCompiler {
 
         let sig = signature(rulesetID: doc.id, version: doc.version, vref: vref, glide: glide,
                             slopeScale: slopeScale, energyMul: energyMul,
+                            bookDistanceFt: bookDistanceFt,
                             themeKey: themeKey, packStamp: packStamp)
 
         return LZCompiledRuleset(
@@ -335,11 +381,15 @@ enum LZRulesetCompiler {
     }
 
     /// FNV-1a over the inputs that change what a pixel renders. Lowercase hex only.
+    /// Every input that changes a pixel must be in here. `bookDistanceFt` joined it with the
+    /// distance model: without it, entering a different landing distance recompiles a different LUT
+    /// and then serves the PREVIOUS aeroplane's cached tiles under the same URL.
     static func signature(rulesetID: String, version: String, vref: Double, glide: Double,
-                          slopeScale: Double, energyMul: Double,
+                          slopeScale: Double, energyMul: Double, bookDistanceFt: Double,
                           themeKey: String, packStamp: String) -> String {
         let parts = [rulesetID, version, themeKey, packStamp,
-                     String(format: "%.2f|%.2f|%.4f|%.4f", vref, glide, slopeScale, energyMul)]
+                     String(format: "%.2f|%.2f|%.4f|%.4f|%.1f",
+                            vref, glide, slopeScale, energyMul, bookDistanceFt)]
         var hash: UInt64 = 0xcbf29ce484222325
         for byte in parts.joined(separator: "\u{1}").utf8 {
             hash ^= UInt64(byte)

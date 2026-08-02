@@ -15,6 +15,8 @@ struct AircraftSheet: View {
     @State private var burnText = ""
     @State private var glideRatioText = ""
     @State private var bestGlideText = ""
+    @State private var vRefText = ""
+    @State private var landingOver50Text = ""
 
     private var hasInput: Bool {
         !callsign.trimmingCharacters(in: .whitespaces).isEmpty
@@ -46,6 +48,22 @@ struct AircraftSheet: View {
                             labeled("Glide ratio", "L/D — e.g. 9 (C172)", $glideRatioText, keyboard: .decimalPad)
                             labeled("Best glide", "kts — e.g. 68", $bestGlideText, keyboard: .numberPad)
                             Text("POH best-glide numbers for the NRST engine-out ranking. Blank uses a conservative \(String(format: "%g", NearestAirports.defaultGlideRatio)):1 default.")
+                                .font(.dsLabelS).foregroundStyle(p.textDim)
+                        }
+                    }
+                    Card(title: "Landing") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            labeled("Approach speed", "kts Vref — e.g. 62", $vRefText, keyboard: .numberPad)
+                            labeled("Landing distance", "ft over 50 ft — e.g. 1250", $landingOver50Text,
+                                    keyboard: .numberPad)
+                            // Says WHY it wants the over-50 number rather than ground roll: an
+                            // unprepared field has a fence or trees at the approach end far more
+                            // often than a clear threshold, and ground roll omits exactly the part
+                            // the obstruction governs.
+                            Text("Used by the off-field landability layer to judge how much rough or "
+                                 + "soft ground you can actually use. Give the POH total over a 50 ft "
+                                 + "obstacle, not the ground roll — an unprepared field usually has "
+                                 + "something at the approach end. Blank uses a conservative default.")
                                 .font(.dsLabelS).foregroundStyle(p.textDim)
                         }
                     }
@@ -90,6 +108,8 @@ struct AircraftSheet: View {
         burnText = profile.burnGPH.map { String(format: "%g", $0) } ?? ""
         glideRatioText = profile.glideRatio.map { String(format: "%g", $0) } ?? ""
         bestGlideText = profile.bestGlideKts.map(String.init) ?? ""
+        vRefText = profile.vRefKts.map(String.init) ?? ""
+        landingOver50Text = profile.landingOver50Ft.map { String(format: "%g", $0) } ?? ""
     }
 
     /// Persist through the model (add-or-update by id) and fly the aircraft.
@@ -104,6 +124,12 @@ struct AircraftSheet: View {
         let ratio = Double(glideRatioText.replacingOccurrences(of: ",", with: "."))
         updated.glideRatio = ratio.flatMap { $0 >= 3 && $0 <= 60 ? $0 : nil }
         updated.bestGlideKts = Int(bestGlideText.filter(\.isNumber)).flatMap { $0 >= 40 && $0 <= 250 ? $0 : nil }
+        // Same clamp-or-nil rule as the glide fields: an implausible entry falls back to the
+        // conservative default rather than being believed. A landing distance typed in metres is
+        // the likely slip, and it would make marginal ground look more usable than it is.
+        updated.vRefKts = Int(vRefText.filter(\.isNumber)).flatMap { $0 >= 30 && $0 <= 200 ? $0 : nil }
+        let over50 = Double(landingOver50Text.replacingOccurrences(of: ",", with: "."))
+        updated.landingOver50Ft = over50.flatMap { $0 >= 300 && $0 <= 12_000 ? $0 : nil }
         model.saveAircraft(updated)
         dismiss()
     }
