@@ -215,6 +215,32 @@ extension DeviceLocation {
         tickSimulation()                       // publish immediately rather than after the first tick
     }
 
+    /// Park a simulated aeroplane at one point and hold it there — no approach, no motion, just a
+    /// position and a height that stay put. `startSimulation` needs an `ApproachSimulator`, and so
+    /// needs an activated approach; the layers that consume ownship ENERGY (the glide footprint) need
+    /// only a fix, and pinning them to an approach makes them untestable and unable to be demonstrated.
+    ///
+    /// Publishes through `publish` like every other simulated fix, so `isSimulating` is set and every
+    /// SIM indicator in the app lights up. Ground speed is zero, which makes `courseUsable` false —
+    /// correct, since a stationary aeroplane has no track.
+    func holdSimulation(at c: Coord, altitudeFtMSL: Double) {
+        assert(altitudeFtMSL.isFinite, "holdSimulation: non-finite altitude")
+        assert(c.lat >= -90 && c.lat <= 90, "holdSimulation: latitude out of range")
+        manager.stopUpdatingLocation()
+        staleTimer?.invalidate()
+        staleTimer = nil
+        monitor.reset()
+        simTimer?.invalidate()
+        simTimer = nil
+        sim = nil
+        simPaused = false
+        isSimulating = true
+        publish(ApproachSimulator.Sample(coord: c, altitudeFtMSL: altitudeFtMSL,
+                                         groundSpeedKt: 0, courseDegTrue: 0,
+                                         distanceToThresholdNm: 0, phase: .levelAtFloor,
+                                         verticalSpeedFpm: 0))
+    }
+
     /// Stop the simulation and hand the publishers back to the receiver. Idempotent.
     func stopSimulation() {
         guard isSimulating || simTimer != nil else { return }

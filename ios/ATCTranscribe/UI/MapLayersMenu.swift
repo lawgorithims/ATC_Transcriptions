@@ -65,6 +65,44 @@ struct MapLayersPanel: View {
                     layerToggle($model.showWxRadar, "Weather radar (precip)", "cloud.rain", p, id: "layer-radar")
                     layerToggle($model.showWindAloft, "Winds aloft (animated)", "wind", p, id: "layer-wind")
 
+                    // Off-field landability. Dev-gated while the data model settles: it is advisory
+                    // only, and the wording below is deliberate — "candidate ground", never "safe".
+                    //
+                    // ...but the rows also appear whenever either layer is ON, however it got there.
+                    // The emergency button arms both for any pilot, dev switch or not, and a layer a
+                    // pilot can turn on but cannot find to turn off is a trap door. Discovery is
+                    // gated; retreat never is.
+                    if model.diagnosticsEnabled || model.showLZRisk || model.showLZEnergy {
+                        layerToggle($model.showLZRisk, "Off-field landability (dev)",
+                                    "square.grid.3x3.square", p, id: "layer-lz")
+                        layerToggle($model.showLZEnergy, "Glide energy bands (dev)",
+                                    "scope", p, id: "layer-lz-energy")
+                        Text("Advisory only — scored candidate ground, not a landing recommendation. "
+                             + "Needs an .lzpack installed; MapLibre engine only.")
+                            .font(.dsLabelS).foregroundStyle(p.textDim)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("layers-lz-note")
+                        // Which packs answered, or why none did. Switching the heatmap on with no
+                        // pack installed leaves the map looking exactly as it did — identical to the
+                        // layer being broken — and this line is the only thing that tells them apart.
+                        if model.showLZRisk, !model.lzPackStatus.isEmpty {
+                            Text("Landability data: \(model.lzPackStatus)")
+                                .font(.dsLabelS).foregroundStyle(p.textDim)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .accessibilityIdentifier("layers-lz-status")
+                        }
+                        // The energy layer's own honesty line: whether wind was applied, whether
+                        // terrain coverage was lost, whose glide ratio, and how far it reaches — or
+                        // WHY there is no footprint. A live layer that silently draws nothing is
+                        // indistinguishable from a broken one.
+                        if model.showLZEnergy, !model.lzEnergyStatus.isEmpty {
+                            Text("Glide energy: \(model.lzEnergyStatus)")
+                                .font(.dsLabelS).foregroundStyle(p.textDim)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .accessibilityIdentifier("layers-lz-energy-status")
+                        }
+                    }
+
                     Divider().padding(.vertical, 2)
 
                     header("Declutter", p)

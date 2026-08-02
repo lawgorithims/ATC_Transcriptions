@@ -838,6 +838,74 @@ final class AppModel: ObservableObject {
     @Published var showWindAloft = UserDefaults.standard.bool(forKey: "atc.map.wind") {
         didSet { UserDefaults.standard.set(showWindAloft, forKey: "atc.map.wind"); syncWind() }
     }
+    /// Off-field landability heatmap (`.lzpack` fact tiles, scored on device against the selected
+    /// aircraft). ADVISORY ONLY — not a navigation or landing-guidance product. Default off, and it
+    /// renders only on the MapLibre engine.
+    ///
+    /// GATING: `diagnosticsEnabled` gates DISCOVERY (whether the layers panel offers the row), not
+    /// rendering. These two flags alone decide whether the layer draws, because the emergency button
+    /// arms them for any pilot and a flag that were also gated on a dev switch would arm silently and
+    /// draw nothing. The panel row is shown whenever the flag is on, however it got there, so a layer
+    /// that is up can always be taken back down (see `MapLayersPanel`).
+    @Published var showLZRisk = UserDefaults.standard.bool(forKey: "atc.map.lz") {
+        didSet { UserDefaults.standard.set(showLZRisk, forKey: "atc.map.lz") }
+    }
+    /// Live glide/arrival-energy bands from ownship state. Same gating as above.
+    @Published var showLZEnergy = UserDefaults.standard.bool(forKey: "atc.map.lzEnergy") {
+        didSet { UserDefaults.standard.set(showLZEnergy, forKey: "atc.map.lzEnergy") }
+    }
+    /// Mirror of the energy layer's status line, published here so the layers panel can show it
+    /// without observing the map's controller. A live layer that silently draws nothing is
+    /// indistinguishable from a broken one — this is what tells them apart.
+    @Published var lzEnergyStatus: String = ""
+    /// The same for the HEATMAP half: which packs are mounted, or the reason none are. Without it a
+    /// pilot who switches the layer on with no `.lzpack` installed sees an unchanged map and no
+    /// explanation — the identical symptom to a layer that is broken.
+    @Published var lzPackStatus: String = ""
+
+    /// True while everything the emergency button turns on is in fact on. DERIVED, never stored: the
+    /// button reports the world rather than remembering what it did, so closing NRST or switching a
+    /// layer off un-arms it truthfully instead of leaving a lit control over a state that is gone.
+    ///
+    /// The store is a PARAMETER rather than `self.widgetStore` on purpose. It is a nested
+    /// ObservableObject, and a nested observable does not republish its parent — a view that reads it
+    /// through `model` gets no re-render when the panel closes, so the button would stay lit over a
+    /// panel that is gone (the exact staleness this derived state exists to prevent). Taking it as an
+    /// argument forces the caller to hold it as an `@EnvironmentObject`, which IS the subscription.
+    func emergencyArmed(compact: Bool, widgets: WidgetStore) -> Bool {
+        let nrstUp = compact ? showNRSTSheet
+            : (widgets.isVisible(.nrst) || widgets.leftPane == .nrst || widgets.rightPane == .nrst)
+        return nrstUp && showLZRisk && showLZEnergy
+    }
+
+    /// The engine-out arm: put the map up, light the off-field layers, and bring the nearest-airport
+    /// panel to the front. One tap, one call, so the button and its test drive the same code.
+    ///
+    /// IDEMPOTENT BY DESIGN, and that is the whole safety property. It only ever turns things ON —
+    /// there is no toggle here and no second-tap-undoes. The same doctrine `WidgetStore.reveal` was
+    /// written for: the outcome of pressing this in an emergency must never be "it went away". Stand
+    /// down is a deliberate long press (`standDownEmergency`), or the layers panel.
+    func armEmergency(compact: Bool) {
+        selectedTab = .map
+        showLZRisk = true
+        showLZEnergy = true
+        if compact { showNRSTSheet = true } else { widgetStore.reveal(.nrst) }
+        assert(showLZRisk && showLZEnergy, "arming must leave both LZ layers on")
+        assert(selectedTab == .map, "arming must leave the map in front")
+        assert(!compact || showNRSTSheet, "compact arming must raise the NRST sheet")
+    }
+
+    /// The deliberate undo. Separate method, separate gesture: a long press cannot be produced by the
+    /// stray double-tap of a gloved hand on a bumpy deck, which is exactly the input that must not be
+    /// able to switch an emergency aid off.
+    func standDownEmergency(compact: Bool) {
+        showLZRisk = false
+        showLZEnergy = false
+        if compact { showNRSTSheet = false } else { widgetStore.dismiss(.nrst) }
+        assert(!showLZRisk && !showLZEnergy, "stand-down must leave both LZ layers off")
+        assert(compact || (widgetStore.leftPane != .nrst && widgetStore.rightPane != .nrst),
+               "stand-down left the NRST panel docked in a side pane")
+    }
     /// Which altitude the wind overlay shows — an index into `WindLevel.allCases` (0 = surface,
     /// 9 = FL390), driven by the map's left-edge altitude slider. Persisted. Clamped on write so a value
     /// from a future build with more levels degrades instead of trapping; switching levels costs no
@@ -1363,6 +1431,25 @@ final class AppModel: ObservableObject {
             flightPlan = FlightPlan(departure: "KBOS", destination: "KPVD",   // auto-frames zoomed-in over
                                     route: ["BOS", "PVD"])                     // Boston Class B + Providence Class C
         }
+        // QA/UI-test: park a simulated aeroplane at a point and height and hold it there
+        // (`--hold-ownship 32.2894 -106.9219 16000`). The Simulator's own location supplies a position
+        // with NO usable altitude, so every layer that spends height — the glide footprint above all —
+        // is untestable there; this is the only way to drive one deterministically.
+        //
+        // DEBUG ONLY, on purpose. Every other launch affordance here opens a screen; this one publishes
+        // a POSITION, and a position the aeroplane is not at is the one piece of wrong information this
+        // app must never be able to show a pilot. Release builds do not contain this branch at all.
+        // (`isSimulating` is published throughout regardless, so even here it is never mistaken for
+        // real — see `DeviceLocation.holdSimulation`.)
+        #if DEBUG
+        if let i = args.firstIndex(of: "--hold-ownship"), i + 3 < args.count,
+           let lat = Double(args[i + 1]), let lon = Double(args[i + 2]), let alt = Double(args[i + 3]) {
+            let here = Coord(lat: lat, lon: lon)
+            Task { @MainActor [weak self] in
+                self?.deviceLocation.holdSimulation(at: here, altitudeFtMSL: alt)
+            }
+        }
+        #endif
         if args.contains("--open-route-map") { showRouteMap = true }   // screenshot/demo: open the map at launch
         // The FAA chart is now a layer on the unified route map; `--open-chart` opens it there. Pair with
         // `--chart-layer ifr|vfr|std|sat` to pick the layer and `--chart-center lat,lon` to frame it.
@@ -3222,9 +3309,7 @@ final class AppModel: ObservableObject {
 
     /// Past this almanac age the predicted geometry is too drifted to base an interference accusation on,
     /// so the threat classifier is handed nil geometry. Matches the Satellites page's staleness warning.
-    /// `nonisolated` because it is an immutable constant with nothing to race on, and the test target
-    /// reads it from an `XCTAssert` autoclosure — a nonisolated context, which is an error in Swift 6.
-    nonisolated static let almanacThreatMaxAgeDays = 90.0
+    static let almanacThreatMaxAgeDays = 90.0
 
     /// Mask angle for "in view". 5° is the usual aviation receiver mask: below it a signal is skimming
     /// too much atmosphere to contribute usefully, and counting those satellites would flatter the
