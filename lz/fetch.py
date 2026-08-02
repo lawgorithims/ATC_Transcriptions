@@ -935,7 +935,21 @@ def cmd_fetch(sources):
         t0 = time.time()
         try:
             r = s.fetch()
-            print(f"ok   {s.name:<14}{json.dumps(r, default=str)[:110]}  ({time.time()-t0:.0f}s)")
+            # A source that resolved NOTHING is not "ok", whatever it returned without raising.
+            # dem_3dep reported ok with {"tiles": 0, "coverage_pct": 0.0} for a cell that is almost
+            # entirely in Mexico — 3DEP is US-only — after seventeen minutes of querying. The
+            # coverage gate does catch it later and exits non-zero, so nothing unsafe shipped, but
+            # a stage that says "ok" for an empty result sends you looking for the fault in the
+            # wrong place. Say it here, where it was learned.
+            empty = (isinstance(r, dict)
+                     and (r.get("coverage_pct") == 0 or r.get("tiles") == 0)
+                     and r.get("status") != STATUS_STALE_FROZEN)
+            tag = "EMPTY" if empty else "ok  "
+            print(f"{tag} {s.name:<14}{json.dumps(r, default=str)[:110]}  ({time.time()-t0:.0f}s)")
+            if empty and s.required:
+                print(f"     ^ nothing resolved for {C.CELL_ID}. If this cell is outside the United "
+                      f"States, no US federal source will ever cover it.")
+                rc = 1
         except Exception as e:
             print(f"{'FAIL' if s.required else 'warn'} {s.name:<14}{str(e)[:140]}")
             if s.required:
