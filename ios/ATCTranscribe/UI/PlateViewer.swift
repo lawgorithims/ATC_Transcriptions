@@ -229,19 +229,32 @@ struct PlateViewer: View {
 
     /// A departure or arrival drawn from its coded legs.
     ///
-    /// Matched to the plate by NAME rather than by the approach scorer: a SID plate is titled with the
-    /// procedure's own name ("PATRIOT THREE"), which is exactly the `ident`/`name` CIFP carries, so the
-    /// fuzzy runway-aware matching an approach needs would only add ways to be wrong.
+    /// ⚠️ I WROTE THIS AS A SUBSTRING MATCH AND IT MATCHED NOTHING. The chart is titled "LUCIT THREE
+    /// (RNAV)" and CIFP idents it `LUCIT3`, so `plate.contains(ident)` was true for 0 of the 6,015
+    /// bundled terminal charts that have a coded procedure — the Vector button is gated on
+    /// `vectorChart != nil`, so it simply never appeared and the bug looked like missing geometry.
+    /// `TerminalChartMatch` carries the measurement and the rule.
+    ///
+    /// ⚠️ AND ONE ROW IS NOT THE PROCEDURE. A SID is coded as a runway transition + a common segment +
+    /// an enroute transition, and a single row is a mean 17.5% of its legs — drawing one row draws a
+    /// fragment and calls it the departure. `ProcedureRoute.sidLegs`/`starLegs` assemble the whole
+    /// thing, deduping shared fixes, which is the same path the moving map draws, so the chart and the
+    /// magenta line cannot disagree.
     private func terminalChart(kind: String) -> VectorProcedureChart? {
-        let plate = current.name.uppercased()
-        let procs = CIFP.procedures(airport: airport).prefix(2048).filter { $0.kind == kind }
-        guard let m = procs.first(where: { plate.contains($0.name.uppercased()) && !$0.name.isEmpty })
-                ?? procs.first(where: { plate.contains($0.ident.uppercased()) && !$0.ident.isEmpty })
+        let rows = CIFP.procedures(airport: airport).prefix(2048).filter { $0.kind == kind }
+        guard let ident = TerminalChartMatch.match(plateName: current.name,
+                                                   idents: rows.map(\.ident)),
+              let row = rows.first(where: { $0.ident.uppercased() == ident })
         else { return nil }
-        let legs = Array(CIFP.legs(procedureID: m.id).prefix(512))       // bounded (rule 2)
+        let loaded = LoadedProcedure(airport: airport, kind: kind, ident: row.ident,
+                                     name: row.name.isEmpty ? row.ident : row.name,
+                                     runway: row.runway, transition: row.transition, fixes: [])
+        let legs = kind == "SID"
+            ? ProcedureRoute.sidLegs(loaded, connectingFix: nil, departureRunway: nil)
+            : ProcedureRoute.starLegs(loaded, connectingFix: nil, landingRunway: nil)
         guard legs.count >= 2 else { return nil }
-        let chart = VectorProcedureChart.build(legs: legs, airport: airport,
-                                               procedureName: m.name.isEmpty ? m.ident : m.name,
+        let chart = VectorProcedureChart.build(legs: Array(legs.prefix(512)), airport: airport,
+                                               procedureName: row.name.isEmpty ? row.ident : row.name,
                                                kind: kind, runwayThresholds: nil)
         return chart.extent.count >= 2 ? chart : nil
     }

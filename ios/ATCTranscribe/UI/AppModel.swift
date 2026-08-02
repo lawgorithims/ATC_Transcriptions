@@ -2747,7 +2747,10 @@ final class AppModel: ObservableObject {
                                                  candidates: [(ident: appr.ident, name: appr.name,
                                                                runway: appr.runway)]).isEmpty,
                   let m = minima.result(for: chart)?.minima else { continue }
-            guard let limit = MinimaSolver.temperatureLimit(m), let lo = limit.minC else { return nil }
+            // ⚠️ `continue`, NOT `return nil`. Several charts can match the flown approach (an ILS plate
+            // and its RNAV sibling both name the runway), and bailing on the first one that publishes no
+            // limit hid the annotation for approaches that do publish one.
+            guard let limit = MinimaSolver.temperatureLimit(m), let lo = limit.minC else { continue }
             assert(lo > -100 && lo < 60, "activeBaroVNAVLimitC: implausible limit")
             return Double(lo)
         }

@@ -317,18 +317,16 @@ struct PlatesTabView: View {
         }
     }
 
-    /// Extract the runway designator from an approach name ("ILS OR LOC RWY 04R" → "04R", "RNAV (GPS)
-    /// RWY 22L" → "22L", "VOR RWY 15" → "15"). nil for circling-only approaches (e.g. "VOR-A").
+    /// The runway a plate title names ("ILS OR LOC RWY 04R" → "4R"); nil for circling-only ("VOR-A"). ⚠️ DELEGATES TO `ApproachActivation.plateRunway` — this used to
+    /// be a second, independent copy of the extraction, and the copy that mattered (the one inside the
+    /// plate matcher) did not exist at all. One implementation, so the Plates list and the matcher can
+    /// never disagree about which runway a chart is for.
+    /// Re-padded for DISPLAY: this key is what the section header shows, and pilots read "04R".
     static func runway(of name: String) -> String? {
-        let up = name.uppercased()
-        guard let r = up.range(of: "RWY ") else { return nil }
-        var digits = "", suffix = ""
-        for ch in up[r.upperBound...].prefix(3) {          // bounded (Power-of-10 rule 2): ≤2 digits + 1 side
-            if ch.isNumber, suffix.isEmpty, digits.count < 2 { digits.append(ch) }
-            else if "LCR".contains(ch), !digits.isEmpty, suffix.isEmpty { suffix = String(ch); break }
-            else { break }
-        }
-        return digits.isEmpty ? nil : digits + suffix
+        guard let r = ApproachActivation.plateRunway(name) else { return nil }
+        let digits = r.prefix { $0.isNumber }
+        guard let n = Int(digits) else { return r }
+        return String(format: "%02d", n) + r.dropFirst(digits.count)
     }
 
     /// Sort key so runways order numerically (04 < 15 < 22) with L<C<R, and "Circling / other" last.
