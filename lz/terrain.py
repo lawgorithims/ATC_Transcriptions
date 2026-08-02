@@ -236,9 +236,26 @@ def build_coarse_tile(url, out_path, force=False):
     dy_m = abs(gt[5]) * 111_320.0
     dx_m = abs(gt[1]) * 111_320.0 * math.cos(math.radians(lat))
     assert dx_m > 0 and dy_m > 0, "build_coarse_tile: degenerate pixel size"
+    # ⚠️ A TILE OF PURE NODATA IS A FAILED READ, NOT A FLAT CELL. When a /vsicurl stream fails
+    # part-way, GDAL hands back a perfectly valid array filled with the band's nodata value; the
+    # masking above then turns all of it into NaN and everything downstream carries on. That is
+    # exactly what happened to n35w108: an all-NaN slope plane, so no cell could pass the extent
+    # scan, so the pack said NOWHERE in a 1-degree cell has room to land — and it verified, gated
+    # and shipped at 11 MB while its neighbours were 55. The source DEM was fine the whole time.
+    #
+    # Nothing else in the pipeline can tell that apart from real terrain, so it has to be caught here.
+    finite = int(np.isfinite(z).sum())
+    if finite == 0:
+        return "read-failed"
+    if finite < z.size // 2:
+        print(f"     ^ only {100.0 * finite / z.size:.1f}% of {os.path.basename(url)} carried "
+              "elevation — treating as a failed read", flush=True)
+        return "read-failed"
+
     with np.errstate(all="ignore"):
         gy, gx = np.gradient(z, dy_m, dx_m)
         slope = np.degrees(np.arctan(np.hypot(gx, gy))).astype(np.float32)
+    assert np.isfinite(slope).any(), "build_coarse_tile: slope came out entirely unmeasured"
     unknown = np.full(slope.shape, np.nan, np.float32)
     _write_stack(out_path, np.stack([slope, unknown, unknown]), gt, wkt)
     return "built"
@@ -354,6 +371,15 @@ def cmd_mosaic():
         src = np.where(fine_ok, C.TERRAIN_SRC_FINE, C.TERRAIN_SRC_COARSE).astype(np.uint8)
     else:
         src = np.where(fine_ok, C.TERRAIN_SRC_FINE, C.TERRAIN_SRC_COARSE).astype(np.uint8)
+
+    # The same check one level up, because a per-tile product can be fine and the MOSAIC still land
+    # nowhere near the master grid (a wrong fallback tile, a bad geotransform). Either way the next
+    # three stages would run happily on an empty grid and produce a pack that passes every
+    # structural gate while asserting there is no measurable ground in the cell.
+    measured = float(np.isfinite(raw[0]).mean())
+    if measured < 0.10:
+        sys.exit(f"mosaic: only {measured * 100:.2f}% of the grid has any slope at all. That is a "
+                 "failed or misplaced source read, not terrain — refusing to build on it.")
 
     np.save(os.path.join(workdir, "slope.npy"), raw[0])
     np.save(os.path.join(workdir, "rough.npy"), raw[1])
