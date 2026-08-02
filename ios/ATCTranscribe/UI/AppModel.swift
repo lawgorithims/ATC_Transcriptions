@@ -2568,6 +2568,17 @@ final class AppModel: ObservableObject {
 
     // MARK: Active approach (activate → fly it → missed)
 
+    /// The off-field glide the pilot has armed after rehearsing it, if any.
+    ///
+    /// ⚠️ DELIBERATELY NOT AN `ActiveApproach`. That type is CIFP-shaped — airport, ARINC ident,
+    /// runway, published holds, coded missed segment — and expressing a glide to unsurveyed ground
+    /// in it would have required inventing an airport, an ident and a runway for a field nobody has
+    /// ever landed on. The whole design of this layer has been to avoid borrowing that authority, so
+    /// the two stay separate types and the map draws them differently.
+    ///
+    /// Transient, like an active approach: this is a phase of THIS flight and never persists.
+    @Published var armedGlidePlan: LZGlidePlan?
+
     /// The approach the pilot has ACTIVATED, and how they are joining it. Distinct from a merely
     /// *loaded* procedure: this is the one being flown, it is what arms the missed-approach control,
     /// and it is what the map draws as the active approach path. Transient by design — an approach is
