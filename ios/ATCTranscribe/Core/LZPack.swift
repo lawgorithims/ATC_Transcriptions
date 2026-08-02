@@ -1,5 +1,6 @@
 import Foundation
 import Compression
+import MapKit   // MKMapRect — the bounds index in LZPackStore
 
 /// Reader for `.lzpack` — the offline off-field-landability fact tiles built by `lz/package.py`.
 ///
@@ -197,9 +198,24 @@ final class LZPackStore {
     /// Far above any plausible install; exists so a directory full of junk cannot spin forever.
     private static let maxPacks = 64
 
-    private(set) var readers: [MBTilesReader] = []
+    /// A mounted pack plus the rect it covers, resolved ONCE at mount.
+    ///
+    /// Without this, `planes(z:x:y:)` asked every pack for every tile and relied on SQLite to say
+    /// "no such row" — an O(packs) query storm on the tile-serving hot path, for a question the
+    /// pack's own `bounds` answers for free. Harmless with one pack, which is all there ever was;
+    /// a region is a dozen, and a served tile is on a MapLibre worker thread with a frame waiting.
+    struct Mounted {
+        let reader: MBTilesReader
+        let rect: MKMapRect
+    }
+
+    private(set) var mounted: [Mounted] = []
     private(set) var rejected: [String] = []
     let directory: URL
+
+    /// The mounted readers, in mount order. Kept as the public surface because callers care about
+    /// packs, not about the bounds index that makes lookups cheap.
+    var readers: [MBTilesReader] { mounted.map(\.reader) }
 
     init(directory: URL? = nil) {
         self.directory = directory ?? Self.defaultDirectory()
@@ -224,16 +240,15 @@ final class LZPackStore {
     /// a pack from a newer pipeline is REFUSED rather than read as garbage, and the refusal is
     /// recorded so the UI can say why instead of showing an empty map.
     func reload() {
-        readers.removeAll()
+        mounted.removeAll()
         rejected.removeAll()
         let fm = FileManager.default
         let all = (try? fm.contentsOfDirectory(at: directory,
                                                includingPropertiesForKeys: nil)) ?? []
         let packs = all.filter { $0.pathExtension.lowercased() == "lzpack" }
                        .sorted { $0.lastPathComponent < $1.lastPathComponent }
-        var mounted = 0
         for url in packs {
-            guard mounted < Self.maxPacks else { break }
+            guard mounted.count < Self.maxPacks else { break }
             guard let r = MBTilesReader(path: url.path) else {
                 rejected.append("\(url.lastPathComponent): unreadable")
                 continue
@@ -247,13 +262,55 @@ final class LZPackStore {
                 rejected.append("\(url.lastPathComponent): plane order mismatch")
                 continue
             }
-            readers.append(r)
-            mounted += 1
+            mounted.append(Mounted(reader: r, rect: Self.coveredRect(r)))
         }
-        assert(readers.count <= Self.maxPacks, "LZPackStore: pack cap exceeded")
+        assert(mounted.count <= Self.maxPacks, "LZPackStore: pack cap exceeded")
+        assert(rejected.count <= packs.count, "LZPackStore: more rejections than files")
     }
 
-    var isAvailable: Bool { !readers.isEmpty }
+    /// The MKMapRect a z/x/y tile covers. `MKMapRect` IS the Web Mercator square normalised to
+    /// `MKMapSize.world`, so this is exact and needs no trigonometry — the tile grid at zoom z is
+    /// just the world divided into 2^z along each axis.
+    static func tileRect(z: Int, x: Int, y: Int) -> MKMapRect {
+        let side = MKMapSize.world.width / Double(1 << z)
+        return MKMapRect(x: Double(x) * side, y: Double(y) * side, width: side, height: side)
+    }
+
+    /// What a pack ACTUALLY covers, derived from the tile addresses it stores — not from the
+    /// `bounds` it claims in metadata.
+    ///
+    /// Bounds metadata is a claim, and a pack whose claim disagrees with its contents would have
+    /// every real tile silently skipped by the index below. That is not hypothetical: the test
+    /// fixture is a synthetic four-tile pack whose addresses sit nowhere near the cell its metadata
+    /// names, and trusting `bounds` made it serve nothing at all. The stored extent cannot lie.
+    ///
+    /// Falls back to the whole world when the pack is empty or the query fails — degraded to the
+    /// old per-tile-query behaviour, which is slow but correct. Fast-but-wrong is not a trade worth
+    /// making with the ground under an aeroplane.
+    static func coveredRect(_ r: MBTilesReader) -> MKMapRect {
+        guard let e = r.tileExtent(z: r.minZoom) else { return .world }
+        let a = tileRect(z: r.minZoom, x: e.minX, y: e.minY)
+        let b = tileRect(z: r.minZoom, x: e.maxX, y: e.maxY)
+        let rect = a.union(b)
+        return rect.isNull || rect.isEmpty ? .world : rect
+    }
+
+    var isAvailable: Bool { !mounted.isEmpty }
+
+    /// Identity of the mounted SET — every pack id paired with its build stamp, sorted.
+    ///
+    /// The tile cache and the served tile URL both key on a signature derived from this. Keying on
+    /// the pack COUNT instead (what this replaced) meant installing one cell and removing another
+    /// left the signature unchanged, so the map went on serving cached tiles composited from a pack
+    /// that is no longer mounted — stale ground under a pilot, indistinguishable from correct.
+    /// Rebuilding a pack under the same filename has the same shape, which is why the stamp is in
+    /// here and not just the id.
+    var packFingerprint: String {
+        mounted
+            .map { "\($0.reader.packID):\($0.reader.metadata["built_at"] ?? "?")" }
+            .sorted()
+            .joined(separator: "|")
+    }
 
     /// Data vintages, for the "what does this layer know, and how old is it" line on the card.
     var vintages: [String: String] {
@@ -266,12 +323,18 @@ final class LZPackStore {
 
     /// Decode the tile at an XYZ address from the first pack that holds it.
     /// `MBTilesReader` performs the TMS row flip, so the address stays XYZ here.
+    ///
+    /// Rejects by BOUNDS before touching SQLite. Over a region of cells the overwhelmingly common
+    /// case is "this tile is not in this pack", and answering that from a rect the pack already
+    /// declared costs a comparison instead of a query.
     func planes(z: Int, x: Int, y: Int) -> LZTilePlanes? {
         guard z >= 0, z <= 24 else { return nil }
         guard x >= 0, y >= 0 else { return nil }
-        for r in readers {
-            guard z >= r.minZoom, z <= r.maxZoom else { continue }
-            if let data = r.tileData(z: z, x: x, y: y), let p = LZPackBlob.decode(data) {
+        let want = Self.tileRect(z: z, x: x, y: y)
+        for m in mounted {                                   // bounded by maxPacks (rule 2)
+            guard z >= m.reader.minZoom, z <= m.reader.maxZoom else { continue }
+            guard m.rect.intersects(want) else { continue }
+            if let data = m.reader.tileData(z: z, x: x, y: y), let p = LZPackBlob.decode(data) {
                 return p
             }
         }

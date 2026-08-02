@@ -32,7 +32,11 @@ final class LZRiskController: ObservableObject {
     private var lastKey: String = ""
 
     /// Cheap identity of the inputs that change what a pixel renders.
-    private static func key(aircraft: AircraftProfile?, night: Bool, packs: Int) -> String {
+    ///
+    /// `packs` is the mounted SET's fingerprint, not its count. A count cannot tell "installed a
+    /// cell" from "installed one and removed another", and the second case leaves every cached tile
+    /// composited from a pack that is gone.
+    private static func key(aircraft: AircraftProfile?, night: Bool, packs: String) -> String {
         let a = aircraft.map { "\($0.glideRatio ?? -1)|\($0.bestGlideKts ?? -1)" } ?? "default"
         return "\(a)|\(night ? "n" : "d")|\(packs)"
     }
@@ -47,7 +51,8 @@ final class LZRiskController: ObservableObject {
             return
         }
         let night = (theme == .night)
-        let k = Self.key(aircraft: aircraft, night: night, packs: store.readers.count)
+        let fingerprint = store.packFingerprint
+        let k = Self.key(aircraft: aircraft, night: night, packs: fingerprint)
         guard k != lastKey || compositor == nil else { return }
         lastKey = k
 
@@ -57,12 +62,13 @@ final class LZRiskController: ObservableObject {
             signature = nil
             return
         }
-        // The pack's own build stamp joins the signature: reinstalling a rebuilt pack under the
-        // same filename must not be served from the previous pack's cached tiles.
-        let stamp = store.readers.first?.metadata["built_at"] ?? "unknown"
+        // The whole mounted set's fingerprint joins the signature, not just the first pack's stamp:
+        // reinstalling a rebuilt pack under the same filename must not be served from the previous
+        // pack's cached tiles, and with several packs mounted "the first one" is an arbitrary pick
+        // that says nothing about the other eleven.
         guard let rules = LZRulesetCompiler.compile(document: doc, aircraft: aircraft,
                                                     themeKey: night ? "night" : "day",
-                                                    packStamp: stamp) else {
+                                                    packStamp: fingerprint) else {
             status = "ruleset failed to compile — layer withheld"
             packAvailable = false
             signature = nil
@@ -87,6 +93,21 @@ final class LZRiskController: ObservableObject {
                 : "pack refused: \(s.rejected.joined(separator: "; "))"
         }
         assert(document != nil || !s.isAvailable, "a mounted pack with no ruleset cannot render")
+    }
+
+    /// A pack landed (or was deleted) while the app was running — pick it up NOW.
+    ///
+    /// `mount()` alone is not enough: the map's `.task(id:)` keys on aircraft/theme/layer state,
+    /// none of which changes when a download finishes, so a pack that arrived while the map was on
+    /// screen stayed invisible until the pilot toggled something. Downloading 88 MB and watching
+    /// the map not change is indistinguishable from the layer being broken.
+    ///
+    /// Idempotent and cheap when nothing moved: `refresh` re-keys on the mounted fingerprint and
+    /// returns immediately if it matches.
+    func packsChangedOnDisk(aircraft: AircraftProfile?, theme: AppTheme) {
+        mount()
+        refresh(aircraft: aircraft, theme: theme)
+        assert(store != nil, "packsChangedOnDisk must leave a store mounted")
     }
 
     /// Handed to `MBTilesHTTPServer.setLZProvider`. Runs on the server's concurrent queue, so it
