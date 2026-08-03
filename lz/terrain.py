@@ -2,12 +2,22 @@
 """terrain.py — Stage 1: slope, roughness and micro-relief, reduced from NATIVE 1 m lidar.
 
 WHAT IT MAKES
-    lz/work/<cell>/tiles10m/<tile>.tif   per-source-tile, 3-band float32 at 10 m in the tile's
-                                         native CRS: [slope_deg, rough_m, micro_m]
+    lz/work/<cell>/tiles10m/<tile>.tif   per-source-tile, 4-band float32 at 10 m in the tile's
+                                         native CRS: [slope_deg, rough_m, micro_m, elev_m]
     lz/work/<cell>/slope.npy             \\
     lz/work/<cell>/rough.npy              |  mosaicked onto the EPSG:5070 master grid
     lz/work/<cell>/micro.npy              |
     lz/work/<cell>/terrain_src.npy       /   0=fine(1 m) 1=mixed 2=coarse(1/3")
+    lz/terrain_archive/elev10m_<cell>.tif    THE HEIGHT ITSELF — int16 m, DEFLATE, EPSG:5070.
+                                         NOT scratch: this survives the per-cell cleanup.
+
+WHY THE ELEVATION IS KEPT
+    The landability planes need only the DERIVATIVES of height, so height was computed, used and
+    discarded — throwing away the ~45 min and ~30 GB of streaming that produced it. Anything wanting
+    the terrain itself (synthetic vision) would have to pull the whole lot again. The block mean is
+    already computed as the datum the roughness residuals are measured against, so keeping it is
+    nearly free. Held at the full 10 m analysis posting rather than the ~30 m a horizon view needs:
+    coarsening later is instant, re-downloading is not.
 
 WHY THE STATISTICS COME FROM 1 m AND NOT FROM A 10 m GRID
     This is the one ordering mistake that silently produces a confident wrong answer. Detrended
@@ -148,7 +158,13 @@ def block_stats(z, nodata=None):
         resid = d - (a[..., None] * X + b[..., None] * Y)
         rough = np.sqrt(np.nanmean(resid * resid, axis=2))
         micro = np.nanmax(resid, axis=2) - np.nanmin(resid, axis=2)
-    return (slope.astype(np.float32), rough.astype(np.float32), micro.astype(np.float32))
+    # ELEVATION COMES FREE. `mean` is the block's mean height, already computed above as the datum
+    # the plane fit measures residuals against. Returning it costs one array copy and saves having to
+    # stream ~145 source tiles a second time if anything ever needs the terrain itself — synthetic
+    # vision being the obvious candidate. The landability planes discard height and keep only its
+    # derivatives, so without this the elevation we paid 45 minutes to download is thrown away.
+    return (slope.astype(np.float32), rough.astype(np.float32), micro.astype(np.float32),
+            mean[..., 0].astype(np.float32))
 
 
 def build_tile(url, out_path, force=False):
@@ -174,6 +190,7 @@ def build_tile(url, out_path, force=False):
     slope = np.full((bh, bw), np.nan, np.float32)
     rough = np.full((bh, bw), np.nan, np.float32)
     micro = np.full((bh, bw), np.nan, np.float32)
+    elev = np.full((bh, bw), np.nan, np.float32)
 
     for b0 in range(0, bh, STRIP_BLOCKS):
         nb = min(STRIP_BLOCKS, bh - b0)
@@ -185,14 +202,15 @@ def build_tile(url, out_path, force=False):
         if arr is None:
             ds = None
             return "read-failed"
-        s, ro, mi = block_stats(arr[pre:pre + ny, :].astype(np.float64), nodata)
+        s, ro, mi, el = block_stats(arr[pre:pre + ny, :].astype(np.float64), nodata)
         slope[b0:b0 + nb, :] = s
         rough[b0:b0 + nb, :] = ro
         micro[b0:b0 + nb, :] = mi
+        elev[b0:b0 + nb, :] = el
     ds = None
 
     gt10 = (gt[0], gt[1] * BLOCK, gt[2], gt[3], gt[4], gt[5] * BLOCK)
-    _write_stack(out_path, np.stack([slope, rough, micro]), gt10, wkt)
+    _write_stack(out_path, np.stack([slope, rough, micro, elev]), gt10, wkt)
     return "built"
 
 
@@ -257,7 +275,7 @@ def build_coarse_tile(url, out_path, force=False):
         slope = np.degrees(np.arctan(np.hypot(gx, gy))).astype(np.float32)
     assert np.isfinite(slope).any(), "build_coarse_tile: slope came out entirely unmeasured"
     unknown = np.full(slope.shape, np.nan, np.float32)
-    _write_stack(out_path, np.stack([slope, unknown, unknown]), gt, wkt)
+    _write_stack(out_path, np.stack([slope, unknown, unknown, z.astype(np.float32)]), gt, wkt)
     return "built"
 
 
@@ -331,7 +349,7 @@ def _warp_to_grid(tifs, vrt, warped, g):
     ds = gdal.Open(warped)
     arr = ds.ReadAsArray().astype(np.float32)
     ds = None
-    assert arr.shape[0] == 3, "mosaic: expected three bands"
+    assert arr.shape[0] == 4, "mosaic: expected four bands (slope, rough, micro, elev)"
     return arr
 
 
@@ -380,6 +398,40 @@ def cmd_mosaic():
     if measured < 0.10:
         sys.exit(f"mosaic: only {measured * 100:.2f}% of the grid has any slope at all. That is a "
                  "failed or misplaced source read, not terrain — refusing to build on it.")
+
+    # ============================================================================================
+    # THE ELEVATION ARCHIVE — kept OUTSIDE the scratch that gets deleted after packaging.
+    # ============================================================================================
+    # The landability planes need only the DERIVATIVES of height (slope, roughness, micro-relief),
+    # so height itself was computed, used and thrown away — along with the ~45 minutes and ~30 GB of
+    # streaming that produced it. Anything wanting the terrain itself, synthetic vision above all,
+    # would have had to re-stream the lot.
+    #
+    # Written as int16 metres, DEFLATE, at the 10 m analysis posting. The app's bundled CONUS grid is
+    # 1855 m per post — fine for an AGL readout, far too coarse for a horizon: a ridge is two samples
+    # wide. Keeping the full 10 m here means a device-facing pack can later be derived at whatever
+    # resolution that feature wants (30 m is the usual choice) WITHOUT touching the network again.
+    # Coarsening is free; the reverse is not.
+    arch = os.path.join(C.LZ_ROOT, "terrain_archive")
+    os.makedirs(arch, exist_ok=True)
+    elev = raw[3]
+    ELEV_NODATA = -32768
+    q = np.where(np.isfinite(elev), np.clip(np.round(elev), -32000, 32000), ELEV_NODATA)
+    drv = gdal.GetDriverByName("GTiff")
+    ep = os.path.join(arch, f"elev10m_{C.CELL_ID}.tif")
+    out = drv.Create(ep, q.shape[1], q.shape[0], 1, gdal.GDT_Int16,
+                     options=["COMPRESS=DEFLATE", "PREDICTOR=2", "ZLEVEL=9",
+                              "TILED=YES", "BIGTIFF=IF_SAFER"])
+    out.SetGeoTransform((g["x_min"], C.CELL_SIZE_M, 0, g["y_max"], 0, -C.CELL_SIZE_M))
+    srs2 = osr.SpatialReference(); srs2.ImportFromEPSG(C.ANALYSIS_EPSG)
+    out.SetProjection(srs2.ExportToWkt())
+    band = out.GetRasterBand(1)
+    band.WriteArray(q.astype(np.int16))
+    band.SetNoDataValue(ELEV_NODATA)
+    out.FlushCache(); out = None
+    measured_elev = float(np.isfinite(elev).mean() * 100.0)
+    print(f"elevation archive: {ep} "
+          f"({os.path.getsize(ep) / 1e6:.0f} MB, {measured_elev:.1f}% measured)")
 
     np.save(os.path.join(workdir, "slope.npy"), raw[0])
     np.save(os.path.join(workdir, "rough.npy"), raw[1])
@@ -462,32 +514,32 @@ def cmd_selftest():
 
     for tilt in (0.0, 3.0, 20.0):
         yy, xx = np.mgrid[0:30, 0:30]
-        s, r, mi = block_stats(np.tan(np.radians(tilt)) * xx.astype(float))
+        s, r, mi, _ = block_stats(np.tan(np.radians(tilt)) * xx.astype(float))
         chk(f"plane {tilt:>4.1f} deg", abs(np.nanmedian(s) - tilt) < 0.05 and np.nanmax(r) < 1e-6,
             f"slope={np.nanmedian(s):.3f} rough={np.nanmax(r):.1e}")
 
     rng = np.random.default_rng(3)
     noise = rng.normal(0, 0.25, (30, 30))
-    _, r_flat, _ = block_stats(noise)
+    _, r_flat, _, _ = block_stats(noise)
     yy, xx = np.mgrid[0:30, 0:30]
-    _, r_tilt, _ = block_stats(np.tan(np.radians(20)) * xx + noise)
+    _, r_tilt, _, _ = block_stats(np.tan(np.radians(20)) * xx + noise)
     chk("detrending separates tilt from texture",
         abs(np.nanmedian(r_flat) - np.nanmedian(r_tilt)) < 0.02,
         f"flat={np.nanmedian(r_flat):.4f} vs 20deg={np.nanmedian(r_tilt):.4f}")
 
     z = np.zeros((10, 10))
     z[:, 4] = -1.5
-    s, r, mi = block_stats(z)
+    s, r, mi, _ = block_stats(z)
     chk("a ditch reads in micro, not sigma", float(mi[0, 0]) > 1.3 and float(r[0, 0]) < 0.6,
         f"micro={float(mi[0,0]):.2f} m sigma={float(r[0,0]):.2f} m")
 
     z = np.full((10, 10), 100.0)
     z[3:6, 3:6] = np.nan
-    s, r, _ = block_stats(z)
+    s, r, _, _ = block_stats(z)
     chk("nodata does not fabricate flat ground", np.isfinite(s[0, 0]) and float(r[0, 0]) < 1e-6)
 
     z = np.full((10, 10), 100.0)
-    s, r, _ = block_stats(z, nodata=100.0)
+    s, r, _, _ = block_stats(z, nodata=100.0)
     chk("an all-nodata block yields nan, not zero", not np.isfinite(s[0, 0]))
 
     print("\nSELFTEST PASS" if ok else "\nSELFTEST FAIL")
