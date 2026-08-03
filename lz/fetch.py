@@ -73,6 +73,10 @@ import lzcommon as C  # noqa: E402
 UA = "CommSight-LZ/1.0 (+https://flycommsight.com) python-urllib"
 HTTP_TIMEOUT = 120
 MAX_RETRIES = 3
+# The National Map answers 200-with-an-error-body when it is unwell, which no HTTP-level retry can
+# see. Retried separately in Dem3DEP._query, where mistaking it for "no coverage" costs a cell its
+# elevation fidelity.
+TNM_ERROR_RETRIES = 4
 RETRY_BACKOFF_S = 4
 
 TNM_API = "https://tnmaccess.nationalmap.gov/api/v1/products"
@@ -318,7 +322,29 @@ class Dem3DEP(Source):
         bbox = f"{C.CELL_LON_MIN},{C.CELL_LAT_MIN},{C.CELL_LON_MAX},{C.CELL_LAT_MAX}"
         u = (f"{TNM_API}?datasets={urllib.parse.quote(dataset)}&bbox={bbox}"
              f"&max={mx}&outputFormat=JSON")
-        return http_json(u) or {"items": []}
+        # ⚠️⚠️ AN API ERROR MUST NEVER BE READ AS "NO DATA HERE". The National Map answers HTTP 200
+        # with an error BODY when it is unwell:
+        #     {"error": "Expecting value: line 1 column 1 (char 0)", "showToast": true, ...}
+        # `.get("items", [])` on that is an empty list, which this class then read as "no 1 m lidar
+        # over this cell" and quietly fell back to 1/3 arc-second. The build succeeded, the gate
+        # passed, and the pack said COARSE — for ground that has six lidar projects over it.
+        #
+        # That is the difference between a cell built at 1 m and the same cell built at 10 m, decided
+        # silently by whether a federal API happened to be healthy that afternoon. Retry, then FAIL
+        # LOUDLY; never infer absence from a fault.
+        for attempt in range(TNM_ERROR_RETRIES + 1):                 # bounded (rule 2)
+            d = http_json(u) or {}
+            if not (isinstance(d, dict) and d.get("error")):
+                return d or {"items": []}
+            if attempt < TNM_ERROR_RETRIES:
+                delay = min(RETRY_BACKOFF_S * (2 ** attempt), BACKOFF_CAP_S)
+                print(f"     National Map returned an error body, retry {attempt + 1} in "
+                      f"{delay:.0f}s: {d['error']}", flush=True)
+                time.sleep(delay)
+        raise RuntimeError(
+            f"National Map product API is returning errors for {dataset!r} "
+            f"({d.get('error')}). REFUSING to treat that as 'no coverage here' — a cell built on "
+            "that assumption is silently downgraded from 1 m to 10 m elevation.")
 
     def probe(self):
         d = self._query(self.DS_1M, mx=1)
@@ -1099,6 +1125,15 @@ def main():
     ap.add_argument("--assert-coverage", action="store_true",
                     help="prove each source is readable and covers the cell")
     ap.add_argument("--source", action="append", default=[], help="limit to one source (repeatable)")
+    ap.add_argument("--skip-optional", action="store_true",
+                    help="skip sources marked optional. Intended for wide-area runs: the only "
+                         "optional source that materialises anything is the quarantined OSM power "
+                         "extract, which is a 129 MB per-STATE file that contributes NOTHING to the "
+                         "pack (verify.py's ODbL gate proves the planes are byte-identical without "
+                         "it). It is also hardcoded to one state, so outside that state it would "
+                         "download the wrong data and record it as provenance. Skipping is both "
+                         "cheaper and a stronger licence position — data never downloaded cannot "
+                         "contaminate anything.")
     ap.add_argument("--patience", type=float, default=0.0, metavar="MIN",
                     help="keep retrying transient HTTP failures for up to MIN minutes, so an "
                          "unattended multi-cell build rides out a federal API outage")
@@ -1109,6 +1144,11 @@ def main():
     PATIENCE_S = max(0.0, a.patience) * 60.0
 
     sel = _selected(a.source)
+    if a.skip_optional:
+        dropped = [s.name for s in sel if not s.required]
+        sel = [s for s in sel if s.required]
+        if dropped:
+            print(f"skipping optional: {', '.join(dropped)}", flush=True)
     if a.list:
         return cmd_list()
     if a.probe:
