@@ -26,8 +26,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import lzcommon as C            # noqa: E402
-import fetch as F               # noqa: E402
+WESM_URL = ("/vsicurl/https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/metadata/WESM.gpkg")
 
 # ⚠️ CALL THE BUILDER'S OWN QUERY, DO NOT WRITE A SECOND ONE. The first version of this file
 # reimplemented the National Map request and got 0 of 6 on cells that are provably 100% 1 m lidar —
@@ -48,16 +47,41 @@ def cell_id(lat_north, lon_west):
     return f"n{lat_north:02d}w{abs(lon_west):03d}"
 
 
-def has_1m(lat_north, lon_west):
-    """True when the National Map publishes 1 m DEM over this cell — the builder's own question."""
-    cid = cell_id(lat_north, lon_west)
-    try:
-        C.select_cell(cid)                 # sets the lat/lon window every URL is built from
-        total = F.Dem3DEP().probe().get("tnm_total_1m")
-        return None if total is None else int(total) > 0
-    except Exception as exc:                                         # noqa: BLE001
-        print(f"     ? {cid}: {exc}", file=sys.stderr, flush=True)
-        return None
+def load_survey_index(max_gsd=1.0):
+    """Every 3DEP survey footprint at or finer than `max_gsd`, read ONCE.
+
+    ⚠️ ONE QUERY, NOT ONE PER CELL. The first version asked the product API per cell, which made a
+    CONUS estimate ~1000 network calls and — during an outage — impossible. The WESM index holds all
+    3,268 survey footprints in a single file that GDAL reads remotely in about a second, so the whole
+    country can be costed locally, offline of the flaky API, in the time one cell used to take.
+    """
+    from osgeo import ogr, gdal
+    gdal.UseExceptions()
+    gdal.SetConfigOption("CPL_VSIL_CURL_ALLOWED_EXTENSIONS", ".gpkg")
+    ds = ogr.Open(WESM_URL)
+    if ds is None:
+        raise RuntimeError("WESM.gpkg unreachable")
+    layer = ds.GetLayer(0)
+    keep = []
+    for feat in layer:                                               # bounded: 3268 features
+        gsd = feat.GetField("dem_gsd_meters")
+        if gsd is None or float(gsd) > max_gsd:
+            continue
+        geom = feat.GetGeometryRef()
+        if geom is not None:
+            keep.append(geom.Clone())
+    return ds, keep
+
+
+def cell_rect(lat_north, lon_west):
+    from osgeo import ogr
+    r = ogr.Geometry(ogr.wkbLinearRing)
+    for x, y in ((lon_west, lat_north - 1), (lon_west + 1, lat_north - 1),
+                 (lon_west + 1, lat_north), (lon_west, lat_north), (lon_west, lat_north - 1)):
+        r.AddPoint_2D(x, y)
+    poly = ogr.Geometry(ogr.wkbPolygon)
+    poly.AddGeometry(r)
+    return poly
 
 
 def main():
@@ -94,9 +118,13 @@ def main():
     fine = coarse = unknown = 0
     answers = {}
     t0 = time.time()
+    _ds, footprints = load_survey_index()
+    print(f"  survey index: {len(footprints)} footprints at <=1 m ({time.time()-t0:.0f}s)",
+          flush=True)
     for i, (lat, lon) in enumerate(targets, 1):                      # bounded (rule 2)
         cid = cell_id(lat, lon)
-        got = has_1m(lat, lon)
+        box = cell_rect(lat, lon)
+        got = any(box.Intersects(g) for g in footprints)             # bounded (rule 2)
         answers[cid] = got
         if got is None:
             unknown += 1
