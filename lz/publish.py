@@ -100,11 +100,30 @@ REGIONS = [
         # dips south near El Paso. The ring is therefore shifted NORTH into New Mexico rather than
         # squared around Las Cruces.
         "cells": ["n32w106",
-                  "n33w106", "n33w107", "n33w108",
-                  "n34w106", "n34w107", "n34w108",
-                  "n35w106", "n35w107", "n35w108"],
+                  "n33w105", "n33w106", "n33w107", "n33w108",
+                  "n34w105", "n34w106", "n34w107", "n34w108"],
+    },
+    {
+        "id": "northern-nm",
+        "title": "Northern New Mexico",
+        "note": "Albuquerque, Santa Fe, the middle Rio Grande, the Sandias and the Jemez, "
+                "north toward the Colorado line.",
+        "cells": ["n35w105", "n35w106", "n35w107", "n35w108",
+                  "n36w106", "n36w107", "n36w108",
+                  "n37w105", "n37w106", "n37w107", "n37w108"],
+    },
+    {
+        "id": "western-nm",
+        "title": "Western New Mexico",
+        "note": "The Continental Divide, the Gila high country and the Arizona border.",
+        "cells": ["n33w109", "n34w109", "n35w109", "n36w109", "n37w109"],
     },
 ]
+
+# ⚠️ A REGION LISTS CELLS THAT MAY NOT EXIST YET. `build_catalog` filters each region down to what
+# is actually published, and drops a region entirely when none of its cells are — so naming the
+# whole planned block here is safe, and the catalog never offers a download that 404s. Forgetting
+# to add a cell here is the failure that bites: it builds, it publishes, and it is invisible.
 
 VERIFY_RANGE_BYTES = 1 << 20             # first MiB is plenty to prove the transport works
 
