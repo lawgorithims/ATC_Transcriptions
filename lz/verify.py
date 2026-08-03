@@ -345,8 +345,17 @@ def gate_odbl():
         moved = osm + ".quarantined"
         shutil.move(osm, moved)
     try:
+        # ⚠️ `--cell` IS LOAD-BEARING. Without it this rebuilt the DEFAULT cell while comparing
+        # hashes against the cell under test — so the file being checked was never touched, the
+        # before/after sha256 matched trivially, and the gate reported PASS having proved nothing.
+        # Every non-default cell "passed" the licence proof vacuously from the moment the pipeline
+        # was parameterised by cell.
+        #
+        # It surfaced only because clearing the default cell's scratch made this subprocess fail,
+        # which turned a silent vacuous pass into an honest failure.
         r = subprocess.run([sys.executable, os.path.join(os.path.dirname(__file__), "hazard.py"),
-                            "--build"], capture_output=True, text=True, timeout=3600)
+                            "--cell", C.CELL_ID, "--build"],
+                           capture_output=True, text=True, timeout=3600)
         if r.returncode != 0:
             return check("ODbL independence", False, "rebuild failed")
         after = (hashlib.sha256(open(hz, "rb").read()).hexdigest(),
