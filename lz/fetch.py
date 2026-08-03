@@ -352,8 +352,28 @@ class Dem3DEP(Source):
 
     def fetch(self):
         """Resolve to a URL list. Nothing is downloaded — see MATERIALISED vs STREAMED."""
-        items = self._query(self.DS_1M).get("items", [])
         tiles, projects, vintages = [], set(), set()
+        via = "tnm-api"
+        try:
+            items = self._query(self.DS_1M).get("items", [])
+        except RuntimeError as exc:
+            # THE PRODUCT API IS DOWN. Terrain does not change on the timescale of an outage — a
+            # hill is where it was this morning — so rather than stop, resolve the same question
+            # from the two sources that do not involve this API at all: the WESM survey index and
+            # the staged-products bucket. See lz/tnm_fallback.py.
+            print(f"     {exc}", flush=True)
+            print("     falling back to the WESM index + S3 staged products …", flush=True)
+            import tnm_fallback
+            items = []
+            via = "wesm+s3"
+            fb_tiles, surveys = tnm_fallback.resolve(
+                C.CELL_LON_MIN, C.CELL_LAT_MIN, C.CELL_LON_MAX, C.CELL_LAT_MAX)
+            tiles.extend(fb_tiles)
+            for s in surveys:
+                projects.add(s["project"])
+                if s.get("collect_end"):
+                    vintages.add(s["collect_end"][:4])
+            print(f"     WESM: {len(tiles)} tile(s) from {len(surveys)} survey(s)", flush=True)
         for it in items:
             url = it.get("downloadURL") or ""
             if not url.endswith(".tif"):
@@ -367,21 +387,34 @@ class Dem3DEP(Source):
 
         # The 1/3 arc-second tile is the documented fallback wherever 1 m is absent. Resolve it
         # even at 100% 1 m coverage: it is how terrain.py fills a hole if a stream read fails.
+        # ⚠️ The API is only a CONVENIENCE here. The 1/3 arc-second product is published on a
+        # deterministic path keyed by the cell id, so an outage must not be allowed to take the
+        # fallback down with it — that would turn "the API is unwell" into "this cell cannot be
+        # built at all", when the tile is sitting at a URL we can write out by hand.
         fb = []
-        for it in self._query(self.DS_13).get("items", []):
-            u = it.get("downloadURL") or ""
-            if u.endswith(".tif") and "/current/" in u:
-                fb.append(u)
+        try:
+            for it in self._query(self.DS_13).get("items", []):
+                u = it.get("downloadURL") or ""
+                if u.endswith(".tif") and "/current/" in u:
+                    fb.append(u)
+        except RuntimeError:
+            pass
         if not fb:
             fb = [f"https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/13/TIFF/current/"
                   f"{C.CELL_ID}/USGS_13_{C.CELL_ID}.tif"]
 
         with open(self.path("tiles_1m.json"), "w") as f:
             json.dump({"tiles": tiles, "fallback_13": sorted(set(fb))}, f, indent=2)
+        # `resolved_via` is provenance, not decoration: it is the only record of WHICH source
+        # answered, and after an outage it is how you tell a cell that genuinely has no 1 m lidar
+        # from one that merely asked on a bad afternoon.
         self._record(status=STATUS_STREAM, url=TNM_API, tiles_1m=len(tiles),
                      projects=sorted(projects), vintage=sorted(vintages),
                      coverage_pct=round(cov, 2), fallback_13=sorted(set(fb)),
-                     note="streamed via /vsicurl; never materialised")
+                     resolved_via=via,
+                     note="streamed via /vsicurl; never materialised"
+                          + ("; 1 m resolved from the WESM index + S3 because the product API was "
+                             "erroring" if via != "tnm-api" else ""))
         # `fallback_13` is REPORTED, not just recorded. Without it the caller sees coverage_pct 0
         # and concludes the cell is empty — but a cell with no 1 m lidar and a working 1/3
         # arc-second tile is entirely buildable, just coarse throughout, which is precisely what the
