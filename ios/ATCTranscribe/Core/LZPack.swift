@@ -388,14 +388,76 @@ final class LZPackStore {
         guard z >= 0, z <= 24 else { return nil }
         guard x >= 0, y >= 0 else { return nil }
         let want = Self.tileRect(z: z, x: x, y: y)
+        // ⚠️ MERGE EVERY PACK THAT HOLDS THIS TILE. Returning the first was a visible hole in the
+        // map, and only at low zoom — which is exactly where a pilot looks first.
+        //
+        // A pack is cut to its own 1-degree cell, but a TILE is not: at z13 a tile is ~4 km and sits
+        // inside one cell, while at z10 it is ~40 km and straddles four. Each pack then publishes
+        // its own copy of that shared tile carrying only its own corner — measured at the New
+        // Mexico four-corner point, the four packs held 38%, 31%, 30% and 25% of one z10 tile.
+        // Taking the first and stopping threw away three quarters of the answer and drew a gap
+        // several miles wide between cells that both had data. Zooming in "fixed" it because one
+        // tile fell inside one cell again.
+        //
+        // Same shape as everything else in this pipeline: the lookup SUCCEEDED, returned a valid
+        // tile, and was mostly empty.
+        var found: [LZTilePlanes] = []
         for m in mounted {                                   // bounded by maxPacks (rule 2)
             guard z >= m.reader.minZoom, z <= m.reader.maxZoom else { continue }
             guard m.rect.intersects(want) else { continue }
-            if let data = m.reader.tileData(z: z, x: x, y: y), let p = LZPackBlob.decode(data) {
-                return p
-            }
+            guard let data = m.reader.tileData(z: z, x: x, y: y),
+                  let p = LZPackBlob.decode(data) else { continue }
+            found.append(p)
+            // STOP AS SOON AS THE TILE IS WHOLE. This runs on the tile-serving path with a frame
+            // waiting, and a wide-zoom tile can intersect every mounted pack — 37 today. Decoding
+            // all of them to fill ground that is already filled is pure cost, and in practice one
+            // to four packs cover any tile completely.
+            if found.count > 1, Self.isComplete(found) { break }
         }
-        return nil
+        return Self.merge(found)
+    }
+
+    /// Combine every pack's copy of one tile into a single complete tile.
+    ///
+    /// Pure and static so it can be tested without building packs on disk — the behaviour that
+    /// matters here is the FILL RULE, not SQLite.
+    /// Whether these tiles between them leave no cell unknown. Cheap: one pass over the class plane.
+    static func isComplete(_ tiles: [LZTilePlanes]) -> Bool {
+        guard let first = tiles.first else { return false }
+        let count = first.planes[LZPack.planeClass].count
+        for i in 0..<count {                                 // bounded: side * side
+            var known = false
+            for t in tiles where t.planes[LZPack.planeClass][i] != LZPack.classUnknown {
+                known = true
+                break
+            }
+            if !known { return false }
+        }
+        return true
+    }
+
+    static func merge(_ tiles: [LZTilePlanes]) -> LZTilePlanes? {
+        guard var acc = tiles.first?.planes else { return nil }
+        var terrain = tiles[0].terrainSource
+        guard tiles.count > 1 else { return tiles[0] }
+        for p in tiles.dropFirst() {                         // bounded by maxPacks (rule 2)
+            let cls = p.planes[LZPack.planeClass]
+            var filled = false
+            for i in 0..<acc[LZPack.planeClass].count
+                where acc[LZPack.planeClass][i] == LZPack.classUnknown
+                   && cls[i] != LZPack.classUnknown {
+                for plane in 0..<min(acc.count, p.planes.count) {
+                    acc[plane][i] = p.planes[plane][i]
+                }
+                filled = true
+            }
+            // COARSE IS STICKY. If any pack that contributed ground measured it from 10 m
+            // elevation, the merged tile must say so — the cap that stops unsurveyed ground
+            // outscoring measured ground rides on this one byte, and letting a fine neighbour
+            // supply it would launder a coarse cell.
+            if filled && p.terrainSource != LZPack.terrainFine { terrain = p.terrainSource }
+        }
+        return LZTilePlanes(planes: acc, terrainSource: terrain)
     }
 
     /// The deepest zoom any mounted pack stores. The map declares this as the source's true
