@@ -1,0 +1,56 @@
+{
+  "n33w109": {
+    "bytes": 34580317,
+    "published_utc": "2026-08-03T21:32:19Z",
+    "sha256": "b571264220ef2f842d365ff57855a53191328993ec9e611e94edeea255b01a2f",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n33w109.tif"
+  },
+  "n34w109": {
+    "bytes": 49727253,
+    "published_utc": "2026-08-03T21:32:31Z",
+    "sha256": "2fffdd1cb95f9fdc2cc034d27306f704921234f2cdc0ea94dea63d55cddf1a80",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n34w109.tif"
+  },
+  "n35w109": {
+    "bytes": 31956249,
+    "published_utc": "2026-08-03T22:24:40Z",
+    "sha256": "e43be4377b151269884dc8cc98f7519832656163c34701886a5d879809ff3f0b",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n35w109.tif"
+  },
+  "n36w109": {
+    "bytes": 37429145,
+    "published_utc": "2026-08-03T23:16:37Z",
+    "sha256": "bb19b32f0404e9f69d607dda11be8452126af89fed926e463b200c52adbc060f",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n36w109.tif"
+  },
+  "n37w105": {
+    "bytes": 31384523,
+    "published_utc": "2026-08-03T21:32:39Z",
+    "sha256": "31c2e56ce0ba78addf16ae5054a55c5eb8a1bbbda335ef85be74a7a36f230b03",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n37w105.tif"
+  },
+  "n37w106": {
+    "bytes": 42078689,
+    "published_utc": "2026-08-03T21:32:50Z",
+    "sha256": "b0592cb99e0bb3e7e9ad7c4bf3020347b65a7dd77823fe46bdb452283bfac455",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n37w106.tif"
+  },
+  "n37w107": {
+    "bytes": 43430993,
+    "published_utc": "2026-08-03T15:20:55Z",
+    "sha256": "54852ea63b578cced49defedaea2e3ab8d549909ab877b59575e6285f2597ae8",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n37w107.tif"
+  },
+  "n37w108": {
+    "bytes": 36084121,
+    "published_utc": "2026-08-03T21:32:59Z",
+    "sha256": "b0900001c57237841f2aa362b33fecc29cacc3a6445de49c17ea46b2be4199ed",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n37w108.tif"
+  },
+  "n37w109": {
+    "bytes": 33900189,
+    "published_utc": "2026-08-04T00:18:31Z",
+    "sha256": "0c6c9ff7ff152d764f3959c6339ffdb355d907e6f53c8deb008278ec53680438",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n37w109.tif"
+  }
+}
