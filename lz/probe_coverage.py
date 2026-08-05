@@ -58,6 +58,18 @@ def load_survey_index(max_gsd=1.0):
     from osgeo import ogr, gdal
     gdal.UseExceptions()
     gdal.SetConfigOption("CPL_VSIL_CURL_ALLOWED_EXTENSIONS", ".gpkg")
+    # ⚠️ THE REMOTE READ FAILS MID-ITERATION WITHOUT THESE. Reading a 3.65 GB GeoPackage over
+    # `/vsicurl` is thousands of range requests against a SQLite b-tree, and one dropped chunk
+    # surfaces as "database disk image is malformed" a thousand features in — observed, not
+    # theoretical. Retries and a larger chunk turn a hard failure into a slower read.
+    #
+    # It fails LOUDLY because gdal.UseExceptions() is on above, and that matters more than the
+    # retries: a truncated footprint set would report perfectly good cells as having no 1 m lidar
+    # and quietly halve the estimate for a run costing weeks.
+    for k, v in (("GDAL_HTTP_MAX_RETRY", "5"), ("GDAL_HTTP_RETRY_DELAY", "2"),
+                 ("CPL_VSIL_CURL_CHUNK_SIZE", "1048576"),
+                 ("CPL_VSIL_CURL_CACHE_SIZE", "268435456")):
+        gdal.SetConfigOption(k, v)
     ds = ogr.Open(WESM_URL)
     if ds is None:
         raise RuntimeError("WESM.gpkg unreachable")

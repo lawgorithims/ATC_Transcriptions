@@ -129,6 +129,19 @@ REGIONS = [
                   "n32w113", "n33w113", "n34w113", "n35w113", "n36w113", "n37w113"],
     },
     {
+        # ⚠️ THE n32 ROW IS MEXICO HERE AND IS DELIBERATELY ABSENT. West of Nogales the border runs
+        # from the Colorado River at about 32.7 N south-east to 31.33 N, so n32w114 and n32w115 —
+        # lat 31-32 — lie entirely in Sonora and Baja. 3DEP is US-only: they would resolve 0.0%
+        # coverage and can never be built, exactly like n32w107 and n32w108. n33w114 and n33w115
+        # straddle the line and build at partial coverage, which is the border and not a fault.
+        "id": "lower-colorado",
+        "title": "Lower Colorado River",
+        "note": "Yuma and the Imperial Valley, Blythe and the Palo Verde, Parker, Lake Havasu, "
+                "Bullhead City and Kingman — the river corridor and the eastern Mojave.",
+        "cells": ["n33w114", "n34w114", "n35w114", "n36w114", "n37w114",
+                  "n33w115", "n34w115", "n35w115", "n36w115", "n37w115"],
+    },
+    {
         "id": "western-nm",
         "title": "Western New Mexico",
         "note": "The Continental Divide, the Gila high country and the Arizona border.",
