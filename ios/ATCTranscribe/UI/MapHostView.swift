@@ -517,7 +517,13 @@ struct MapHostView: View {
             lzMinZoom: lzController.minZoom,
             lzMaxZoom: lzController.maxZoom,
             lzProvider: lzController.provider,
-            lzProbe: { [lzController] c in lzController.sample(lon: c.lon, lat: c.lat) },
+            // GATED ON THE LAYER, exactly like `lzSignature` above. Without this the tap card
+            // offered "Off-field landability" for ground the pilot had switched the shading OFF
+            // for — an answer about a layer that is not on screen, arriving in the disambiguation
+            // list beside things that are. Turning a layer off should mean it stops speaking.
+            lzProbe: model.showLZRisk
+                ? { [lzController] c in lzController.sample(lon: c.lon, lat: c.lat) }
+                : nil,
             lzEnergyBands: model.showLZEnergy ? lzController.energyBands : [],
             // NOT gated on the layer toggles. The pilot armed this deliberately after rehearsing
             // it; switching the shading off is a decluttering decision and must not silently

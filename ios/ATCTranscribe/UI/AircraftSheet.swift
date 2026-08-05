@@ -17,6 +17,13 @@ struct AircraftSheet: View {
     @State private var bestGlideText = ""
     @State private var vRefText = ""
     @State private var landingOver50Text = ""
+    @State private var mtowText = ""
+    @State private var spanText = ""
+    @State private var isRotorcraft = false
+    @State private var showPicker = false
+    /// Which catalogue entry filled the form, so the sheet can say where the numbers came from —
+    /// and stop saying it the moment the pilot edits one.
+    @State private var filledFrom: String?
 
     private var hasInput: Bool {
         !callsign.trimmingCharacters(in: .whitespaces).isEmpty
@@ -30,9 +37,49 @@ struct AircraftSheet: View {
             ScrollView {
                 VStack(spacing: 16) {
                     Card(title: "Aircraft") {
-                        VStack(spacing: 10) {
+                        VStack(alignment: .leading, spacing: 10) {
                             labeled("Callsign", "e.g. N8925T", $callsign)
                             labeled("Type", "e.g. Piper Seneca", $type, autocap: .words)
+                            Button {
+                                Haptics.impact(.light); showPicker = true
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "list.bullet").font(.dsLabelS)
+                                    Text("Fill from a type…").font(.dsLabel)
+                                    Spacer(minLength: 0)
+                                }.foregroundStyle(p.accent)
+                            }
+                            .buttonStyle(.plainHaptic)
+                            .accessibilityIdentifier("aircraft-fill-from-type")
+                            if let filledFrom {
+                                Text("Filled from \(filledFrom). "
+                                     + AircraftCatalog.provenanceNote)
+                                    .font(.dsLabelS).foregroundStyle(p.warn)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .accessibilityIdentifier("aircraft-filled-note")
+                            }
+                        }
+                    }
+                    Card(title: "Airframe") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            labeled("Max gross weight", "lb — e.g. 2450", $mtowText,
+                                    keyboard: .numberPad)
+                            labeled(isRotorcraft ? "Rotor diameter" : "Wingspan",
+                                    "ft — e.g. 36", $spanText, keyboard: .decimalPad)
+                            Toggle(isOn: $isRotorcraft) {
+                                Text("Helicopter or gyroplane").font(.dsLabel)
+                                    .foregroundStyle(p.text)
+                            }
+                            .accessibilityIdentifier("aircraft-is-rotorcraft")
+                            Text(isRotorcraft
+                                 ? "Autorotation descends far more steeply than any aeroplane but "
+                                   + "touches down in a fraction of the ground, so the landing "
+                                   + "distance below is NOT used for you — the landability layer "
+                                   + "still shows surface and slope, and you judge the space."
+                                 : "Recorded for reference. Weight and span do not feed the "
+                                   + "landability scoring today.")
+                                .font(.dsLabelS).foregroundStyle(p.textDim)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                     }
                     Card(title: "Performance") {
@@ -51,7 +98,7 @@ struct AircraftSheet: View {
                                 .font(.dsLabelS).foregroundStyle(p.textDim)
                         }
                     }
-                    Card(title: "Landing") {
+                    Card(title: isRotorcraft ? "Landing (not used for rotorcraft)" : "Landing") {
                         VStack(alignment: .leading, spacing: 10) {
                             labeled("Approach speed", "kts Vref — e.g. 62", $vRefText, keyboard: .numberPad)
                             labeled("Landing distance", "ft over 50 ft — e.g. 1250", $landingOver50Text,
@@ -98,6 +145,25 @@ struct AircraftSheet: View {
         .tint(p.accent)
         .preferredColorScheme(model.theme.colorScheme)
         .onAppear(perform: seed)
+        .sheet(isPresented: $showPicker) {
+            AircraftPickerSheet { e in fill(from: e) }.environmentObject(model)
+        }
+    }
+
+    /// Copy a catalogue entry into the FORM. Nothing is saved until the pilot taps Save, and every
+    /// value stays editable — see AircraftCatalog for why that separation is load-bearing.
+    private func fill(from e: AircraftCatalog.Entry) {
+        if type.trimmingCharacters(in: .whitespaces).isEmpty { type = e.displayName }
+        glideRatioText = String(format: "%g", e.glideRatio)
+        bestGlideText = String(e.bestGlideKts)
+        vRefText = String(e.vRefKts)
+        landingOver50Text = e.landingOver50Ft.map { String(format: "%g", $0) } ?? ""
+        cruiseText = String(e.cruiseKts)
+        burnText = String(format: "%g", e.burnGPH)
+        mtowText = String(e.mtowLb)
+        spanText = String(format: "%g", e.spanFt)
+        isRotorcraft = e.isRotorcraft
+        filledFrom = e.displayName
     }
 
     /// Seed the fields from the profile being edited (blank for a fresh add).
@@ -110,6 +176,9 @@ struct AircraftSheet: View {
         bestGlideText = profile.bestGlideKts.map(String.init) ?? ""
         vRefText = profile.vRefKts.map(String.init) ?? ""
         landingOver50Text = profile.landingOver50Ft.map { String(format: "%g", $0) } ?? ""
+        mtowText = profile.mtowLb.map(String.init) ?? ""
+        spanText = profile.spanFt.map { String(format: "%g", $0) } ?? ""
+        isRotorcraft = profile.isRotorcraft ?? false
     }
 
     /// Persist through the model (add-or-update by id) and fly the aircraft.
@@ -130,6 +199,14 @@ struct AircraftSheet: View {
         updated.vRefKts = Int(vRefText.filter(\.isNumber)).flatMap { $0 >= 30 && $0 <= 200 ? $0 : nil }
         let over50 = Double(landingOver50Text.replacingOccurrences(of: ",", with: "."))
         updated.landingOver50Ft = over50.flatMap { $0 >= 300 && $0 <= 12_000 ? $0 : nil }
+        updated.mtowLb = Int(mtowText.filter(\.isNumber)).flatMap { $0 >= 200 && $0 <= 1_500_000 ? $0 : nil }
+        updated.spanFt = Double(spanText.replacingOccurrences(of: ",", with: "."))
+            .flatMap { $0 >= 5 && $0 <= 300 ? $0 : nil }
+        updated.isRotorcraft = isRotorcraft ? true : nil
+        // ⚠️ A ROTORCRAFT CARRIES NO FIXED-WING LANDING DISTANCE. Autorotation touches down in a
+        // fraction of the ground an aeroplane needs, so keeping a book over-50-ft figure here would
+        // make the landability layer demand a runway's worth of open ground from a helicopter.
+        if isRotorcraft { updated.landingOver50Ft = nil }
         model.saveAircraft(updated)
         dismiss()
     }

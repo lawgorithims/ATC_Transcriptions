@@ -223,7 +223,13 @@ extension DeviceLocation {
     /// Publishes through `publish` like every other simulated fix, so `isSimulating` is set and every
     /// SIM indicator in the app lights up. Ground speed is zero, which makes `courseUsable` false —
     /// correct, since a stationary aeroplane has no track.
-    func holdSimulation(at c: Coord, altitudeFtMSL: Double) {
+    /// `headingDeg` sets the track the fix reports. It is optional because a PARKED aeroplane has
+    /// no track — ground speed is zero and `courseUsable` is correctly false — but the glide bench
+    /// needs one: the footprint is wind-distorted and therefore directional, and the approach
+    /// planner picks a landing direction relative to where you are pointed. Passing nil keeps the
+    /// old stationary behaviour exactly.
+    func holdSimulation(at c: Coord, altitudeFtMSL: Double, headingDeg: Double? = nil,
+                        groundSpeedKt: Double = 0) {
         assert(altitudeFtMSL.isFinite, "holdSimulation: non-finite altitude")
         assert(c.lat >= -90 && c.lat <= 90, "holdSimulation: latitude out of range")
         manager.stopUpdatingLocation()
@@ -236,7 +242,8 @@ extension DeviceLocation {
         simPaused = false
         isSimulating = true
         publish(ApproachSimulator.Sample(coord: c, altitudeFtMSL: altitudeFtMSL,
-                                         groundSpeedKt: 0, courseDegTrue: 0,
+                                         groundSpeedKt: groundSpeedKt,
+                                         courseDegTrue: headingDeg ?? 0,
                                          distanceToThresholdNm: 0, phase: .levelAtFloor,
                                          verticalSpeedFpm: 0))
     }

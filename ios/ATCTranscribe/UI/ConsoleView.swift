@@ -817,6 +817,10 @@ struct TopBar: View {
         HStack(spacing: 0) {
             brand(p)
             Spacer(minLength: 8)
+            // Zulu + local, left of the controls. Sits in the bar rather than a widget because it
+            // is the one readout that is true regardless of what the map is doing.
+            BarClock(compact: hSize == .compact)
+                .padding(.trailing, 10)
             HStack(spacing: barSpacing) {
                 toggle(p, "slider.horizontal.3", on: model.showInputBar,
                        id: "input-toggle", label: "Input controls") { model.showInputBar.toggle() }
