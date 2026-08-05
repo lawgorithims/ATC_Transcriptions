@@ -102,9 +102,32 @@ enum LZSiteFinder {
     /// What this aeroplane needs on unprepared ground, in metres — the same figure the shading's
     /// extent cap uses, so the list and the map cannot disagree about what "too short" means.
     static func requiredRunMetres(for aircraft: AircraftProfile?) -> Double {
-        let bookFt = max(300.0, min(12_000.0, aircraft?.landingOver50Ft ?? 1600.0))
-        return bookFt * 0.3048 * unpreparedFactor
+        bookLandingDistanceFt(for: aircraft) * 0.3048 * unpreparedFactor
     }
+
+    /// Book landing distance over a 50 ft obstacle, in feet — **the one place the rotorcraft case is
+    /// decided**, called by the site finder and by the ruleset compiler so the two cannot drift.
+    ///
+    /// ⚠️ A ROTORCRAFT MUST NOT INHERIT THE FIXED-WING DEFAULT. The catalogue publishes no landing
+    /// distance for helicopters, saying in as many words that a fixed-wing figure "would be both
+    /// wrong and misleading" — and then every consumer read the nil and substituted 1,600 ft. An R44
+    /// was being asked for 731 m of open ground, roughly five times an autorotation's needs, so the
+    /// extent veto (below half the requirement) blacked out ground a helicopter could use easily.
+    /// The sheet told the pilot the number was not used while the engine was using it.
+    ///
+    /// The rotorcraft figure is deliberately this model's FLOOR rather than a POH number: a run-on
+    /// autorotation is the demanding case, a vertical touchdown needs far less, and nothing here
+    /// knows which the pilot will fly. 300 ft × the 1.5 unprepared factor = 137 m of clear ground —
+    /// well inside published run-on autorotation guidance, and still a real requirement rather than
+    /// "a helicopter can land anywhere", which is the claim this layer must never make.
+    static func bookLandingDistanceFt(for aircraft: AircraftProfile?,
+                                      fixedWingDefault: Double = 1600.0) -> Double {
+        if aircraft?.isRotorcraft == true { return rotorcraftBookFt }
+        return max(300.0, min(12_000.0, aircraft?.landingOver50Ft ?? fixedWingDefault))
+    }
+
+    /// See `bookLandingDistanceFt`. Equal to the clamp floor on purpose.
+    static let rotorcraftBookFt = 300.0
 
     /// Mirrors `extent_model.unprepared_factor` in the ruleset. Duplicated as a constant rather than
     /// re-read here because this type must stay usable without a compiled ruleset; the two are
@@ -167,7 +190,10 @@ enum LZSiteFinder {
 
         // 2. Take the strongest samples and measure a RUN through each. Sorting first keeps the
         //    expensive directional walk off ground that was never going to be offered.
-        scored.sort { rank($0.info.score, $0.arrival) > rank($1.info.score, $1.arrival) }
+        scored.sort {
+            rank($0.info.score, $0.arrival, bearing: $0.bearing, heading: input.headingDeg)
+                > rank($1.info.score, $1.arrival, bearing: $1.bearing, heading: input.headingDeg)
+        }
 
         var out: [Candidate] = []
         // Every point already measured, accepted or not. Testing separation against ACCEPTED
@@ -268,7 +294,8 @@ enum LZSiteFinder {
     /// Ground score and arrival comfort together. Reaching good ground with nothing in hand is not
     /// the same offer as reaching it comfortably, and a ranking that ignores that would send a pilot
     /// to the edge of the footprint.
-    private static func rank(_ score: Int, _ arrival: LZEnergyClass) -> Double {
+    private static func rank(_ score: Int, _ arrival: LZEnergyClass,
+                             bearing: Double, heading: Double?) -> Double {
         let arrivalWeight: Double
         switch arrival {
         case .comfortable: arrivalWeight = 1.0
@@ -276,8 +303,30 @@ enum LZSiteFinder {
         case .marginal:    arrivalWeight = 0.6
         case .blocked:     arrivalWeight = 0.0
         }
-        return Double(score) * arrivalWeight
+        return Double(score) * arrivalWeight * turnFactor(to: bearing, from: heading)
     }
+
+    /// How much of a turn this candidate costs, as a bounded multiplier.
+    ///
+    /// ⚠️ THIS TERM WAS DESIGNED, PROMISED ON SCREEN, AND NEVER WIRED. `Input.headingDeg` was
+    /// assembled by the panel, carried through the whole search and read by nothing — the ranked
+    /// list came out identical whichever way the aeroplane pointed, while the glide bench told the
+    /// pilot in as many words that heading changed the answer.
+    ///
+    /// Kept deliberately WEAK, at the same 0.15 magnitude as the wind-alignment tiebreak, for the
+    /// same reason: a turn is a cost, not a veto. Ground straight ahead is preferred over identical
+    /// ground behind you, but better ground behind still wins — reachability is the energy field's
+    /// job and it has already had its say by the time anything is ranked. Straight ahead 1.00,
+    /// abeam 0.925, directly behind 0.85.
+    static func turnFactor(to bearingDeg: Double, from headingDeg: Double?) -> Double {
+        guard let h = headingDeg, h.isFinite, bearingDeg.isFinite else { return 1.0 }
+        var turn = abs(normalised(bearingDeg) - normalised(h))
+        if turn > 180 { turn = 360 - turn }
+        return 1.0 - turnPenalty * (turn / 180.0)
+    }
+
+    /// The most a full 180° reversal may cost a candidate. See `turnFactor`.
+    static let turnPenalty = 0.15
 
     /// Which arrival band a point falls in, from the already-computed footprint.
     private static func arrivalClass(at p: Coord, field: LZEnergyField) -> LZEnergyClass? {

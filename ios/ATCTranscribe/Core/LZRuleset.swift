@@ -201,9 +201,12 @@ enum LZRulesetCompiler {
         let vref = max(30.0, min(200.0, Double(aircraft?.vRefKts ?? Int(d.vref_kt))))
         let glide = max(3.0, min(60.0, aircraft?.glideRatio ?? d.glide_ratio))
         // Book landing distance over a 50 ft obstacle. Bounded so a data-entry slip (a ground roll
-        // typed in metres, say) cannot invent an aeroplane that lands anywhere.
-        let bookDistanceFt = max(300.0, min(12_000.0,
-            aircraft?.landingOver50Ft ?? d.landing_over_50ft ?? doc.distance_model?.reference_over_50ft ?? 1600.0))
+        // typed in metres, say) cannot invent an aeroplane that lands anywhere — and routed through
+        // the site finder's helper so the shading's extent cap and the ranked list decide the
+        // ROTORCRAFT case identically. They read the same nil and drew opposite conclusions before.
+        let bookDistanceFt = LZSiteFinder.bookLandingDistanceFt(
+            for: aircraft,
+            fixedWingDefault: d.landing_over_50ft ?? doc.distance_model?.reference_over_50ft ?? 1600.0)
 
         guard let slopeU = doc.utilities["slope_deg"]?.breakpoints,
               let roughU = doc.utilities["rough_m"]?.breakpoints,
@@ -213,7 +216,17 @@ enum LZRulesetCompiler {
         // Slope tolerance is where aircraft capability enters the CURVE rather than a multiplier:
         // a slower aeroplane tolerates more slope for the same outcome, so the whole breakpoint
         // set stretches. Bounded so a data-entry slip cannot invent a bush plane.
-        let slopeScale = max(0.6, min(1.6, (d.vref_kt / vref) * d.slope_tolerance_scale))
+        //
+        // ⚠️ AND A ROTORCRAFT MUST NOT COME OUT MORE SLOPE-TOLERANT THAN THE REFERENCE. The stretch
+        // is a fixed-wing argument: a slower touchdown leaves more margin on sloping ground. Skid
+        // gear does not work that way — slope is a rollover limit, not an energy one — so a
+        // helicopter's low Vref was quietly widening the very curve it should tighten. Rather than
+        // invent a rotorcraft slope limit this model has no source for, it refuses to widen it at
+        // all and leaves the conservative fixed-wing curve standing.
+        let rawSlopeScale = (d.vref_kt / vref) * d.slope_tolerance_scale
+        let slopeScale = aircraft?.isRotorcraft == true
+            ? max(0.6, min(1.0, rawSlopeScale))
+            : max(0.6, min(1.6, rawSlopeScale))
         let slopeLUT = buildLUT(count: 256) { raw in
             guard let deg = LZPack.slopeDegrees(UInt8(raw)) else { return 0.0 }
             return interpolate(slopeU, at: deg / slopeScale)

@@ -117,8 +117,16 @@ REGIONS = [
         "title": "Eastern Arizona",
         "note": "The White Mountains, the Mogollon Rim, the Little Colorado and the high "
                 "desert north toward the Navajo Nation.",
-        "cells": ["n33w110", "n34w110", "n35w110", "n36w110", "n37w110",
-                  "n33w111", "n34w111", "n35w111", "n36w111", "n37w111"],
+        "cells": ["n32w110", "n33w110", "n34w110", "n35w110", "n36w110", "n37w110",
+                  "n32w111", "n33w111", "n34w111", "n35w111", "n36w111", "n37w111"],
+    },
+    {
+        "id": "central-az",
+        "title": "Central Arizona",
+        "note": "Phoenix and the Valley, Prescott, Sedona and the Verde, Flagstaff and the "
+                "San Francisco Peaks, north to the Grand Canyon.",
+        "cells": ["n32w112", "n33w112", "n34w112", "n35w112", "n36w112", "n37w112",
+                  "n32w113", "n33w113", "n34w113", "n35w113", "n36w113", "n37w113"],
     },
     {
         "id": "western-nm",

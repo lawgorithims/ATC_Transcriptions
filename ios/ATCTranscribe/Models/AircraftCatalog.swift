@@ -157,6 +157,11 @@ enum AircraftCatalog {
         // No landingOver50Ft BY DESIGN. In autorotation these descend at roughly 4:1 — far steeper
         // than any aeroplane — but touch down in a fraction of the ground, so a fixed-wing landing
         // distance would be both wrong and misleading. `isRotorcraft` is derived from its absence.
+        //
+        // ⚠️ WITHHOLDING THE NUMBER IS NOT ENOUGH ON ITS OWN. Every consumer used to read the nil and
+        // fall back to the 1,600 ft fixed-wing default, which asked an R44 for 731 m of open ground
+        // and blacked the layer out for helicopters. `LZSiteFinder.bookLandingDistanceFt` is now the
+        // single place that decides it — change the rotorcraft rule there, not here.
         .init(manufacturer: "Robinson", model: "R22", glideRatio: 4.0, bestGlideKts: 65,
               vRefKts: 55, landingOver50Ft: nil, mtowLb: 1370, spanFt: 25.2,
               cruiseKts: 95, burnGPH: 9.0),
@@ -206,21 +211,8 @@ enum AircraftCatalog {
         + "pilots on dry pavement at sea level. Check every value against your POH and edit it."
 }
 
-extension AircraftProfile {
-    /// Fill this profile from a catalogue entry, keeping the pilot's own callsign.
-    ///
-    /// The callsign is never touched: it identifies the airframe, and the whole point of the
-    /// catalogue is to populate the numbers around an aeroplane the pilot has already named.
-    mutating func apply(_ e: AircraftCatalog.Entry) {
-        type = e.displayName
-        glideRatio = e.glideRatio
-        bestGlideKts = e.bestGlideKts
-        vRefKts = e.vRefKts
-        landingOver50Ft = e.landingOver50Ft
-        cruiseKts = e.cruiseKts
-        burnGPH = e.burnGPH
-        mtowLb = e.mtowLb
-        spanFt = e.spanFt
-        isRotorcraft = e.isRotorcraft
-    }
-}
+// ⚠️ NO `AircraftProfile.apply(_:)` HERE ON PURPOSE. An earlier version had one, and nothing
+// called it — the sheet does the filling itself, because it must write into the TEXT FIELDS the
+// pilot is editing, not into a saved profile. Two implementations of one rule is exactly the drift
+// this codebase keeps getting bitten by: the dead one would have quietly diverged, and whoever
+// found it later would have had to work out which was authoritative. See AircraftSheet.fill(from:).
