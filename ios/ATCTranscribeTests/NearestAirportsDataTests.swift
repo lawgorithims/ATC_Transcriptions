@@ -164,6 +164,54 @@ final class NearestAirportsDataTests: XCTestCase {
                                                  from: JSONEncoder().encode([p]))
         XCTAssertEqual(redecoded.first?.glideRatio, 9.5)
         XCTAssertEqual(redecoded.first?.bestGlideKts, 105)
+        // ⚠️ EVERY FIELD ADDED SINCE must be nil on that legacy blob, not defaulted. This assertion
+        // is named explicitly rather than left implicit, because the test predates the airframe
+        // fields and would have kept passing whether or not they were back-compatible — the pilot's
+        // saved hangar decoding is not something to establish by accident.
+        XCTAssertNil(profiles.first?.vRefKts)
+        XCTAssertNil(profiles.first?.landingOver50Ft)
+        XCTAssertNil(profiles.first?.mtowLb)
+        XCTAssertNil(profiles.first?.spanFt)
+        XCTAssertNil(profiles.first?.isRotorcraft,
+                     "a legacy profile must not decode as an aeroplane OR a helicopter — unknown")
+    }
+
+    /// The catalogue must not contain a value that would poison the layers it feeds.
+    ///
+    /// These figures reach the glide footprint and the landability shading directly, so a typo — a
+    /// 90:1 glide, a landing distance entered in metres — would not look like a bug, it would look
+    /// like a confident wrong answer on the map.
+    func testEveryCatalogueEntryIsWithinThePlausibleBand() {
+        XCTAssertFalse(AircraftCatalog.all.isEmpty)
+        for e in AircraftCatalog.all {
+            XCTAssertTrue((3.0...30.0).contains(e.glideRatio), "\(e.id) glide \(e.glideRatio)")
+            XCTAssertTrue((40...250).contains(e.bestGlideKts), "\(e.id) best glide")
+            XCTAssertTrue((30...200).contains(e.vRefKts), "\(e.id) Vref")
+            XCTAssertTrue((200...1_500_000).contains(e.mtowLb), "\(e.id) MTOW")
+            XCTAssertTrue((5.0...300.0).contains(e.spanFt), "\(e.id) span")
+            XCTAssertGreaterThan(e.bestGlideKts, e.vRefKts,
+                                 "\(e.id): best glide is flown ABOVE approach speed")
+            if let ld = e.landingOver50Ft {
+                XCTAssertTrue((300.0...12_000.0).contains(ld), "\(e.id) landing distance")
+            }
+        }
+    }
+
+    /// ⚠️ ROTORCRAFT CARRY NO FIXED-WING LANDING DISTANCE. If one ever did, the landability layer
+    /// would demand a runway's worth of open ground from a helicopter that can land in a clearing.
+    func testRotorcraftCarryNoLandingDistanceAndAShallowerGlide() {
+        let rotor = AircraftCatalog.all.filter(\.isRotorcraft)
+        XCTAssertGreaterThanOrEqual(rotor.count, 5, "the catalogue should offer rotorcraft")
+        for r in rotor {
+            XCTAssertNil(r.landingOver50Ft, "\(r.id) carries a fixed-wing landing distance")
+            XCTAssertLessThanOrEqual(r.glideRatio, 6.0,
+                                     "\(r.id): autorotation is a steep descent, not a glide")
+        }
+        // And the converse — no aeroplane is silently missing its landing distance, which would
+        // make `isRotorcraft` true for it and quietly exempt it from the run-length check.
+        for a in AircraftCatalog.all where !a.isRotorcraft {
+            XCTAssertNotNil(a.landingOver50Ft, "\(a.id) would be treated as a rotorcraft")
+        }
     }
 
     // MARK: engagement — the undo that stands in for the missing confirm alert

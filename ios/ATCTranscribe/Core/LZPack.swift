@@ -401,63 +401,142 @@ final class LZPackStore {
         //
         // Same shape as everything else in this pipeline: the lookup SUCCEEDED, returned a valid
         // tile, and was mostly empty.
-        var found: [LZTilePlanes] = []
+        //
+        // ⚠️ AND THE SAME ACCUMULATOR AS `merge`, NOT A SECOND COPY OF ITS RULES. This loop and
+        // `merge` were written twice, sharing only the fill primitive — so the twelve tests that
+        // pin the early-out, the sticky-coarse rule and the plane-count rule all exercised the copy
+        // the map does NOT serve. Two implementations, one of them tested. Everything below the
+        // decode now runs in `Accumulator`, which both call.
+        var acc = Accumulator()
         for m in mounted {                                   // bounded by maxPacks (rule 2)
             guard z >= m.reader.minZoom, z <= m.reader.maxZoom else { continue }
             guard m.rect.intersects(want) else { continue }
             guard let data = m.reader.tileData(z: z, x: x, y: y),
                   let p = LZPackBlob.decode(data) else { continue }
-            found.append(p)
-            // STOP AS SOON AS THE TILE IS WHOLE. This runs on the tile-serving path with a frame
-            // waiting, and a wide-zoom tile can intersect every mounted pack — 37 today. Decoding
-            // all of them to fill ground that is already filled is pure cost, and in practice one
-            // to four packs cover any tile completely.
-            if found.count > 1, Self.isComplete(found) { break }
+            acc.add(p)
+            // Stopping here is what keeps the decode off the other 33 packs. It must stay O(1) —
+            // see `Accumulator.isComplete`.
+            if acc.isComplete { break }
         }
-        return Self.merge(found)
+        return acc.finish()
+    }
+
+    /// Assembling one tile out of however many packs hold a piece of it.
+    ///
+    /// A value type with the whole merge rule in it — the fill, the early-out, sticky coarse
+    /// provenance and the plane-count floor — so the live tile-serving path and the pure `merge`
+    /// entry point cannot disagree about any of them.
+    struct Accumulator {
+        private(set) var planes: [[UInt8]]?
+        private(set) var terrain = LZPack.terrainFine
+        private(set) var unknowns = 0
+        private var contributed = LZPack.planeCount
+
+        /// ⚠️ O(1), NOT A RESCAN. The first version swept all 65 536 pixels across every pack found
+        /// so far, once per pack — O(n²) on the tile-serving path with a frame waiting. Worse, at
+        /// low zoom over a contiguous block the tile can NEVER complete (much of it lies outside
+        /// every pack), so it paid that in full every time and still decoded everything. Counting
+        /// unknowns as they are filled makes the same decision for free.
+        var isComplete: Bool { planes != nil && unknowns == 0 }
+
+        mutating func add(_ p: LZTilePlanes) {
+            guard planes != nil else {
+                planes = p.planes
+                terrain = p.terrainSource
+                unknowns = LZPackStore.unknownCount(p.planes)
+                contributed = p.planes.count
+                return
+            }
+            let r = LZPackStore.fill(&planes!, from: p)
+            if r.filled {
+                // COARSE IS STICKY. If a pack that actually supplied ground measured it from 10 m
+                // elevation, the merged tile must say so — the cap that stops unsurveyed ground
+                // outscoring measured ground rides on this one byte, and letting a fine neighbour
+                // supply it would launder that cell into looking properly surveyed.
+                if p.terrainSource != LZPack.terrainFine { terrain = p.terrainSource }
+                contributed = min(contributed, r.srcPlanes)
+            }
+            unknowns = r.unknownsLeft
+        }
+
+        func finish() -> LZTilePlanes? {
+            guard let planes else { return nil }
+            return LZTilePlanes(planes: LZPackStore.truncate(planes, toContributed: contributed),
+                                terrainSource: terrain)
+        }
+    }
+
+    /// Cells with no surface class — the ground this tile still cannot describe.
+    static func unknownCount(_ planes: [[UInt8]]) -> Int {
+        planes[LZPack.planeClass].reduce(into: 0) { n, v in
+            if v == LZPack.classUnknown { n += 1 }
+        }
+    }
+
+    /// Copy every plane from `p` into `acc` wherever `acc` has no class yet.
+    ///
+    /// `Accumulator` is the only caller; kept `static` and pure so the fill rule itself can be
+    /// exercised directly.
+    @discardableResult
+    static func fill(_ acc: inout [[UInt8]],
+                     from p: LZTilePlanes) -> (filled: Bool, unknownsLeft: Int, srcPlanes: Int) {
+        // ⚠️ FLAT BUFFERS, NOT NESTED SUBSCRIPTS. `acc[plane][i] = …` on an array-of-arrays pays a
+        // uniqueness check and two bounds checks per byte, and this runs 65 536 times per pack on
+        // the tile-serving path. Written the obvious way it measured 306 ms for 37 packs.
+        //
+        // One pass decides WHICH cells this pack supplies; then each plane is patched over just
+        // those indices.
+        var targets: [Int] = []
+        var left = 0
+        targets.reserveCapacity(1024)
+        acc[LZPack.planeClass].withUnsafeBufferPointer { dstCls in
+            p.planes[LZPack.planeClass].withUnsafeBufferPointer { srcCls in
+                for i in 0..<dstCls.count where dstCls[i] == LZPack.classUnknown {
+                    if srcCls[i] == LZPack.classUnknown { left += 1 } else { targets.append(i) }
+                }
+            }
+        }
+        guard !targets.isEmpty else { return (false, left, p.planes.count) }
+        let planeCount = min(acc.count, p.planes.count)
+        for plane in 0..<planeCount {                        // bounded: planeCount
+            p.planes[plane].withUnsafeBufferPointer { src in
+                acc[plane].withUnsafeMutableBufferPointer { dst in
+                    for i in targets { dst[i] = src[i] }
+                }
+            }
+        }
+        return (true, left, p.planes.count)
+    }
+
+    /// ⚠️ A PLANE A CONTRIBUTOR NEVER CARRIED MUST NOT BE READ AS A MEASUREMENT OF ZERO.
+    ///
+    /// Mixed schemas meet here: a pilot who downloaded cells before the extent plane existed and
+    /// cells after it has both on disk, and at low zoom one tile is assembled from both. `fill`
+    /// copies only the planes the source HAS, so a schema-1 contributor left the accumulator's own
+    /// extent bytes — zeros, because that ground was outside its cell — standing over the ground it
+    /// supplied. Zero extent is not "unmeasured", it is "no open run at all": the cap table maps it
+    /// to 0 and the cell scores as unusable terrain. `extentRaw` says in as many words that this
+    /// must never happen.
+    ///
+    /// Presence is expressible per TILE and not per cell — there is no spare byte value, 0 and 255
+    /// both mean something — so a tile any contributor could not describe drops the plane entirely
+    /// and scores exactly as it did before the plane existed. Conservative, and honest about which.
+    static func truncate(_ planes: [[UInt8]], toContributed n: Int) -> [[UInt8]] {
+        guard n < planes.count, n > 0 else { return planes }
+        return Array(planes.prefix(n))
     }
 
     /// Combine every pack's copy of one tile into a single complete tile.
     ///
-    /// Pure and static so it can be tested without building packs on disk — the behaviour that
-    /// matters here is the FILL RULE, not SQLite.
-    /// Whether these tiles between them leave no cell unknown. Cheap: one pass over the class plane.
-    static func isComplete(_ tiles: [LZTilePlanes]) -> Bool {
-        guard let first = tiles.first else { return false }
-        let count = first.planes[LZPack.planeClass].count
-        for i in 0..<count {                                 // bounded: side * side
-            var known = false
-            for t in tiles where t.planes[LZPack.planeClass][i] != LZPack.classUnknown {
-                known = true
-                break
-            }
-            if !known { return false }
-        }
-        return true
-    }
-
+    /// The same `Accumulator` the live path runs, so a test written here is a test of what the map
+    /// serves. Pure and static so the fill rule can be tested without building packs on disk.
     static func merge(_ tiles: [LZTilePlanes]) -> LZTilePlanes? {
-        guard var acc = tiles.first?.planes else { return nil }
-        var terrain = tiles[0].terrainSource
-        guard tiles.count > 1 else { return tiles[0] }
-        for p in tiles.dropFirst() {                         // bounded by maxPacks (rule 2)
-            let cls = p.planes[LZPack.planeClass]
-            var filled = false
-            for i in 0..<acc[LZPack.planeClass].count
-                where acc[LZPack.planeClass][i] == LZPack.classUnknown
-                   && cls[i] != LZPack.classUnknown {
-                for plane in 0..<min(acc.count, p.planes.count) {
-                    acc[plane][i] = p.planes[plane][i]
-                }
-                filled = true
-            }
-            // COARSE IS STICKY. If any pack that contributed ground measured it from 10 m
-            // elevation, the merged tile must say so — the cap that stops unsurveyed ground
-            // outscoring measured ground rides on this one byte, and letting a fine neighbour
-            // supply it would launder a coarse cell.
-            if filled && p.terrainSource != LZPack.terrainFine { terrain = p.terrainSource }
+        var acc = Accumulator()
+        for t in tiles {                                     // bounded by maxPacks (rule 2)
+            if acc.isComplete { break }
+            acc.add(t)
         }
-        return LZTilePlanes(planes: acc, terrainSource: terrain)
+        return acc.finish()
     }
 
     /// The deepest zoom any mounted pack stores. The map declares this as the source's true

@@ -153,4 +153,66 @@ final class LZLandingDistanceTests: XCTestCase {
         let total = r.wSurface + r.wSlope + r.wRough + r.wHazard
         XCTAssertEqual(total, 255, accuracy: 2, "weights no longer sum to one")
     }
+
+    // MARK: - rotorcraft
+
+    private func helicopter() -> AircraftProfile {
+        var a = AircraftProfile()
+        a.callsign = "N44RH"
+        a.glideRatio = 4.0                  // autorotation, roughly 4:1
+        a.bestGlideKts = 70
+        a.vRefKts = 60
+        a.landingOver50Ft = nil             // the catalogue publishes none, by design
+        a.isRotorcraft = true
+        return a
+    }
+
+    /// ⚠️ THE DEFECT THIS PINS. The catalogue withholds a landing distance for helicopters and says
+    /// in as many words that a fixed-wing figure would be misleading; the sheet tells the pilot the
+    /// field is "not used for rotorcraft". Every consumer then read the nil and substituted the
+    /// 1,600 ft fixed-wing default, so an R44 was asked for 731 m of open ground — about five times
+    /// an autorotation's needs — and the extent veto blacked out ground it could use easily.
+    ///
+    /// Nothing on screen said so. The layer simply went dark for helicopters, which reads exactly
+    /// like "nowhere here is landable": the most dangerous sentence this layer can speak.
+    func testAHelicopterIsNotAskedForARunwaysWorthOfGround() {
+        let heli = LZSiteFinder.requiredRunMetres(for: helicopter())
+        let fixed = LZSiteFinder.requiredRunMetres(for: plane(vref: 60, over50: nil))
+        XCTAssertLessThan(heli, fixed / 3.0,
+                          "a rotorcraft is still inheriting the fixed-wing landing distance")
+        // …but it is still a REQUIREMENT. "A helicopter can land anywhere" is a claim this layer
+        // must never make: a 137 m clear run is the floor the model can express, not zero.
+        XCTAssertGreaterThan(heli, 100.0, "a rotorcraft was let off any room requirement at all")
+    }
+
+    /// The list and the shading must decide it identically — they read the same nil and drew
+    /// opposite conclusions before, which is what routing both through one helper fixes.
+    func testTheShadingAndTheListAgreeOnWhatAHelicopterNeeds() throws {
+        let heli = helicopter()
+        let compiledFt = LZSiteFinder.bookLandingDistanceFt(for: heli)
+        XCTAssertEqual(compiledFt, LZSiteFinder.rotorcraftBookFt)
+        // The compiled ruleset must be a DIFFERENT one from the same airframe read as fixed-wing,
+        // or the map is still painting the aeroplane's answer under the helicopter's name.
+        var asFixedWing = heli
+        asFixedWing.isRotorcraft = nil
+        XCTAssertNotEqual(try compiled(heli).signature, try compiled(asFixedWing).signature,
+                          "marking the profile as a rotorcraft changed nothing the map draws")
+    }
+
+    /// ⚠️ THE HALF THAT ERRED THE UNSAFE WAY. Slope tolerance stretches with a slower Vref — a
+    /// fixed-wing argument, since a slower touchdown leaves more margin on sloping ground. Skid gear
+    /// does not work that way: slope is a rollover limit, not an energy one. A helicopter's low Vref
+    /// was therefore widening the very curve it should tighten, and unlike the distance defect this
+    /// one made the map MORE permissive.
+    func testAHelicopterIsNeverMoreSlopeTolerantThanTheReference() throws {
+        let heli = try compiled(helicopter())
+        let reference = try compiled(nil)                  // the ruleset's own conservative curve
+        for raw in 0...255 {
+            XCTAssertLessThanOrEqual(Int(heli.slopeLUT[raw]), Int(reference.slopeLUT[raw]),
+                                     "a rotorcraft scored slope \(raw) better than the reference "
+                                     + "fixed-wing curve — the stretch is back")
+        }
+        // And it must not have been flattened to nothing either: level ground still scores.
+        XCTAssertGreaterThan(Int(heli.slopeLUT[0]), 200, "level ground stopped being landable")
+    }
 }

@@ -848,7 +848,19 @@ final class AppModel: ObservableObject {
     /// draw nothing. The panel row is shown whenever the flag is on, however it got there, so a layer
     /// that is up can always be taken back down (see `MapLayersPanel`).
     @Published var showLZRisk = UserDefaults.standard.bool(forKey: "atc.map.lz") {
-        didSet { UserDefaults.standard.set(showLZRisk, forKey: "atc.map.lz") }
+        didSet {
+            UserDefaults.standard.set(showLZRisk, forKey: "atc.map.lz")
+            // ⚠️ SWITCHING THE LAYER OFF MUST TAKE ITS PANEL WITH IT. The ranked list is revealed
+            // from the layers panel, but a floating widget's visibility PERSISTS: reveal it once,
+            // switch the shading off, and the list went on naming ground for a layer that was no
+            // longer on screen — and came back on the next launch that way. The panel's own guard
+            // used to read `showLZRisk || packAvailable`, an OR, so having packs on disk was enough
+            // to keep it answering.
+            //
+            // Not symmetrical on purpose: switching the layer ON does not reveal the panel, because
+            // that is a decluttering decision the pilot makes separately.
+            if !showLZRisk && oldValue { widgetStore.dismiss(.landable) }
+        }
     }
     /// Live glide/arrival-energy bands from ownship state. Same gating as above.
     @Published var showLZEnergy = UserDefaults.standard.bool(forKey: "atc.map.lzEnergy") {

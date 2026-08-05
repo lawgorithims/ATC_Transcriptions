@@ -1314,6 +1314,7 @@ struct FlightPlanBar: View {
             Button { editingAircraft = AircraftProfile() } label: {
                 Label("Add aircraft…", systemImage: "plus")
             }
+            .accessibilityIdentifier("aircraft-add")
             if let selected = model.selectedAircraft {
                 Button { editingAircraft = selected } label: {
                     Label("Edit \(selected.callsign)…", systemImage: "pencil")
@@ -1332,6 +1333,15 @@ struct FlightPlanBar: View {
                     Image(systemName: "chevron.down").font(.dsLabelS).foregroundStyle(p.textDim)
                 }
             }
+            // ⚠️ THE LABEL HAS TO BE COLLAPSED HERE, NOT ON THE MENU. A Menu whose label is a
+            // multi-view container keeps its children as separate accessibility elements, and the
+            // identifier and label applied outside land on a group that is never exposed: this
+            // control shipped announcing NOTHING to VoiceOver, and appeared in the hierarchy as an
+            // unlabelled button. The icon-only menus beside it work because their label is a single
+            // Image. Found by a UI test that could not reach the aircraft sheet at all.
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Aircraft")
+            .accessibilityIdentifier("plan-aircraft")
         }
         .accessibilityIdentifier("plan-aircraft")
         .accessibilityLabel("Aircraft")

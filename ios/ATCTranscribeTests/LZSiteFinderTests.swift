@@ -309,4 +309,69 @@ final class LZSiteFinderTests: XCTestCase {
         XCTAssertEqual(LZSiteFinder.requiredRunMetres(for: bare),
                        LZSiteFinder.requiredRunMetres(for: nil), accuracy: 0.001)
     }
+
+    // MARK: - the turn
+
+    /// ⚠️ WHAT THIS PINS. `Input.headingDeg` was assembled by the panel, carried through the entire
+    /// search, and read by nothing — the list came out byte-identical whichever way the aeroplane
+    /// pointed, while the glide bench told the pilot heading changed the answer. A field that is
+    /// threaded through three types and consumed by none is the same failure this whole layer keeps
+    /// producing: work done, reported, and measuring nothing.
+    func testTheTurnFromPresentHeadingReordersOtherwiseEqualGround() {
+        // Two identical patches, one dead ahead and one dead astern.
+        let ahead = Geo.point(from: here, bearingDeg: 0, distanceNm: 1.0)
+        let astern = Geo.point(from: here, bearingDeg: 180, distanceNm: 1.0)
+        let sampler: LZSiteFinder.Sampler = { c in
+            let nearAhead = Geo.nmBetween(c, ahead) < 0.45
+            let nearAstern = Geo.nmBetween(c, astern) < 0.45
+            return Self.info(score: nearAhead || nearAstern ? 90 : 20)
+        }
+        func firstBearing(heading: Double?) -> Double? {
+            let i = LZSiteFinder.Input(coord: here, altitudeFtMSL: 8000, headingDeg: heading,
+                                       windFromDeg: nil, windKts: nil, requiredRunMetres: 200)
+            return LZSiteFinder.find(i, field: discField(radiusNm: 2.0), sample: sampler)
+                .first?.bearingDeg
+        }
+        guard let north = firstBearing(heading: 0), let south = firstBearing(heading: 180) else {
+            return XCTFail("the search found nothing on ground it should have offered twice")
+        }
+        XCTAssertLessThan(abs(north - 0), 30, "pointing north did not put the northern patch first")
+        XCTAssertLessThan(abs(south - 180), 30,
+                          "pointing south did not put the southern patch first — heading is inert")
+    }
+
+    /// And it must stay a TIEBREAK. Better ground behind you still wins: reachability is the energy
+    /// field's question and it has already answered by the time anything is ranked. A turn term
+    /// strong enough to reorder unequal ground would quietly steer a pilot at the worse field.
+    func testABetterFieldBehindYouStillWins() {
+        let ahead = Geo.point(from: here, bearingDeg: 0, distanceNm: 1.0)
+        let astern = Geo.point(from: here, bearingDeg: 180, distanceNm: 1.0)
+        let sampler: LZSiteFinder.Sampler = { c in
+            if Geo.nmBetween(c, astern) < 0.45 { return Self.info(score: 95) }
+            if Geo.nmBetween(c, ahead) < 0.45 { return Self.info(score: 70) }
+            return Self.info(score: 20)
+        }
+        let i = LZSiteFinder.Input(coord: here, altitudeFtMSL: 8000, headingDeg: 0,
+                                   windFromDeg: nil, windKts: nil, requiredRunMetres: 200)
+        let first = LZSiteFinder.find(i, field: discField(radiusNm: 2.0), sample: sampler).first
+        XCTAssertEqual(first?.bearingDeg ?? -1, 180, accuracy: 30,
+                       "the turn penalty outvoted 25 points of ground quality")
+    }
+
+    /// Bounds. Straight ahead costs nothing, a reversal costs the stated maximum and no more, and an
+    /// unknown heading — a stationary aircraft, which is exactly what the bench publishes — must
+    /// leave the ranking untouched rather than default to "north".
+    func testTheTurnFactorIsBoundedAndAbsentWhenTheHeadingIs() {
+        XCTAssertEqual(LZSiteFinder.turnFactor(to: 90, from: 90), 1.0, accuracy: 1e-9)
+        XCTAssertEqual(LZSiteFinder.turnFactor(to: 270, from: 90),
+                       1.0 - LZSiteFinder.turnPenalty, accuracy: 1e-9)
+        XCTAssertEqual(LZSiteFinder.turnFactor(to: 0, from: 350), 1.0, accuracy: 0.01,
+                       "the turn wrapped the long way round the compass")
+        XCTAssertEqual(LZSiteFinder.turnFactor(to: 123, from: nil), 1.0, accuracy: 1e-9)
+        for b in stride(from: 0.0, to: 360.0, by: 15.0) {
+            let f = LZSiteFinder.turnFactor(to: b, from: 40)
+            XCTAssertGreaterThanOrEqual(f, 1.0 - LZSiteFinder.turnPenalty - 1e-9)
+            XCTAssertLessThanOrEqual(f, 1.0 + 1e-9)
+        }
+    }
 }

@@ -238,7 +238,18 @@ struct LandableGroundPanelView: View {
         notice = nil
         defer { searching = false }
 
-        guard model.showLZRisk || controller.packAvailable else {
+        // ⚠️ AN OR HERE MEANT THE LIST OUTLIVED ITS LAYER. `showLZRisk || packAvailable` let the
+        // panel go on ranking ground whenever packs were merely present on disk, so with the
+        // shading switched off it kept naming fields the map was not drawing — an answer about a
+        // layer that is not on screen. AppModel dismisses this widget when the layer goes off; this
+        // is the second half of the same rule, for any other way the panel might be raised.
+        guard model.showLZRisk else {
+            notice = "The off-field landability layer is switched off. Turn it on in Map layers to "
+                   + "rank reachable ground."
+            candidates = []
+            return
+        }
+        guard controller.packAvailable else {
             notice = "The off-field landability layer has no data loaded. Download a region in "
                    + "Settings › Downloads."
             candidates = []

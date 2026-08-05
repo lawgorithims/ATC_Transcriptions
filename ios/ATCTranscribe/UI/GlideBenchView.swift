@@ -18,9 +18,6 @@ struct GlideBenchView: View {
     @ObservedObject var deviceLocation: DeviceLocation
     @Environment(\.dismiss) private var dismiss
 
-    /// Where the aeroplane is parked. Seeded from the present fix so the bench opens somewhere
-    /// meaningful rather than at Null Island.
-    @State private var coord: Coord?
     @State private var altitudeFt: Double = 9500
     @State private var headingDeg: Double = 0
     @State private var region = MKCoordinateRegion()
@@ -160,8 +157,9 @@ struct GlideBenchView: View {
                 }
                 Slider(value: $headingDeg, in: 0...359, step: 1)
                     .accessibilityIdentifier("bench-heading")
-                Text("Heading matters: the footprint is stretched by wind, and the rehearsal picks "
-                     + "its landing direction relative to where you are pointed.")
+                Text("Heading orders the ranked landing areas — ground ahead of you is preferred "
+                     + "over identical ground behind, though better ground behind still wins. The "
+                     + "rehearsal then picks its landing direction from the WIND, not from this.")
                     .font(.dsLabelS).foregroundStyle(p.textDim)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -234,7 +232,6 @@ struct GlideBenchView: View {
     private func seed() {
         let start = model.presentPosition
             ?? Coord(lat: 32.2894, lon: -106.9219)          // Las Cruces, where coverage exists
-        coord = start
         region = MKCoordinateRegion(
             center: CLLocationCoordinate2D(latitude: start.lat, longitude: start.lon),
             span: MKCoordinateSpan(latitudeDelta: 0.6, longitudeDelta: 0.6))
@@ -246,9 +243,8 @@ struct GlideBenchView: View {
 
     private func place() {
         let c = region.center
-        let where_ = Coord(lat: c.latitude, lon: c.longitude)
-        coord = where_
-        model.deviceLocation.holdSimulation(at: where_, altitudeFtMSL: altitudeFt,
+        let target = Coord(lat: c.latitude, lon: c.longitude)
+        model.deviceLocation.holdSimulation(at: target, altitudeFtMSL: altitudeFt,
                                             headingDeg: headingDeg)
         // Mount the layer explicitly: LZRiskController compiles its compositor in the MAP's apply
         // pass, so a bench opened before the map has drawn would otherwise score nothing.

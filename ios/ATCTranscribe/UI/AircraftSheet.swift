@@ -21,8 +21,12 @@ struct AircraftSheet: View {
     @State private var spanText = ""
     @State private var isRotorcraft = false
     @State private var showPicker = false
-    /// Which catalogue entry filled the form, so the sheet can say where the numbers came from —
-    /// and stop saying it the moment the pilot edits one.
+    /// Which catalogue entry filled the form, so the sheet can say where the numbers came from.
+    ///
+    /// DELIBERATELY NOT CLEARED ON EDIT. Editing one field does not change the provenance of the
+    /// others — a pilot who corrects the landing distance still has a catalogue glide ratio — and a
+    /// warning that disappears after the first keystroke would be least visible exactly when the
+    /// form is most mixed. It stays until the sheet is closed.
     @State private var filledFrom: String?
 
     private var hasInput: Bool {
@@ -74,8 +78,10 @@ struct AircraftSheet: View {
                             Text(isRotorcraft
                                  ? "Autorotation descends far more steeply than any aeroplane but "
                                    + "touches down in a fraction of the ground, so the landing "
-                                   + "distance below is NOT used for you — the landability layer "
-                                   + "still shows surface and slope, and you judge the space."
+                                   + "distance below is replaced with a rotorcraft minimum of about "
+                                   + "\(Int(LZSiteFinder.rotorcraftBookFt)) ft — not by your POH "
+                                   + "numbers, which this app has no rotorcraft table for. You "
+                                   + "judge the space; the layer shows surface, slope and room."
                                  : "Recorded for reference. Weight and span do not feed the "
                                    + "landability scoring today.")
                                 .font(.dsLabelS).foregroundStyle(p.textDim)
@@ -98,7 +104,7 @@ struct AircraftSheet: View {
                                 .font(.dsLabelS).foregroundStyle(p.textDim)
                         }
                     }
-                    Card(title: isRotorcraft ? "Landing (not used for rotorcraft)" : "Landing") {
+                    Card(title: isRotorcraft ? "Landing (rotorcraft minimum used instead)" : "Landing") {
                         VStack(alignment: .leading, spacing: 10) {
                             labeled("Approach speed", "kts Vref — e.g. 62", $vRefText, keyboard: .numberPad)
                             labeled("Landing distance", "ft over 50 ft — e.g. 1250", $landingOver50Text,
