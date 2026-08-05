@@ -35,6 +35,22 @@ struct AircraftProfile: Codable, Equatable, Identifiable {
     /// the part of the landing that the obstruction governs.
     var landingOver50Ft: Double?
 
+    // Airframe facts. Optional on the same back-compat rule: a profile saved before these existed
+    // must still decode, so every one is `nil` for older entries rather than a fabricated default.
+    /// Max gross weight, pounds.
+    var mtowLb: Int?
+    /// Wingspan in feet — ROTOR DIAMETER for a rotorcraft.
+    var spanFt: Double?
+
+    /// Whether this is a helicopter or gyroplane.
+    ///
+    /// ⚠️ NOT COSMETIC. Autorotation descends at roughly 4:1 — far steeper than any aeroplane — but
+    /// touches down in a fraction of the ground. The landability layer's required-run model is
+    /// built on fixed-wing landing distance and does not describe that, so this flag exists to let
+    /// the UI say which numbers do not apply rather than quietly scoring a helicopter as a very bad
+    /// glider that needs a runway.
+    var isRotorcraft: Bool?
+
     /// True when there's nothing worth keeping (drives add-sheet validation).
     var isEmpty: Bool { callsign.isEmpty && type.isEmpty }
 

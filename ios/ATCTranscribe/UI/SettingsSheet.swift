@@ -466,6 +466,19 @@ struct SettingsSheet: View {
                         }
                     }
                     .accessibilityIdentifier("settings-demo-flight")
+                    // Drag the aeroplane anywhere, set height and heading, watch the glide answer
+                    // change. Publishes a FAKE position — same door, same refusals.
+                    NavigationLink {
+                        GlideBenchView(deviceLocation: model.deviceLocation).environmentObject(model)
+                    } label: {
+                        HStack {
+                            Label("Glide bench", systemImage: "slider.horizontal.below.rectangle")
+                                .font(.dsLabel).foregroundStyle(p.text)
+                            Spacer()
+                            Image(systemName: "chevron.right").font(.dsLabelS).foregroundStyle(p.textDim)
+                        }
+                    }
+                    .accessibilityIdentifier("settings-glide-bench")
                 }
                 NavigationLink {
                     NotamCredentialView(store: model.notams, palette: p)
