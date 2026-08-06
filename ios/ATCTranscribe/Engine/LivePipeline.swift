@@ -203,7 +203,7 @@ actor LivePipeline {
     /// speaker cut returns one piece), so a streaming false-split can never surface as mislabeled lines.
     private let diarizer: Diarizer
     private var diarizationEnabled = true
-    private var deadAirFilterEnabled = true
+    private var deadAirFilterEnabled: Bool
 
     private static let timeFormatter: DateFormatter = {
         let f = DateFormatter(); f.dateFormat = "HH:mm:ss"; f.locale = Locale(identifier: "en_US_POSIX"); return f
@@ -217,6 +217,7 @@ actor LivePipeline {
          gateEnabled: Bool = true,
          gateSensitivity: GateSensitivity = .conservative,
          diarizationEnabled: Bool = true,
+         deadAirFilterEnabled: Bool = true,
          embedder: CoreMLSpeakerEmbedder? = nil,
          vadConfig: VADConfig = VADConfig()) {
         self.transcriber = transcriber
@@ -224,6 +225,10 @@ actor LivePipeline {
         self.preprocessor = preprocessor
         self.corrector = corrector
         self.diarizationEnabled = diarizationEnabled
+        // Injected at construction, not just via the setter: a session is rebuilt on every model swap
+        // and feed change, so a preference only applied by `setDeadAirFilter` would silently revert to
+        // the default the next time one happened.
+        self.deadAirFilterEnabled = deadAirFilterEnabled
         // EXPERIMENTAL: a pre-loaded neural ECAPA voice embedder for clustering, or nil for the default
         // MFCC backend. The 80 MB Core ML model is loaded OFF the main actor by the caller and INJECTED
         // (never constructed here) so the actor's init never blocks the UI thread; SpeakerModel is

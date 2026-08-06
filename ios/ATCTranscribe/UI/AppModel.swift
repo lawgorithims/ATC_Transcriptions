@@ -1111,6 +1111,18 @@ final class AppModel: ObservableObject {
         }
     }
 
+    // Dead-air filter: drop radio noise BEFORE the transcriber sees it. On by default — on 500 held-out
+    // no-speech clips the model invented words on 66% of them (including fully-formed clearances), and
+    // the energy squelch can't catch it because radio noise is loud. Measured on the real corpora the
+    // filter drops 0 of 139 real transmissions and rejects 464 of 500 dead-air clips. Persisted;
+    // hot-applied. Off restores the previous behaviour exactly.
+    @Published var deadAirFilterEnabled = (UserDefaults.standard.object(forKey: "atc.filter.deadAir") as? Bool) ?? true {
+        didSet {
+            UserDefaults.standard.set(deadAirFilterEnabled, forKey: "atc.filter.deadAir")
+            session?.setDeadAirFilter(deadAirFilterEnabled)
+        }
+    }
+
     // EXPERIMENTAL acoustic fill: when a line's speaker can't be told from the words, guess it from the
     // sound of the voice. OFF by default — on a single radio frequency every voice shares the same
     // channel, so voice-based guessing is unreliable (a corpus study measured ~coin-flip accuracy).
@@ -1800,6 +1812,7 @@ final class AppModel: ObservableObject {
                                     corrector: currentCorrector(), llm: llm,
                                     gateEnabled: skipWhenConfident, gateSensitivity: gateSensitivity,
                                     diarizationEnabled: diarizationEnabled,
+                                    deadAirFilterEnabled: deadAirFilterEnabled,
                                     embedder: embedder,
                                     vadConfig: VADConfig(squelchAuto: squelchAuto,
                                                          squelchLevel: Float(manualSquelch),

@@ -93,9 +93,16 @@ final class VicinityGroundingTests: XCTestCase {
     }
 
     /// One synthetic speech segment (audio is ignored by the scripted transcriber).
+    /// A carrier segment for tests whose transcriber is scripted — the audio content is irrelevant to
+    /// what they assert, but it must still read as SPEECH: `DeadAirFilter` now drops steady audio
+    /// before the decode, and a flat buffer (the old `repeating: 0`) is the definition of dead air.
+    /// Alternating loud/quiet blocks give the envelope the burstiness real speech has.
     private func segment(_ samples: Int = 16_000) -> SpeechSegment {
-        SpeechSegment(audio: [Float](repeating: 0, count: samples),
-                      streamStartS: 0, streamEndS: Double(samples) / 16_000, finalizedWallTime: 0)
+        let audio: [Float] = (0..<samples).map { i in
+            (i / 4000) % 2 == 0 ? 0.30 : 0.002        // ~0.25 s word/gap alternation
+        }
+        return SpeechSegment(audio: audio, streamStartS: 0,
+                             streamEndS: Double(samples) / 16_000, finalizedWallTime: 0)
     }
 
     func testHardGroundingSnapsAgainstNearestAirportOnly() async {

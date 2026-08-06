@@ -174,6 +174,12 @@ final class TranscriptionSession: ObservableObject {
         Task { await pipeline.setDiarization(on) }
     }
 
+    /// Toggle the pre-decode dead-air filter (Settings) at runtime. Takes effect on the next segment.
+    func setDeadAirFilter(_ on: Bool) {
+        let pipeline = self.pipeline
+        Task { await pipeline.setDeadAirFilter(on) }
+    }
+
     /// Toggle the experimental acoustic fill (Settings): when on, an unknown-content line may be
     /// labeled from its voice cluster (see `SpeakerLabeler.acousticFillEnabled`). Off by default —
     /// on-device voice separation is unreliable on single-feed radio. Re-fuses EVERY retained line so

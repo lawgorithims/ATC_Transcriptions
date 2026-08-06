@@ -6,6 +6,15 @@ import XCTest
 /// clips), so they fail if the thresholds or the statistics drift.
 final class DeadAirFilterTests: XCTestCase {
 
+    /// Always returns the same line, so the only thing that can make `process` return nil is the gate.
+    private actor FixedTranscriber: Transcribing {
+        private let line: String
+        init(_ line: String) { self.line = line }
+        func transcribe(_ audio: [Float], context: String?) async throws -> TranscriptionOutput {
+            TranscriptionOutput(text: line, asr: .unknown)
+        }
+    }
+
     private let sr = 16_000
 
     /// Steady noise: constant-amplitude white noise. Envelope is flat -> low range, low CV. This is
@@ -74,6 +83,27 @@ final class DeadAirFilterTests: XCTestCase {
         let env = DeadAirFilter.envelope([Float](repeating: 0.1, count: 480 * 5 + 100))
         XCTAssertEqual(env.count, 5, "partial trailing frame must be discarded, not padded")
         XCTAssertEqual(env[0], 0.1, accuracy: 1e-5)
+    }
+
+    /// The preference must reach a NEWLY BUILT pipeline, not just a running one. A session is rebuilt
+    /// on every model swap and feed change, so if the flag were only applied through `setDeadAirFilter`
+    /// a user who turned it OFF would get it silently back ON at the next swap. This asserts the
+    /// constructor carries it — the failure it guards against leaves no trace at runtime.
+    func testPreferenceSurvivesPipelineConstruction() async {
+        let audio = steadyNoise(seconds: 3)
+        let seg = SpeechSegment(audio: audio, streamStartS: 0,
+                                streamEndS: Double(audio.count) / 16_000.0,
+                                finalizedWallTime: Date().timeIntervalSince1970)
+
+        let on = LivePipeline(transcriber: FixedTranscriber("delta 2 1 9 heavy"),
+                              context: ATCContext(), deadAirFilterEnabled: true)
+        let dropped = await on.process(seg)
+        XCTAssertNil(dropped, "filter ON must drop steady noise before the decode")
+
+        let off = LivePipeline(transcriber: FixedTranscriber("delta 2 1 9 heavy"),
+                               context: ATCContext(), deadAirFilterEnabled: false)
+        let kept = await off.process(seg)
+        XCTAssertNotNil(kept, "filter OFF must restore the previous behaviour — the segment reaches the transcriber")
     }
 
     /// Pin the shipped operating point. Measured zero-gold-loss thresholds were 14.36 dB / 0.583;

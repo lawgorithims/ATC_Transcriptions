@@ -43,6 +43,23 @@ final class EngineReliabilityTests: XCTestCase {
         [Float](repeating: amp, count: n * VADSegmenter.frameSamples)
     }
 
+    /// `n` frames that read as SPEECH to both gates. A flat block is loud enough for `VADSegmenter`
+    /// (which gates on energy) but is exactly what `DeadAirFilter` rejects — it gates on burstiness,
+    /// and a constant envelope is the definition of dead air. Every 4th frame dips, which gives the
+    /// envelope the dynamic range real speech has WITHOUT adding trailing silence (the flush test
+    /// depends on the feed ending mid-speech) and without a dip long enough to close a segment
+    /// (one frame = 30 ms, far below the 400 ms silence timeout). 26 of 34 frames stay loud, so the
+    /// ≥16-speech-frame emit threshold is still met and segmentation is unchanged.
+    private func voiced(_ n: Int, _ amp: Float) -> [Float] {
+        var out = [Float]()
+        out.reserveCapacity(n * VADSegmenter.frameSamples)
+        for f in 0..<n {
+            let a: Float = (f % 4 == 3) ? amp * 0.04 : amp
+            out += [Float](repeating: a, count: VADSegmenter.frameSamples)
+        }
+        return out
+    }
+
     // MARK: - M2: ordering + drain
 
     func testRecordsArriveInOrderAndAllArriveBeforeRunReturns() async {
@@ -68,7 +85,7 @@ final class EngineReliabilityTests: XCTestCase {
     func testFlushRecordArrivesBeforeRunReturns() async {
         // The feed ends MID-SPEECH (no trailing silence): the only segment comes from the
         // flush() drain — the exact record the old fire-and-forget hop could drop at stream end.
-        let audio = frames(34, 0.5)
+        let audio = voiced(34, 0.5)
         let pipeline = LivePipeline(transcriber: ScriptedTranscriber(["last words"]),
                                     context: ATCContext(), diarizationEnabled: false)
         let collector = Collector()
@@ -87,7 +104,7 @@ final class EngineReliabilityTests: XCTestCase {
         let pipeline = LivePipeline(transcriber: ScriptedTranscriber(["final line"]),
                                     context: ATCContext(), diarizationEnabled: false)
         let session = TranscriptionSession(pipeline: pipeline)
-        session.start(source: ArrayAudioSource(frames(34, 0.5)), label: "test")
+        session.start(source: ArrayAudioSource(voiced(34, 0.5)), label: "test")
         // Bounded poll for the natural end (statically bounded loop — rule 2).
         for i in 0..<600 {
             assert(i < 600)
@@ -107,7 +124,7 @@ final class EngineReliabilityTests: XCTestCase {
         let pipeline = LivePipeline(transcriber: ScriptedTranscriber(["dropped"]),
                                     context: ATCContext(), diarizationEnabled: false)
         let session = TranscriptionSession(pipeline: pipeline)
-        session.start(source: ArrayAudioSource(frames(34, 0.5)), label: "test")
+        session.start(source: ArrayAudioSource(voiced(34, 0.5)), label: "test")
         session.stop()   // synchronous on the main actor — no append can interleave before this
         try await Task.sleep(nanoseconds: 500_000_000)   // let any in-flight drain complete
         XCTAssertEqual(session.status, .stopped)
