@@ -273,6 +273,16 @@ struct SettingsSheet: View {
                     .font(.dsLabelS).foregroundStyle(p.textDim)
             }
         }
+        Card(title: "Dead air") {
+            VStack(alignment: .leading, spacing: 10) {
+                Toggle(isOn: $model.deadAirFilterEnabled) {
+                    Text("Ignore radio noise").font(.dsLabel).foregroundStyle(p.text)
+                }
+                .accessibilityIdentifier("dead-air-toggle")
+                Text("Between transmissions the frequency is just static, and a speech model handed static will sometimes write a transmission that was never said — occasionally a complete-sounding clearance. CommSight checks whether a burst actually has the rise and fall of speech before transcribing it, so noise is skipped instead of invented. It errs toward transcribing: on our test recordings it skipped no real transmission. Turn it off if you suspect a quiet call was missed.")
+                    .font(.dsLabelS).foregroundStyle(p.textDim)
+            }
+        }
     }
 
     @ViewBuilder private var connectionsCategory: some View {
