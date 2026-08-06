@@ -31,6 +31,8 @@ USAGE
 # ---------------------------------------------------------------------------------------------
 # THE ONE LINE THAT MATTERS. Must precede the huggingface_hub import.
 # ---------------------------------------------------------------------------------------------
+import contextlib
+import fcntl
 import os
 
 os.environ["HF_HUB_DISABLE_XET"] = "1"          # FORCED, not setdefault
@@ -108,6 +110,32 @@ def verify_fetchable(cell, expect_bytes):
     return True, f"206, GeoTIFF, {expect_bytes / 1e6:.0f} MB"
 
 
+@contextlib.contextmanager
+def index_lock():
+    """Hold an exclusive lock across the index's read-modify-write.
+
+    ⚠️ TWO PUBLISHERS WOULD SILENTLY LOSE AN ENTRY. `load_index` → mutate → `save_index` is atomic
+    in its WRITE (tmp + os.replace) but not across the pair: two runs publishing at the same moment
+    each load the same snapshot and the second's save drops the first's cell.
+
+    That loss is worse than it sounds. The raster itself is DELETED locally the moment the upload
+    verifies, so this index is the only local record that a cell's elevation exists at all. A
+    dropped entry leaves the file sitting in object storage with nothing pointing at it, and the
+    obvious repair — re-run the build — costs another 45 minutes of streaming for data already
+    paid for.
+
+    Needed the moment two build queues run in parallel, which is exactly what a ten-core machine
+    invites.
+    """
+    os.makedirs(ARCHIVE_DIR, exist_ok=True)
+    with open(INDEX_PATH + ".lock", "w") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
+
+
 def load_index():
     if os.path.exists(INDEX_PATH):
         try:
@@ -147,11 +175,14 @@ def publish_one(api, cell, token, keep):
         _fail(f"{cell}: uploaded but NOT fetchable ({why}). Local copy KEPT.")
     print(f"  verified: {why}")
 
-    idx = load_index()
-    idx[cell] = {"bytes": size, "sha256": digest,
-                 "url": f"{BASE_URL}/elev10m/{cell}.tif",
-                 "published_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
-    save_index(idx)
+    # Read-modify-write under the lock — see `index_lock`. The window is tiny and the loss is
+    # permanent, which is the combination that makes a bug like this survive for months.
+    with index_lock():
+        idx = load_index()
+        idx[cell] = {"bytes": size, "sha256": digest,
+                     "url": f"{BASE_URL}/elev10m/{cell}.tif",
+                     "published_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+        save_index(idx)
 
     if keep:
         print(f"  kept {local} (--keep)")

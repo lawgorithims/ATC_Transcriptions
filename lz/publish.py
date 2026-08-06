@@ -142,6 +142,38 @@ REGIONS = [
                   "n33w115", "n34w115", "n35w115", "n36w115", "n37w115"],
     },
     {
+        "id": "socal",
+        "title": "Southern California",
+        "note": "San Diego and the back country, Anza-Borrego and the Salton Sea, Palm Springs "
+                "and the Inland Empire, the Los Angeles basin and Orange County out to the coast.",
+        # ⚠️ THE n32 ROW IS ABSENT WEST OF w115 AND ALWAYS WILL BE. From the Colorado River the
+        # border runs straight to the Pacific at 32.53 N, so lat 31-32 here is entirely Baja.
+        "cells": ["n33w116", "n33w117", "n33w118", "n33w119",
+                  "n34w116", "n34w117", "n34w118", "n34w119"],
+    },
+    {
+        "id": "mojave-sierra",
+        "title": "Mojave and the Eastern Sierra",
+        "note": "Barstow and the high desert, the Antelope Valley, China Lake, Death Valley, "
+                "the Owens Valley under the Sierra crest, and Las Vegas.",
+        "cells": ["n35w116", "n35w117", "n35w118",
+                  "n36w116", "n36w117", "n36w118",
+                  "n37w116", "n37w117", "n37w118"],
+    },
+    {
+        "id": "central-california",
+        "title": "Central California",
+        "note": "Santa Barbara and the Channel, San Luis Obispo and Paso Robles, Bakersfield and "
+                "the southern San Joaquin, the southern Sierra, Big Sur and Monterey.",
+        # ⚠️ FIVE CANDIDATE CELLS ARE OPEN PACIFIC AND ARE NOT HERE: n33w120, n33w121, n33w122,
+        # n34w122 and n35w122. The survey index reports no 1 m lidar over any of them, which is not
+        # a gap in 3DEP — there is no land under them to survey.
+        "cells": ["n34w120", "n34w121",
+                  "n35w119", "n35w120", "n35w121",
+                  "n36w119", "n36w120", "n36w121", "n36w122",
+                  "n37w119", "n37w120", "n37w121", "n37w122"],
+    },
+    {
         "id": "western-nm",
         "title": "Western New Mexico",
         "note": "The Continental Divide, the Gila high country and the Arizona border.",
