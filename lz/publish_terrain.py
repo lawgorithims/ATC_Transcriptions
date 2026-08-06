@@ -147,11 +147,26 @@ def load_index():
 
 
 def save_index(idx):
+    """Atomic replace — and a tmp name that is unique per writer.
+
+    ⚠️ A SHARED TMP NAME MAKES THE "ATOMIC" WRITE ATOMIC AGAINST A CRASH ONLY, NOT AGAINST A SECOND
+    WRITER. With one fixed `published.json.tmp`, two processes write the same file, the first
+    `os.replace` consumes it — publishing the OTHER process's bytes under its own name — and the
+    second raises FileNotFoundError on a file it thought it owned. Observed, not theoretical: it
+    fell out of the concurrency test for `index_lock`.
+
+    `index_lock` already serialises the only caller, so this is defence in depth rather than the
+    live fix. It is here because the next caller will not know about the lock.
+    """
     os.makedirs(ARCHIVE_DIR, exist_ok=True)
-    tmp = INDEX_PATH + ".tmp"
-    with open(tmp, "w") as fh:
-        json.dump(idx, fh, indent=2, sort_keys=True)
-    os.replace(tmp, INDEX_PATH)
+    tmp = f"{INDEX_PATH}.{os.getpid()}.tmp"
+    try:
+        with open(tmp, "w") as fh:
+            json.dump(idx, fh, indent=2, sort_keys=True)
+        os.replace(tmp, INDEX_PATH)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
 
 
 def publish_one(api, cell, token, keep):
