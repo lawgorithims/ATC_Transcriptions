@@ -265,10 +265,42 @@ def build_coarse_tile(url, out_path, force=False):
     finite = int(np.isfinite(z).sum())
     if finite == 0:
         return "read-failed"
+    # ⚠️ AND A PARTIAL TILE IS NOT AUTOMATICALLY A FAILED ONE. The first version of this guard read
+    # "under half the tile carried elevation" as a broken stream, which is true inland and WRONG
+    # everywhere the United States has an edge. 3DEP carries nodata over ocean and stops at the
+    # border, so a coastal or borderland cell is legitimately half empty: n33w117 is 53% Mexico and
+    # measured 41.4% — a perfectly good read of a cell that is mostly somewhere else. It cost San
+    # Diego and its neighbour, and every remaining coastal cell was queued to fail the same way.
+    #
+    # So TEST THE HYPOTHESIS instead of proxying it. A broken stream is transient and a coastline is
+    # not: re-read the tile with the HTTP cache dropped and compare the valid masks. Identical means
+    # geography, which is a real answer; different means the read is unstable, which is not. One
+    # extra read, paid only in the suspicious case.
+    #
+    # The missing ground is not invented either way — it stays NaN, lands as `unknown` in the class
+    # plane, and the device scores it as unmeasured rather than as anything a pilot could use.
     if finite < z.size // 2:
-        print(f"     ^ only {100.0 * finite / z.size:.1f}% of {os.path.basename(url)} carried "
-              "elevation — treating as a failed read", flush=True)
-        return "read-failed"
+        pct = 100.0 * finite / z.size
+        gdal.VSICurlClearCache()
+        try:
+            again = gdal.Open("/vsicurl/" + url)
+            z2 = again.GetRasterBand(1).ReadAsArray() if again is not None else None
+            again = None
+        except RuntimeError:
+            z2 = None
+        if z2 is None:
+            print(f"     ^ {pct:.1f}% of {os.path.basename(url)} and the re-read failed outright",
+                  flush=True)
+            return "read-failed"
+        mask2 = np.ones_like(z2, bool) if nodata is None else (z2 != nodata)
+        finite2 = int(mask2.sum())
+        if finite2 != finite:
+            print(f"     ^ {os.path.basename(url)} read {pct:.1f}% then "
+                  f"{100.0 * finite2 / z2.size:.1f}% — unstable, treating as a failed read",
+                  flush=True)
+            return "read-failed"
+        print(f"     ^ {pct:.1f}% of {os.path.basename(url)} carried elevation, twice — this is "
+              "coastline or border, not a broken read; the rest stays unmeasured", flush=True)
 
     with np.errstate(all="ignore"):
         gy, gx = np.gradient(z, dy_m, dx_m)
