@@ -203,6 +203,7 @@ actor LivePipeline {
     /// speaker cut returns one piece), so a streaming false-split can never surface as mislabeled lines.
     private let diarizer: Diarizer
     private var diarizationEnabled = true
+    private var deadAirFilterEnabled = true
 
     private static let timeFormatter: DateFormatter = {
         let f = DateFormatter(); f.dateFormat = "HH:mm:ss"; f.locale = Locale(identifier: "en_US_POSIX"); return f
@@ -241,10 +242,26 @@ actor LivePipeline {
     /// mode 1:1. Takes effect on the next segment.
     func setDiarization(_ on: Bool) { diarizationEnabled = on; segmenter.setSpeakerAware(on) }
 
+    /// Kill switch for the pre-decode dead-air gate. ON by default: it loses no real transmission on
+    /// any clip we have, and the failure it prevents (an invented clearance) is worse than the failure
+    /// it could cause. Off restores the old behaviour verbatim — the gate is the only thing it guards.
+    func setDeadAirFilter(_ on: Bool) { deadAirFilterEnabled = on }
+
     /// Transcribe one speech segment into a record, or nil when nothing usable was
     /// decoded. `speaker` tags the record with a diarization speaker id. Port of `_transcribe_segment`.
     func process(_ segment: SpeechSegment, speaker: Int? = nil,
                  speakerDistance: Float? = nil) async -> TranscriptRecord? {
+        // Dead-air gate, BEFORE the decode: on pure radio noise the transcriber invents plausible ATC
+        // text (measured: words on 66% of 500 no-speech clips), and a fabricated clearance is the worst
+        // output this app can produce. VADSegmenter gates on ENERGY and radio noise is loud, so 280 of
+        // those 500 reach us anyway. Rejecting here also skips the decode entirely — a battery win.
+        // Judged on the RAW segment: the preprocessor exists to make faint speech decodable and would
+        // flatten the very burstiness this reads.
+        if deadAirFilterEnabled,
+           case .deadAir(let rangeDB, let cv) = DeadAirFilter.verdict(for: segment.audio) {
+            NSLog("[pipeline] dead air dropped before decode: range %.1f dB, cv %.2f", rangeDB, cv)
+            return nil
+        }
         // Head/tail split so the transcriber can budget priming and history from opposite ends —
         // otherwise a long prompt loses the facility/ownship/ADS-B priming inside WhisperKit.
         let promptParts = context.buildPromptParts()
