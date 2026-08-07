@@ -37,6 +37,7 @@ import argparse
 import hashlib
 import json
 import math
+import time
 import os
 import shutil
 import sqlite3
@@ -226,13 +227,85 @@ def gate_ground_truth(pack):
     return ok, True
 
 
+# ---------------------------------------------------------------------------------------------
+# THE RECEIPT
+# ---------------------------------------------------------------------------------------------
+# ⚠️ A GATE NOTHING CONSULTS IS NOT A GATE. package.py writes the pack, verify.py judges it, and
+# publish.py used to upload whatever was in lz/out/ without ever asking how the judging went. When
+# a stage fails, build_cell.sh exits — but the PACK IT ALREADY WROTE STAYS ON DISK, so a rejected
+# cell sits there looking exactly like an accepted one. n33w119 and n34w119 failed their gate and
+# were one `publish.py --publish` away from every device.
+#
+# So a pass now leaves a receipt keyed to the pack's exact bytes, and publish.py refuses to upload
+# anything new without one. Keyed by sha256 rather than by cell name because a rebuilt pack is a
+# different pack: a stale receipt must not vouch for bytes it never saw.
+
+def receipt_path(pack_path):
+    return pack_path + ".verified.json"
+
+
+def pack_sha256(pack_path):
+    h = hashlib.sha256()
+    with open(pack_path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):         # bounded by file size
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def write_receipt(pack_path, skipped_odbl, truth_checked):
+    rec = {"cell": C.CELL_ID, "sha256": pack_sha256(pack_path),
+           "bytes": os.path.getsize(pack_path),
+           "verified_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+           "odbl_gate": "skipped" if skipped_odbl else "ran",
+           "ground_truth": "checked" if truth_checked else "none registered"}
+    with open(receipt_path(pack_path), "w") as fh:
+        json.dump(rec, fh, indent=2, sort_keys=True)
+    print(f"\nreceipt written: {os.path.basename(receipt_path(pack_path))}")
+
+
+def clear_receipt(pack_path):
+    """A failing pack must not keep a receipt from an earlier, luckier run."""
+    try:
+        os.remove(receipt_path(pack_path))
+        print("previous receipt REVOKED — this pack no longer vouches for itself")
+    except FileNotFoundError:
+        pass
+
+
 def gate_structure(pack):
     ok = True
     counts = pack.counts()
     expect13 = len(C.cell_tiles(C.NATIVE_ZOOM))
-    ok &= check(f"z{C.NATIVE_ZOOM} tile count", counts.get(C.NATIVE_ZOOM, 0) <= expect13
-                and counts.get(C.NATIVE_ZOOM, 0) > expect13 * 0.5,
-                f"{counts.get(C.NATIVE_ZOOM,0)} of {expect13} possible")
+    got13 = counts.get(C.NATIVE_ZOOM, 0)
+    # ⚠️ MEASURE THE TILE COUNT AGAINST THE GROUND THAT EXISTS, NOT AGAINST THE WHOLE CELL.
+    #
+    # This used to demand more than HALF the cell's 644 z13 tiles, which is right inland and wrong
+    # wherever the United States has an edge. 3DEP stops at the coast and at the border, so a
+    # coastal cell legitimately packs fewer tiles: n34w119 is most of the Santa Barbara Channel and
+    # produced 235, a correct pack that the gate rejected. It would have taken Los Angeles out of
+    # the build, and every remaining coastal cell with it — the second time the same flat 50%
+    # assumption has mistaken geography for a broken build.
+    #
+    # ⚠️ AND THE NEW RULE IS STRICTER WHERE IT MATTERS, NOT LOOSER. The failure this gate exists for
+    # is n35w108: a failed DEM read produced an 11 MB pack claiming a whole degree of New Mexico had
+    # nowhere to land. That cell's DEM coverage was ~100%, so scaling by coverage demands ~483 tiles
+    # of it rather than the old 322 — it fails harder than before. What changes is only that a cell
+    # which is half ocean is no longer required to invent tiles over water.
+    cov = None
+    try:
+        dem = C.load_manifest()["sources"].get("dem_3dep", {})
+        cov = float(dem["coverage_pct"]) / 100.0
+    except (KeyError, TypeError, ValueError, FileNotFoundError):
+        cov = None
+    if cov is None:
+        # No manifest to compare against (a re-verify after cleanup). Fall back to the old absolute
+        # rule and SAY SO, rather than passing something that was never actually checked.
+        floor, basis = expect13 * 0.5, "no manifest — absolute floor, coverage unverified"
+    else:
+        floor = expect13 * cov * 0.75
+        basis = f"{100 * cov:.1f}% DEM coverage, so at least {floor:.0f}"
+    ok &= check(f"z{C.NATIVE_ZOOM} tile count", got13 <= expect13 and got13 > floor,
+                f"{got13} of {expect13} possible ({basis})")
     ok &= check("pyramid spans the declared zooms",
                 set(counts) == set(range(C.MIN_ZOOM, C.NATIVE_ZOOM + 1)),
                 ", ".join(f"z{z}={n}" for z, n in sorted(counts.items())))
@@ -397,6 +470,10 @@ def main():
     else:
         ok &= gate_odbl()
 
+    if ok:
+        write_receipt(pack_path, skipped_odbl=a.skip_odbl, truth_checked=truth_checked)
+    else:
+        clear_receipt(pack_path)
     if not ok:
         print("\nGATE FAIL")
     elif truth_checked:
