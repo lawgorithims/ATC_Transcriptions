@@ -36,6 +36,18 @@ enum WhatsNew {
     /// need not be contiguous" is for.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 108, version: "1.0", headline: "It stops writing down the static",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "waveform.slash",
+                    title: "Radio noise is skipped, not invented",
+                    detail: "Between transmissions a frequency is just static, and a speech model handed static does not stay quiet — it writes something plausible, now and then a complete-sounding clearance that nobody said. On 500 recordings of pure noise the old behaviour produced words on two thirds of them. CommSight now checks whether a burst actually has the rise and fall of speech before it transcribes anything, and skips it if not. On our test recordings that removed 93% of the invented lines while skipping no real transmission. It also means noise no longer costs a transcription, so the battery lasts a little longer on a quiet frequency."),
+                WhatsNewHighlight(
+                    icon: "switch.2",
+                    title: "And you can turn it off",
+                    detail: "Settings › Dead air › Ignore radio noise. It is on by default and deliberately errs toward transcribing — a line you can see and dismiss is better than a call you never got. If you ever suspect a quiet transmission was missed, switch it off and it behaves exactly as before."),
+            ]),
+        ReleaseNote(
             build: 107, version: "1.0", headline: "Reachable ground, ranked — and a glide you can rehearse",
             highlights: [
                 WhatsNewHighlight(
