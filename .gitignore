@@ -110,3 +110,4 @@ python-legacy/models/whisper-atc-turbo/training_args.bin
 /candidates.json
 gold_testset*.jsonl
 
+lz/out/*.verified.json

@@ -388,6 +388,41 @@ def save_done(done):
     os.replace(tmp, DONE_PATH)
 
 
+def assert_new_packs_are_verified(cells, done):
+    """Refuse the whole run if any pack being uploaded for the first time has no verify receipt.
+
+    ⚠️ THE GATE HAD NO TEETH. verify.py judged each pack and this script never asked the verdict —
+    it uploaded whatever was in lz/out/. When a stage fails, build_cell.sh exits, but the pack
+    package.py already wrote STAYS ON DISK looking exactly like a good one. n33w119 and n34w119
+    failed their structural gate and were one `--publish` away from every device.
+
+    Scoped to NEW bytes on purpose. A cell already published with this exact sha256 is skipped by
+    the uploader anyway, and demanding receipts for the 72 cells built before receipts existed
+    would block every future publish over history that cannot be re-verified without a rebuild.
+    What matters is that nothing NEW ships ungated.
+    """
+    missing = []
+    for cell, path in sorted(cells.items()):
+        sha = sha256_of(path)
+        if done.get(cell, {}).get("sha256") == sha:
+            continue                                   # unchanged, already live, not a new upload
+        rec_path = path + ".verified.json"
+        try:
+            with open(rec_path) as fh:
+                rec = json.load(fh)
+        except (FileNotFoundError, json.JSONDecodeError):
+            missing.append(f"{cell}: no verify receipt — did `verify.py --cell {cell}` pass?")
+            continue
+        if rec.get("sha256") != sha:
+            missing.append(f"{cell}: receipt is for different bytes "
+                           f"({rec.get('sha256', '?')[:12]}… vs {sha[:12]}…) — pack rebuilt since")
+    if missing:
+        _fail("REFUSING TO PUBLISH — these packs are not vouched for by a passing gate:\n  "
+              + "\n  ".join(missing)
+              + "\n\nA pack that failed verification stays on disk looking exactly like one that "
+                "passed. Rebuild or re-verify before publishing.")
+
+
 def do_publish(cells, token, force):
     """Upload each pack, then the catalog, then verify. Resumable: a cell whose sha256 matches what
     was published last run is skipped, so an interrupted 9-cell push resumes instead of re-sending
@@ -395,6 +430,7 @@ def do_publish(cells, token, force):
     # BEFORE anything is uploaded — a pack in no region is worse than an unpublished one, because
     # it looks published.
     assert_every_pack_has_a_region(cells)
+    assert_new_packs_are_verified(cells, load_done())
 
     from huggingface_hub import HfApi, create_repo     # imported AFTER the Xet export
 
