@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.commsight.lzpacific</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/private/tmp/claude-501/-Users-bsusl/9d2aac48-9e5c-4de6-a943-c605eaeb11b0/scratchpad/build_pacific2.sh</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key><string>/Users/bsusl</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <!-- NO KeepAlive. `launchctl submit` defaults it to true, which turned a failing queue into a
+       thirteen-hour respawn loop. This runs ONCE; a finished queue stays finished. -->
+  <key>StandardOutPath</key><string>/private/tmp/claude-501/-Users-bsusl/9d2aac48-9e5c-4de6-a943-c605eaeb11b0/scratchpad/pacific_launchd.log</string>
+  <key>StandardErrorPath</key><string>/private/tmp/claude-501/-Users-bsusl/9d2aac48-9e5c-4de6-a943-c605eaeb11b0/scratchpad/pacific_launchd.log</string>
+</dict></plist>
