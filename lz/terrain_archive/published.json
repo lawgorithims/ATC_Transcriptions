@@ -5,6 +5,12 @@
     "sha256": "2c42df09a0b0368d01cc68370bf8accc9c0ad665190794a89874a2c2b52a6c4d",
     "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n32w105.tif"
   },
+  "n32w106": {
+    "bytes": 23528173,
+    "published_utc": "2026-08-06T09:53:31Z",
+    "sha256": "fd2e13d87eb59409019b5e81d6e99e272f6811d6ffe23de5ba2ed9970ea41ded",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n32w106.tif"
+  },
   "n32w110": {
     "bytes": 23810535,
     "published_utc": "2026-08-04T18:42:26Z",
@@ -28,6 +34,30 @@
     "published_utc": "2026-08-05T01:16:09Z",
     "sha256": "30958b8771682651cb823b792060bcc59b4b931d1fb3715e9af4708bf3fd72ac",
     "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n32w113.tif"
+  },
+  "n33w105": {
+    "bytes": 27173571,
+    "published_utc": "2026-08-06T10:43:03Z",
+    "sha256": "c94cc10a3ea2cdc037c88e9e39c095008b3bb2f79b56d8355f891ad7664bfbbf",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n33w105.tif"
+  },
+  "n33w106": {
+    "bytes": 34677765,
+    "published_utc": "2026-08-06T05:41:20Z",
+    "sha256": "f422024e27d00ca701ed3a0cf74604862a87673eec089547598adea8c0552183",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n33w106.tif"
+  },
+  "n33w107": {
+    "bytes": 24591625,
+    "published_utc": "2026-08-06T04:43:19Z",
+    "sha256": "4d451cff9929f8264f10eb7e476491a05e35a007e8bb9fa71144bdb2f8f4ba5a",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n33w107.tif"
+  },
+  "n33w108": {
+    "bytes": 27733111,
+    "published_utc": "2026-08-06T06:24:33Z",
+    "sha256": "a2b4d0482b2875e30d1a2f0d830f72653001465d209b60a56f4d2174aa84168c",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n33w108.tif"
   },
   "n33w109": {
     "bytes": 34580317,
@@ -71,6 +101,54 @@
     "sha256": "af7d6f952d876e195e7d066a5376e318601630bbb33997d7a28a57375b8bfaba",
     "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n33w115.tif"
   },
+  "n33w116": {
+    "bytes": 8425397,
+    "published_utc": "2026-08-07T13:45:13Z",
+    "sha256": "17985e4eb3f082570be10909941e6da4b5ed7b675d97bb197eb48aab10205e91",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n33w116.tif"
+  },
+  "n33w117": {
+    "bytes": 27649691,
+    "published_utc": "2026-08-06T18:34:23Z",
+    "sha256": "7872c00f4d3a8ce16e468aa9da435ca28b4f8a934a844738293c055bd1fe1934",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n33w117.tif"
+  },
+  "n33w118": {
+    "bytes": 7158459,
+    "published_utc": "2026-08-07T13:57:53Z",
+    "sha256": "7cca8cff1cfa3b05c357a8b4e72298ad3b66195b2c696a96a4e7d87de79ca84d",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n33w118.tif"
+  },
+  "n33w119": {
+    "bytes": 1352067,
+    "published_utc": "2026-08-07T00:30:13Z",
+    "sha256": "7d08c832660f93c7eed8149c25b7405f61d85702bfb9977c52e24c0c32d4420d",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n33w119.tif"
+  },
+  "n34w105": {
+    "bytes": 21309261,
+    "published_utc": "2026-08-06T11:31:56Z",
+    "sha256": "27be0676f63a6bb62d3f2fca780ae74ead648c3d0e0659ab3f405074bdc7b18a",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n34w105.tif"
+  },
+  "n34w106": {
+    "bytes": 38857519,
+    "published_utc": "2026-08-06T08:06:17Z",
+    "sha256": "f81b8b2c02b5e700d9b2f7576b46a3f669a1377c77f2d6b10dbe3ef5fa3271c7",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n34w106.tif"
+  },
+  "n34w107": {
+    "bytes": 27230405,
+    "published_utc": "2026-08-06T07:12:57Z",
+    "sha256": "b243458de6a4e6c1832c19d67677b7039dc86d84d6475d887556bd14d8ac3ea7",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n34w107.tif"
+  },
+  "n34w108": {
+    "bytes": 41909737,
+    "published_utc": "2026-08-06T08:58:58Z",
+    "sha256": "107c6fc50bd2c933df6bd053305e375b70b62b5f3703fa5ac405d3333077984c",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n34w108.tif"
+  },
   "n34w109": {
     "bytes": 49727253,
     "published_utc": "2026-08-03T21:32:31Z",
@@ -112,6 +190,66 @@
     "published_utc": "2026-08-05T13:45:26Z",
     "sha256": "b1b570bc8fc266f3acded49bcdfb780109cc1eff9466619bcee1da137cf1c1c0",
     "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n34w115.tif"
+  },
+  "n34w116": {
+    "bytes": 34539331,
+    "published_utc": "2026-08-06T05:11:30Z",
+    "sha256": "b0127f4a3170d11dcee7624b167dc539e8be06a43846c43051d94b14acf92693",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n34w116.tif"
+  },
+  "n34w117": {
+    "bytes": 57250433,
+    "published_utc": "2026-08-06T10:08:20Z",
+    "sha256": "370453c98f47de0d3aea9531a40d7760329462f29d2da7adc65099121930f889",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n34w117.tif"
+  },
+  "n34w118": {
+    "bytes": 37196185,
+    "published_utc": "2026-08-06T14:23:49Z",
+    "sha256": "98219fbf67e8bd101eea06e0f3ac2c0eeb26b571a142a82146501106f14adb11",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n34w118.tif"
+  },
+  "n34w119": {
+    "bytes": 6104613,
+    "published_utc": "2026-08-07T00:30:18Z",
+    "sha256": "188f8ffc1564737c4a391a877e359ccf73d54ac19d47ea428a20fbd2d94d391a",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n34w119.tif"
+  },
+  "n34w120": {
+    "bytes": 1945135,
+    "published_utc": "2026-08-07T17:26:23Z",
+    "sha256": "4d4dc9eeded3df50685fe44a89d3fefa68056629e41cb1768de9d2489e98d484",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n34w120.tif"
+  },
+  "n34w121": {
+    "bytes": 2014825,
+    "published_utc": "2026-08-07T21:09:44Z",
+    "sha256": "861c91cf304aa4e5ae328425ab57d43d86166647f75a8e22267085d89c973273",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n34w121.tif"
+  },
+  "n35w105": {
+    "bytes": 20383231,
+    "published_utc": "2026-08-06T12:35:36Z",
+    "sha256": "d3bade0ba963921c12eeabcd74551c1d14277821cf377a8a875e8f1daf2adf3a",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n35w105.tif"
+  },
+  "n35w106": {
+    "bytes": 21742367,
+    "published_utc": "2026-08-06T13:31:35Z",
+    "sha256": "b85bb3fdb8181d8acfb8b86660ceffd4f0c240016f9cd857d5017ac994207ad6",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n35w106.tif"
+  },
+  "n35w107": {
+    "bytes": 27408473,
+    "published_utc": "2026-08-06T14:15:22Z",
+    "sha256": "82da5535c7f53912f4945b7ad78f51c628ae4ad811ebb06774c7d727a548984c",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n35w107.tif"
+  },
+  "n35w108": {
+    "bytes": 33866605,
+    "published_utc": "2026-08-06T15:08:33Z",
+    "sha256": "3fbf39a9bb2df1aa044b5f72029019e66f9043962e26003cdff93d63874fe943",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n35w108.tif"
   },
   "n35w109": {
     "bytes": 31956249,
@@ -155,11 +293,65 @@
     "sha256": "75d7d41cec4c8d52986251d7db51afbef4a06f0750ff125a4b7d013b6b4f773c",
     "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n35w115.tif"
   },
+  "n35w116": {
+    "bytes": 33912237,
+    "published_utc": "2026-08-06T06:07:48Z",
+    "sha256": "ca9a77dc2e2c214e1f10093864687fe07be46e04c24a71e8293701b99e26df8d",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n35w116.tif"
+  },
+  "n35w117": {
+    "bytes": 46830249,
+    "published_utc": "2026-08-06T11:28:40Z",
+    "sha256": "a7ce8b03778eea0c6813be1f434bc98e006ec74aa8f14fc98a2bc35b80e0faad",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n35w117.tif"
+  },
+  "n35w118": {
+    "bytes": 41408279,
+    "published_utc": "2026-08-06T16:09:03Z",
+    "sha256": "1a4cdd4bea65e9f9b203a9c0be08f3e8226f05e104c3f358f94e61e517ff6fb4",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n35w118.tif"
+  },
+  "n35w119": {
+    "bytes": 51293723,
+    "published_utc": "2026-08-07T15:29:32Z",
+    "sha256": "7ef52856a33004fa0ebc402492f7daeba79555e0c7947a2b63da73291247c1d3",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n35w119.tif"
+  },
+  "n35w120": {
+    "bytes": 43310321,
+    "published_utc": "2026-08-07T18:26:53Z",
+    "sha256": "185fb3d0c3ac18f5723b4d717cf48ff11e1fc98ae35874b4d0ccd55919a9ce9d",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n35w120.tif"
+  },
+  "n35w121": {
+    "bytes": 20156343,
+    "published_utc": "2026-08-07T21:44:00Z",
+    "sha256": "1a897bbf59a3209dda53f6fc4b72cfbec3202acb7c7bfcb24d9cf3f46cd37b6a",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n35w121.tif"
+  },
   "n36w105": {
     "bytes": 29381725,
     "published_utc": "2026-08-04T05:15:51Z",
     "sha256": "45055f8b8e46ccff74f0786088d40e348fdf5c642e71a289af5315d61481eebc",
     "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n36w105.tif"
+  },
+  "n36w106": {
+    "bytes": 37602975,
+    "published_utc": "2026-08-06T16:13:24Z",
+    "sha256": "5d46a4708e8a904d45bffa118f1ec4835e920a0554995667ea490b2486d139d8",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n36w106.tif"
+  },
+  "n36w107": {
+    "bytes": 39438831,
+    "published_utc": "2026-08-06T16:58:38Z",
+    "sha256": "1218b42d410381438c3e7793a352baefc9bee40b68927c84ef40f380a1e8f2ae",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n36w107.tif"
+  },
+  "n36w108": {
+    "bytes": 32119173,
+    "published_utc": "2026-08-06T17:51:56Z",
+    "sha256": "00cc729b4120e33d2028a9df0ff7ecfdced9e3bc77b123e5a5cd8df4837c6bbd",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n36w108.tif"
   },
   "n36w109": {
     "bytes": 37429145,
@@ -202,6 +394,48 @@
     "published_utc": "2026-08-05T16:06:36Z",
     "sha256": "010e9c91c7dcd17072b00725c41f0d0378aa1937889252842d683a51fac23947",
     "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n36w115.tif"
+  },
+  "n36w116": {
+    "bytes": 38976399,
+    "published_utc": "2026-08-06T07:19:47Z",
+    "sha256": "7afbc6b76905630488d0fd59d2b8f92b2756c55d81391d33781fd7da85b3dd5f",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n36w116.tif"
+  },
+  "n36w117": {
+    "bytes": 44855601,
+    "published_utc": "2026-08-06T12:15:45Z",
+    "sha256": "1c2510c2e4cb571193735d0520bd0441f09a7b2dc27994cab3ec3fe808d15776",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n36w117.tif"
+  },
+  "n36w118": {
+    "bytes": 39866367,
+    "published_utc": "2026-08-06T17:12:51Z",
+    "sha256": "dcdba510c6516c20810a674a8f6fb7e659cb62b487bc6d54712d6e76ddc3d18b",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n36w118.tif"
+  },
+  "n36w119": {
+    "bytes": 53657663,
+    "published_utc": "2026-08-07T16:29:01Z",
+    "sha256": "73125934621ee0024fbe3ca32f6e1f6be6e51dd6105dada0239ffab6b81460b9",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n36w119.tif"
+  },
+  "n36w120": {
+    "bytes": 20920761,
+    "published_utc": "2026-08-07T19:29:06Z",
+    "sha256": "078810abb63d3ce75264262ef73a4498531421d2ba347a0fa2fce97419cacad2",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n36w120.tif"
+  },
+  "n36w121": {
+    "bytes": 50438815,
+    "published_utc": "2026-08-07T22:49:10Z",
+    "sha256": "dcb74ef52d61bab0b6ce1ee80188ac67c18502b55d614f004f9234b24ade390e",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n36w121.tif"
+  },
+  "n36w122": {
+    "bytes": 13201797,
+    "published_utc": "2026-08-08T00:27:40Z",
+    "sha256": "a9d2e7d3ecf775c18222f7b23a46f7ef20634ed9934ada7afaf2ee5775506981",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n36w122.tif"
   },
   "n37w105": {
     "bytes": 31384523,
@@ -268,5 +502,47 @@
     "published_utc": "2026-08-05T17:17:23Z",
     "sha256": "4400967fe40cc8c8d846ec63f25b4105e976dfb7d70c56d536e51ed200bb324a",
     "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n37w115.tif"
+  },
+  "n37w116": {
+    "bytes": 42293271,
+    "published_utc": "2026-08-06T08:13:15Z",
+    "sha256": "90d0f8423720b08a7c4c5b9ff3be302ddd1b354d2e1c767b09f109144b8a0f8a",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n37w116.tif"
+  },
+  "n37w117": {
+    "bytes": 42506055,
+    "published_utc": "2026-08-06T12:58:21Z",
+    "sha256": "fdc9b70897e6b34ef6cdd7c7ba236d710a4b9435c14265d217cfcdf042c1c8c4",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n37w117.tif"
+  },
+  "n37w118": {
+    "bytes": 54743799,
+    "published_utc": "2026-08-06T18:14:10Z",
+    "sha256": "abfcc7154c6c44d4131b4ffd209c9b2342d10d9b6beeacd039424f1499ceb0ba",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n37w118.tif"
+  },
+  "n37w119": {
+    "bytes": 61617757,
+    "published_utc": "2026-08-07T17:20:38Z",
+    "sha256": "aa2664d5bf002f94e8bb565d5cc0a640d6a056013850c2edcfb6df112eaaeac7",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n37w119.tif"
+  },
+  "n37w120": {
+    "bytes": 20002429,
+    "published_utc": "2026-08-07T21:04:49Z",
+    "sha256": "64045b0e23719f86fd8ceefa8ed99a9869969fda63f93c320f78cd84393d25a5",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n37w120.tif"
+  },
+  "n37w121": {
+    "bytes": 38657319,
+    "published_utc": "2026-08-08T00:11:09Z",
+    "sha256": "479f03b56d8d55bcf0f3ac5488052887cc59303415e4f3856b68b65dfe46c266",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n37w121.tif"
+  },
+  "n37w122": {
+    "bytes": 47027033,
+    "published_utc": "2026-08-08T01:18:39Z",
+    "sha256": "d4f433c7ce62fe6f1aba0b78677bd701cea51711eb3768aaa90ac175b6c9b442",
+    "url": "https://huggingface.co/datasets/SingularityUS/commsight-terrain/resolve/main/elev10m/n37w122.tif"
   }
 }
