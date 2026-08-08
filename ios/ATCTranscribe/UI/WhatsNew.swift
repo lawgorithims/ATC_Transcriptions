@@ -36,6 +36,34 @@ enum WhatsNew {
     /// need not be contiguous" is for.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 109, version: "1.0", headline: "The landability layer now covers the Southwest",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "square.grid.3x3.fill",
+                    title: "Three areas became ninety-one",
+                    detail: "The off-field landability layer shipped with three 1-degree areas around Las Cruces, which meant it was dark almost everywhere. It now covers an unbroken block from the Texas line to the Pacific: all of New Mexico and Arizona, the lower Colorado River, southern and central California, the Mojave and the eastern Sierra. Albuquerque, Phoenix, Los Angeles and San Diego are in it. Download what you need under Settings › Downloads — they are large, so it asks before spending your data."),
+                WhatsNewHighlight(
+                    icon: "rectangle.split.3x3",
+                    title: "The holes between areas are gone",
+                    detail: "Zoomed out, the shading had gaps several miles wide where areas met — one map tile can straddle four of them and only the first was being read. A hole in this layer reads as \u{201c}nothing landable here\u{201d}, which is the most dangerous thing it can say, so this was worth fixing properly rather than papering over."),
+                WhatsNewHighlight(
+                    icon: "airplane.circle",
+                    title: "Tell it what you fly",
+                    detail: "A new aircraft list covers 35 types from 17 manufacturers, including nine helicopters. Pick yours and the weight, span, approach speed, glide ratio and landing distance fill in — then change any of them, because the list is a starting point and your POH is the authority. Every number says where it came from."),
+                WhatsNewHighlight(
+                    icon: "helicopter",
+                    title: "Helicopters are no longer asked for a runway",
+                    detail: "Marking your aircraft as a rotorcraft used to change nothing behind the scenes: the layer still demanded about 730 m of open ground, roughly five times what an autorotation needs, so it blacked out ground a helicopter could use easily. It now uses a rotorcraft minimum instead, and no longer treats a low approach speed as permission to accept steeper ground \u{2014} slope is a rollover limit for skid gear, not an energy one."),
+                WhatsNewHighlight(
+                    icon: "clock",
+                    title: "Zulu and local, always on screen",
+                    detail: "The top bar now carries both. Zulu is on top in monospaced digits because that is the one every clearance, METAR and NOTAM is in; local sits underneath so you still know what time it is where you are standing."),
+                WhatsNewHighlight(
+                    icon: "eye.slash",
+                    title: "A layer you switched off stops talking",
+                    detail: "Tapping the map used to offer an \u{201c}Off-field landability\u{201d} answer even with the shading turned off \u{2014} an answer about a layer that was not on screen, sitting in the list beside things that were. Turning a layer off now means it stops speaking."),
+            ]),
+        ReleaseNote(
             build: 108, version: "1.0", headline: "It stops writing down the static",
             highlights: [
                 WhatsNewHighlight(
