@@ -8,6 +8,7 @@ import MapKit
 enum SourceKind: String, CaseIterable, Identifiable {
     case liveFeed = "Internet live feed"
     case stratux = "Stratux receiver"
+    case obelisk = "Obelisk"
     case microphone = "Device microphone"
     case usbAudio = "USB audio"
     case replay = "Replay demo"
@@ -15,11 +16,28 @@ enum SourceKind: String, CaseIterable, Identifiable {
     /// Only the internet live feed needs a LiveATC stream link + frequency.
     var needsLink: Bool { self == .liveFeed }
     /// Cockpit-audio sources from a Stratux receiver (audio sidecar + on-board ADS-B/GPS).
+    ///
+    /// Deliberately NOT true for `.obelisk`. Both appliances serve the same audio sidecar, but
+    /// only the Stratux carries ADS-B and GPS; this flag gates the traffic/GPS link, and letting
+    /// the Obelisk set it would have the app polling endpoints that do not exist and reporting a
+    /// receiver that is not there.
     var isStratux: Bool { self == .stratux }
-    /// In-cockpit live audio (mic / USB / Stratux) — grounds the corrector on the surrounding GPS
-    /// vicinity rather than the typed "Airport context" field (which the internet feed uses, and which
-    /// can be stale vs an in-cockpit feed). Replay has no location, so it grounds on neither.
-    var isInCockpit: Bool { self == .microphone || self == .usbAudio || self == .stratux }
+    /// A cockpit appliance reached over its own Wi-Fi, streaming raw PCM from the
+    /// `commsight-cockpit-audio` sidecar. Both kinds share `StratuxAudioSource`.
+    var cockpitDevice: CockpitDeviceKind? {
+        switch self {
+        case .stratux: return .stratux
+        case .obelisk: return .obelisk
+        default: return nil
+        }
+    }
+    /// In-cockpit live audio (mic / USB / Stratux / Obelisk) — grounds the corrector on the
+    /// surrounding GPS vicinity rather than the typed "Airport context" field (which the internet
+    /// feed uses, and which can be stale vs an in-cockpit feed). Replay has no location, so it
+    /// grounds on neither.
+    var isInCockpit: Bool {
+        self == .microphone || self == .usbAudio || self == .stratux || self == .obelisk
+    }
 }
 
 /// The view-model the console binds to. In **live** mode (launched with `--model-dir`)
@@ -1229,6 +1247,40 @@ final class AppModel: ObservableObject {
             if didFinishInit, stratuxHost != oldValue { syncStratux() }
         }
     }
+    // MARK: Obelisk cockpit-audio appliance
+    //
+    // Audio-only sibling of the Stratux, running the identical sidecar on its own access point.
+    // Kept as separate settings rather than reusing the Stratux fields because a cockpit can
+    // legitimately carry both — a Stratux for traffic/GPS and an Obelisk for audio — and sharing
+    // one address field would make selecting one silently break the other.
+    @Published var obeliskHost = UserDefaults.standard.string(forKey: "atc.obeliskHost")
+        ?? CockpitDeviceKind.obelisk.defaultHost {
+        didSet { UserDefaults.standard.set(obeliskHost, forKey: "atc.obeliskHost") }
+    }
+    @Published var obeliskAudioPort = (UserDefaults.standard.object(forKey: "atc.obeliskAudioPort") as? Int)
+        ?? CockpitDeviceKind.obelisk.defaultAudioPort {
+        didSet { UserDefaults.standard.set(obeliskAudioPort, forKey: "atc.obeliskAudioPort") }
+    }
+    /// Last observed battery state, refreshed from the Obelisk's `/health`. Nil until probed, and
+    /// always nil for a Stratux (no battery).
+    @Published var obeliskBattery: BatteryTelemetry?
+    /// Result of the most recent discovery sweep, newest first — drives the Settings device list.
+    @Published var cockpitDevices: [CockpitDeviceStatus] = []
+
+    /// Probe both appliance addresses and publish the result. Safe to call repeatedly; bounded by
+    /// `CockpitDeviceProbe.timeout` per device, so worst case is a couple of seconds.
+    func refreshCockpitDevices() async {
+        let overrides: [CockpitDeviceKind: (host: String, port: Int)] = [
+            .stratux: (stratuxHost, stratuxAudioPort),
+            .obelisk: (obeliskHost, obeliskAudioPort),
+        ]
+        let found = await CockpitDeviceProbe.discover(overrides: overrides)
+        await MainActor.run {
+            self.cockpitDevices = found
+            self.obeliskBattery = found.first(where: { $0.kind == .obelisk })?.health?.battery
+        }
+    }
+
     @Published var stratuxAudioPort = (UserDefaults.standard.object(forKey: "atc.stratuxAudioPort") as? Int) ?? 8090 {
         didSet { UserDefaults.standard.set(stratuxAudioPort, forKey: "atc.stratuxAudioPort") }
     }
@@ -3274,6 +3326,7 @@ final class AppModel: ObservableObject {
         switch s {
         case .liveFeed:   return "stream"
         case .stratux:    return "stratux"
+        case .obelisk:    return "obelisk"
         case .microphone: return "mic"
         case .usbAudio:   return "usb"
         case .replay:     return "replay"
@@ -4582,6 +4635,20 @@ final class AppModel: ObservableObject {
             }
             audioMonitor.setMuted(!monitorEnabled)
             src = MonitoredSource(stx, monitor: audioMonitor)
+        case .obelisk:
+            // The Obelisk runs the SAME cockpit-audio sidecar as the Stratux — raw 16 kHz mono
+            // S16LE at <host>:<port>/audio.raw — so `StratuxAudioSource` is reused verbatim rather
+            // than duplicated. Only the address differs (the Obelisk's own AP is 192.168.4.1).
+            //
+            // Note this path does NOT touch `stratuxEnabled`: the Obelisk is audio-only, with no
+            // ADS-B or GPS to link to. Whether it serves filtered or raw audio is the device's
+            // decision, reported back in /health as `filter.commsight_source`.
+            guard let obk = StratuxAudioSource(host: obeliskHost, audioPort: obeliskAudioPort,
+                                               onTrouble: { [weak self] msg in Task { @MainActor in self?.detail = msg } }) else {
+                detail = "Set a valid Obelisk address in Settings › Obelisk."; return
+            }
+            audioMonitor.setMuted(!monitorEnabled)
+            src = MonitoredSource(obk, monitor: audioMonitor)
         }
         // Hold an active audio session for every source so transcription continues when the app is
         // backgrounded (the `audio` background mode is declared). mic/USB record; feed/replay/Stratux play.
