@@ -50,6 +50,9 @@ fi
 # ---- pull built tiles from HF -----------------------------------------------------------------
 echo "== pull MBTiles from HF ($HF_DATASET) =="
 export HF_TOKEN="${HF_TOKEN:-$(cat "$HOME/.hf_token" 2>/dev/null || true)}"
+# Match the upload path (see build_all_packs.sh) and the app: fetch over plain transport rather
+# than the Xet client, so what this box serves is what a pilot's device would actually receive.
+export HF_HUB_DISABLE_XET=1
 export HF_HUB_ENABLE_HF_TRANSFER=1
 HF_BIN="$PREFIX/venv/bin/hf"
 if [ ! -x "$HF_BIN" ]; then

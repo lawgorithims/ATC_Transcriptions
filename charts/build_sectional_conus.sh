@@ -51,6 +51,9 @@ PY
 if [ "${UPLOAD:-0}" = "1" ]; then
   echo "== upload → HF $HF_DATASET =="
   export HF_TOKEN="${HF_TOKEN:-$(cat "$HOME/.hf_token" 2>/dev/null || true)}"
+  # ⚠️ See the note in build_all_packs.sh: without HF_HUB_DISABLE_XET the mosaic uploads as
+  # Xet-backed and the app's plain anonymous GET returns 403 — published but unreadable.
+  export HF_HUB_DISABLE_XET=1
   export HF_HUB_ENABLE_HF_TRANSFER=1
   "$HOME/chartenv/bin/hf" upload "$HF_DATASET" "$mb" "sectional/conus_sectional.mbtiles" --repo-type dataset
 fi

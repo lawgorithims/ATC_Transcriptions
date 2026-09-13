@@ -17,6 +17,14 @@ export WARPDIR="${WARPDIR:-/tmp/charts/warp}"
 mkdir -p "$OUT" "$WORK" "$WARPDIR"
 UA="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 export HF_TOKEN="${HF_TOKEN:-$(cat "$HOME/.hf_token" 2>/dev/null || true)}"
+# ⚠️ DISABLE XET, OR THE APP CANNOT READ WHAT THIS UPLOADS. Hugging Face migrated this dataset to
+# Xet-backed storage, which serves large files only through a chunk-reconstruction protocol the app
+# does not speak — its plain anonymous `GET /resolve/main/<path>` gets 403. Every pack uploaded
+# without this flag therefore publishes fine and is UNFETCHABLE, and the recovery is
+# `rehost_classic_lfs.sh`: re-download and re-upload the whole ~4 GiB dataset to undo it.
+# `lz/publish.py` forces the same flag for the same reason. Set BEFORE the hf CLI runs, since
+# huggingface_hub reads it when it imports its Xet integration.
+export HF_HUB_DISABLE_XET=1
 export HF_HUB_ENABLE_HF_TRANSFER=1
 HF="$HOME/chartenv/bin/hf"
 up(){ [ "${UPLOAD:-1}" = "1" ] || return 0; "$HF" upload "$HF_DATASET" "$1" "$2" --repo-type dataset >/dev/null 2>&1 && echo "  up $2"; }

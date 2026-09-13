@@ -20,6 +20,9 @@ export WARPDIR="${WARPDIR:-/tmp/charts/warp}"
 mkdir -p "$OUT" "$WORK" "$WARPDIR"
 UA="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 export HF_TOKEN="${HF_TOKEN:-$(cat "$HOME/.hf_token" 2>/dev/null || true)}"
+# ⚠️ See the note in build_all_packs.sh: without HF_HUB_DISABLE_XET these packs upload as
+# Xet-backed and the app's plain anonymous GET returns 403 — published but unreadable.
+export HF_HUB_DISABLE_XET=1
 export HF_HUB_ENABLE_HF_TRANSFER=1
 HF="$HOME/chartenv/bin/hf"
 DATASET_BASE="https://huggingface.co/datasets/${HF_DATASET}/resolve/main"
@@ -54,6 +57,13 @@ if [ "$nbuilt" -eq 0 ]; then
   echo "!! no IFR-high packs built — leaving the hosted index.json untouched" >&2
   exit 1
 fi
+# ⚠️ THIS MERGE INHERITS THE HOSTED MANIFEST'S `cycle`, NOT THE ONE THESE PACKS WERE BUILT AT.
+# It starts from the published index.json and replaces only `ifrHigh`, so running this after a
+# cycle rebuild stamps the NEW packs with the OLD cycle — observed on 2026-09-12, where 86 packs
+# built at 09-03-2026 produced a manifest reading cycle=07-09-2026. The app reads `cycle` to
+# decide what is current and what to prune, so that manifest is worse than none.
+# Use `publish_packs.py` for a full-cycle publish; this path is only safe for adding ifrHigh to
+# an already-correct hosted cycle.
 echo "== merge ifrHigh into hosted index.json ($nbuilt packs) =="
 curl -fsSL --max-time 60 "${DATASET_BASE}/index.json" -o "$WORK/index_hosted.json" \
   || { echo "!! could not fetch hosted index.json"; exit 1; }

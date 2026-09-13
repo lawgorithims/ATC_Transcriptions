@@ -18,7 +18,15 @@
 # Key env (all optional): CYCLE, TILE_FORMAT(PNG|WEBP), QUALITY, ZOOM_OVERVIEWS, OUT, WORK, CLIP_REPO
 set -euo pipefail
 
-CYCLE="${CYCLE:-05-14-2026}"                         # FAA 56-day effective date (MM-DD-YYYY)
+# ⚠️ ONE SOURCE OF TRUTH FOR THE CYCLE. This line used to be `CYCLE="${CYCLE:-05-14-2026}"` —
+# a literal hand-copied from charts.conf, which therefore went stale the moment either file was
+# bumped alone. Read it FROM charts.conf (in a subshell, so none of that file's other vars
+# leak in and change this script's own defaults), and refuse to guess if it cannot be read.
+# An explicit env CYCLE still wins, which is how the mosaic builders pin a cycle.
+if [ -z "${CYCLE:-}" ] && [ -f "$(dirname "${BASH_SOURCE[0]}")/charts.conf" ]; then
+  CYCLE="$(. "$(dirname "${BASH_SOURCE[0]}")/charts.conf" >/dev/null 2>&1; printf '%s' "${CYCLE:-}")"
+fi
+: "${CYCLE:?CYCLE unset and charts.conf unreadable — refusing to guess an FAA chart cycle}"
 TILE_FORMAT="${TILE_FORMAT:-PNG}"                     # PNG (universal) or WEBP (≈5× smaller; needs iOS 14+)
 QUALITY="${QUALITY:-75}"                              # WEBP/JPEG quality
 ZOOM_OVERVIEWS="${ZOOM_OVERVIEWS:-2 4 8 16 32 64 128}" # gdaladdo factors → lower zoom levels
