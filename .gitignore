@@ -111,3 +111,18 @@ python-legacy/models/whisper-atc-turbo/training_args.bin
 gold_testset*.jsonl
 
 lz/out/*.verified.json
+
+# ⚠️ A STRAY .lzpack MUST NEVER REACH GIT AGAIN. `lz/.gitignore` already covers `lz/out/`, which is
+# where packs are BUILT — but four of them were COPIED elsewhere and committed: the dev
+# install-into-the-simulator recipe was run with no booted simulator, `xcrun simctl
+# get_app_container` printed its error to stdout, and `cp` into "$(…)/Library/Application Support/lz/"
+# created `ios/An error was encountered processing the command (…)/` and filled it. 344 MB on `main`
+# — the single largest contributor to this repo passing GitHub's storage warning, and invisible
+# because nobody reads a path that long. A directory-scoped ignore cannot catch a copy; this pattern
+# is unanchored so it catches one ANYWHERE in the tree.
+#
+# Packs' real home is Hugging Face (`SingularityUS/commsight-lz`, classic Git-LFS) — lz/publish.py.
+*.lzpack
+# The one deliberate exception: a 16 KB 4-tile fixture, because a test that needs a 90 MB download
+# is not a test.
+!ios/ATCTranscribeTests/lz_fixture.lzpack

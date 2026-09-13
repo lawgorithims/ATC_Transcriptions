@@ -156,15 +156,28 @@ Requires `python3`, `numpy`, and the GDAL **command line** tools (no `osgeo` Pyt
 
 The pack is not bundled — the app scans `Application Support/lz/` for `*.lzpack`:
 
+⚠️ **Resolve the container into a variable and check it — do not inline the command into `cp`.**
+With no booted simulator, `get_app_container` prints its error to **stdout**, so
+`cp … "$(xcrun simctl …)/Library/Application Support/lz/"` creates a directory *named after the
+error message* and copies the pack into it. That is not hypothetical: it put four packs — 344 MB —
+onto `main` under `ios/An error was encountered processing the command (…)/`, where they sat until
+they were found while chasing a GitHub storage warning.
+
 ```bash
-xcrun simctl get_app_container booted com.commsight.atc data
+CONTAINER=$(xcrun simctl get_app_container booted com.commsight.atc data) || exit 1
+[ -d "$CONTAINER" ] || { echo "no booted simulator with the app installed"; exit 1; }
+DEST="$CONTAINER/Library/Application Support/lz"
+mkdir -p "$DEST"
+cp lz/out/n33w107.lzpack "$DEST/"
 ```
 
-Copy `lz/out/n33w107.lzpack` into `<container>/Library/Application Support/lz/`, then enable
-**LZ risk (dev)** in the map layers panel (7-tap the version row in Settings to unlock diagnostics).
+Then enable **LZ risk (dev)** in the map layers panel (7-tap the version row in Settings to unlock
+diagnostics).
 
-Hosting on Hugging Face is deferred. When it happens it must use **classic Git-LFS** — anonymous
-Xet-backed resolves 403 for the app (see `charts/rehost_classic_lfs.sh`).
+Packs are published to Hugging Face as **classic Git-LFS** — anonymous Xet-backed resolves 403 for
+the app (see `charts/rehost_classic_lfs.sh`). The dataset is
+[`SingularityUS/commsight-lz`](https://huggingface.co/datasets/SingularityUS/commsight-lz);
+`lz/publish.py` is the uploader and `out/.published.json` the machine-local checkpoint.
 
 ---
 
