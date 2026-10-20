@@ -120,13 +120,19 @@ def main():
     g.add_argument("--publish", action="store_true")
     ap.add_argument("--stage-next", action="store_true",
                     help="publish a not-yet-effective cycle under `next` instead of refusing")
+    ap.add_argument("--from-dir", default=NAV,
+                    help="where to read the databases from (default: the app's bundled Resources/nav). "
+                         "Point this at a build directory to publish a freshly built cycle WITHOUT "
+                         "committing a 21 MB binary into the repo — which is the habit this whole "
+                         "over-the-air path exists to end (git already carries 13 revisions of "
+                         "cifp.sqlite, about 250 MB of history).")
     a = ap.parse_args()
 
     today = datetime.date.today().isoformat()
     manifest, plan, staged = {"schema": 1, "datasets": {}}, [], {}
 
     for key, (local_name, remote, queries) in DATASETS.items():
-        path = os.path.join(NAV, local_name)
+        path = os.path.join(a.from_dir, local_name)
         if not os.path.exists(path):
             raise SystemExit(f"REFUSING: {path} is missing — build it first (ios/Tools/build_{key}.py)")
         m = read_meta(path)

@@ -1,7 +1,7 @@
 import Foundation
 import SQLite3
 
-/// One CONTINUOUS run of an enroute airway (a V/J/T/Q route as fix chain), from the bundled `cifp.sqlite`
+/// One CONTINUOUS run of an enroute airway (a V/J/T/Q route as fix chain), from the active `cifp.sqlite`
 /// `airway` table (built by `Tools/build_cifp.py` from the FAA CIFP ER records). `area` (USA/PAC/…)
 /// disambiguates same-ident airways in different regions — the East Coast V1 and the Hawaii V1 are
 /// different routes; merging them would draw a bogus trans-Pacific line.
@@ -23,12 +23,35 @@ struct AirwaySegment: Equatable {
 /// Same read-only full-mutex handle pattern as `CIFP`. Queries are REGION-scoped and bounded, and are
 /// called off-main once per settled map region (never per frame). A missing table degrades to empty.
 enum Airways {
-    private static let db: OpaquePointer? = open()
+    private static var dbHandle: OpaquePointer? = open()
+    private static var db: OpaquePointer? { dbHandle }
     static var available: Bool { db != nil }
 
+    /// Discard and re-resolve the handle against the CURRENT active URL. Mirrors
+    /// `CIFP.reopenForTests` and exists for the same reason: production resolves once per launch on
+    /// purpose, so a test that installs a NavDataUpdate override in the SAME process would otherwise
+    /// leave this shared handle bound to its fixture database and starve every later airway test.
+    ///
+    /// Airways needed this the moment it started resolving through `NavDataUpdate` rather than
+    /// `Bundle.main` — the handle was a `static let` before, which could never be rebound.
+    /// Test-only; never call it from a production install or revert.
+    static func reopenForTests() {
+        if let h = dbHandle { sqlite3_close(h) }
+        dbHandle = open()
+    }
+
     private static func open() -> OpaquePointer? {
-        guard let path = (Bundle.main.url(forResource: "cifp", withExtension: "sqlite", subdirectory: "nav")
-                          ?? Bundle.main.url(forResource: "cifp", withExtension: "sqlite"))?.path else { return nil }
+        // ⚠️ MUST RESOLVE THROUGH NavDataUpdate, NOT Bundle.main. The airway table lives INSIDE
+        // cifp.sqlite, so it shares a cycle with the procedures — and this reader used to open the
+        // bundled file directly while CIFP.swift:176 opened the active one. The moment a downloaded
+        // cycle was installed the two diverged: approaches came from the new cycle, airways from the
+        // old, with nothing to indicate it. A revoked V-route would keep drawing, an MEA could be
+        // last cycle's, and the DataProvenance stamp would report the NEW cycle for both.
+        //
+        // Mixed-cycle fusion is the specific failure DataProvenance.swift exists to prevent, and it
+        // was unreachable until nav data became downloadable — which is exactly why it had to be
+        // fixed in the same change that made downloading possible.
+        guard let path = NavDataUpdate.activeURL(.cifp)?.path else { return nil }
         var h: OpaquePointer?
         guard sqlite3_open_v2(path, &h, SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
             if h != nil { sqlite3_close(h) }

@@ -55,6 +55,13 @@ if [ "${UPLOAD:-0}" = "1" ]; then
   # Xet-backed and the app's plain anonymous GET returns 403 — published but unreadable.
   export HF_HUB_DISABLE_XET=1
   export HF_HUB_ENABLE_HF_TRANSFER=1
-  "$HOME/chartenv/bin/hf" upload "$HF_DATASET" "$mb" "sectional/conus_sectional.mbtiles" --repo-type dataset
+  # See the note in build_ifr_high_conus.sh: this was hardcoded to a venv bootstrap.sh never creates.
+  HF="${HF:-$(command -v hf 2>/dev/null || true)}"
+  for cand in "${PREFIX:-$HOME/faa-charts}/venv/bin/hf" "$HOME/chartenv/bin/hf"; do
+    [ -n "$HF" ] && break
+    [ -x "$cand" ] && HF="$cand"
+  done
+  [ -n "$HF" ] && [ -x "$HF" ] || { echo "!! no 'hf' binary found — refusing to pretend to upload" >&2; exit 78; }
+  "$HF" upload "$HF_DATASET" "$mb" "sectional/conus_sectional.mbtiles" --repo-type dataset
 fi
 echo "== done =="

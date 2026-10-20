@@ -24,9 +24,27 @@ export HF_TOKEN="${HF_TOKEN:-$(cat "$HOME/.hf_token" 2>/dev/null || true)}"
 # Xet-backed and the app's plain anonymous GET returns 403 — published but unreadable.
 export HF_HUB_DISABLE_XET=1
 export HF_HUB_ENABLE_HF_TRANSFER=1
-HF="$HOME/chartenv/bin/hf"
+# ⚠️ RESOLVE THE UPLOADER, AND FAIL IF IT IS NOT THERE. This was hardcoded to
+# "$HOME/chartenv/bin/hf" — the author's own Mac venv, a path `bootstrap.sh` NEVER creates (it builds
+# "$PREFIX/venv", default ~/faa-charts/venv). So on any Linux box bootstrap.sh had set up, every
+# upload invoked a binary that did not exist; `up()` discarded the error and the run reported success
+# having published nothing. Prefer whatever is on PATH, then the bootstrap venv, then the legacy Mac
+# path, and refuse to continue if none of them is executable.
+HF="${HF:-$(command -v hf 2>/dev/null || true)}"
+for cand in "${PREFIX:-$HOME/faa-charts}/venv/bin/hf" "$HOME/chartenv/bin/hf"; do
+  [ -n "$HF" ] && break
+  [ -x "$cand" ] && HF="$cand"
+done
+[ -n "$HF" ] && [ -x "$HF" ] || { echo "!! no 'hf' binary found (PATH, \$PREFIX/venv/bin, ~/chartenv/bin) — refusing to pretend to upload" >&2; exit 78; }
 DATASET_BASE="https://huggingface.co/datasets/${HF_DATASET}/resolve/main"
-up(){ [ "${UPLOAD:-1}" = "1" ] || return 0; "$HF" upload "$HF_DATASET" "$1" "$2" --repo-type dataset >/dev/null 2>&1 && echo "  up $2"; }
+# FATAL on failure, and no `2>&1`. The old form hid every upload error behind /dev/null under
+# `set -uo pipefail` with no `-e`, so a pack could fail to upload and still be named in the manifest.
+up(){
+  [ "${UPLOAD:-1}" = "1" ] || return 0
+  "$HF" upload "$HF_DATASET" "$1" "$2" --repo-type dataset >/dev/null \
+    || { echo "!! upload FAILED: $2" >&2; exit 1; }
+  echo "  up $2"
+}
 
 [ -d "$CLIP_REPO/clippingShapes" ] || git clone --depth 1 -q https://github.com/jlmcgraw/aviationCharts.git "$CLIP_REPO"
 

@@ -25,6 +25,9 @@ final class NavDataUpdateTests: XCTestCase {
         // boundary. (revert alone is not enough once the handle is already bound.)
         CIFP.reopenForTests()
         AirportData.reopenForTests()
+        // Airways reads the airway table out of the SAME cifp.sqlite and now resolves it through
+        // NavDataUpdate too, so it has the identical fixture-leak and needs the identical reset.
+        Airways.reopenForTests()
     }
 
     /// A minimal database shaped like the real one, so the invariant checks have something to bite on.

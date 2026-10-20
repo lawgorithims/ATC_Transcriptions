@@ -17,6 +17,7 @@ struct DownloadsView: View {
     @EnvironmentObject var model: AppModel
     @ObservedObject var library = ChartLibrary.shared
     @ObservedObject var lzLibrary = LZPackLibrary.shared
+    @ObservedObject var navLibrary = NavDataLibrary.shared
     @ObservedObject var bag: PlateBag
 
     @State private var warming = true
@@ -41,6 +42,7 @@ struct DownloadsView: View {
             ForEach(Self.rasterLayers, id: \.self) { chartLayerSection($0) }
             landabilitySection
             platesSection
+            navDataSection
             storageSection
             Section {
                 Toggle(isOn: $model.chartCompatRendering) {
@@ -63,6 +65,7 @@ struct DownloadsView: View {
             library.refreshCachedBytes()
             await lzLibrary.warm()
             lzLibrary.refreshInstalled()
+            await navLibrary.refresh()
             warming = false
             await refreshPlateStatus()
         }
@@ -444,6 +447,102 @@ struct DownloadsView: View {
     /// difference: these rows show BYTE progress. A chart pack is a few megabytes and an
     /// indeterminate spinner is honest for it; a cell is ~88 MB, and a spinner that sits there for
     /// two minutes over a cockpit LTE link is indistinguishable from a stall.
+    /// Procedures and airports — the two datasets that could previously only be refreshed by an App
+    /// Store release.
+    ///
+    /// They are the reason the currency banner said "3 datasets have expired" with nowhere to go:
+    /// `NavDataUpdate` could verify and install a new cycle, and `CIFP`/`AirportData` already read
+    /// through it, but nothing could ever DELIVER one — no manifest, no URL, no downloader, and no row
+    /// here. Measured 2026-10-19, both were three cycles behind while the FAA had published three
+    /// newer ones.
+    ///
+    /// Shown even when there is nothing to download, unlike the chart rows. What is current is a fact
+    /// a pilot checks BEFORE a flight, and a section that appears only when something is wrong cannot
+    /// answer "am I current?" — it can only interrupt.
+    @ViewBuilder private var navDataSection: some View {
+        let p = model.palette
+        let updates = navLibrary.available()
+        Section {
+            ForEach(NavDataUpdate.Dataset.allCases, id: \.rawValue) { d in
+                let serving = NavDataUpdate.activeURL(d).map { NavDataUpdate.meta($0) } ?? [:]
+                let update = updates.first { $0.dataset == d }?.entry
+                let state = navLibrary.states[d.rawValue]
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Label(d.displayName,
+                              systemImage: d == .cifp ? "point.topleft.down.curvedto.point.bottomright.up"
+                                                      : "building.2")
+                            .font(.callout).foregroundStyle(p.text)
+                        Spacer()
+                        navStateView(d, state: state, update: update, p: p)
+                    }
+                    // Always name the cycle being SERVED, and say plainly whether it came down or
+                    // shipped with the app — "up to date" with no provenance is what let three stale
+                    // cycles go unnoticed.
+                    Text(navCycleLine(d, serving: serving))
+                        .font(.caption2).foregroundStyle(p.textDim)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.vertical, 2)
+                .accessibilityIdentifier("downloads-nav-\(d.rawValue)")
+            }
+        } header: {
+            Text("Procedures & airports · 28-day")
+        } footer: {
+            Text("Coded approaches, departures and arrivals, plus runway geometry and published "
+                 + "frequencies. These update over the air — you no longer need an app update to fly "
+                 + "a current cycle. A new cycle is only offered once it has taken effect; the FAA "
+                 + "publishes them weeks early.")
+        }
+    }
+
+    @ViewBuilder
+    private func navStateView(_ d: NavDataUpdate.Dataset,
+                              state: NavDataLibrary.State?,
+                              update: NavDataLibrary.Catalog.Entry?,
+                              p: Palette) -> some View {
+        switch state {
+        case .checking, .verifying:
+            ProgressView().controlSize(.mini)
+        case .downloading:
+            ProgressView().controlSize(.mini)
+        case .installed(let cycle):
+            Label("Cycle \(cycle) — restart to use", systemImage: "checkmark.circle.fill")
+                .font(.dsLabelS).foregroundStyle(p.good)
+        case .failed(let why):
+            Label(why, systemImage: "exclamationmark.triangle.fill")
+                .font(.dsLabelS).foregroundStyle(p.bad)
+        case .idle, .none:
+            if let u = update {
+                Button {
+                    Haptics.impact(.medium)
+                    navLibrary.update(d)
+                } label: {
+                    Text("Update to \(u.cycle)")
+                        .font(.dsLabelBold).foregroundStyle(.white)
+                        .padding(.horizontal, 10).padding(.vertical, 5)
+                        .background(Capsule().fill(p.accent))
+                }
+                .buttonStyle(.plainHaptic)
+                .accessibilityIdentifier("nav-update-\(d.rawValue)")
+            } else {
+                Image(systemName: "checkmark.circle.fill").font(.dsLabelS).foregroundStyle(p.good)
+            }
+        }
+    }
+
+    /// "Cycle 2610, expires 29 Oct · downloaded" — or why we cannot say.
+    private func navCycleLine(_ d: NavDataUpdate.Dataset, serving: [String: String]) -> String {
+        let cycle = serving["cycle"] ?? ""
+        guard !cycle.isEmpty else { return "No provenance — this data cannot be dated." }
+        let source = NavDataUpdate.isOverridden(d) ? "downloaded" : "built into this app version"
+        var line = "Cycle \(cycle)"
+        if let exp = serving["expires"], !exp.isEmpty {
+            line += ", expires \(exp)"
+        }
+        return line + " · " + source
+    }
+
     @ViewBuilder private var landabilitySection: some View {
         let p = model.palette
         if let catalog = lzLibrary.catalog, !catalog.regions.isEmpty {

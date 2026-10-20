@@ -126,3 +126,12 @@ lz/out/*.verified.json
 # The one deliberate exception: a 16 KB 4-tile fixture, because a test that needs a 90 MB download
 # is not a test.
 !ios/ATCTranscribeTests/lz_fixture.lzpack
+
+# ⚠️ NASR SUBSCRIPTION CACHE — 239 MB PER CYCLE, AND IT ALMOST REACHED main.
+# `build_apt.py --date` caches the FAA 28-day subscription zip so a re-run after a parse failure
+# does not re-download it. A `git add -A` immediately afterwards swept it into a commit; GitHub's
+# 100 MB file limit was the only thing that stopped it, and that is luck, not a safeguard. This is
+# the same shape as the four stray .lzpack files that DID reach main under a shell error message.
+# Unanchored, so it is caught wherever --cache-dir is pointed.
+.nasr-cache/
+28DaySubscription_Effective_*.zip

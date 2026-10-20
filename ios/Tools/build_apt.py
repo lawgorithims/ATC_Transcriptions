@@ -16,12 +16,13 @@ come from CIFP. What is genuinely missing is everything about the FIELD:
 Source: the 28-day subscription zip, member `extra/<DD_Mon_YYYY>_CSV.zip`, itself holding APT_BASE.csv,
 APT_RWY.csv, APT_RWY_END.csv, FRQ.csv and ATC_BASE.csv.
 
-    python3 build_apt.py [--zip 28DaySubscription.zip | --csv-zip CSV.zip] [--out path.sqlite]
+    python3 build_apt.py [--date YYYY-MM-DD | --zip 28DaySubscription.zip | --csv-zip CSV.zip]
+                         [--out path.sqlite]
 
 Follows build_cifp.py's contract: the effective date is read from the DATA, absent stays NULL, and the
 build REFUSES to write if a table regresses against the CSV row count it came from.
 """
-import argparse, csv, datetime as dt, io, os, sqlite3, sys, zipfile
+import argparse, csv, datetime as dt, io, os, sqlite3, sys, urllib.error, urllib.request, zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_OUT = os.path.join(HERE, "..", "ATCTranscribe", "Resources", "nav", "apt.sqlite")
@@ -46,13 +47,59 @@ def latlon(row, base):
     return (lat, lon) if lat is not None and lon is not None else (None, None)
 
 
+# The 28-day subscription, named by its effective date. Same chain and the same anchor build_cifp.py
+# uses, so the two nav databases agree on what "this cycle" means by construction.
+NASR_URL = "https://nfdc.faa.gov/webContent/28DaySub/28DaySubscription_Effective_{date}.zip"
+UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+      "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+
+
+def fetch_subscription(date, cache_dir):
+    """Download the 28-day subscription for `date` (YYYY-MM-DD), caching it.
+
+    ⚠️ THIS IS WHY AIRPORTS COULD NOT BE REBUILT UNATTENDED. Every other nav builder here fetches its
+    own source — build_cifp.py pulls CIFP_<YYMMDD>.zip, build_procedures.py pulls the d-TPP metafile —
+    but this one only ever accepted a zip someone had already downloaded by hand. So a scheduled job
+    could rebuild procedures and plates and then stop dead at airports, which is half an update and
+    arguably worse than none: the datasets would disagree about which cycle they describe.
+
+    Cached because it is ~239 MiB and a re-run after a parse failure should not re-fetch it.
+    """
+    os.makedirs(cache_dir, exist_ok=True)
+    dest = os.path.join(cache_dir, f"28DaySubscription_Effective_{date}.zip")
+    if os.path.exists(dest) and os.path.getsize(dest) > 1 << 20:
+        print(f"  using cached {dest} ({os.path.getsize(dest) / 2**20:.0f} MiB)")
+        return dest
+    url = NASR_URL.format(date=date)
+    print(f"  downloading {url} …", flush=True)
+    req = urllib.request.Request(url, headers={"User-Agent": UA})
+    try:
+        with urllib.request.urlopen(req, timeout=900) as r, open(dest + ".part", "wb") as f:
+            while True:                                   # bounded by content length
+                chunk = r.read(1 << 20)
+                if not chunk:
+                    break
+                f.write(chunk)
+    except urllib.error.HTTPError as ex:
+        if ex.code == 404:
+            sys.exit(f"no NASR subscription published for {date} (HTTP 404). Cycles are 28 days — is "
+                     f"that a real effective date?")
+        raise
+    os.replace(dest + ".part", dest)                      # never leave a half file looking complete
+    print(f"  downloaded {os.path.getsize(dest) / 2**20:.0f} MiB")
+    return dest
+
+
 def open_csv_zip(args):
-    """The CSV bundle, either given directly or extracted from the full subscription zip."""
+    """The CSV bundle, either given directly, extracted from a subscription zip, or fetched."""
     if args.csv_zip:
         return zipfile.ZipFile(args.csv_zip)
-    if not args.zip:
-        sys.exit("give --zip (the 28-day subscription) or --csv-zip")
-    outer = zipfile.ZipFile(args.zip)
+    zip_path = args.zip
+    if not zip_path and args.date:
+        zip_path = fetch_subscription(args.date, args.cache_dir)
+    if not zip_path:
+        sys.exit("give --date YYYY-MM-DD (fetches), --zip (the 28-day subscription), or --csv-zip")
+    outer = zipfile.ZipFile(zip_path)
     inner = [n for n in outer.namelist() if n.upper().endswith("_CSV.ZIP")]
     if not inner:
         sys.exit("no <date>_CSV.zip inside the subscription — is this the right archive?")
@@ -74,6 +121,8 @@ def rows(zf, member):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--zip"); ap.add_argument("--csv-zip")
+    ap.add_argument("--date", help="NASR effective date YYYY-MM-DD — fetches the subscription")
+    ap.add_argument("--cache-dir", default=os.path.join(HERE, ".nasr-cache"))
     ap.add_argument("--out", default=DEFAULT_OUT)
     args = ap.parse_args()
 

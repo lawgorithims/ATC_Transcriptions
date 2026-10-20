@@ -26,7 +26,6 @@ export HF_TOKEN="${HF_TOKEN:-$(cat "$HOME/.hf_token" 2>/dev/null || true)}"
 # huggingface_hub reads it when it imports its Xet integration.
 export HF_HUB_DISABLE_XET=1
 export HF_HUB_ENABLE_HF_TRANSFER=1
-HF="$HOME/chartenv/bin/hf"
 # ⚠️ THIS SCRIPT NO LONGER PUBLISHES. It builds packs; `publish_packs.py` publishes them.
 #
 # It used to do both, badly, in three ways that each shipped something broken while reporting success:
