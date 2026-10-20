@@ -149,6 +149,15 @@ gdaladdo -q -r average "$mb" $ZOOM_OVERVIEWS
 got="$(sqlite3 "$mb" "select value from metadata where name='format';" 2>/dev/null)"
 want="$(echo "$TILE_FORMAT" | tr 'A-Z' 'a-z')"
 [ "$got" = "$want" ] || { echo "!! $mb: tile format is '$got', expected '$want' — is TILE_FORMAT exported?"; rm -f "$mb"; exit 1; }
+# STAMP THE CYCLE INTO THE PACK. Nothing else on disk records which FAA cycle a pack was built from:
+# the filename carries no cycle (the app adds one when it caches), and the metadata table carries only
+# bounds/zoom/format. That is fine for a hand-run build and dangerous for a scheduled one — every
+# resumability check in this pipeline is "does the output file exist", so a nightly job with a
+# persistent scratch directory skips all 86 builds on a cycle roll and publishes LAST cycle's packs
+# under the NEW cycle number. The pilot gets charts that are a cycle out and labelled current, which
+# is worse than no update at all. publish_packs.py refuses any pack whose stamp disagrees with the
+# cycle being published, so the artifact proves its own provenance rather than the path implying it.
+sqlite3 "$mb" "INSERT OR REPLACE INTO metadata(name,value) VALUES('faa_cycle','$CYCLE');"
 python3 - "$mb" <<'PY'
 import sqlite3, sys
 c = sqlite3.connect(sys.argv[1])

@@ -57,7 +57,7 @@ EXPECTED = {"sectional": 37, "ifrLow": 37, "ifrHigh": 12}
 
 
 def read_pack(path):
-    """Pull the manifest record out of a pack, and refuse a pack that is not WEBP."""
+    """Pull the manifest record out of a pack, and refuse one that is not WEBP or not this cycle."""
     m = dict(sqlite3.connect(path).execute("select name,value from metadata").fetchall())
     fmt = (m.get("format") or "").lower()
     if fmt != "webp":
@@ -65,6 +65,30 @@ def read_pack(path):
             f"REFUSING: {os.path.basename(path)} is format={fmt!r}, not webp. charts.conf documents "
             f"that an unexported TILE_FORMAT silently builds PNG at ~5x the size (~15 GB of packs "
             f"instead of ~3 GB, on the host AND on every pilot's iPad). Rebuild it."
+        )
+    # ⚠️ THE PACK MUST SAY WHICH CYCLE IT IS, AND IT MUST AGREE WITH THIS RUN.
+    #
+    # Every resumability check in this pipeline is "does the output file exist" — build_all_packs.sh
+    # skips a built pack, build_ifr_high_conus.sh skips a built pack, and .published_charts.json skips
+    # a published one. On a hand-run build from a clean directory that is correct. On a SCHEDULED build
+    # with a persistent scratch volume it is catastrophic: on cycle-roll day every check passes, not one
+    # chart is rebuilt, and last cycle's packs are published under the new cycle number. The manifest
+    # says 10-29-2026, the tiles are 09-03-2026, and nothing downstream can tell. A pilot briefing off
+    # charts the app calls current is the worst output this pipeline can produce.
+    #
+    # build_chart.sh stamps `faa_cycle` at build time, so the artifact carries its own provenance and a
+    # mismatch is caught here rather than in the cockpit. Absent is refused too — a pack built before
+    # the stamp existed cannot be verified, and "cannot verify" is not "fine".
+    stamped = m.get("faa_cycle")
+    if stamped != CYCLE:
+        raise SystemExit(
+            f"REFUSING: {os.path.basename(path)} is stamped faa_cycle={stamped!r} but this run is "
+            f"publishing {CYCLE!r}.\n"
+            f"  Most likely a scratch directory left over from the previous cycle: the build skipped it "
+            f"because the file already existed.\n"
+            f"  Rebuild into a cycle-scoped OUT (e.g. OUT=$SCRATCH/packs/{CYCLE}), or delete the stale "
+            f"packs and rebuild.\n"
+            f"  If stamped is None the pack predates the faa_cycle stamp and must be rebuilt."
         )
     name = os.path.splitext(os.path.basename(path))[0]
     return {

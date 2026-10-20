@@ -27,7 +27,30 @@ export HF_TOKEN="${HF_TOKEN:-$(cat "$HOME/.hf_token" 2>/dev/null || true)}"
 export HF_HUB_DISABLE_XET=1
 export HF_HUB_ENABLE_HF_TRANSFER=1
 HF="$HOME/chartenv/bin/hf"
-up(){ [ "${UPLOAD:-1}" = "1" ] || return 0; "$HF" upload "$HF_DATASET" "$1" "$2" --repo-type dataset >/dev/null 2>&1 && echo "  up $2"; }
+# ⚠️ THIS SCRIPT NO LONGER PUBLISHES. It builds packs; `publish_packs.py` publishes them.
+#
+# It used to do both, badly, in three ways that each shipped something broken while reporting success:
+#
+#   1. The manifest it wrote had NO `ifrHigh` key — only `sectional` and `ifrLow`. ChartCatalog decodes
+#      ifrHigh as optional, so uploading it did not fail; it just TOOK THE IFR-HIGH LAYER AWAY from
+#      every pilot until build_ifr_high_conus.sh patched it back in.
+#   2. `up()` was `"$HF" upload … >/dev/null 2>&1 && echo`, under `set -uo pipefail` with no `-e`, in
+#      loops that `continue` past failures. Every upload error was discarded. A pack could fail to
+#      upload and still be named in the manifest.
+#   3. It never set HF_HUB_DISABLE_XET, so packs landed Xet-backed and the app's plain anonymous GET
+#      got 403 — published, and unreadable.
+#
+# publish_packs.py has the correct contract: one complete three-family manifest, Xet forced off, every
+# pack verified fetchable by an anonymous ranged GET after upload, and index.json written LAST so a
+# failure leaves the previous cycle whole. Keeping a second uploader here is how the three defects
+# above came back after each was fixed once.
+#
+#   UPLOAD=0 ./build_all_packs.sh && CYCLE=<cycle> OUT=<out> ~/chartenv/bin/python3 publish_packs.py --publish
+up(){
+  [ "${UPLOAD:-0}" = "1" ] || return 0
+  echo "!! build_all_packs.sh no longer uploads — run publish_packs.py instead (see the note above)." >&2
+  exit 2
+}
 
 [ -d "$CLIP_REPO/clippingShapes" ] || git clone --depth 1 -q https://github.com/jlmcgraw/aviationCharts.git "$CLIP_REPO"
 
@@ -57,21 +80,7 @@ for n in "${IFR_LOW_CONUS[@]}"; do
   up "$mb" "ifr/${n}.mbtiles"
 done
 
-echo "== manifest (index.json) =="
-CYCLE="$CYCLE" python3 - "$OUT" > "$WORK/index.json" <<'PY'
-import sqlite3, glob, os, json, sys
-out = sys.argv[1]
-def rec(p, sub):
-    m = dict(sqlite3.connect(p).execute("select name,value from metadata").fetchall())
-    b = [float(x) for x in m["bounds"].split(",")]
-    name = os.path.splitext(os.path.basename(p))[0]
-    return {"id": name, "bounds": b, "bytes": os.path.getsize(p), "path": f"{sub}/{name}.mbtiles",
-            "minzoom": int(m["minzoom"]), "maxzoom": int(m["maxzoom"])}
-man = {"cycle": os.environ.get("CYCLE", ""), "sectional": [], "ifrLow": []}
-for p in sorted(glob.glob(f"{out}/*_SEC.mbtiles")): man["sectional"].append(rec(p, "sectional"))
-for p in sorted(glob.glob(f"{out}/ENR_L*.mbtiles")): man["ifrLow"].append(rec(p, "ifr"))
-print(json.dumps(man))
-PY
-up "$WORK/index.json" "index.json"
-python3 -c "import json;d=json.load(open('$WORK/index.json'));print('manifest:',len(d['sectional']),'sectional +',len(d['ifrLow']),'ifr')"
+# The manifest is publish_packs.py's job — see the note at the top. Writing one here produced the
+# ifrHigh-less index.json described in defect 1.
+echo "== packs built. Publish with:  CYCLE=$CYCLE OUT=$OUT ~/chartenv/bin/python3 $HERE/publish_packs.py --publish"
 echo "== done =="
