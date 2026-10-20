@@ -1,0 +1,23 @@
+{
+ "datasets": {
+  "apt": {
+   "bytes": 8781824,
+   "cycle": "2026-07-09",
+   "dataset": "apt",
+   "effective": "2026-07-09",
+   "expires": "2026-08-06",
+   "path": "apt.sqlite",
+   "sha256": "8e6e1fc3f307ab603dc226ecd3a0b178a0909ae79971b7ac8707114561d9f808"
+  },
+  "cifp": {
+   "bytes": 22056960,
+   "cycle": "2607",
+   "dataset": "cifp",
+   "effective": "2026-07-09",
+   "expires": "2026-08-06",
+   "path": "cifp.sqlite",
+   "sha256": "b08f36ac2665bb56c90c6eaa891c7360623fde278f5b872773a1a8b627ab21b6"
+  }
+ },
+ "schema": 1
+}

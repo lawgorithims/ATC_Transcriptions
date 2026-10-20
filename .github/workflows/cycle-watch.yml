@@ -1,0 +1,140 @@
+# Daily: has the FAA published a newer aeronautical cycle than the one we ship?
+#
+# Exists because nobody noticed for 74 days. The app shipped d-TPP cycle 2607, expired 2026-08-06,
+# and built every approach-plate URL from it — so aeronav.faa.gov/d-tpp/2607/<pdf> returned 404 for
+# every plate in the product, silently, until someone went looking. Charts were ten days from expiry
+# with their replacement already downloadable, and CIFP was three cycles behind.
+#
+# DETECTION ONLY, ON PURPOSE. This opens an issue; it does not build or publish anything. The chart
+# rebuild is ~4 hours and ~17 GB of intermediates, which fits a scheduled runner badly and fits an
+# unattended publish worse — `publish_packs.py` and `publish_nav.py` both refuse input they cannot
+# vouch for, and a human should see that refusal. Knowing a cycle landed was the missing part.
+#
+# It uploads NO artifacts. Actions artifact storage is what put this account over its allowance
+# before (2,088 MiB of build output in a spike repo), and a daily job is exactly how that recurs.
+name: cycle-watch
+
+on:
+  schedule:
+    - cron: "17 13 * * *"        # 13:17 UTC daily — after the FAA's 0901Z cycle cutover, off the hour
+  workflow_dispatch:              # and runnable by hand
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: cycle-watch
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      # Read what we SHIP straight out of the tree, so the comparison can never drift from reality.
+      # procedures.json carries its own cycle; cifp.sqlite carries effective in its meta table.
+      - name: Read the shipped cycles
+        id: shipped
+        run: |
+          set -euo pipefail
+          DTPP=$(python3 -c "import json;print(json.load(open('ios/ATCTranscribe/Resources/nav/procedures.json'))['cycle'])")
+          CIFP=$(python3 -c "
+          import sqlite3
+          c=sqlite3.connect('file:ios/ATCTranscribe/Resources/nav/cifp.sqlite?mode=ro',uri=True)
+          print(dict(c.execute('select key,value from meta').fetchall()).get('effective',''))")
+          echo "dtpp=$DTPP" >> "$GITHUB_OUTPUT"
+          echo "cifp=$CIFP" >> "$GITHUB_OUTPUT"
+          echo "shipping d-TPP $DTPP, CIFP effective $CIFP"
+
+      - name: Probe the FAA
+        id: probe
+        run: |
+          set +e
+          python3 .github/scripts/check_cycles.py \
+            --shipped-cifp "${{ steps.shipped.outputs.cifp }}" \
+            --shipped-dtpp "${{ steps.shipped.outputs.dtpp }}" | tee report.txt
+          echo "status=$?" >> "$GITHUB_OUTPUT"
+
+      # A probe that could not reach its source must not read as "nothing new". That is the same
+      # silence this workflow exists to break, one level up — and the distinction HIFLD taught this
+      # project: unchanged-because-stable is not unchanged-because-dead.
+      - name: Fail loudly if a probe could not run
+        if: steps.probe.outputs.status == '1'
+        run: |
+          echo "::error::A cycle probe could not reach its source — this is NOT 'nothing new'."
+          cat report.txt
+          exit 1
+
+      - name: Open or update the issue
+        if: steps.probe.outputs.status == '10'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = [
+              'A newer aeronautical cycle is published upstream than the one this repo ships.',
+              '',
+              '```',
+              fs.readFileSync('report.txt', 'utf8').trimEnd(),
+              '```',
+              '',
+              '### What to run',
+              '',
+              '| dataset | command |',
+              '|---|---|',
+              '| plates index | `python3 ios/Tools/build_procedures.py` |',
+              '| procedures | `python3 ios/Tools/build_cifp.py --date <YYMMDD>` |',
+              '| airports | `python3 ios/Tools/build_apt.py` |',
+              '| charts | `UPLOAD=0 ./charts/build_all_packs.sh` then `publish_packs.py --publish` |',
+              '| nav over-the-air | `python3 nav/publish_nav.py --publish` |',
+              '',
+              'Build charts into a **cycle-scoped** `OUT` (e.g. `OUT=$SCRATCH/packs/<cycle>`).',
+              'Every resumability check here is "does the file exist", so a shared scratch directory',
+              'makes the build skip everything and publish the previous cycle under the new number.',
+              '`publish_packs.py` refuses that now — the packs carry a `faa_cycle` stamp — but the',
+              'refusal is easier to avoid than to read.',
+              '',
+              '_Raised by `.github/workflows/cycle-watch.yml`. Closes itself when the shipped cycles catch up._',
+            ].join('\n');
+            const title = 'Aeronautical data: a newer cycle is available upstream';
+            const existing = (await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'cycle-watch',
+            })).data[0];
+            if (existing) {
+              // Update in place rather than opening one a day — a daily job that files duplicates
+              // gets muted, and a muted alarm is the state we started from.
+              await github.rest.issues.update({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: existing.number, body,
+              });
+              core.info(`updated #${existing.number}`);
+            } else {
+              const made = await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title, body, labels: ['cycle-watch'],
+              });
+              core.info(`opened #${made.data.number}`);
+            }
+
+      - name: Close the issue once we have caught up
+        if: steps.probe.outputs.status == '0'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            for (const i of (await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'cycle-watch',
+            })).data) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo, issue_number: i.number,
+                body: 'The shipped cycles are current again — closing.',
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: i.number, state: 'closed',
+              });
+            }
