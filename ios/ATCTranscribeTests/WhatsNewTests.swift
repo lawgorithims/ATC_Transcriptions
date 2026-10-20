@@ -94,8 +94,8 @@ final class WhatsNewTests: XCTestCase {
     /// Pin the concrete shipped contract (not just self-consistency) so a renumber or a dropped entry
     /// is caught, and so the dev-dormant guarantee (no note ≤ build 1) is explicit.
     func testConcreteChangelogContract() {
-        XCTAssertEqual(builds, [109, 108, 107, 106, 104, 103, 102, 101, 100, 99, 98, 97, 96, 95, 94, 93, 92, 91, 90, 88, 87, 77, 76, 75, 74, 73, 72, 71, 70, 69, 68, 66, 65, 64, 63, 62, 61, 60, 59, 58, 57, 56, 55, 54, 53, 51, 49, 47, 46, 45, 44, 43, 42, 41, 40, 39, 38, 37, 36, 35, 34, 33, 31, 30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 18, 17, 16, 15, 14, 13, 12, 11, 10, 8], "the shipped build list changed — update the gate tests")
-        XCTAssertEqual(WhatsNew.releaseNotes.first?.build, 109)
+        XCTAssertEqual(builds, [110, 109, 108, 107, 106, 104, 103, 102, 101, 100, 99, 98, 97, 96, 95, 94, 93, 92, 91, 90, 88, 87, 77, 76, 75, 74, 73, 72, 71, 70, 69, 68, 66, 65, 64, 63, 62, 61, 60, 59, 58, 57, 56, 55, 54, 53, 51, 49, 47, 46, 45, 44, 43, 42, 41, 40, 39, 38, 37, 36, 35, 34, 33, 31, 30, 29, 28, 27, 26, 25, 24, 23, 22, 21, 18, 17, 16, 15, 14, 13, 12, 11, 10, 8], "the shipped build list changed — update the gate tests")
+        XCTAssertEqual(WhatsNew.releaseNotes.first?.build, 110)
         XCTAssertTrue(builds.allSatisfy { $0 > 1 }, "the dev-dormant guarantee assumes no release note ≤ build 1")
     }
 
@@ -105,6 +105,54 @@ final class WhatsNewTests: XCTestCase {
         XCTAssertEqual(WhatsNew.entries(newerThan: 8, upTo: 12).map(\.build), [12, 11, 10])
         XCTAssertFalse(WhatsNew.entries(newerThan: 8, upTo: 12).map(\.build).contains(8))
         XCTAssertEqual(WhatsNew.entries(newerThan: 10, upTo: 12).map(\.build), [12, 11])   // 10 excluded
+    }
+
+    // MARK: - EFB-beta changelog filter
+
+    /// `entries` stays pure over the whole array; the gate is applied one level up. This is the
+    /// invariant that was briefly broken — filtering inside `entries` changed the meaning of a pure
+    /// function and silently failed the three interval tests above.
+    func testEntriesIsNotGateDependent() {
+        XCTAssertEqual(WhatsNew.entries(newerThan: 8, upTo: 12).map(\.build), [12, 11, 10],
+                       "entries() must remain the pure (lastSeen, current] interval over the FULL log, "
+                       + "independent of Features.transcription")
+    }
+
+    /// What an upgrading tester is auto-shown. In the EFB-only build the catch-up must not replay
+    /// pre-beta history, because almost all of it describes the hidden half of the product.
+    func testAutoShowCatchUpRespectsTheEFBBetaFloor() {
+        let shown = WhatsNew.autoShowEntries(lastSeen: 90, current: 110, onboarding: false).map(\.build)
+        if Features.transcription {
+            XCTAssertTrue(shown.contains(109), "a transcription build should still catch up on 109")
+            XCTAssertGreaterThan(shown.count, 1)
+        } else {
+            XCTAssertEqual(shown, [110],
+                           "an EFB-only build upgrading from build 90 must show ONLY the beta note — "
+                           + "otherwise first launch auto-presents twenty builds of transcription notes")
+        }
+    }
+
+    /// The full log is what Settings → About renders; `visibleReleaseNotes` is what it SHOULD render.
+    func testVisibleReleaseNotesRespectsTheGate() {
+        let visible = WhatsNew.visibleReleaseNotes.map(\.build)
+        if Features.transcription {
+            XCTAssertEqual(visible, WhatsNew.releaseNotes.map(\.build))
+        } else {
+            XCTAssertEqual(visible, [110])
+            XCTAssertFalse(visible.contains(109))
+        }
+        XCTAssertFalse(visible.isEmpty, "the changelog must never render empty — a beta note must exist "
+                       + "at or above WhatsNew.efbBetaFirstBuild")
+    }
+
+    /// The beta note must actually say what changed, since it is the ONLY note an EFB-only tester sees.
+    func testTheBetaNoteExistsAndNamesTheChange() throws {
+        let note = try XCTUnwrap(WhatsNew.releaseNotes.first { $0.build == WhatsNew.efbBetaFirstBuild })
+        XCTAssertFalse(note.highlights.isEmpty)
+        let text = (note.headline + note.highlights.map { $0.title + $0.detail }.joined()).lowercased()
+        XCTAssertTrue(text.contains("transcription"),
+                      "the beta note is the only changelog entry an EFB-only tester sees, so it has to "
+                      + "explain that the radio side is put away rather than leave them hunting for it")
     }
 
     /// The persisted baseline only moves forward, so a downgrade reinstall can't replay an old log.

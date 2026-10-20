@@ -36,6 +36,18 @@ enum WhatsNew {
     /// need not be contiguous" is for.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 110, version: "1.0", headline: "The flight bag, on its own",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "map.fill",
+                    title: "An electronic flight bag you can hand to anyone",
+                    detail: "This build is the flight bag by itself: the moving map with offline VFR sectional, IFR low and IFR high charts, approach and departure plates, coded FAA procedures, the flight plan with ForeFlight hand-off, off-field landability, hazards and airport climate. Charts are current to the 03 September 2026 cycle."),
+                WhatsNewHighlight(
+                    icon: "waveform.slash",
+                    title: "Live ATC transcription is put away for now",
+                    detail: "The radio side needs a piece of cockpit hardware that is not finished, so rather than ship a feature you cannot use, it is hidden — along with the speech-model download it used to ask for on first launch, which is why this build starts straight on the chart. Nothing was deleted; it comes back when the hardware does."),
+            ]),
+        ReleaseNote(
             build: 109, version: "1.0", headline: "The landability layer now covers the Southwest",
             highlights: [
                 WhatsNewHighlight(
@@ -1392,6 +1404,11 @@ enum WhatsNew {
     /// Release notes for builds the tester hasn't seen yet — newer than `lastSeen`, no newer than the
     /// `current` running build (so a note for a not-yet-installed build never leaks early).
     static func entries(newerThan lastSeen: Int, upTo current: Int) -> [ReleaseNote] {
+        // Deliberately over the FULL array and deliberately free of the feature gate: this is the pure,
+        // unit-tested half-open (lastSeen, current] interval, exercised directly with real historical
+        // build numbers. The EFB-beta visibility filter belongs one level up, in `autoShowEntries`,
+        // which is what the app actually calls — putting it here silently changed the meaning of a
+        // pure function and broke three of its tests.
         releaseNotes.filter { $0.build > lastSeen && $0.build <= current }
     }
 
@@ -1400,7 +1417,26 @@ enum WhatsNew {
     /// last seen (relaunch / downgrade), otherwise the catch-up of unseen builds.
     static func autoShowEntries(lastSeen: Int, current: Int, onboarding: Bool) -> [ReleaseNote] {
         guard !onboarding, current > lastSeen else { return [] }
+        // An install upgrading from, say, build 90 straight to the EFB beta has lastSeen = 90, so an
+        // unfiltered catch-up would auto-present twenty builds of transcription notes on first launch —
+        // the loudest possible advertisement for the half of the product this build hides.
         return entries(newerThan: lastSeen, upTo: current)
+            .filter { Features.transcription || $0.build >= efbBetaFirstBuild }
+    }
+
+    /// The first build of the EFB-only beta. Entries below this describe a product whose headline
+    /// feature that build does not expose.
+    static let efbBetaFirstBuild = 110
+
+    /// What the changelog should SHOW in this build.
+    ///
+    /// The full array is 84 entries of real history, and most of them are about transcription —
+    /// speech models, dead-air filtering, the clearance loader, speaker labelling. Shipping that
+    /// verbatim into a public EFB beta reads as a list of features the tester cannot find, so the
+    /// gated build shows only build 110 and later. Nothing is deleted: flip the gate and the whole
+    /// history is back, which is also what keeps this honest rather than rewritten.
+    static var visibleReleaseNotes: [ReleaseNote] {
+        Features.transcription ? releaseNotes : releaseNotes.filter { $0.build >= efbBetaFirstBuild }
     }
 
     /// The persisted "last seen build" only ever moves forward, so a downgrade reinstall (build 12 →

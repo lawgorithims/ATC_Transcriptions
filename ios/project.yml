@@ -23,6 +23,24 @@ options:
 
 settings:
   base:
+    # ============================ THE TRANSCRIPTION GATE ============================
+    # ABSENT = the EFB-only public beta (moving map, charts, plates, procedures, flight plan,
+    # landability, hazards, weather). The live-ATC transcription UI, its onboarding download wall,
+    # its ~865 MB of model downloads and its seeded sample transcript are all compiled out of the
+    # PRESENTATION layer. The engine, models, correction pipeline and their unit tests still build
+    # and still run either way -- this hides the feature, it does not remove it.
+    #
+    # Absent-by-default is deliberate: see the polarity note in Core/Features.swift. A flag that
+    # had to be switched ON to hide things would have shipped the hidden half visible.
+    #
+    # TO RE-ENABLE, uncomment the line below AND the two TRANSCRIPTION BLOCKs in the app target's
+    # info.properties (NSMicrophoneUsageDescription, UIBackgroundModes: [audio]), then re-run
+    # `xcodegen generate`. Keep `$(inherited)` -- dropping it loses Xcode's per-config DEBUG symbol.
+    # ATCTranscribeTests/TranscriptionGateTests asserts the symbol and the plist agree, so a
+    # half-done flip fails the suite instead of crashing on a device.
+    #
+    # SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) COMMSIGHT_TRANSCRIPTION
+    # ===============================================================================
     MARKETING_VERSION: "1.0"   # build 1 shipped as 1.0; keep the same train so build N is 1.0 (N)
     CURRENT_PROJECT_VERSION: "1"
     SWIFT_VERSION: "5.9"
@@ -132,16 +150,33 @@ targets:
           - D-DIN-Bold.otf
           - D-DINCondensed.otf
           - D-DINCondensed-Bold.otf
-        # Expose Documents/ in the Files app + Finder so the opt-in transcript log (atc-transcripts.jsonl)
-        # can be pulled off-device into the training pipeline. No effect unless logging is enabled.
+        # Expose Documents/ in the Files app + Finder. Originally for the opt-in transcript log
+        # (atc-transcripts.jsonl); kept in every build because the flight-plan and notes exports use it too.
+        #
+        # NOTE: LSSupportsOpeningDocumentsInPlace used to be set true HERE and false again at the
+        # CFBundleDocumentTypes block below -- a duplicate YAML key where the later value silently won.
+        # Removed here; the intentional `false` (a .fpl is imported, never edited in place) is the one
+        # that survives, which is also what shipped.
         UIFileSharingEnabled: true
-        LSSupportsOpeningDocumentsInPlace: true
-        NSMicrophoneUsageDescription: "CommSight uses the microphone to capture and transcribe live ATC audio."
+        # ==================== TRANSCRIPTION BLOCK -- see Core/Features.swift ====================
+        # These entries exist ONLY for live-ATC transcription and are OMITTED from the EFB-only beta.
+        # They are co-versioned with the COMMSIGHT_TRANSCRIPTION compilation condition below by
+        # ATCTranscribeTests/TranscriptionGateTests -- flip one without the other and the suite fails.
+        #
+        # To re-enable transcription, uncomment BOTH this key and UIBackgroundModes further down, add
+        # COMMSIGHT_TRANSCRIPTION to SWIFT_ACTIVE_COMPILATION_CONDITIONS, then `xcodegen generate`.
+        #
+        # NSMicrophoneUsageDescription: "CommSight uses the microphone to capture and transcribe live ATC audio."
+        # =======================================================================================
         # Connecting to a Stratux receiver on the local Wi-Fi (audio sidecar + traffic/GPS web API) needs
         # the local-network permission (iOS 14+) and a cleartext-local ATS exception (the link is http/ws
         # to 192.168.x.x). NSAllowsLocalNetworking is scoped to LOCAL hosts, so non-local loads are
         # unaffected.
-        NSLocalNetworkUsageDescription: "CommSight connects to a Stratux receiver on your local Wi-Fi to receive live cockpit audio, aircraft traffic, and GPS."
+        # NOT part of the transcription block. The Stratux ADS-B traffic + GPS link is an EFB feature
+        # and needs this key in EVERY build: without it iOS refuses local-network access with no prompt
+        # and no catchable error, so the receiver just never connects. Reworded rather than removed so
+        # the beta's permission dialog does not advertise cockpit audio.
+        NSLocalNetworkUsageDescription: "CommSight connects to a Stratux receiver on your local Wi-Fi to show aircraft traffic and GPS position."
         # Shows your aircraft's position on the chart map from the device GPS (in addition to a Stratux
         # fix when connected). Optional — the chart works without it.
         NSLocationWhenInUseUsageDescription: "CommSight shows your aircraft's position on the chart map using your device's GPS."
@@ -170,8 +205,15 @@ targets:
             UTTypeTagSpecification:
               public.filename-extension:
                 - fpl
-        UIBackgroundModes:
-          - audio
+        # ==================== TRANSCRIPTION BLOCK (2 of 2) ====================
+        # `audio` keeps a capture session alive when backgrounded. In the EFB-only build nothing can
+        # start a session at all -- AppModel.start() is reachable only from the power button, which the
+        # gate hides -- so the entitlement would be unused, and an unused background mode is something
+        # App Review asks about. Restore together with NSMicrophoneUsageDescription above.
+        #
+        # UIBackgroundModes:
+        #   - audio
+        # ======================================================================
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
           - UIInterfaceOrientationLandscapeLeft

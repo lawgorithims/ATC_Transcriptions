@@ -34,7 +34,10 @@ struct BatteryDiagnosticsView: View {
                             KV("Thermal", Self.thermalLabel(s.thermal))
                             KV("CPU", String(format: "%.0f%% of a core", s.cpu))
                             KV("Map", String(format: "%.1f fps%@", s.mapFPS, s.engine == "maplibre" ? "" : " (classic)"))
-                            KV("Whisper", String(format: "%.0f%% of last min", s.whisperPct))
+                            // Named for the engine in a transcription build; in an EFB-only build this row would be a
+                            // permanent "Whisper 0%" naming the hidden half, so it reads as generic CPU there.
+                            KV(Features.transcription ? "Whisper" : "Speech CPU",
+                               String(format: "%.0f%% of last min", s.whisperPct))
                             KV("Doing", s.activity)
                         } else {
                             Text("No samples yet — enable collection above and leave the app open a couple of minutes.")

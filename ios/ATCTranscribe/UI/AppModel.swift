@@ -1572,8 +1572,11 @@ final class AppModel: ObservableObject {
         // QA/screenshot: auto-present the Flight Bag on the Plates tab (`--flight-bag`).
         if args.contains("--flight-bag") { selectedTab = .plates; showFlightBagOnLaunch = true }
         // QA/screenshot: open the app on a specific bottom tab (`--start-tab plates [KBOS]`).
+        // Clamped to a tab that actually has a bar item: this parses against the FULL RootTab enum, so
+        // `--start-tab transcript` would otherwise land an EFB-only build on a tab the bar does not show.
         if let i = args.firstIndex(of: "--start-tab"), i + 1 < args.count,
-           let tab = RootTab(rawValue: args[i + 1]) {
+           let tab = RootTab(rawValue: args[i + 1]),
+           tab != .transcript || Features.transcription {
             selectedTab = tab
             if i + 2 < args.count, !args[i + 2].hasPrefix("-") { platesAirport = args[i + 2].uppercased() }
         }
@@ -1664,11 +1667,31 @@ final class AppModel: ObservableObject {
                 liveMode = true
                 detail = "Ready — press Start."
             }
-        } else {
+        } else if Features.transcription {
             seedSampleData()   // no model yet — populated demo layout behind the download gate
             // Gate the first launch on downloading the required model, unless launched with an
             // explicit flag or the user already chose to skip on a previous launch.
             needsOnboarding = explicitModel == nil && !Self.onboardingDismissed
+        } else {
+            // EFB-ONLY BUILD. This branch is the one EVERY lean install takes — no speech model ships,
+            // so `preferredActiveModel` is nil. Both statements above are wrong here:
+            //
+            //   * `seedSampleData()` fabricates four invented ATC transmissions and publishes
+            //     `status = .live` / `detail = "Transcribing."` plus a passing proof-of-life reading
+            //     9.1% WER. It is a SHIPPING path, not a debug one, so without this branch a beta
+            //     tester's first launch shows a live transcript of traffic that does not exist.
+            //   * `needsOnboarding` would present OnboardingDownloadView as a fullScreenCover — a
+            //     speech-model download wall headlined "On-device ATC transcription" — as the very
+            //     first screen of an EFB beta.
+            //
+            // Leave the engine idle and say nothing. `detail` stays empty rather than "Ready — press
+            // Start": there is no Start button in this build.
+            status = .idle
+            detail = ""
+            // A fresh install no longer passes through onboarding, and `finishOnboarding()` was the ONLY
+            // seeder of the What's-new baseline. Seed it here or `evaluateWhatsNew()` at the end of init
+            // reads lastSeen == 0 and greets a first-time beta tester with the entire back catalogue.
+            if UserDefaults.standard.object(forKey: Self.lastSeenBuildKey) == nil { markWhatsNewSeen() }
         }
         didFinishInit = true   // from here, a showDebug toggle may add the debug widgets
         // Bring back an engine-out engagement the app died holding, so the undo the no-confirm engage
@@ -4725,7 +4748,7 @@ final class AppModel: ObservableObject {
         // so it must NOT advance the persisted baseline (see `whatsNewDismissed`). Respect the onboarding
         // cover — a sheet can't present under a fullScreenCover — and defer to `finishOnboarding`.
         if CommandLine.arguments.contains("--whats-new") {
-            whatsNewEntries = WhatsNew.releaseNotes
+            whatsNewEntries = WhatsNew.visibleReleaseNotes
             whatsNewForcedPreview = true
             if !needsOnboarding { showWhatsNew = true }
             return
@@ -4950,7 +4973,10 @@ final class AppModel: ObservableObject {
         } else if !modelDownloaded("small") {
             loadStartIntent = false     // no model to carry Start onto — recovery needs a fresh user action (finding 1)
             detail = "\(reason) Download the Small model to continue."
-            needsOnboarding = true
+            // Gated: this is a second route to the OnboardingDownloadView fullScreenCover, independent of
+            // the init-time decision. Forcing needsOnboarding=false at init is NOT enough on its own —
+            // a model-load failure here would slam the download wall over the EFB map.
+            needsOnboarding = Features.transcription
         } else {
             // The Small (required) model failed to LOAD despite being on disk. This CAN be genuine corruption
             // — but it can also be a TRANSIENT failure (thermal/OOM/mmap race, or a false watchdog timeout),
@@ -4970,7 +4996,7 @@ final class AppModel: ObservableObject {
             } else {
                 detail = "\(reason) The Small model didn't load — reopen the app to retry, or re-download it."
             }
-            needsOnboarding = true
+            needsOnboarding = Features.transcription   // see the note above — the other cover route
         }
     }
 

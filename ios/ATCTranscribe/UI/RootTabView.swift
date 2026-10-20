@@ -88,7 +88,12 @@ private struct BottomTabBar: View {
     var body: some View {
         HStack(spacing: 0) {
             // Angular / geometric glyphs (per feedback — less round).
-            item(.transcript, icon: "list.bullet.rectangle.fill", label: "Transcript")
+            // Bar membership is owned HERE, not by RootTab.allCases (which is never referenced) — so
+            // this single line is the tab's presence. The enum case stays: its raw value is load-bearing
+            // for `--start-tab`, and removing it would change a Codable-adjacent contract for no gain.
+            if Features.transcription {
+                item(.transcript, icon: "list.bullet.rectangle.fill", label: "Transcript")
+            }
             item(.map, icon: "map.fill", label: "Map")
             item(.plates, icon: "books.vertical.fill", label: "Plates")
             item(.airports, icon: "airplane", label: "Airports")

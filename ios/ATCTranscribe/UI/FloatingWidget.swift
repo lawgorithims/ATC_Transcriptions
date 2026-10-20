@@ -50,8 +50,30 @@ enum FloatingWidgetKind: String, Codable, CaseIterable, Identifiable {
     /// it is meaningless without a position, an altitude and a pack, so offering it as a checkbox
     /// would mostly offer an empty box.
     var userManageable: Bool {
-        self != .objectInfo && self != .nrst && self != .landable && !retired
+        self != .objectInfo && self != .nrst && self != .landable && !hiddenFromUI
     }
+
+    /// Kinds whose content is live-ATC transcription, hidden when `Features.transcription` is off.
+    ///
+    /// Follows the `retired` pattern deliberately: the enum CASE stays, because `WidgetLayout` decodes
+    /// its items atomically and removing a case would fail the decode of every saved layout and silently
+    /// reset it. These are suppressed at RENDER (`FloatingCanvas.frames`), removed from the Widgets menu
+    /// (`userManageable`) and refused as a docked side pane (`WidgetStore.restoredPane`) — but their
+    /// FRAMES are kept in the layout. Two reasons not to delete the frames: `WidgetLayout.update` silently
+    /// no-ops on a missing frame, so every mutator (`show`, `reveal`, `dismiss`, `toggle`,
+    /// `bringToFront`) would degrade with no signal; and keeping them preserves the pilot's saved size and
+    /// position for when transcription comes back.
+    ///
+    /// `.stratux` is NOT here — that card reports the receiver link, GPS and traffic, which is EFB.
+    /// `.diagnostics` is NOT here either — it reports CPU and memory. `.host` IS, because it reports the
+    /// active speech model.
+    var isTranscription: Bool {
+        self == .transcript || self == .proofOfLife || self == .host || self == .latency
+    }
+
+    /// Hidden from the user entirely in this build — retired kinds plus, in an EFB-only build, the
+    /// transcription ones. One predicate so every call site asks the same question.
+    var hiddenFromUI: Bool { retired || (isTranscription && !Features.transcription) }
 
     /// Kinds that no longer exist as widgets. `.flightPlan` moved to the flight-plan STRIP under
     /// the top bar (the briefcase toggle). The enum case must STAY — `WidgetLayout` decodes its
@@ -108,6 +130,15 @@ struct WidgetLayout: Codable, Equatable {
               var layout = try? JSONDecoder().decode(WidgetLayout.self, from: data),
               !layout.items.isEmpty else { return nil }
         layout.items.removeAll { $0.kind.retired }   // flight plan is a strip now, not a card
+        // An UPGRADING install (build 109 -> EFB beta) has the transcript and performance cards saved as
+        // visible. Do not delete their frames — see `isTranscription` — just make sure they come back
+        // hidden. `FloatingCanvas` filters them at render too; this keeps the stored state honest so the
+        // Widgets menu checkmarks agree with what is on screen.
+        if !Features.transcription {
+            for i in layout.items.indices where layout.items[i].kind.isTranscription {
+                layout.items[i].visible = false
+            }
+        }
         guard !layout.items.isEmpty else { return nil }
         layout.mergeNewKinds()                        // back-fill widget kinds added since this layout was saved
         return layout
@@ -120,7 +151,7 @@ struct WidgetLayout: Codable, Equatable {
         let present = Set(items.map(\.kind))
         let defaults = Self.defaults().items
         assert(defaults.count <= 32, "defaults set unexpectedly large")
-        for frame in defaults where !present.contains(frame.kind) && !frame.kind.retired {
+        for frame in defaults where !present.contains(frame.kind) && !frame.kind.hiddenFromUI {
             items.append(frame)
         }
         assert(items.count <= 32, "widget layout unexpectedly large after merge")
@@ -138,14 +169,20 @@ struct WidgetLayout: Codable, Equatable {
     /// plan is the strip under the top bar now — no card.)
     static func defaults() -> WidgetLayout {
         WidgetLayout(items: [
-            WidgetFrame(kind: .transcript,  anchor: .bottomLeading, offset: .zero, size: CGSize(width: 380, height: 460), opacity: 0.92, visible: true,  pinned: false, z: 1),
+            // ⚠️ `.transcript` and `.proofOfLife` below were the ONLY two frames marked visible, so on a
+            // fresh iPad install the transcript card and the WER/speed "Performance check" card floated
+            // over the map before the pilot touched anything — the hidden half as the map's default
+            // furniture. Gating them both would leave the flagship layout completely EMPTY, so `.gps`
+            // is raised to visible in that build: it is the natural EFB default (`.nrst` and `.landable`
+            // are opened by controls by design, and `.objectInfo` only by a map tap).
+            WidgetFrame(kind: .transcript,  anchor: .bottomLeading, offset: .zero, size: CGSize(width: 380, height: 460), opacity: 0.92, visible: Features.transcription, pinned: false, z: 1),
             WidgetFrame(kind: .objectInfo,  anchor: .trailing,      offset: .zero, size: CGSize(width: 340, height: 440), opacity: 0.95, visible: false, pinned: false, z: 6),
-            WidgetFrame(kind: .proofOfLife, anchor: .bottomTrailing, offset: .zero, size: CGSize(width: 300, height: 150), opacity: 0.90, visible: true,  pinned: false, z: 3),
+            WidgetFrame(kind: .proofOfLife, anchor: .bottomTrailing, offset: .zero, size: CGSize(width: 300, height: 150), opacity: 0.90, visible: Features.transcription, pinned: false, z: 3),
             WidgetFrame(kind: .stratux,     anchor: .topTrailing,   offset: .zero, size: CGSize(width: 300, height: 190), opacity: 0.90, visible: false, pinned: false, z: 4),
             WidgetFrame(kind: .host,        anchor: .topTrailing,   offset: CGSize(width: 0, height: 0.28), size: CGSize(width: 260, height: 140), opacity: 0.90, visible: false, pinned: false, z: 5),
             WidgetFrame(kind: .latency,     anchor: .center,        offset: .zero, size: CGSize(width: 300, height: 180), opacity: 0.90, visible: false, pinned: false, z: 7),
             WidgetFrame(kind: .diagnostics, anchor: .center,        offset: CGSize(width: 0, height: 0.2), size: CGSize(width: 280, height: 170), opacity: 0.90, visible: false, pinned: false, z: 8),
-            WidgetFrame(kind: .gps,         anchor: .topLeading,    offset: CGSize(width: 0, height: 0.28), size: CGSize(width: 250, height: 156), opacity: 0.90, visible: false, pinned: false, z: 2),
+            WidgetFrame(kind: .gps,         anchor: .topLeading,    offset: CGSize(width: 0, height: 0.28), size: CGSize(width: 250, height: 156), opacity: 0.90, visible: !Features.transcription, pinned: false, z: 2),
             // Offset off the trailing centre so it does not land exactly on top of the object card
             // (which shares that anchor) — belt to the z-lift's braces.
             WidgetFrame(kind: .nrst,        anchor: .topTrailing,   offset: CGSize(width: 0, height: 0.12), size: CGSize(width: 400, height: 520), opacity: 0.95, visible: false, pinned: false, z: 9),
@@ -247,10 +284,15 @@ struct WidgetLayout: Codable, Equatable {
         let args = CommandLine.arguments
         if args.contains("--reset-widgets") { leftPane = nil; rightPane = nil }
         // QA/screenshot: pre-dock a widget into a side pane (`--dock-left transcript` / `--dock-right stratux`).
-        if let i = args.firstIndex(of: "--dock-left"), i + 1 < args.count, let k = FloatingWidgetKind(rawValue: args[i + 1]) {
+        // `!k.hiddenFromUI` so an argument cannot resurrect a hidden widget as a full-height pane —
+        // these parse ANY raw value, and a screenshot script still carrying `--dock-left transcript`
+        // would otherwise reintroduce exactly what the gate removes.
+        if let i = args.firstIndex(of: "--dock-left"), i + 1 < args.count,
+           let k = FloatingWidgetKind(rawValue: args[i + 1]), !k.hiddenFromUI {
             leftPane = k; layout.update(k) { $0.visible = false }
         }
-        if let i = args.firstIndex(of: "--dock-right"), i + 1 < args.count, let k = FloatingWidgetKind(rawValue: args[i + 1]) {
+        if let i = args.firstIndex(of: "--dock-right"), i + 1 < args.count,
+           let k = FloatingWidgetKind(rawValue: args[i + 1]), !k.hiddenFromUI {
             rightPane = k; layout.update(k) { $0.visible = false }
         }
     }
@@ -279,7 +321,11 @@ struct WidgetLayout: Codable, Equatable {
     /// map tap re-docks it (M10/L19).
     private static func restoredPane(_ key: String) -> FloatingWidgetKind? {
         let k = FloatingWidgetKind(rawValue: UserDefaults.standard.string(forKey: key) ?? "")
-        return k == .objectInfo ? nil : k
+        // `hiddenFromUI` joins objectInfo here for the build-109 upgrade path: a pilot who docked the
+        // Transcript to an edge has "transcript" persisted under atc.pane.left, and SidePane is mounted
+        // unconditionally — so without this the beta opens with a blank full-height pane eating ~320pt
+        // of chart, with no widget inside it to close.
+        return (k == .objectInfo || k?.hiddenFromUI == true) ? nil : k
     }
     @Published var leftPane: FloatingWidgetKind? = WidgetStore.restoredPane("atc.pane.left") {
         didSet { UserDefaults.standard.set(leftPane?.rawValue, forKey: "atc.pane.left") }

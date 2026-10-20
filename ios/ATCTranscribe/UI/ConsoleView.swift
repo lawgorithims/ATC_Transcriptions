@@ -82,7 +82,15 @@ struct ConsoleView: View {
             AirportClimateView(palette: model.palette, theme: model.theme, ident: "KDEN",
                                coord: Coord(lat: 39.8617, lon: -104.6731))
         }
-        .fullScreenCover(isPresented: $model.needsOnboarding) {
+        // ⚠️ GATE THE PRESENTER, NEVER THE BODY. A fullScreenCover has no interactive dismiss on iOS,
+        // and the only code that clears `needsOnboarding` is finishOnboarding(), reachable only from
+        // buttons INSIDE OnboardingDownloadView. Gate the body and a build that still sets the flag
+        // presents an empty, undismissable cover over the whole app — bricked, with no way out but a
+        // reinstall. Belt-and-braces with the AppModel gating: this modifier cannot present even if some
+        // future path sets the flag again.
+        .fullScreenCover(isPresented: Binding(
+            get: { Features.transcription && model.needsOnboarding },
+            set: { model.needsOnboarding = $0 })) {
             OnboardingDownloadView().environmentObject(model).environmentObject(downloads)
         }
         .fullScreenCover(isPresented: $model.showRouteMap) {
@@ -131,6 +139,14 @@ struct ConsoleView: View {
         .animation(.easeInOut(duration: 0.25), value: model.theme)
         .onAppear {
             Haptics.prepare()   // warm the Taptic engine so the first button tap is felt (iPhone only)
+            // ⚠️ EVERYTHING IN THIS `if` IS A TRANSCRIPTION DOWNLOAD, AND IT USED TO BE UNCONDITIONAL.
+            // Between them the two calls below pull ~865 MB from HuggingFace — the 465 MB speech model
+            // and the 400 MB AI-fixer GGUF — on EVERY launch until they land, with no user action, no
+            // progress UI outside the (now hidden) transcription surfaces, and no Wi-Fi check. In an
+            // EFB-only build that is a multi-hundred-megabyte background transfer, possibly on cellular,
+            // for a feature the app does not expose. `prefetchChartsOnLaunch()` stays OUTSIDE the gate —
+            // that one is the EFB chart warm-up and must keep running.
+            if Features.transcription {
             // Bridge a finished download back to the model so it can load a model that wasn't
             // present at launch (lean TestFlight build → first-run download → live console).
             downloads.onReady = { entry in
@@ -157,6 +173,7 @@ struct ConsoleView: View {
             if !ModelStore.isReady(ModelCatalog.llm), bundledLLMModelPath() == nil {
                 downloads.download(ModelCatalog.llm)
             }
+            }   // end Features.transcription
             // Warm the FAA chart catalog + prefetch the packs around the device and the filed route in the
             // background, so opening the route map is instant instead of a cold catalog fetch + download.
             model.prefetchChartsOnLaunch()
@@ -169,6 +186,29 @@ struct ConsoleView: View {
     }
 
     private var hairline: some View { Rectangle().fill(model.palette.border).frame(height: 1) }
+
+    /// Stands in for `InputBar` as the render site of `model.detail` in the EFB-only build.
+    ///
+    /// In a gated build every remaining writer of `detail` is an EFB one — flight-plan import
+    /// (AppModel importFPL) and "…isn't published at this airport" when a procedure fails to load — so
+    /// this surfaces exactly the messages a beta tester needs and nothing about transcription. Collapses
+    /// to zero height when there is nothing to say, so the map keeps the space.
+    @ViewBuilder private var efbStatusStrip: some View {
+        if !model.detail.isEmpty {
+            let p = model.palette
+            HStack(spacing: 8) {
+                Image(systemName: "info.circle").font(.system(size: 12, weight: .semibold))
+                Text(model.detail).font(.dsLabelS).lineLimit(2)
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(p.textDim)
+            .padding(.horizontal, 12).padding(.vertical, 6)
+            .background(p.surfaceAlt)
+            .overlay(alignment: .bottom) { Rectangle().fill(p.border).frame(height: 1) }
+            .accessibilityIdentifier("efb-status-strip")
+            .transition(Self.barTransition)
+        }
+    }
 
     /// Below the top bar: floating widgets over the map (regular width), or a bottom transcript card with
     /// the map showing above it (compact). The area is transparent, so taps on the open map reach it.
@@ -190,7 +230,22 @@ struct ConsoleView: View {
                 TopBar()
                 // The Input strip (source picker + setup) is the one genuinely bar-shaped control; it stays
                 // as a toggleable strip under the top bar. Everything else is now a floating widget.
-                if model.showInputBar { InputBar().transition(Self.barTransition) }
+                //
+                // ⚠️ InputBar is an INDEPENDENT render site from the heading-bar input-toggle, and
+                // `showInputBar` defaults to TRUE (AppModel "atc.bar.input"), so gating only the toggle
+                // button would leave the whole transcription source strip on screen.
+                //
+                // ⚠️ It also holds the ONLY render site of `model.detail` in the app (see :1872 region).
+                // Flight-plan import — an EFB feature that must keep working — writes all three of its
+                // outcomes there (AppModel importFPL: too large / unreadable / imported), reached from
+                // the "Open in CommSight" .fpl share-sheet hand-off. Gating InputBar without replacing
+                // that surface makes FPL import succeed or fail in total silence. So the gated build
+                // renders `detail` on its own thin strip in the same slot.
+                if Features.transcription {
+                    if model.showInputBar { InputBar().transition(Self.barTransition) }
+                } else {
+                    efbStatusStrip
+                }
                 if model.showFlightPlanBar { FlightPlanBar().transition(Self.barTransition) }
                 if let appr = model.activeApproach {
                     activeApproachStrip(appr)
@@ -583,10 +638,21 @@ struct ConsoleView: View {
             if hSize == .regular {
                 FloatingCanvas(palette: model.palette).environmentObject(model)
             } else {
+                // ⚠️ ON COMPACT WIDTH THIS IS THE MAP'S ENTIRE LOWER HALF. `transcriptArea` is a bare
+                // TranscriptCard at a fixed 340pt, gated on NOTHING but the size class — the iPad widget
+                // layout does not reach here, so hiding the transcript WIDGET leaves every iPhone tester
+                // with a permanent transcript card on the EFB home screen.
+                //
+                // Keep the VStack's shape and drop only the child: `Spacer(minLength: 0)` already owns the
+                // space, so the map simply goes full-bleed with no gap. `maxHeight: .infinity` is what
+                // keeps the standby overlay applied below at full screen once the 340pt child is gone.
                 VStack(spacing: 0) {
                     Spacer(minLength: 0)
-                    transcriptArea.frame(height: 340).padding(10)
+                    if Features.transcription {
+                        transcriptArea.frame(height: 340).padding(10)
+                    }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .opacity(model.standby ? 0.4 : 1)
@@ -822,15 +888,27 @@ struct TopBar: View {
             BarClock(compact: hSize == .compact)
                 .padding(.trailing, 10)
             HStack(spacing: barSpacing) {
-                toggle(p, "slider.horizontal.3", on: model.showInputBar,
-                       id: "input-toggle", label: "Input controls") { model.showInputBar.toggle() }
+                // Only 2 of this bar's 10 controls are transcription — the input toggle here and the
+                // PowerButton below. Everything else (flight bag, map search, layers, widgets, theme,
+                // record, settings, emergency) is EFB and must stay, so the bar itself is NOT gated.
+                if Features.transcription {
+                    toggle(p, "slider.horizontal.3", on: model.showInputBar,
+                           id: "input-toggle", label: "Input controls") { model.showInputBar.toggle() }
+                }
                 flightPlanToggle(p)   // briefcase — the ForeFlight-style flight-plan strip
                 iconButton(p, "magnifyingglass", id: "map-search", label: "Search") { Haptics.impact(.light); model.showMapSearch = true }
                 MapLayersMenu(iconSize: iconSize).foregroundStyle(p.text)   // base map + overlays
                 WidgetsMenu(iconSize: iconSize).foregroundStyle(p.text)     // show/hide floating widgets
                 ThemeMenu()
                 RecordButton()          // ⏺ record flight → breadcrumb + logbook (blinks while recording)
-                PowerButton()
+                // The ONLY caller of AppModel.start(), and therefore the only way an audio session is
+                // ever activated. With it gone the `audio` background mode and the microphone permission
+                // become unreachable, which is what lets the EFB beta drop both from the Info.plist
+                // (see Core/Features.swift and TranscriptionGateTests). RecordButton above is NOT this —
+                // that records a flight track to the logbook and is EFB.
+                if Features.transcription {
+                    PowerButton()
+                }
                 iconButton(p, "gearshape.fill", id: "settings-button", label: "Settings") {
                     model.showSettings = true
                 }
@@ -852,7 +930,10 @@ struct TopBar: View {
             if hSize == .regular {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("CommSight").font(.dsHeadline).foregroundStyle(p.text)
-                    Text("On-device ATC transcription").font(.dsLabelS).foregroundStyle(p.textDim)
+                    // The masthead states the product's purpose on every iPad launch, so in the EFB-only
+                    // build it would be the most prominent piece of hidden-feature copy in the app.
+                    Text(Features.transcription ? "On-device ATC transcription" : "Electronic flight bag")
+                        .font(.dsLabelS).foregroundStyle(p.textDim)
                 }
             }
             emergencyButton(p)
@@ -2062,6 +2143,9 @@ struct FloatingCanvas: View {
 
     private var frames: [WidgetFrame] {
         widgets.layout.items.filter {
+            // `hiddenFromUI` first: it must win over a saved `visible: true` from build 109, and over
+            // anything a mutator sets, so a transcription card can never reach the canvas in this build.
+            guard !$0.kind.hiddenFromUI else { return false }
             guard $0.kind != widgets.leftPane, $0.kind != widgets.rightPane else { return false }   // docked in a side pane
             return $0.kind == .objectInfo ? (widgets.mapProbe != nil) : $0.visible
         }

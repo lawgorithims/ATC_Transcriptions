@@ -19,13 +19,19 @@ struct SettingsSheet: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 12) {
-                    categoryLink("Transcription & AI", "waveform", "Speech models · active model · correction",
-                                 id: "settings-cat-transcription") {
-                        categoryPage("Transcription & AI") { transcriptionCategory }
-                    }
-                    categoryLink("Audio & speakers", "mic", "Squelch · calibrate mic · speaker separation",
-                                 id: "settings-cat-audio") {
-                        categoryPage("Audio & speakers") { audioCategory }
+                    // Both of these pages are wholly transcription — speech models, correction tuning,
+                    // squelch, mic calibration, speaker separation. Gated as whole DOORS rather than by
+                    // restructuring the list, because "Charts & downloads" below is one of only three
+                    // routes to the EFB download UI and must not be disturbed.
+                    if Features.transcription {
+                        categoryLink("Transcription & AI", "waveform", "Speech models · active model · correction",
+                                     id: "settings-cat-transcription") {
+                            categoryPage("Transcription & AI") { transcriptionCategory }
+                        }
+                        categoryLink("Audio & speakers", "mic", "Squelch · calibrate mic · speaker separation",
+                                     id: "settings-cat-audio") {
+                            categoryPage("Audio & speakers") { audioCategory }
+                        }
                     }
                     categoryLink("Traffic & connections", "dot.radiowaves.up.forward", "ADS-B · Stratux · ForeFlight",
                                  id: "settings-cat-connections") {
@@ -293,7 +299,7 @@ struct SettingsSheet: View {
                     Text("Online ADS-B streaming").font(.dsLabel).foregroundStyle(p.text)
                 }
                 .accessibilityIdentifier("adsb-toggle")
-                Text("Streams nearby aircraft (within ~30 NM of your position) from a public ADS-B feed and draws them on the map — and helps the AI fixer lock a misheard callsign onto a plane actually on frequency. Runs whenever it's on and the app is open (no transcription needed); needs a network connection; off by default. If a Stratux receiver is connected, its on-board traffic is used instead. You can also toggle this from the map's Layers menu. Live data only — stale contacts are dropped.")
+                Text("Streams nearby aircraft (within ~30 NM of your position) from a public ADS-B feed and draws them on the map — Runs whenever it's on and the app is open; needs a network connection; off by default. If a Stratux receiver is connected, its on-board traffic is used instead. You can also toggle this from the map's Layers menu. Live data only — stale contacts are dropped.")
                     .font(.dsLabelS).foregroundStyle(p.textDim)
                 Text(ADSBService.attribution)
                     .font(.dsLabelS).foregroundStyle(p.textDim.opacity(0.8))
@@ -305,7 +311,11 @@ struct SettingsSheet: View {
                     Text("Stratux link").font(.dsLabel).foregroundStyle(p.text)
                 }
                 .accessibilityIdentifier("stratux-enable")
-                Text("Connect to a Stratux ADS-B/GPS receiver over its Wi-Fi for cockpit audio plus on-board traffic and GPS — no internet needed in flight. Turn the Stratux link on (here or in the Stratux bar on the console) to stream traffic + GPS; pick “Stratux receiver” as the input source to transcribe its audio.")
+                // This page is EFB and stays; only the copy changes, because the second half of the
+                // original string tells the reader to pick an input source that this build does not offer.
+                Text(Features.transcription
+                     ? "Connect to a Stratux ADS-B/GPS receiver over its Wi-Fi for cockpit audio plus on-board traffic and GPS — no internet needed in flight. Turn the Stratux link on (here or in the Stratux bar on the console) to stream traffic + GPS; pick “Stratux receiver” as the input source to transcribe its audio."
+                     : "Connect to a Stratux ADS-B/GPS receiver over its Wi-Fi for on-board traffic and GPS — no internet needed in flight. Turn the Stratux link on (here or in the Stratux bar on the console) to stream traffic + GPS.")
                     .font(.dsLabelS).foregroundStyle(p.textDim)
                 HStack(spacing: 10) {
                     Text("Address").font(.dsLabel).foregroundStyle(p.textDim)
@@ -438,17 +448,22 @@ struct SettingsSheet: View {
                 // version, because it edits flight data. Hidden again is impossible by design
                 // (persisted), but it never surfaces to a user who hasn't gone looking.
                 if model.diagnosticsEnabled {
-                    NavigationLink {
-                        ClearanceTestBenchView().environmentObject(model)
-                    } label: {
-                        HStack {
-                            Label("Clearance test bench", systemImage: "airplane.circle")
-                                .font(.dsLabel).foregroundStyle(p.text)
-                            Spacer()
-                            Image(systemName: "chevron.right").font(.dsLabelS).foregroundStyle(p.textDim)
+                    // The bench itself is a transcription tool, but the 7-tap gesture above is NOT gated:
+                    // it is also the only unlock for the flight simulator, demo flight, glide bench and
+                    // the Developer - Globe page, all of which are EFB.
+                    if Features.transcription {
+                        NavigationLink {
+                            ClearanceTestBenchView().environmentObject(model)
+                        } label: {
+                            HStack {
+                                Label("Clearance test bench", systemImage: "airplane.circle")
+                                    .font(.dsLabel).foregroundStyle(p.text)
+                                Spacer()
+                                Image(systemName: "chevron.right").font(.dsLabelS).foregroundStyle(p.textDim)
+                            }
                         }
+                        .accessibilityIdentifier("settings-test-bench")
                     }
-                    .accessibilityIdentifier("settings-test-bench")
                     // Flies a simulated aircraft down the active approach so the vertical guidance can
                     // be watched working. Publishes a FAKE position — see the refusals it arms behind.
                     NavigationLink {
@@ -505,7 +520,7 @@ struct SettingsSheet: View {
                 .accessibilityIdentifier("settings-notam-feed")
                 NavigationLink {
                     ScrollView {
-                        WhatsNewContent(entries: WhatsNew.releaseNotes)
+                        WhatsNewContent(entries: WhatsNew.visibleReleaseNotes)
                             .environmentObject(model)
                             .padding(16)
                     }
