@@ -13,6 +13,7 @@ class codes: B/C/D (class airspace, pre-existing) · R Restricted · P Prohibite
              MOA Military Operations Area · D Danger
 """
 import argparse, json, math, os, urllib.request
+import sys, datetime as dt
 
 SVC = ("https://services6.arcgis.com/ssFJjBXIUyZDrSYZ/ArcGIS/rest/services/"
        "Special_Use_Airspace/FeatureServer/0/query")
@@ -65,7 +66,16 @@ def fetch_all():
              f"LOWER_VAL,LOWER_UOM,LOWER_CODE,UPPER_VAL,UPPER_UOM,UPPER_CODE&"
              f"returnGeometry=true&outSR=4326&resultOffset={offset}&resultRecordCount=1000&f=json")
         d = json.loads(urllib.request.urlopen(urllib.request.Request(q, headers=UA), timeout=90).read())
-        batch = d.get("features", [])
+        # An ArcGIS error payload carries `error` and NO `features`, so a bare .get(...,[]) turns a
+        # failure into "zero results" and the caller cannot tell. Say which it was.
+        if "error" in d:
+            e = d["error"]
+            raise RuntimeError(f"feature service error {e.get('code')}: {e.get('message')} "
+                               f"{'; '.join(e.get('details') or [])}")
+        if "features" not in d:
+            raise RuntimeError(f"feature service returned no `features` key (got {sorted(d)[:6]}) — "
+                               f"treating as a failure, not as an empty result")
+        batch = d["features"]
         feats += batch
         print(f"  fetched {len(feats)} SUA features…", flush=True)
         if not d.get("exceededTransferLimit") or not batch:
@@ -121,12 +131,48 @@ def main():
                      "r": rings})
         kept += 1
 
+    # ⚠️ REFUSE AN EMPTY OR COLLAPSED FETCH. THIS ALREADY DESTROYED THE LAYER ONCE.
+    #
+    # On 2026-10-19 a run returned ZERO features from a service that was up and holding 1,542 — a
+    # transient hiccup, confirmed by the same `fetch_all()` returning 1,536 minutes later. The script
+    # wrote the file anyway: 2,829 features became 1,286, every MOA, Restricted, Warning, Prohibited
+    # and Alert area silently gone, and it printed "SUA kept=0" as if that were a result. Shipped,
+    # that is an app drawing no special-use airspace at all and saying nothing — a pilot reads empty
+    # as clear.
+    #
+    # `d.get("features", [])` in fetch_all is what makes it quiet: an error payload has no `features`
+    # key, so a failure and an honestly-empty answer are indistinguishable downstream. The floor here
+    # is the backstop. It is the same stance lz/fetch.py takes with `assert_coverage()`, and for the
+    # same stated reason: a missing source must break the build, not thin the layer.
+    MIN_SUA = 800                       # the service has held ~1,540; a real halving is still news
+    if len(rows) < MIN_SUA:
+        sys.exit(f"REFUSING to write: only {len(rows)} SUA features (expected >= {MIN_SUA}). The "
+                 f"feature service returned little or nothing — almost certainly transient. The "
+                 f"existing airspace.json is UNTOUCHED. Re-run; if it persists, check whether the "
+                 f"service moved: {SVC}")
+
     out = os.path.abspath(args.out)
-    existing = json.load(open(out)) if os.path.exists(out) else []
-    classrows = [r for r in existing if r.get("c") in ("B", "C", "D")]   # keep pre-existing class airspace
-    merged = classrows + rows
+    # The file is `{cycle, from, to, features:[…]}` since airspace gained provenance. Older builds
+    # wrote a bare array; read both so a part-migrated tree does not lose its class airspace.
+    prev = json.load(open(out)) if os.path.exists(out) else {}
+    if isinstance(prev, list):
+        prev_features, meta = prev, {}
+    else:
+        prev_features, meta = prev.get("features", []), {k: prev.get(k) for k in ("cycle", "from", "to")}
+    classrows = [r for r in prev_features if r.get("c") in ("B", "C", "D")]  # keep class airspace
+    if not meta.get("cycle"):
+        sys.exit("the airspace file carries no cycle — run build_airspace_db.py first. Merging SUA "
+                 "into an undated file would produce exactly the undated artifact that made 2,829 "
+                 "features invisible to the currency sweep.")
+    # SUA comes from a CONTINUOUSLY updated feature service, not the 28-day NASR chain, so it gets
+    # its own fetch date rather than borrowing a cycle it does not belong to. Reporting it under the
+    # NASR cycle would overstate how fresh it is on the day the cycle rolls.
+    doc = dict(meta)
+    doc["sua_fetched"] = dt.date.today().isoformat()
+    doc["features"] = classrows + rows
+    merged = doc["features"]
     with open(out, "w") as fh:
-        json.dump(merged, fh, separators=(",", ":"))
+        json.dump(doc, fh, separators=(",", ":"))
     import collections
     dist = collections.Counter(r["c"] for r in rows)
     print(f"SUA kept={kept} {dict(dist)} | class rows kept={len(classrows)} | total={len(merged)} "

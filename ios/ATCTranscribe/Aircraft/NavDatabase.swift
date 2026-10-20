@@ -153,16 +153,66 @@ enum NavDatabase {
 
     private static let airspaceTable: [Airspace] = loadAirspace()
 
+    /// Force the lazy table so `airspaceProvenance` is populated. The provenance is a side effect of
+    /// decoding, so asking for it before anything has touched airspace would otherwise report
+    /// `.unknown` on a perfectly well-dated file — and the currency sweep runs at launch, before the
+    /// map has drawn a single airspace ring.
+    static func primeAirspaceProvenance() { _ = airspaceTable }
+
+    private static func isoDay(_ s: String?) -> Date? {
+        guard let s, !s.isEmpty else { return nil }
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "UTC") ?? .current
+        let f = DateFormatter()
+        f.calendar = cal; f.timeZone = cal.timeZone
+        f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "yyyy-MM-dd"
+        // NASR airspace changes at 0901Z like the rest of the 28-day chain.
+        return f.date(from: s).map { $0.addingTimeInterval(9 * 3600 + 60) }
+    }
+
     private struct AirspaceDTO: Decodable {
         let c: String; let n: String; let lo: Int?; let hi: Int?
         let bb: [Double]; let r: [[[Double]]]
     }
 
+    /// Where the airspace came from and when it stops being current.
+    ///
+    /// The file used to be a BARE ARRAY with no dates at all, so these 2,829 Class B/C/D and SUA
+    /// features were the one aeronautical dataset the currency sweep could not see. Undated is not
+    /// current, and from inside the app the two look identical.
+    ///
+    /// `.unknown` for a file that predates the stamp, which `DataCurrencyBadge` renders as "Undated"
+    /// rather than as a reassuring "Current" — the same stance `CIFP.provenance` takes.
+    static private(set) var airspaceProvenance: DataProvenance = .unknown
+
+    private struct AirspaceDoc: Decodable {
+        let cycle: String?
+        let from: String?
+        let to: String?
+        let sua_fetched: String?
+        let features: [AirspaceDTO]
+    }
+
     private static func loadAirspace() -> [Airspace] {
         let url = Bundle.main.url(forResource: "airspace", withExtension: "json", subdirectory: "nav")
             ?? Bundle.main.url(forResource: "airspace", withExtension: "json")
-        guard let url, let data = try? Data(contentsOf: url),
-              let dtos = try? JSONDecoder().decode([AirspaceDTO].self, from: data) else { return [] }
+        guard let url, let data = try? Data(contentsOf: url) else { return [] }
+        // Both shapes: the dated document, and the legacy bare array. A device that has not taken the
+        // rebuild must keep its airspace rather than lose the layer to a decode failure.
+        let dtos: [AirspaceDTO]
+        if let doc = try? JSONDecoder().decode(AirspaceDoc.self, from: data) {
+            dtos = doc.features
+            if let c = doc.cycle, !c.isEmpty,
+               let eff = Self.isoDay(doc.from), let exp = Self.isoDay(doc.to) {
+                airspaceProvenance = DataProvenance(source: "FAA NASR class airspace + SUA",
+                                                    cycle: c, effective: eff, expires: exp,
+                                                    ingestedAt: Self.isoDay(doc.sua_fetched))
+            }
+        } else if let bare = try? JSONDecoder().decode([AirspaceDTO].self, from: data) {
+            dtos = bare                      // legacy: stays `.unknown`, i.e. reported as Undated
+        } else {
+            return []
+        }
         return dtos.enumerated().compactMap { i, d -> Airspace? in
             guard d.bb.count == 4 else { return nil }
             let rings = d.r

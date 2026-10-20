@@ -3894,6 +3894,10 @@ final class AppModel: ObservableObject {
         }
         sources.append(("Airports", AirportData.provenance))
         sources.append(("Charts", ChartLibrary.shared.chartProvenance))
+        // Airspace was absent from this sweep entirely until it gained a cycle — 2,829 Class B/C/D
+        // and SUA features that could not be reported stale because nothing dated them.
+        NavDatabase.primeAirspaceProvenance()
+        sources.append(("Airspace", NavDatabase.airspaceProvenance))
         staleDataSummary = StaleDataSummary.make(sources: sources, asOf: now)
     }
 

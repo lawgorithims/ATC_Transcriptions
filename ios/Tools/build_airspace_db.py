@@ -19,6 +19,7 @@ Run on a box with the NASR zip (the same one build_nav_db.py uses):
   python3 build_airspace_db.py --nasr-zip nasr.zip [--out path.json] [--tol 0.0015]
 """
 import argparse, json, math, os, shutil, sys, tempfile, zipfile
+import re, datetime as dt
 
 sys.setrecursionlimit(1_000_000)  # some Class B rings have thousands of vertices
 
@@ -52,9 +53,16 @@ def dp(points, tol):
     return [a, b]
 
 
+def nasr_effective_from_name(path):
+    """`28DaySubscription_Effective_2026-10-01.zip` -> `2026-10-01`, else None."""
+    m = re.search(r"(\d{4}-\d{2}-\d{2})", os.path.basename(path))
+    return m.group(1) if m else None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--nasr-zip", required=True)
+    ap.add_argument("--date", help="NASR effective date YYYY-MM-DD; inferred from the zip name if absent")
     ap.add_argument("--tol", type=float, default=0.0015, help="DP tolerance in degrees (~150 m)")
     ap.add_argument("--out", default=os.path.join(
         os.path.dirname(__file__), "..", "ATCTranscribe", "Resources", "nav", "airspace.json"))
@@ -113,8 +121,29 @@ def main():
         out.sort(key=lambda e: (e["c"], e["n"]))
         outp = os.path.abspath(args.out)
         os.makedirs(os.path.dirname(outp), exist_ok=True)
+
+        # ⚠️ STAMP THE CYCLE. This file used to be a BARE ARRAY of features — no cycle, no effective
+        # date, nothing. Every other aeronautical dataset in the app is dated and swept by the
+        # currency banner; airspace was invisible to it, so 2,829 Class B/C/D and SUA features could
+        # go arbitrarily stale and the app had no way to say so. "Undated" is not "current", and a
+        # pilot cannot tell the difference from the inside.
+        #
+        # The date comes from the NASR subscription the shapes were read out of — the filename
+        # carries it, same 28-day chain as apt.sqlite — so the two agree by construction rather than
+        # by someone remembering to pass the same --date to both.
+        eff = args.date or nasr_effective_from_name(args.nasr_zip)
+        if not eff:
+            sys.exit("cannot date this build: pass --date YYYY-MM-DD, or use a NASR zip whose name "
+                     "carries its effective date (28DaySubscription_Effective_<date>.zip). Writing an "
+                     "undated airspace file is what this guard exists to stop.")
+        doc = {
+            "cycle": eff,
+            "from": eff,
+            "to": (dt.date.fromisoformat(eff) + dt.timedelta(days=28)).isoformat(),
+            "features": out,
+        }
         with open(outp, "w") as f:
-            json.dump(out, f, separators=(",", ":"))
+            json.dump(doc, f, separators=(",", ":"))
         nring = sum(len(e["r"]) for e in out)
         nvert = sum(len(rr) for e in out for rr in e["r"])
         print(f"kept {kept} features={len(out)} rings={nring} verts={nvert} "
