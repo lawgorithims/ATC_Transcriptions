@@ -18,6 +18,7 @@ final class NavDataUpdateTests: XCTestCase {
         try? FileManager.default.removeItem(at: tmp)
         NavDataUpdate.revertToBundled(.apt)
         NavDataUpdate.revertToBundled(.cifp)
+        NavDataUpdate.revertToBundled(.procedures)
         // These tests INSTALL a cycle-2699 fixture DB into the shared Application Support path. CIFP's
         // handle is a resolve-once static, so any CIFP read that happened while the override was active
         // bound the shared handle to that tiny fixture — starving every later CIFP-backed test in the
@@ -28,6 +29,9 @@ final class NavDataUpdateTests: XCTestCase {
         // Airways reads the airway table out of the SAME cifp.sqlite and now resolves it through
         // NavDataUpdate too, so it has the identical fixture-leak and needs the identical reset.
         Airways.reopenForTests()
+        // procedures.json is an updatable dataset too now, and `Procedures.data` is the same kind of
+        // resolve-once static.
+        Procedures.reloadForTests()
     }
 
     /// A minimal database shaped like the real one, so the invariant checks have something to bite on.

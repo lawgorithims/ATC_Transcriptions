@@ -47,7 +47,16 @@ enum Procedures {
         let regions: [String: [String]]?    // region name → [ICAO] for bundle downloads
         struct Rec: Decodable { let c: String; let n: String; let f: String }
     }
-    private static let data: DTO = load()
+    private static var dataStore: DTO = load()
+    private static var data: DTO { dataStore }
+
+    /// Re-read the index against the CURRENT active URL. Production resolves once per launch on
+    /// purpose (a downloaded cycle takes effect next launch, never mid-session) — this exists so a
+    /// test that installs a NavDataUpdate override in the SAME process does not leave the shared
+    /// value bound to its fixture, which would starve every later plate test. Mirrors
+    /// `CIFP.reopenForTests` and `Airways.reopenForTests`, and became necessary the moment this
+    /// stopped reading from Bundle.main. Test-only.
+    static func reloadForTests() { dataStore = load() }
 
     /// The FAA chart cycle the bundled index was built for (e.g. "2607"); "" when missing.
     static var cycle: String { data.cycle }
@@ -123,8 +132,16 @@ enum Procedures {
     }
 
     private static func load() -> DTO {
-        let url = Bundle.main.url(forResource: "procedures", withExtension: "json", subdirectory: "nav")
-            ?? Bundle.main.url(forResource: "procedures", withExtension: "json")
+        // ⚠️ `activeURL`, NOT Bundle.main. `Procedures.cycle` comes out of this file and is
+        // interpolated into every plate URL (plateURL, above), so binding it to the bundle meant the
+        // plate cycle could only ever advance with an App Store release. It did not: the shipped
+        // index sat at cycle 2607 past its 2026-08-06 expiry, the FAA aged that cycle off aeronav,
+        // and every approach plate in the app returned 404 for 74 days. Nothing reported it, because
+        // from the app's side a 404 is just a failed download.
+        //
+        // Resolving here means a downloaded index moves the plate cycle with it, and the whole
+        // feature follows — the list, the URLs, and the cache keys derived from them.
+        let url = NavDataUpdate.activeURL(.procedures)
         guard let url, let d = try? Data(contentsOf: url),
               let dto = try? JSONDecoder().decode(DTO.self, from: d)
         else { return DTO(cycle: "", from: nil, to: nil, airports: [:], regions: nil) }

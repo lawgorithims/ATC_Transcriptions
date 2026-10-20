@@ -55,10 +55,24 @@ DATASETS = {
         ("SELECT COUNT(*) FROM runway_end", 1),
         ("SELECT COUNT(*) FROM frequency", 1),
     ]),
+    # JSON, not SQLite — handled by read_meta/check_invariants' json branches. It is here because it
+    # is the dataset whose staleness broke a feature outright: Procedures.plateURL interpolates this
+    # file's cycle into the d-TPP URL, the FAA ages old cycles off, and every plate 404'd for 74 days.
+    "procedures": ("procedures.json", "procedures.json", []),
 }
 
 
 def read_meta(path):
+    """Provenance, normalised to cycle/effective/expires whatever the container is.
+
+    procedures.json keeps it as top-level cycle/from/to; the SQLite databases keep it in a `meta`
+    table. NavDataUpdate.meta does the same normalisation on the device, so both sides agree.
+    """
+    if path.endswith(".json"):
+        o = json.load(open(path))
+        return {k: v for k, v in (("cycle", o.get("cycle")),
+                                  ("effective", o.get("from")),
+                                  ("expires", o.get("to"))) if v}
     c = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     try:
         return dict(c.execute("SELECT key, value FROM meta").fetchall())
@@ -81,6 +95,17 @@ def check_invariants(path, queries):
     downloaded a bad file, this one stops it being published to everyone. A build that silently
     produced an empty table is the failure both exist for.
     """
+    if path.endswith(".json"):
+        # The corpus check NavDataUpdate.verifyProcedures makes: enough airports to be the real
+        # index rather than a stub. 3,197 airports silently replaced by four would leave most of the
+        # country with no plates and nothing saying why.
+        o = json.load(open(path))
+        n = len(o.get("airports") or {})
+        if n < 1000:
+            raise SystemExit(
+                f"REFUSING {os.path.basename(path)}: only {n} airports. The device applies the same "
+                f"floor, so publishing this would ship a file every client must then reject.")
+        return
     c = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     try:
         for sql, at_least in queries:
@@ -108,7 +133,11 @@ def verify_anonymous(remote_path):
         return False, f"HTTP {ex.code}{hint}"
     except Exception as ex:
         return False, f"{type(ex).__name__}: {ex}"
-    if not head.startswith(b"SQLite format 3"):
+    expect_json = remote_path.endswith(".json")
+    if expect_json:
+        if not head.lstrip().startswith(b"{"):
+            return False, f"not JSON (got {head[:16]!r})"
+    elif not head.startswith(b"SQLite format 3"):
         return False, f"not SQLite (got {head[:16]!r})"
     return True, "ok"
 

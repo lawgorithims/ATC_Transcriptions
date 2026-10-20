@@ -24,18 +24,26 @@ import SQLite3
 enum NavDataUpdate {
     /// Datasets that can be overridden by a download.
     enum Dataset: String, CaseIterable {
-        case cifp, apt
+        case cifp, apt, procedures
 
         var displayName: String {
             switch self {
-            case .cifp: return "Procedures"
-            case .apt:  return "Airports"
+            case .cifp:       return "Procedures"
+            case .apt:        return "Airports"
+            case .procedures: return "Approach plates"
             }
         }
+
+        /// `procedures` is JSON, the other two are SQLite. It is in here anyway because it is the
+        /// dataset whose staleness BROKE A FEATURE OUTRIGHT: `Procedures.plateURL` interpolates the
+        /// bundled cycle into https://aeronav.faa.gov/d-tpp/<cycle>/<pdf>, the FAA ages old cycles
+        /// off, and so every approach plate in the app 404'd for 74 days with nothing reporting it.
+        var fileExtension: String { self == .procedures ? "json" : "sqlite" }
+
         /// The bundled fallback, always present.
         var bundledURL: URL? {
-            Bundle.main.url(forResource: rawValue, withExtension: "sqlite", subdirectory: "nav")
-                ?? Bundle.main.url(forResource: rawValue, withExtension: "sqlite")
+            Bundle.main.url(forResource: rawValue, withExtension: fileExtension, subdirectory: "nav")
+                ?? Bundle.main.url(forResource: rawValue, withExtension: fileExtension)
         }
     }
 
@@ -48,7 +56,7 @@ enum NavDataUpdate {
     }
 
     static func installedURL(_ d: Dataset) -> URL {
-        directory.appendingPathComponent("\(d.rawValue).sqlite")
+        directory.appendingPathComponent("\(d.rawValue).\(d.fileExtension)")
     }
 
     /// The database to actually open: a verified download when one is installed, else the bundle.
@@ -75,6 +83,18 @@ enum NavDataUpdate {
     }
 
     static func meta(_ url: URL) -> [String: String] {
+        // procedures.json keeps its provenance as top-level `cycle`/`from`/`to` rather than a meta
+        // table. Normalised to the same keys the SQLite path returns so every caller —
+        // `isOlderThanBundle`, `isNotYetEffective`, `activeURL`, the Downloads row — is unchanged.
+        if url.pathExtension == "json" {
+            guard let d = try? Data(contentsOf: url),
+                  let o = (try? JSONSerialization.jsonObject(with: d)) as? [String: Any] else { return [:] }
+            var m: [String: String] = [:]
+            if let c = o["cycle"] as? String, !c.isEmpty { m["cycle"] = c }
+            if let f = o["from"] as? String, !f.isEmpty { m["effective"] = f }
+            if let t = o["to"] as? String, !t.isEmpty { m["expires"] = t }
+            return m
+        }
         var out: [String: String] = [:]
         var db: OpaquePointer?
         guard sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else { return [:] }
@@ -140,6 +160,7 @@ enum NavDataUpdate {
     /// Verify a candidate BEFORE it replaces anything. Mirrors the builder's own self-checks, so a file
     /// that was truncated in transit, or built by a broken pipeline, never becomes the active database.
     static func verify(_ url: URL, as d: Dataset) -> Rejection? {
+        if d == .procedures { return verifyProcedures(url) }
         var db: OpaquePointer?
         guard sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else { return .unopenable }
         defer { sqlite3_close(db) }
@@ -168,6 +189,12 @@ enum NavDataUpdate {
             checks = [("SELECT COUNT(*) FROM airport", 1),
                       ("SELECT COUNT(*) FROM runway_end", 1),
                       ("SELECT COUNT(*) FROM frequency", 1)]
+        case .procedures:
+            // Unreachable — `verify` hands this case to `verifyProcedures` before opening SQLite.
+            // Spelled out rather than covered by a `default:` on purpose: a `default` here would
+            // silently absorb the NEXT dataset someone adds, letting it install having had no corpus
+            // check at all, which is the one thing this function exists to prevent.
+            return verifyProcedures(url)
         }
         for (sql, atLeast) in checks {
             guard count(db, sql) >= atLeast else { return .failsInvariants }
@@ -177,6 +204,28 @@ enum NavDataUpdate {
             guard count(db, "SELECT COUNT(*) FROM procedure p WHERE NOT EXISTS"
                         + "(SELECT 1 FROM leg WHERE procedure_id=p.id)") == 0 else { return .failsInvariants }
         }
+        return nil
+    }
+
+    /// The JSON sibling of `verify`. Same contract, different shape of corpus check.
+    ///
+    /// The invariant that matters is NOT "is this valid JSON" — a truncated download usually is not,
+    /// and `JSONSerialization` catches that. It is that the file describes a usable plate index:
+    /// provenance that can be dated, and enough airports to be the real thing rather than a stub. A
+    /// 3,197-airport index silently replaced by one holding four would leave most of the country with
+    /// no plates and nothing saying why.
+    private static func verifyProcedures(_ url: URL) -> Rejection? {
+        guard let data = try? Data(contentsOf: url),
+              let o = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        else { return .unopenable }
+        let m = meta(url)
+        guard !m.isEmpty else { return .noMeta }
+        guard !(m["cycle"] ?? "").isEmpty else { return .noCycle }
+        guard let airports = o["airports"] as? [String: Any], airports.count >= 1000 else {
+            return .failsInvariants
+        }
+        if isOlderThanBundle(url, .procedures) { return .olderThanBundle }
+        if isNotYetEffective(url) { return .notYetEffective }
         return nil
     }
 
