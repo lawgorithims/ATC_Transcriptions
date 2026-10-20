@@ -59,7 +59,11 @@ enum NavDataUpdate {
         let installed = installedURL(d)
         if FileManager.default.fileExists(atPath: installed.path),
            !readCycle(installed).isEmpty,
-           !isOlderThanBundle(installed, d) {
+           !isOlderThanBundle(installed, d),
+           // Re-checked at READ time, not just at install: a cycle staged ahead of its effective date
+           // would otherwise go live the moment it was written. Checking here means a pre-staged cycle
+           // simply starts being used on the morning it becomes legal, with no further download.
+           !isNotYetEffective(installed) {
             return installed
         }
         return d.bundledURL
@@ -96,7 +100,7 @@ enum NavDataUpdate {
 
     /// Why a candidate database was rejected, for the log and the UI.
     enum Rejection: String {
-        case unopenable, noMeta, noCycle, failsInvariants, olderThanBundle
+        case unopenable, noMeta, noCycle, failsInvariants, olderThanBundle, notYetEffective
         var reason: String {
             switch self {
             case .unopenable:      return "the file is not a readable database"
@@ -104,8 +108,33 @@ enum NavDataUpdate {
             case .noCycle:         return "it carries no cycle identifier"
             case .failsInvariants: return "its contents failed the integrity checks"
             case .olderThanBundle: return "it is older than the data already built in"
+            case .notYetEffective: return "its cycle has not taken effect yet"
             }
         }
+    }
+
+    /// Is this database's cycle not yet in force?
+    ///
+    /// ⚠️ THE FAA PUBLISHES A CYCLE WEEKS BEFORE IT TAKES EFFECT. CIFP_261029.zip was downloadable on
+    /// 2026-10-19, ten days before 2026-10-29. Everything else in this file — `isOlderThanBundle`,
+    /// `activeURL`, and the currency banner — reasons about `expires` and about being too OLD. Nothing
+    /// looked at `effective`, so an automated job that simply fetched "the newest cycle the FAA has
+    /// posted" would install procedures that are not legal to fly yet, and the app would show them as
+    /// current with no warning. Flying next cycle's approach today is a worse error than flying last
+    /// cycle's, because the pilot has no reason to suspect it.
+    ///
+    /// Compared in UTC against the cycle boundary the FAA actually uses (0901Z), not local midnight, so
+    /// the swap happens at the real cutover wherever the aircraft is. Undated databases are not guessed
+    /// at — `isOlderThanBundle` already takes that position.
+    static func isNotYetEffective(_ url: URL, asOf now: Date = Date()) -> Bool {
+        guard let eff = meta(url)["effective"], !eff.isEmpty else { return false }
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "UTC") ?? .current
+        let f = DateFormatter()
+        f.calendar = cal; f.timeZone = cal.timeZone
+        f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "yyyy-MM-dd"
+        guard let d = f.date(from: eff) else { return false }           // unparseable: don't guess
+        return now < d.addingTimeInterval(9 * 3600 + 60)                // 0901Z on the effective date
     }
 
     /// Verify a candidate BEFORE it replaces anything. Mirrors the builder's own self-checks, so a file
@@ -123,6 +152,7 @@ enum NavDataUpdate {
         guard !m.isEmpty else { return .noMeta }
         guard !(m["cycle"] ?? "").isEmpty else { return .noCycle }
         if isOlderThanBundle(url, d) { return .olderThanBundle }
+        if isNotYetEffective(url) { return .notYetEffective }
 
         // The same invariants navdb.py verifies, so a database that would have failed the build cannot
         // pass here either. Every one of these was a real defect at some point in this project's life.

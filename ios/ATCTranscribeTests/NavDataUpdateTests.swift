@@ -28,6 +28,13 @@ final class NavDataUpdateTests: XCTestCase {
     }
 
     /// A minimal database shaped like the real one, so the invariant checks have something to bite on.
+    ///
+    /// ⚠️ `effective` must be a date that is BOTH newer than the bundled cycle AND already in force.
+    /// These fixtures used "2099-01-01" — comfortably newer, and never effective — which was harmless
+    /// until `isNotYetEffective` started refusing cycles that have not begun. A far-future cycle is
+    /// exactly what that guard exists to reject, so the fixtures say `Self.iso(daysFromNow: -1)`:
+    /// yesterday is newer than the bundle (2026-07-09) and in force, without hardcoding a date that
+    /// rots.
     private func makeCIFP(cycle: String, effective: String,
                           legs: Bool = true, marks: Bool = true, orphanProcedure: Bool = false) throws -> URL {
         let url = tmp.appendingPathComponent("\(UUID().uuidString).sqlite")
@@ -95,7 +102,7 @@ final class NavDataUpdateTests: XCTestCase {
     // MARK: the happy path, and the fallback underneath it
 
     func testInstallsAValidNewerCycleAndServesIt() throws {
-        let url = try makeCIFP(cycle: "2699", effective: "2099-01-01")
+        let url = try makeCIFP(cycle: "2699", effective: Self.iso(daysFromNow: -1))
         XCTAssertNil(NavDataUpdate.install(from: url, as: .cifp))
         XCTAssertTrue(NavDataUpdate.isOverridden(.cifp))
         XCTAssertEqual(NavDataUpdate.activeURL(.cifp)?.path, NavDataUpdate.installedURL(.cifp).path)
@@ -103,7 +110,7 @@ final class NavDataUpdateTests: XCTestCase {
     }
 
     func testRevertingGoesBackToTheBundledCopyRatherThanNothing() throws {
-        let url = try makeCIFP(cycle: "2699", effective: "2099-01-01")
+        let url = try makeCIFP(cycle: "2699", effective: Self.iso(daysFromNow: -1))
         XCTAssertNil(NavDataUpdate.install(from: url, as: .cifp))
         NavDataUpdate.revertToBundled(.cifp)
         XCTAssertFalse(NavDataUpdate.isOverridden(.cifp))
@@ -112,9 +119,9 @@ final class NavDataUpdateTests: XCTestCase {
 
     /// A refused candidate must leave the previously-active database exactly as it was.
     func testARefusedCandidateDoesNotDisturbWhatIsInstalled() throws {
-        let good = try makeCIFP(cycle: "2699", effective: "2099-01-01")
+        let good = try makeCIFP(cycle: "2699", effective: Self.iso(daysFromNow: -1))
         XCTAssertNil(NavDataUpdate.install(from: good, as: .cifp))
-        let bad = try makeCIFP(cycle: "2700", effective: "2099-02-01", marks: false)
+        let bad = try makeCIFP(cycle: "2700", effective: Self.iso(daysFromNow: -1), marks: false)
         XCTAssertEqual(NavDataUpdate.install(from: bad, as: .cifp), .failsInvariants)
         XCTAssertEqual(NavDataUpdate.readCycle(NavDataUpdate.installedURL(.cifp)), "2699",
                        "the good cycle must still be the one installed")
@@ -126,5 +133,61 @@ final class NavDataUpdateTests: XCTestCase {
         XCTAssertFalse(NavDataUpdate.isOverridden(.cifp))
         XCTAssertNotNil(NavDataUpdate.activeURL(.cifp))
         XCTAssertNotNil(NavDataUpdate.activeURL(.apt))
+    }
+
+    // MARK: Not-yet-effective cycles
+
+    /// ⚠️ THE CASE AN AUTOMATED JOB WALKS STRAIGHT INTO. The FAA posts a cycle weeks before it takes
+    /// effect — CIFP_261029.zip was downloadable on 2026-10-19, ten days early. A daily job that
+    /// fetches "the newest cycle published" therefore fetches one that is not legal to fly, and before
+    /// this guard every other check waved it through: it is newer than the bundle, it has a cycle, and
+    /// its invariants pass. The app would have shown next cycle's procedures as current.
+    func testACycleThatHasNotTakenEffectYetIsRefused() throws {
+        let future = Self.iso(daysFromNow: 10)
+        let db = try makeCIFP(cycle: "2699", effective: future)
+        XCTAssertEqual(NavDataUpdate.verify(db, as: .cifp), .notYetEffective,
+                       "a cycle effective in 10 days must not install")
+        XCTAssertEqual(NavDataUpdate.install(from: db, as: .cifp), .notYetEffective)
+        XCTAssertFalse(NavDataUpdate.isOverridden(.cifp), "the bundle must still be serving")
+    }
+
+    /// The boundary is 0901Z on the effective date, which is the FAA's own cutover — not local
+    /// midnight, so the answer does not depend on where the aircraft is.
+    func testEffectiveTodayBeforeTheCutoverIsStillNotEffective() throws {
+        let today = Self.iso(daysFromNow: 0)
+        let db = try makeCIFP(cycle: "2699", effective: today)
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "UTC")!
+        let midnightZ = cal.startOfDay(for: Date())
+        XCTAssertTrue(NavDataUpdate.isNotYetEffective(db, asOf: midnightZ.addingTimeInterval(8 * 3600)),
+                      "0800Z on the effective date is before the 0901Z cutover")
+        XCTAssertFalse(NavDataUpdate.isNotYetEffective(db, asOf: midnightZ.addingTimeInterval(10 * 3600)),
+                       "1000Z on the effective date is after it")
+    }
+
+    /// Pre-staging is the point of checking at READ time too: a cycle installed early must not be
+    /// served early, but must start being served on its own without another download.
+    func testAnAlreadyEffectiveCycleInstallsAndServes() throws {
+        let past = Self.iso(daysFromNow: -1)
+        let db = try makeCIFP(cycle: "2699", effective: past)
+        XCTAssertNil(NavDataUpdate.verify(db, as: .cifp), "yesterday's effective date is in force today")
+        XCTAssertNil(NavDataUpdate.install(from: db, as: .cifp))
+        XCTAssertTrue(NavDataUpdate.isOverridden(.cifp), "it should now be serving")
+    }
+
+    /// An undated database is not guessed at, matching `isOlderThanBundle`'s existing stance.
+    func testAnUndatedCandidateIsNotTreatedAsNotYetEffective() throws {
+        let db = try makeCIFP(cycle: "2699", effective: "")
+        XCTAssertFalse(NavDataUpdate.isNotYetEffective(db), "no effective date means no opinion")
+    }
+
+    private static func iso(daysFromNow: Int) -> String {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "UTC")!
+        let d = cal.date(byAdding: .day, value: daysFromNow, to: Date())!
+        let f = DateFormatter()
+        f.calendar = cal; f.timeZone = cal.timeZone
+        f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "yyyy-MM-dd"
+        return f.string(from: d)
     }
 }
