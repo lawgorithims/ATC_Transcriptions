@@ -550,7 +550,11 @@ private func inflated(_ r: MKMapRect, by f: Double) -> MKMapRect {
         var anyLoaded = false
         for e in todo {
             if layer != activeLayer { return }                 // a layer switch superseded us — abort
-            var reader = MBTilesReader(path: library.localURL(e).path)   // cached-on-disk hit (prefetched → instant)
+            // `readableURL`, NOT `localURL`: on a cycle roll the pilot's downloaded packs are still on
+            // disk under the PREVIOUS cycle's filename, and asking only for the current one blanked the
+            // chart the moment a new index.json was adopted. Falls back to the newest copy on disk and
+            // the Downloads screen offers the re-download (ChartLibrary.stalePackCount).
+            var reader = library.readableURL(e).flatMap { MBTilesReader(path: $0.path) }   // cached-on-disk hit (prefetched → instant)
             if reader == nil, let url = await library.ensureOnDisk(e) { reader = MBTilesReader(path: url.path) }
             inFlight.remove(e.id)
             if let reader, layer == activeLayer, loaded[e.id] == nil {

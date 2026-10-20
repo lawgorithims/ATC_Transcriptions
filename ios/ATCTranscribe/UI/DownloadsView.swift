@@ -13,6 +13,7 @@ struct DownloadsView: View {
     @State private var checkingForCycle = false
     @State private var cycleCheck: ChartLibrary.CycleCheck?
     @State private var cycleUpdateDeclined = false
+    @State private var staleUpdateDeclined = false
     @EnvironmentObject var model: AppModel
     @ObservedObject var library = ChartLibrary.shared
     @ObservedObject var lzLibrary = LZPackLibrary.shared
@@ -139,6 +140,57 @@ struct DownloadsView: View {
                 Spacer()
                 Text("56-day").font(.dsLabelS).foregroundStyle(p.textDim)
             }
+            // ⚠️ NOT GATED ON isExpired, AND THAT IS THE POINT. On a cycle roll the newly adopted
+            // catalog is perfectly CURRENT, so every expiry-gated control below hides itself — at
+            // exactly the moment the pilot's downloaded packs have gone stale and need re-fetching.
+            // This row is the only thing that surfaces that state, so it keys off what is actually on
+            // disk (ChartLibrary.stalePackCount) rather than off the catalog's dates.
+            //
+            // The map is still drawing these packs rather than blanking (ChartLibrary.readableURL), so
+            // the wording says "older cycle", not "missing" — the pilot has charts, just not this
+            // cycle's.
+            if library.stalePackCount > 0 {
+                let n = library.stalePackCount
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "clock.arrow.circlepath").foregroundStyle(p.warn)
+                        Text("\(n) pack\(n == 1 ? "" : "s") from an older cycle")
+                            .font(.callout.weight(.semibold)).foregroundStyle(p.text)
+                    }
+                    Text("The map is drawing these from your last download so you are not left without a "
+                         + "chart. They do not match cycle \(library.cycle) — re-download when you have "
+                         + "a connection you are happy to use.")
+                        .font(.caption2).foregroundStyle(p.textDim)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Button {
+                        Haptics.impact(.medium)
+                        Task {
+                            // `updateInstalledPacks` carries the metered-connection guard every bulk
+                            // path in this screen uses; a multi-gigabyte re-download over a cockpit
+                            // hotspot is exactly what it exists to refuse. It returns false when it
+                            // declined, which is reported below rather than failing silently.
+                            staleUpdateDeclined = !(await library.updateInstalledPacks(
+                                library.installedPackIDs()))
+                        }
+                    } label: {
+                        Text("Re-download \(n) pack\(n == 1 ? "" : "s")")
+                            .font(.dsLabelBold).foregroundStyle(.white)
+                            .padding(.horizontal, 12).padding(.vertical, 6)
+                            .background(Capsule().fill(p.accent))
+                    }
+                    .buttonStyle(.plainHaptic)
+                    .accessibilityIdentifier("charts-redownload-stale")
+                    if staleUpdateDeclined {
+                        Label("Skipped — you are on a metered connection. Reconnect to Wi-Fi and tap "
+                              + "again. Your older-cycle charts stay on the map until then.",
+                              systemImage: "antenna.radiowaves.left.and.right.slash")
+                            .font(.caption2).foregroundStyle(p.textDim)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+
             // An EXPIRED chart catalog is the one case a pilot must not have to go looking for: the map
             // keeps drawing, and out-of-cycle charts look exactly as authoritative as current ones.
             if library.chartProvenance.currency().isExpired {

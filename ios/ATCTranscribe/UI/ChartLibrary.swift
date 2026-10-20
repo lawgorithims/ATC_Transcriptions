@@ -268,9 +268,81 @@ final class ChartLibrary: ObservableObject {
     }
 
     /// On-disk name carries the AIRAC cycle so a new cycle can't be served from a stale cached file.
+    ///
+    /// This is the WRITE path and the "is it current" path. For READING, use `readableURL` — see the
+    /// note there for why the two must differ.
     func localURL(_ e: ChartCatalog.Entry) -> URL {
         dir.appendingPathComponent("\(e.id)-\(cycle).mbtiles")
     }
+
+    /// The pack file to actually OPEN: this cycle's if it is there, else the newest older-cycle copy
+    /// still on disk.
+    ///
+    /// ⚠️ WITHOUT THIS, PUBLISHING A NEW CYCLE BLANKS EVERY PILOT'S OFFLINE KIT. `pruneOldCycleFiles`
+    /// deliberately KEEPS pinned packs across a rollover and its comment promises they survive "as a
+    /// labeled-expired fallback" — but nothing implemented the fallback. `localURL` returns only
+    /// `<id>-<currentCycle>.mbtiles`, so the instant a newly published index.json was adopted every
+    /// downloaded pack became invisible: the files were on disk, the reader asked for a name that did
+    /// not exist yet, and the chart went blank. On a metered or absent connection the multi-gigabyte
+    /// re-download is exactly what the pilot cannot do, and it would happen the moment an automated
+    /// publish landed — making a cycle roll strictly worse than no automation at all.
+    ///
+    /// An expired pack is the right thing to draw here. The alternative is a blank chart, and the app
+    /// already labels stale data loudly (DataCurrencyBanner, the Downloads expiry row, and
+    /// `stalePackCount` below, which offers the re-download). Showing last cycle's chart clearly marked
+    /// beats showing nothing silently.
+    ///
+    /// Returns nil when there is no copy at all, so callers keep their existing "not cached" path.
+    func readableURL(_ e: ChartCatalog.Entry) -> URL? {
+        let current = localURL(e)
+        if FileManager.default.fileExists(atPath: current.path) { return current }
+        return newestOlderCyclePack(e.id)
+    }
+
+    /// True when the only copy on disk is from an older cycle — the map is drawing it, and the pilot
+    /// should be offered a refresh.
+    func isServedStale(_ e: ChartCatalog.Entry) -> Bool {
+        !FileManager.default.fileExists(atPath: localURL(e).path) && newestOlderCyclePack(e.id) != nil
+    }
+
+    /// Newest on-disk pack for this id from ANY cycle other than the current one. Thin disk wrapper —
+    /// the choice itself is `chooseOlderCyclePack`, kept pure so it can be unit-tested without a
+    /// filesystem (same split as `packID`, which `ChartPackIDTests` covers).
+    private func newestOlderCyclePack(_ id: String) -> URL? {
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: [.contentModificationDateKey]) else { return nil }
+        let candidates = files.map { url -> (name: String, modified: Date) in
+            let d = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+            return (url.lastPathComponent, d ?? .distantPast)
+        }
+        return Self.chooseOlderCyclePack(id: id, currentCycle: cycle, candidates: candidates)
+            .map { dir.appendingPathComponent($0) }
+    }
+
+    /// Which on-disk file to fall back to for `id` when this cycle's pack is absent.
+    ///
+    /// Ordered by modification date, NOT by the cycle string. Two cycle shapes coexist on disk —
+    /// `MM-DD-YYYY` and the legacy `YYNN` (see `packID`) — and neither sorts lexically into chronological
+    /// order, let alone against each other: "05-14-2026" > "01-29-2027" as text. The download date is
+    /// the one ordering that is actually true.
+    ///
+    /// Excludes the current cycle: callers reach here only when that file is missing, and including it
+    /// would let a zero-byte or half-written current file win on recency.
+    nonisolated static func chooseOlderCyclePack(
+        id: String, currentCycle: String, candidates: [(name: String, modified: Date)]
+    ) -> String? {
+        let currentName = "\(id)-\(currentCycle).mbtiles"
+        return candidates
+            .filter { $0.name != currentName && packID($0.name) == id }
+            .max { $0.modified < $1.modified }?
+            .name
+    }
+
+    /// How many packs the map is currently serving from an older cycle. Drives the Downloads row that
+    /// offers the re-download, which is deliberately NOT gated on `isExpired`: on a cycle roll the NEW
+    /// catalog is perfectly current, so an expiry-gated control would hide itself at exactly the moment
+    /// the pilot needs it.
+    var stalePackCount: Int { (catalog?.entries ?? []).filter { isServedStale($0) }.count }
 
     /// A pack is considered cached once its file is on disk — the download path only leaves a file
     /// there after an integrity check, so presence is a safe signal (no per-call SQLite open).
