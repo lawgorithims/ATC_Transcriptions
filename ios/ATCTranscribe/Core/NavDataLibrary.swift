@@ -20,9 +20,15 @@ import CryptoKit
 ///       "datasets": { "cifp": { cycle, effective, expires, bytes, sha256, path }, "apt": { … } },
 ///       "next":     { … } }          // optional: a cycle published ahead of its effective date
 ///
-/// `next` exists because the FAA posts a cycle weeks early. Staging it lets a pilot download on the
-/// ground before it is in force; `NavDataUpdate.activeURL` re-checks the effective date at read time,
-/// so a staged cycle simply starts being served on the morning it becomes legal.
+/// `next` exists because the FAA posts a cycle weeks early, and `publish_nav.py --stage-next` writes
+/// it under a `next/` prefix so it cannot overwrite the in-force file.
+///
+/// ⚠️ THIS CLIENT DOES NOT CONSUME IT YET. `available()` and `update()` read only `datasets`, so a
+/// staged cycle is published and ignored until it becomes effective — at which point the publisher
+/// promotes it to `datasets` and the ordinary path picks it up. That is a working outcome, just not
+/// the pre-download one. The field is decoded rather than dropped so the schema stays stable while
+/// the pre-download path is written; the earlier version of this comment claimed the pre-download
+/// already worked, which it never did.
 @MainActor
 final class NavDataLibrary: ObservableObject {
     static let shared = NavDataLibrary()
@@ -122,7 +128,13 @@ final class NavDataLibrary: ObservableObject {
         guard let url = URL(string: "\(Self.base)/\(e.path)") else {
             states[d.rawValue] = .failed("The download address is not valid."); return
         }
-        let staged = dir.appendingPathComponent("\(d.rawValue)-\(e.cycle).sqlite")
+        // ⚠️ THE DATASET'S OWN EXTENSION, NOT ".sqlite". `NavDataUpdate.meta` decides whether to read
+        // provenance as JSON or out of a SQLite `meta` table by looking at `url.pathExtension`
+        // (NavDataUpdate.swift), so staging procedures.json as `procedures-2610.sqlite` sent a JSON
+        // file down the SQLite path: sqlite3_open succeeds on anything, the schema probe fails, and
+        // the download was rejected as `.unopenable`. The plate index — the dataset whose staleness
+        // 404'd every approach plate for 74 days — could never have installed.
+        let staged = dir.appendingPathComponent("\(d.rawValue)-\(e.cycle).\(d.fileExtension)")
         do {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             states[d.rawValue] = .downloading(0)
@@ -140,12 +152,18 @@ final class NavDataLibrary: ObservableObject {
             // that arrived intact and is still the wrong thing (empty tables, no provenance, a cycle
             // that has not started). Neither subsumes the other.
             states[d.rawValue] = .verifying
-            let digest = Self.sha256(of: staged)
+            // Off the main actor: this class is @MainActor, and hashing 22 MB plus the install's
+            // verify-and-copy on the main thread stutters the UI for the whole of it. Both are
+            // nonisolated statics touching only the filesystem, so a detached task is safe.
+            let digest = await Task.detached(priority: .utility) { Self.sha256(of: staged) }.value
             guard digest?.caseInsensitiveCompare(e.sha256) == .orderedSame else {
                 try? FileManager.default.removeItem(at: staged)
                 states[d.rawValue] = .failed("The download did not match its checksum."); return
             }
-            if let bad = NavDataUpdate.install(from: staged, as: d) {
+            let rejection = await Task.detached(priority: .utility) {
+                NavDataUpdate.install(from: staged, as: d)
+            }.value
+            if let bad = rejection {
                 try? FileManager.default.removeItem(at: staged)
                 states[d.rawValue] = .failed("Refused — \(bad.reason).")
                 return

@@ -306,7 +306,9 @@ struct StratuxCard: View {
                 }
                 KV("Traffic", active ? "\(model.aircraft.count) in range" : "—")
                 if !active {
-                    Text("Turn on the Stratux link in Settings or the Stratux bar. Pick “Stratux receiver” as the input source to transcribe its audio.")
+                    Text((Features.transcription
+                      ? "Turn on the Stratux link in Settings or the Stratux bar. Pick “Stratux receiver” as the input source to transcribe its audio."
+                      : "Turn on the Stratux link in Settings or the Stratux bar."))
                         .font(.dsLabelS).foregroundStyle(p.textDim)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }

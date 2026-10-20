@@ -1647,7 +1647,14 @@ final class AppModel: ObservableObject {
         self.modelDirs = models
         // Restore the model the user last had active (persisted) when it's still available; else
         // prefer the larger (higher-accuracy) model when present, falling back to small/bundled.
-        if let active = Self.preferredActiveModel(from: models) {
+        // ⚠️ `Features.transcription` FIRST. This branch used to be chosen by "is a speech model on
+        // disk", which is not the same question in a gated build. Application Support survives an
+        // in-place TestFlight update, so a tester who downloaded the 465 MB model under a
+        // transcription build and then updated to the EFB build still resolved one here — taking the
+        // live-mode branch, setting `detail = "Ready — press Start."`, and rendering that on the map's
+        // status strip for a power button the gate had removed. A clean install took the else and
+        // looked fine, which is exactly why EFBOnlyChromeUITests (which launches clean) missed it.
+        if Features.transcription, let active = Self.preferredActiveModel(from: models) {
             modelSource = explicitModel != nil ? "launch"
                 : (ModelStore.downloadedWhisperDir() != nil ? "downloaded" : "bundled")
             // First launch only (no source ever saved): default to the self-contained Replay demo

@@ -609,11 +609,21 @@ final class ChartLibrary: ObservableObject {
 
     // MARK: Pinned-pack persistence
 
+    /// Is this file one of the pilot's explicit downloads, and therefore exempt from the disk budget?
+    ///
+    /// ⚠️ CYCLE-AGNOSTIC, AND IT HAS TO BE. This matched only `-<currentCycle>.mbtiles`, which was
+    /// right when the reader opened nothing else. It is not any more: `readableURL` deliberately
+    /// serves an OLDER-cycle pack when this cycle's is absent, and `pruneOldCycleFiles` deliberately
+    /// keeps those files for it. `enforceDiskBudget` asked this function whether they were pinned,
+    /// was told no, and was free to delete the very packs the map had fallen back to — turning the
+    /// cycle-roll fix into a slower version of the bug it fixed.
+    ///
+    /// `loadPinned` drops the in-memory pin set on a cycle change, so the persisted ids are consulted
+    /// too; those are what survive a rollover and what `pruneOldCycleFiles` already keys off.
     private func isPinnedFile(_ url: URL) -> Bool {
-        let name = url.lastPathComponent
-        let suffix = "-\(cycle).mbtiles"
-        guard name.hasSuffix(suffix) else { return false }
-        return pinned.contains(String(name.dropLast(suffix.count)))
+        guard let id = Self.packID(url.lastPathComponent) else { return false }
+        if pinned.contains(id) { return true }
+        return (UserDefaults.standard.stringArray(forKey: pinnedKey) ?? []).contains(id)
     }
 
     private func loadPinned() {

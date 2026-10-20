@@ -37,7 +37,7 @@ how a --publish run can look fine right up to the upload. The import is deferred
 branch on purpose, but that means the failure lands after the manifest is written; it lands BEFORE
 any upload, so the hosted cycle is never left half-replaced.
 """
-import os, sys, json, glob, sqlite3, urllib.request, urllib.error, argparse
+import os, sys, json, glob, sqlite3, urllib.request, urllib.error, argparse, datetime
 
 os.environ["HF_HUB_DISABLE_XET"] = "1"   # FORCED before the import below — see defect 1 above.
 os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
@@ -125,6 +125,8 @@ def main():
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--dry-run", action="store_true", help="compose + validate the manifest, upload nothing")
     g.add_argument("--publish", action="store_true", help="upload packs, verify each, then the manifest")
+    ap.add_argument("--publish-early", action="store_true",
+                    help="publish a cycle that has not taken effect yet (the FAA posts weeks ahead)")
     ap.add_argument("--allow-partial", action="store_true",
                     help="publish even if a family is short of its expected pack count")
     a = ap.parse_args()
@@ -132,6 +134,31 @@ def main():
     if not CYCLE:
         raise SystemExit("REFUSING: CYCLE is unset. A manifest whose cycle does not match its packs "
                          "is worse than no manifest — the app trusts it to decide what is current.")
+
+    # ⚠️ REFUSE A CYCLE THAT IS NOT IN FORCE YET, unless asked explicitly.
+    #
+    # The FAA posts a chart cycle weeks ahead — 10-29-2026 was fully downloadable on 2026-10-19 — and
+    # the app derives currency from this manifest's `cycle` alone (ChartCatalog.provenance: effective
+    # date + 56 days). Publish early and every device treats next cycle's charts as today's, with no
+    # banner and nothing to notice. That is worse than publishing late: an expired chart announces
+    # itself, a premature one looks exactly like a current one.
+    #
+    # `publish_nav.py` has refused this since it was written; charts had no such guard, which is the
+    # asymmetry this closes. --publish-early is there because BUILDING ahead is correct and someone
+    # will legitimately want to stage the artifacts; it just must be a decision, not a default.
+    try:
+        eff = datetime.datetime.strptime(CYCLE, "%m-%d-%Y").date()
+    except ValueError:
+        raise SystemExit(f"REFUSING: CYCLE {CYCLE!r} is not MM-DD-YYYY, so its effective date cannot "
+                         f"be checked.")
+    today = datetime.date.today()
+    if eff > today and not a.publish_early:
+        raise SystemExit(
+            f"REFUSING: cycle {CYCLE} takes effect {eff} — {(eff - today).days} days from now "
+            f"(today {today}).\n"
+            f"  Building ahead is correct; publishing ahead makes every device call these charts "
+            f"current.\n"
+            f"  Re-run on or after {eff}, or pass --publish-early if you have a reason.")
 
     manifest, plan, problems = {"cycle": CYCLE}, [], []
     for label, pattern, subdir, key in FAMILIES:

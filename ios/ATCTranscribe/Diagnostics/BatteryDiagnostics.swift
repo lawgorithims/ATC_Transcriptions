@@ -104,12 +104,15 @@ struct BatteryActivitySnapshot {
         if !byAct.isEmpty {
             lines.append("By activity (averages):")
             for r in byAct {
-                lines.append(String(format: "  %@ — CPU %.0f%% · map %.1f fps · whisper %.0f%% · %d min",
+                // "whisper" named the hidden half in a report testers are asked to send back.
+                // Renamed in the TEXT only; the stored field keeps its name (battery_diagnostics_v2
+                // is persisted, and renaming a key is a migration rather than a tidy-up).
+                lines.append(String(format: "  %@ — CPU %.0f%% · map %.1f fps · speech %.0f%% · %d min",
                                     r.tag, r.cpu, r.fps, r.whisper, r.count))
             }
             lines.append("")
         }
-        lines.append("time,level%,charging,thermal,cpu%,mapfps,whisper%,engine,activity")
+        lines.append("time,level%,charging,thermal,cpu%,mapfps,speech%,engine,activity")
         let df = ISO8601DateFormatter()
         for s in samples.suffix(Self.maxSamples) {                            // bounded (rule 2)
             let lvl = s.level >= 0 ? String(format: "%.0f", s.level * 100) : "n/a"

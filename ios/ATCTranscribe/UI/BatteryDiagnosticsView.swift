@@ -22,7 +22,7 @@ struct BatteryDiagnosticsView: View {
                             Text("Sample battery every minute").font(.dsLabel).foregroundStyle(p.text)
                         }
                         .accessibilityIdentifier("battery-diag-toggle")
-                        Text("Records battery level, thermal state, and what the app is doing (transcription, map layer, Stratux, GPS) once a minute while open, so a drain spike can be traced to a cause. Off costs nothing. Fly a normal session with it on, then Copy the log.")
+                        Text("Records battery level, thermal state, and what the app is doing (map layer, Stratux, GPS) once a minute while open, so a drain spike can be traced to a cause. Off costs nothing. Fly a normal session with it on, then Copy the log.")
                             .font(.dsLabelS).foregroundStyle(p.textDim)
                     }
                 }
@@ -84,13 +84,13 @@ struct BatteryDiagnosticsView: View {
                 if battery.samples.count >= 3 {
                     Card(title: "By activity (averages)") {
                         VStack(alignment: .leading, spacing: 7) {
-                            Text("Isolates the drain: compare CPU (Whisper/ANE) and map fps (idle redraw) across what the app was doing.")
+                            Text("Isolates the drain: compare CPU and map fps (idle redraw) across what the app was doing.")
                                 .font(.dsLabelS).foregroundStyle(p.textDim)
                             ForEach(BatteryDiagnostics.activityAverages(battery.samples), id: \.tag) { row in
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(row.tag).font(.dsLabelSBold).foregroundStyle(p.text)
                                         .fixedSize(horizontal: false, vertical: true)
-                                    Text(String(format: "CPU %.0f%% · map %.1f fps · whisper %.0f%% · %d min",
+                                    Text(String(format: "CPU %.0f%% · map %.1f fps · speech %.0f%% · %d min",
                                                 row.cpu, row.fps, row.whisper, row.count))
                                         .font(.caption2.monospaced()).foregroundStyle(p.textDim)
                                 }

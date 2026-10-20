@@ -525,6 +525,14 @@ struct DownloadsView: View {
                 }
                 .buttonStyle(.plainHaptic)
                 .accessibilityIdentifier("nav-update-\(d.rawValue)")
+            } else if navLibrary.catalog == nil {
+                // ⚠️ NOT A TICK. `available()` returns [] both when we are current AND when the
+                // manifest could not be fetched (refresh() swallows offline deliberately, because an
+                // EFB is offline all the time and that is not an error). Rendering both as a green
+                // check told a pilot "your procedures are current" on the strength of a request that
+                // never completed — the one claim this section exists to make, made without evidence.
+                Label("Could not check", systemImage: "wifi.slash")
+                    .font(.dsLabelS).foregroundStyle(p.textDim)
             } else {
                 Image(systemName: "checkmark.circle.fill").font(.dsLabelS).foregroundStyle(p.good)
             }

@@ -193,13 +193,21 @@ def main():
                     f"REFUSING {local_name}: cycle {cycle} is effective {eff}, which is in the future "
                     f"(today {today}). The FAA posts cycles weeks early. Pass --stage-next to publish "
                     f"it under `next` for pre-download, or wait until it is in force.")
+            # ⚠️ A DISTINCT REMOTE PATH. `remote` is constant per dataset ("cifp.sqlite"), so a staged
+            # upload went to the SAME object the live manifest points at — publishing not-yet-effective
+            # bytes over the in-force file while omitting the key from `datasets` entirely. Every
+            # device would then fetch next cycle's data under this cycle's entry, which is the exact
+            # thing --stage-next exists to avoid.
+            rec = dict(rec, path=f"next/{remote}")
             staged[key] = rec
+            plan.append((path, rec["path"]))
             print(f"  {key:5s} cycle {cycle}  effective {eff}  -> STAGED as next ({rec['bytes']/2**20:.1f} MiB)")
+            continue
         else:
             manifest["datasets"][key] = rec
             print(f"  {key:5s} cycle {cycle}  effective {eff}  expires {exp}  "
                   f"({rec['bytes']/2**20:.1f} MiB)")
-        plan.append((path, remote))
+            plan.append((path, remote))
 
     if staged:
         manifest["next"] = staged

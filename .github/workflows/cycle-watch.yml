@@ -52,11 +52,19 @@ jobs:
       - name: Probe the FAA
         id: probe
         run: |
+          # ⚠️ NO PIPE INTO tee. `$?` after a pipeline is the LAST element's status, and GitHub's
+          # default shell is `bash -e {0}` with no pipefail — so `status` was tee's, i.e. always 0.
+          # Every branch below keys off it, which made this whole workflow inert: it could never open
+          # an issue (needs 10) and never fail on an unreachable source (needs 1). A daily watcher
+          # that silently reports "nothing new" every day is worse than no watcher, because it looks
+          # like coverage.
           set +e
           python3 .github/scripts/check_cycles.py \
             --shipped-cifp "${{ steps.shipped.outputs.cifp }}" \
-            --shipped-dtpp "${{ steps.shipped.outputs.dtpp }}" | tee report.txt
-          echo "status=$?" >> "$GITHUB_OUTPUT"
+            --shipped-dtpp "${{ steps.shipped.outputs.dtpp }}" > report.txt 2>&1
+          status=$?
+          cat report.txt
+          echo "status=$status" >> "$GITHUB_OUTPUT"
 
       # A probe that could not reach its source must not read as "nothing new". That is the same
       # silence this workflow exists to break, one level up — and the distinction HIFLD taught this

@@ -39,8 +39,14 @@ done
 DATASET_BASE="https://huggingface.co/datasets/${HF_DATASET}/resolve/main"
 # FATAL on failure, and no `2>&1`. The old form hid every upload error behind /dev/null under
 # `set -uo pipefail` with no `-e`, so a pack could fail to upload and still be named in the manifest.
+# ⚠️ UPLOAD IS OFF BY DEFAULT NOW. build_all_packs.sh was retired as a publisher and this script was
+# not, so it stayed a SECOND one — uploading packs and then re-publishing a rewritten index.json
+# composed by the inline Python below, with no faa_cycle check anywhere. Two publishers is precisely
+# how the ifrHigh-less manifest and the Xet 403 each came back after being fixed once.
+#
+#   UPLOAD=0 ./build_ifr_high_conus.sh && CYCLE=<cycle> OUT=<out> publish_packs.py --publish
 up(){
-  [ "${UPLOAD:-1}" = "1" ] || return 0
+  [ "${UPLOAD:-0}" = "1" ] || return 0
   "$HF" upload "$HF_DATASET" "$1" "$2" --repo-type dataset >/dev/null \
     || { echo "!! upload FAILED: $2" >&2; exit 1; }
   echo "  up $2"
@@ -90,6 +96,14 @@ python3 - "$WORK/index_hosted.json" "$WORK/index.json" "${built[@]}" <<'PY'
 import sqlite3, os, json, sys
 hosted, outp, packs = sys.argv[1], sys.argv[2], sys.argv[3:]
 def rec(p):
+    # Refuse a pack that does not say it is this cycle. The surrounding script can still be opted
+    # into publishing (UPLOAD=1), and this manifest names whatever is on disk — which on a shared
+    # scratch directory is last cycle's packs.
+    _m = dict(sqlite3.connect(p).execute("select name,value from metadata").fetchall())
+    _want = os.environ.get("CYCLE", "")
+    if _want and _m.get("faa_cycle") not in (None, _want):
+        raise SystemExit(f"REFUSING {os.path.basename(p)}: stamped faa_cycle={_m.get('faa_cycle')!r}, "
+                         f"publishing {_want!r}. Rebuild into a cycle-scoped OUT.")
     m = dict(sqlite3.connect(p).execute("select name,value from metadata").fetchall())
     b = [float(x) for x in m["bounds"].split(",")]
     name = os.path.splitext(os.path.basename(p))[0]
