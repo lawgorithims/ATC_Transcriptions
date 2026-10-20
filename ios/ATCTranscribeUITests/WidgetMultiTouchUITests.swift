@@ -12,10 +12,16 @@ final class WidgetMultiTouchUITests: XCTestCase {
 
     private func isRegularWidth(_ app: XCUIApplication) -> Bool { app.windows.firstMatch.frame.width >= 700 }
 
-    /// The proof-of-life widget's header title carries the `widget-header-proofOfLife` id (SwiftUI
+    /// The GPS widget's header title carries the `widget-header-gps` id (SwiftUI
     /// propagates the container id to its label); it's the drag handle for the whole card.
     private func header(_ app: XCUIApplication) -> XCUIElement {
-        app.staticTexts.matching(identifier: "widget-header-proofOfLife").firstMatch
+        // ⚠️ MUST be a widget that exists in BOTH builds. This used to target
+        // `widget-header-proofOfLife`, which is transcription furniture and is compiled out of an
+        // EFB-only build — so this test silently XCTSkipped ("Floating widgets are iPad/regular-width
+        // only") on an iPad, where that message is plainly untrue. The subject here is that the
+        // two-finger recognizers must not swallow a ONE-finger drag; any draggable widget proves it,
+        // and `.gps` is the one `defaults()` raises for the EFB build (FloatingWidget.swift:185).
+        app.staticTexts.matching(identifier: "widget-header-gps").firstMatch
     }
 
     func testSingleFingerDragStillMovesWidget() throws {

@@ -100,7 +100,7 @@ final class ConsoleUITests: XCTestCase {
     }
 
     // 3. Settings sheet: the model + correction controls all tap without error; Done dismisses.
-    func test3_settingsControls() {
+    func test3_settingsControls() throws {
         let app = launch(onboardingDismissed: true)
         XCTAssertTrue(app.buttons["settings-button"].waitForExistence(timeout: 40))
         app.buttons["settings-button"].tap()
@@ -121,8 +121,12 @@ final class ConsoleUITests: XCTestCase {
         snap(app, "04b-appearance")
         app.navigationBars.buttons.firstMatch.tap()   // back to the category list
 
-        // Settings is now organized into category sub-pages — the model + correction controls live under
-        // "Transcription & AI". Push into it before exercising them.
+        // Everything above is EFB chrome and runs in BOTH builds. Everything below lives under
+        // "Transcription & AI", which an EFB-only build does not offer — so the gate goes HERE, not at
+        // the top of the test, and the Appearance coverage is kept either way. `test9_efbOnlyChrome`
+        // asserts the positive side: that the category is genuinely absent and General is still there.
+        try UITestFeatures.requireTranscription("Settings › Transcription & AI")
+
         let transCat = app.buttons["settings-cat-transcription"]
         XCTAssertTrue(transCat.waitForExistence(timeout: 5), "Transcription category row missing")
         transCat.tap()
@@ -156,7 +160,8 @@ final class ConsoleUITests: XCTestCase {
 
     // 3b. Experimental "guess speaker by voice" (ECAPA) toggle: present, OFF by default, flips on,
     //     and the app stays healthy after dismissing (drives the Stage-5b wiring end-to-end in the sim).
-    func test3b_experimentalVoiceToggle() {
+    func test3b_experimentalVoiceToggle() throws {
+        try UITestFeatures.requireTranscription("The experimental acoustic speaker-fill toggle (ECAPA)")
         let app = launch(onboardingDismissed: true)
         XCTAssertTrue(app.buttons["settings-button"].waitForExistence(timeout: 40))
         app.buttons["settings-button"].tap()
@@ -183,7 +188,8 @@ final class ConsoleUITests: XCTestCase {
     }
 
     // 4. Source picker switches inputs; the Start/Stop power button toggles the (demo) session.
-    func test4_sourceAndStartStop() {
+    func test4_sourceAndStartStop() throws {
+        try UITestFeatures.requireTranscription("The audio source picker and the start/stop capture button")
         let app = launch(onboardingDismissed: true)
         XCTAssertTrue(consoleReady(app))
         openInputStrip(app)
@@ -225,6 +231,7 @@ final class ConsoleUITests: XCTestCase {
     // 5. The proof-of-life widget floats over the map by default (regular width); its Run button runs
     // the on-device check. (Compact shows only the transcript card — skipped there.)
     func test5_proofOfLifeButton() throws {
+        try UITestFeatures.requireTranscription("The proof-of-life (WER/speed) widget")
         let app = launch(onboardingDismissed: true, resetWidgets: true)
         XCTAssertTrue(consoleReady(app))
         try XCTSkipUnless(isRegularWidth(app), "Floating widgets are iPad/regular-width only; compact shows the transcript.")
@@ -246,28 +253,40 @@ final class ConsoleUITests: XCTestCase {
         let menu = app.buttons["widgets-menu"]
         XCTAssertTrue(menu.waitForExistence(timeout: 8), "Widgets menu missing from the top bar")
         menu.tap()
-        // Host is hidden by default, so the menu offers it (no checkmark) — tap to show it.
-        let host = app.buttons["Host"].firstMatch
-        XCTAssertTrue(host.waitForExistence(timeout: 5), "Host not offered in the Widgets menu")
+        // ⚠️ USE A WIDGET THAT EXISTS IN BOTH BUILDS. This used "Host", which reports the active speech
+        // model and is therefore transcription furniture — `isTranscription` removes it from the menu in
+        // an EFB-only build, and the failure read "Host not offered in the Widgets menu", which is the
+        // gate working rather than a menu bug. "Stratux link" is the right fixture: hidden by default,
+        // user-manageable, and EFB (it reports the receiver link, GPS and traffic).
+        let widget = app.buttons["Stratux link"].firstMatch
+        XCTAssertTrue(widget.waitForExistence(timeout: 5), "Stratux link not offered in the Widgets menu")
         snap(app, "08-widgets-menu")
-        host.tap()
+        widget.tap()
 
-        guard isRegularWidth(app) else { return }   // compact renders only the transcript — menu tested, render N/A
-        XCTAssertTrue(app.staticTexts["HOST"].waitForExistence(timeout: 5), "Host widget did not appear after enabling")
+        guard isRegularWidth(app) else { return }   // compact has no floating canvas — menu tested, render N/A
+        XCTAssertTrue(app.staticTexts["STRATUX LINK"].waitForExistence(timeout: 5),
+                      "Stratux widget did not appear after enabling")
         snap(app, "09-widget-shown")
 
         // Toggle it back off from the same menu → the card disappears.
         menu.tap()
-        let hostOff = app.buttons["Host"].firstMatch
-        XCTAssertTrue(hostOff.waitForExistence(timeout: 5), "Host toggle missing on second open")
-        hostOff.tap()
-        XCTAssertTrue(app.staticTexts["HOST"].waitForNonExistence(timeout: 5), "Host widget did not hide")
+        let widgetOff = app.buttons["Stratux link"].firstMatch
+        XCTAssertTrue(widgetOff.waitForExistence(timeout: 5), "Stratux toggle missing on second open")
+        widgetOff.tap()
+        XCTAssertTrue(app.staticTexts["STRATUX LINK"].waitForNonExistence(timeout: 5), "Host widget did not hide")
     }
 
     // 7. Standby: touch-and-hold the power button opens the low-power standby screen; Resume returns.
     // Device-agnostic on purpose — the Resume banner is hoisted to `homeArea` in ConsoleView so it
     // renders on BOTH the compact (iPhone) and regular-width (iPad) layouts. Must pass on both sims.
-    func test7_standby() {
+    func test7_standby() throws {
+        // Standby exists to STOP CAPTURE: "capture is stopped and the audio session released so an
+        // unattended quiet feed stops draining the battery" (ConsoleView.swift, StandbyBanner). With no
+        // capture in an EFB-only build it has nothing to do, and its only entry point is a long-press on
+        // the power button (ConsoleView.swift:1153) — which is gated. So standby is unreachable there by
+        // design, not by oversight. If the beta ever wants a map-dim for battery on a long leg, that is a
+        // NEW EFB control, not this one un-gated.
+        try UITestFeatures.requireTranscription("Standby (its only entry point is the power button)")
         let app = launch(onboardingDismissed: true)
         let power = app.buttons["start-stop-button"]
         XCTAssertTrue(power.waitForExistence(timeout: 40), "power button missing")

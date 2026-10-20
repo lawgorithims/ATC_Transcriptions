@@ -119,17 +119,22 @@ final class LZLayerUITests: XCTestCase {
         XCTAssertEqual(emergency.value as? String, "Off", "the emergency button must start un-armed")
     }
 
-    /// It must be on screen on the TRANSCRIPT tab too. It rides the top bar precisely because that
-    /// bar is the one piece of chrome present on every tab — an emergency control a pilot has to
-    /// navigate to first is not one.
+    /// It must be on screen after a TAB CHANGE. It rides the top bar precisely because that bar is
+    /// the one piece of chrome present on every tab — an emergency control a pilot has to navigate to
+    /// first is not one.
+    ///
+    /// ⚠️ Uses the PLATES tab, not Transcript. The original tapped `tab-transcript`, which an
+    /// EFB-only build does not offer (RootTabView.swift) — the failure said "no transcript tab",
+    /// which is correct behaviour reported as a failure. Any other tab proves tab-independence, and
+    /// Plates is present in every build.
     func testEmergencyButtonSurvivesATabChange() {
         let app = launch()
         XCTAssertTrue(app.buttons["emergency-button"].waitForExistence(timeout: 30))
-        let transcript = app.buttons["tab-transcript"]
-        XCTAssertTrue(transcript.waitForExistence(timeout: 10), "no transcript tab")
-        transcript.tap()
+        let other = app.buttons["tab-plates"]
+        XCTAssertTrue(other.waitForExistence(timeout: 10), "no plates tab")
+        other.tap()
         XCTAssertTrue(app.buttons["emergency-button"].waitForExistence(timeout: 10),
-                      "the emergency button vanished off the map tab")
+                      "the emergency button vanished after leaving the map tab")
     }
 
     /// The whole point of the control: one press turns on both off-field layers AND brings up the

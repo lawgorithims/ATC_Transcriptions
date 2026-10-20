@@ -16,8 +16,13 @@ final class PaneAndNotesUITests: XCTestCase {
         return app
     }
 
+    // ⚠️ DOCK A WIDGET THAT EXISTS IN BOTH BUILDS. This docked `transcript` and `stratux`, both
+    // transcription furniture, and the EFB-only build guards `--dock-left`/`--dock-right` against
+    // hidden kinds (FloatingWidget.swift) — so the pane correctly refused to render and the failure
+    // read "left side pane did not render", which looks like a pane regression and is not one. The
+    // subject is the pane's popout/close mechanics; `.gps` and `.nrst` exercise them identically.
     func testDockedPanePopsOutThenCloses() {
-        let app = launch(["--dock-left", "transcript"])
+        let app = launch(["--dock-left", "gps"])
         let popout = app.buttons["pane-popout-left"]
         XCTAssertTrue(popout.waitForExistence(timeout: 10), "left side pane did not render")
         // ↗ pops it back to a floating widget → the pane (and its buttons) disappear.
@@ -25,7 +30,7 @@ final class PaneAndNotesUITests: XCTestCase {
         XCTAssertTrue(waitGone(popout, timeout: 5), "pane did not pop out to a floating widget")
 
         // Re-dock (relaunch) and this time close it with the ✕.
-        let app2 = launch(["--dock-right", "stratux"])
+        let app2 = launch(["--dock-right", "nrst"])
         let close = app2.buttons["pane-close-right"]
         XCTAssertTrue(close.waitForExistence(timeout: 10), "right side pane did not render")
         close.tap()

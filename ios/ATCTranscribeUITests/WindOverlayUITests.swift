@@ -61,16 +61,38 @@ final class WindOverlayUITests: XCTestCase {
         XCTAssertTrue(toggle.waitForExistence(timeout: 8), "winds-aloft toggle missing from the layers panel")
         snap(app, "01-layers-panel-wind-row")
         toggle.tap()
-        // Dismiss the popover with a tap on open chart, low and right of the slider's corner. Tapping the
-        // menu button again leaves the popover's presentation in place on iPad, and the freshly-raised
-        // control does not reliably enter the snapshot behind it.
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.62, dy: 0.78)).tap()
+
+        // ⚠️ ASSERT THE TOGGLE BEFORE DISMISSING. This test was intermittent, and the old failure said
+        // only that the slider never appeared — which reads as a renderer bug when it is not one. The
+        // slider's mount is `showWindAloft && useMapLibreMap && !mapLibreRenderFailed`
+        // (MapHostView.swift:919), and the `map-engine-maplibre` identifier is published only when the
+        // second AND third are true (MapHostView.swift:374). So a failure reporting `engine: MapLibre`
+        // had already proved two of the three — the one that was false was the toggle itself. Checking
+        // it here turns a confusing renderer-shaped failure into "the tap did not take".
+        XCTAssertEqual(toggle.value as? String, "1",
+                       "tapping layer-wind did not switch it on, so nothing downstream can be asserted")
+
+        // Dismiss the popover through the dismiss region XCUITest exposes for exactly this, rather than
+        // a normalized coordinate. (0.62, 0.78) was a guess at "open chart, low and right", and on a
+        // 13-inch iPad the layers popover is tall enough to still cover that point — so the dismissal
+        // tap could land back INSIDE the panel and flip the switch off again, which is what made this
+        // flaky rather than broken. Fall back to the old coordinate if the region is absent.
+        let dismissRegion = app.otherElements["PopoverDismissRegion"]
+        if dismissRegion.waitForExistence(timeout: 2) {
+            dismissRegion.tap()
+        } else {
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.62, dy: 0.78)).tap()
+        }
+        // NO post-dismissal assertion on `toggle` here. Dismissing the popover removes the switch from
+        // the accessibility tree, so `toggle.value` raises "No matches found for Descendants matching
+        // type Switch" before any `?? default` can apply — which is a test bug dressed up as a product
+        // failure. (I wrote exactly that and it failed on the next run.) The slider check below is the
+        // real end-state oracle anyway: the slider cannot mount unless `showWindAloft` is still true.
 
         let slider = element(app, "wind-altitude-slider")
         XCTAssertTrue(slider.waitForExistence(timeout: 10),
                       "the altitude slider did not appear after enabling the layer "
-                      + "(engine: \(engineDescription(app)), control: "
-                      + "\(element(app, "wind-altitude-control").exists), "
+                      + "(engine: \(engineDescription(app)), toggle: \(toggle.value as? String ?? "gone"), "
                       + "chip: \(element(app, "wind-status-chip").exists))")
         XCTAssertEqual(slider.value as? String, "FL180, 500 hPa",
                        "the slider must report the restored level")

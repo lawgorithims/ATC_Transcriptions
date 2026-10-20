@@ -380,10 +380,21 @@ xcodebuild -project ATCTranscribe.xcodeproj -scheme ATCTranscribe \
   -destination 'generic/platform=iOS Simulator' \
   -skipMacroValidation CODE_SIGNING_ALLOWED=NO build-for-testing
 
-# run the unit + UI tests on a simulator
+# unit tests — any simulator
 xcodebuild test-without-building -project ATCTranscribe.xcodeproj -scheme ATCTranscribe \
-  -destination 'platform=iOS Simulator,name=iPhone 16'
+  -destination 'platform=iOS Simulator,name=iPhone 16' -only-testing:ATCTranscribeTests
+
+# UI tests — an iPad simulator, NOT an iPhone one
+xcodebuild test-without-building -project ATCTranscribe.xcodeproj -scheme ATCTranscribe \
+  -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M5)' -only-testing:ATCTranscribeUITests
 ```
+
+> **The UI suite needs an iPad.** It is not a preference: several tests drive chrome that only exists
+> at regular width — the docked side panes (`PaneAndNotesUITests`) and the two-column layers panel
+> (`MapControlsUITests.testLayersMenuTwoColumnPanel`) — and others depend on the room an iPad gives
+> the console strip. Measured on 2026-09-13: the same suite is **51 passed / 0 failed** on iPad Pro 13
+> and **14 failed** on iPhone 17 Pro, with every one of those 14 passing again on the iPad. Running it
+> on an iPhone produces a page of failures that look like regressions and are not.
 
 For a real device, set `DEVELOPMENT_TEAM` (and a provisioning profile) in `project.yml` and use a
 `platform=iOS,id=<udid>` destination.
