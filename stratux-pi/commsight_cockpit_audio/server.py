@@ -15,6 +15,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import __version__, capture
+from . import battery
 from .config import Config
 from .ledmeter import LedMeter
 
@@ -108,6 +109,16 @@ class _Handler(BaseHTTPRequestHandler):
             # as "an iPad is streaming".
             "streaming": self.capture_lock.locked() and not (meter and meter.holding),
             "led_meter": meter.status() if meter else {"enabled": False},
+            # Obelisk extras. BOTH are null on a Stratux, and null is meaningful rather than missing:
+            # the app distinguishes "this appliance has no battery" from "it has one and reported
+            # nothing". `battery.read()` never raises — a health endpoint that 500s because a battery
+            # shim is unhappy would take the AUDIO down with it, and audio is the point.
+            "battery": battery.read(),
+            # NO "filter" KEY. The app can decode one (CockpitHealth.filter) and will show it when it
+            # arrives, but this sidecar has no noise filter — Config carries no filter knobs and
+            # nothing processes the stream. Emitting {"enabled": false} would be reporting the state
+            # of a feature that does not exist, which is the same fabrication as a seeded transcript:
+            # it reads as a measurement. The key appears when a filter does.
         })
 
     def _stream(self, wav):

@@ -6,6 +6,7 @@ import SwiftUI
 /// page. Model picking, correction tuning, downloads, connections, and the buried test-bench unlock all
 /// live under their category.
 struct SettingsSheet: View {
+    @State private var probingCockpit = false
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var downloads: ModelDownloadManager
     @Environment(\.dismiss) private var dismiss
@@ -329,20 +330,71 @@ struct SettingsSheet: View {
                         .overlay(RoundedRectangle(cornerRadius: DS.Radius.r2).stroke(p.border, lineWidth: 1))
                         .accessibilityIdentifier("stratux-host")
                 }
-                HStack(spacing: 10) {
-                    Text("Audio port").font(.dsLabel).foregroundStyle(p.textDim)
-                        .frame(width: 84, alignment: .leading)
-                    TextField("8090", value: $model.stratuxAudioPort, format: .number.grouping(.never))
-                        .textFieldStyle(.plain).keyboardType(.numberPad).font(.dsLabel)
-                        .padding(.horizontal, 10).padding(.vertical, 8)
-                        .background(p.surfaceAlt).clipShape(RoundedRectangle(cornerRadius: DS.Radius.r2))
-                        .overlay(RoundedRectangle(cornerRadius: DS.Radius.r2).stroke(p.border, lineWidth: 1))
-                        .frame(maxWidth: 120)
-                    Spacer(minLength: 0)
+                // The ADDRESS above is EFB — traffic and GPS use it. The AUDIO PORT is not: it
+                // configures the cockpit-audio sidecar, which an EFB-only build cannot consume. It was
+                // left visible by the first gating pass, so the beta offered a port field for a feature
+                // it does not have, next to a paragraph explaining how to stream audio to it.
+                if Features.transcription {
+                    HStack(spacing: 10) {
+                        Text("Audio port").font(.dsLabel).foregroundStyle(p.textDim)
+                            .frame(width: 84, alignment: .leading)
+                        TextField("8090", value: $model.stratuxAudioPort, format: .number.grouping(.never))
+                            .textFieldStyle(.plain).keyboardType(.numberPad).font(.dsLabel)
+                            .padding(.horizontal, 10).padding(.vertical, 8)
+                            .background(p.surfaceAlt).clipShape(RoundedRectangle(cornerRadius: DS.Radius.r2))
+                            .overlay(RoundedRectangle(cornerRadius: DS.Radius.r2).stroke(p.border, lineWidth: 1))
+                            .frame(maxWidth: 120)
+                        Spacer(minLength: 0)
+                    }
                 }
-                Text("Traffic + GPS use the receiver's web API on \(model.stratuxHost); cockpit audio streams from the sidecar on port \(String(model.stratuxAudioPort)) at /audio.raw. Set the sidecar up with the guide in Tools/stratux. iOS will ask once for permission to find devices on your local network.")
+                Text(Features.transcription
+                     ? "Traffic + GPS use the receiver's web API on \(model.stratuxHost); cockpit audio streams from the sidecar on port \(String(model.stratuxAudioPort)) at /audio.raw. Set the sidecar up with the guide in Tools/stratux. iOS will ask once for permission to find devices on your local network."
+                     : "Traffic + GPS use the receiver's web API on \(model.stratuxHost). iOS will ask once for permission to find devices on your local network.")
                     .font(.dsLabelS).foregroundStyle(p.textDim)
                 Text(StratuxService.attribution).font(.dsLabelS).foregroundStyle(p.textDim.opacity(0.8))
+            }
+        }
+        // ⚠️ TRANSCRIPTION-ONLY, AND GATED. The Obelisk is a cockpit-AUDIO appliance; an EFB-only
+        // build has nothing to do with one. Ungated this would put the hidden half of the product
+        // back into the beta's Settings, which is the thing the gate exists to prevent.
+        //
+        // It also closes the dangling error path the Obelisk source shipped with: selecting Obelisk
+        // as an input told the pilot to "Set a valid Obelisk address in Settings › Obelisk", and no
+        // such section existed.
+        if Features.transcription {
+            Card(title: "Obelisk") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Audio-only cockpit appliance on its own Wi-Fi — the same `/audio.raw` "
+                         + "sidecar the Stratux serves, without ADS-B or GPS. Pick “Obelisk” as the "
+                         + "input source to transcribe it. A cockpit can carry both; they keep "
+                         + "separate addresses so selecting one never breaks the other.")
+                        .font(.dsLabelS).foregroundStyle(p.textDim)
+                    HStack(spacing: 10) {
+                        Text("Address").font(.dsLabel).foregroundStyle(p.textDim)
+                            .frame(width: 84, alignment: .leading)
+                        TextField(CockpitDeviceKind.obelisk.defaultHost, text: $model.obeliskHost)
+                            .textFieldStyle(.plain).autocorrectionDisabled()
+                            .textInputAutocapitalization(.never).keyboardType(.numbersAndPunctuation)
+                            .font(.dsLabel)
+                            .padding(.horizontal, 10).padding(.vertical, 8)
+                            .background(p.surfaceAlt).clipShape(RoundedRectangle(cornerRadius: DS.Radius.r2))
+                            .overlay(RoundedRectangle(cornerRadius: DS.Radius.r2).stroke(p.border, lineWidth: 1))
+                            .accessibilityIdentifier("obelisk-host")
+                    }
+                    HStack(spacing: 10) {
+                        Text("Audio port").font(.dsLabel).foregroundStyle(p.textDim)
+                            .frame(width: 84, alignment: .leading)
+                        TextField("8090", value: $model.obeliskAudioPort, format: .number.grouping(.never))
+                            .textFieldStyle(.plain).keyboardType(.numberPad).font(.dsLabel)
+                            .padding(.horizontal, 10).padding(.vertical, 8)
+                            .background(p.surfaceAlt).clipShape(RoundedRectangle(cornerRadius: DS.Radius.r2))
+                            .overlay(RoundedRectangle(cornerRadius: DS.Radius.r2).stroke(p.border, lineWidth: 1))
+                            .frame(maxWidth: 120)
+                            .accessibilityIdentifier("obelisk-audio-port")
+                        Spacer(minLength: 0)
+                    }
+                    obeliskStatusRow(p)
+                }
             }
         }
         Card(title: "ForeFlight") {
@@ -622,5 +674,82 @@ struct SettingsSheet: View {
                 .overlay(RoundedRectangle(cornerRadius: DS.Radius.r2).stroke(p.border, lineWidth: 1))
         }
         .buttonStyle(.plainHaptic)
+    }
+
+    // MARK: Obelisk status
+
+    /// Probe result, battery and filter state for the Obelisk.
+    ///
+    /// This is the only caller of `AppModel.refreshCockpitDevices()`, which shipped with none —
+    /// `CockpitDeviceProbe` and the whole discovery sweep were dead code. It runs on appear and on a
+    /// manual retry rather than on a timer: the appliance is one Wi-Fi hop away and the answer only
+    /// changes when the pilot plugs something in or switches networks, so polling would spend battery
+    /// to learn nothing.
+    @ViewBuilder private func obeliskStatusRow(_ p: Palette) -> some View {
+        let status = model.cockpitDevices.first { $0.kind == .obelisk }
+        VStack(alignment: .leading, spacing: 8) {
+            Divider().overlay(p.border)
+            HStack(spacing: 8) {
+                if probingCockpit {
+                    ProgressView().controlSize(.mini)
+                    Text("Looking…").font(.dsLabelS).foregroundStyle(p.textDim)
+                } else if let st = status {
+                    Image(systemName: st.isUsable ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                        .font(.dsLabelS).foregroundStyle(st.isUsable ? p.good : p.warn)
+                    // `summary` is deliberately concrete about WHY — "not found" sends people to
+                    // reboot routers when the fault is an unplugged adapter.
+                    Text(st.summary).font(.dsLabelS).foregroundStyle(p.text)
+                } else {
+                    Text("Not checked yet").font(.dsLabelS).foregroundStyle(p.textDim)
+                }
+                Spacer(minLength: 0)
+                Button {
+                    Haptics.impact(.light)
+                    Task { probingCockpit = true; await model.refreshCockpitDevices(); probingCockpit = false }
+                } label: {
+                    Text("Check").font(.dsLabelBold).foregroundStyle(p.accent)
+                }
+                .buttonStyle(.plainHaptic).disabled(probingCockpit)
+                .accessibilityIdentifier("obelisk-check")
+            }
+            if let b = model.obeliskBattery, let pct = b.clampedPercent {
+                HStack(spacing: 8) {
+                    Image(systemName: b.charging == true ? "battery.100.bolt"
+                                                         : (b.isLow ? "battery.25" : "battery.75"))
+                        .font(.dsLabelS).foregroundStyle(b.isLow ? p.bad : p.textDim)
+                    Text(batteryLine(b, pct: pct))
+                        .font(.dsLabelS).foregroundStyle(b.isLow ? p.bad : p.textDim)
+                    Spacer(minLength: 0)
+                }
+                .accessibilityIdentifier("obelisk-battery")
+            }
+            if let f = status?.health?.filter, f.enabled == true {
+                // Worth stating rather than hiding: noise reduction tuned for a human listener can
+                // chew up consonants and HURT recognition, so which stream is being served is a fact
+                // that belongs in front of whoever is comparing accuracy.
+                Text("Noise filter on\(f.preset.map { " (\($0))" } ?? "") — serving "
+                     + (f.servingFiltered ? "filtered" : "raw") + " audio")
+                    .font(.dsLabelS).foregroundStyle(p.textDim.opacity(0.85))
+            }
+        }
+        .task {
+            // One probe when the page opens, and only if we have not already got an answer.
+            guard model.cockpitDevices.isEmpty, !probingCockpit else { return }
+            probingCockpit = true
+            await model.refreshCockpitDevices()
+            probingCockpit = false
+        }
+    }
+
+    /// "64% · 3.9 V · 2 h 10 m left" — only the parts the device actually reported.
+    private func batteryLine(_ b: BatteryTelemetry, pct: Double) -> String {
+        var bits = ["\(Int(pct.rounded()))%"]
+        if b.charging == true { bits.append("charging") }
+        if let v = b.voltage { bits.append(String(format: "%.2f V", v)) }
+        if let m = b.minutesRemaining, m > 0 {
+            bits.append(m >= 60 ? "\(m / 60) h \(m % 60) m left" : "\(m) m left")
+        }
+        if let t = b.temperatureC { bits.append(String(format: "%.0f°C", t)) }
+        return bits.joined(separator: " · ")
     }
 }
