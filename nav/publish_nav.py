@@ -157,7 +157,9 @@ def main():
                          "cifp.sqlite, about 250 MB of history).")
     a = ap.parse_args()
 
-    today = datetime.date.today().isoformat()
+    # UTC — see the note in charts/publish_packs.py. The manifest dates are UTC days and the
+    # device compares them in UTC (NavDataUpdate.isNotYetEffective), so the publisher must too.
+    today = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
     manifest, plan, staged = {"schema": 1, "datasets": {}}, [], {}
 
     for key, (local_name, remote, queries) in DATASETS.items():

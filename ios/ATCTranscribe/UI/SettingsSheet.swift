@@ -403,7 +403,11 @@ struct SettingsSheet: View {
                     Text("ForeFlight hand-off").font(.dsLabel).foregroundStyle(p.text)
                 }
                 .accessibilityIdentifier("foreflight-toggle")
-                Text("Offer to load amended flight plans into ForeFlight — an “Accept ➔ ForeFlight” button on clearance suggestions and a send button in the flight bag. App-to-app on this device, so it works offline (no cell or internet needed). Loaded departures and arrivals are sent as their individual fixes; approaches are not sent (load those in ForeFlight itself). Review the route in ForeFlight before using it.")
+                // The hand-off itself is EFB and stays; only the "clearance suggestions" button it
+                // mentions is transcription-side.
+                Text(Features.transcription
+                     ? "Offer to load amended flight plans into ForeFlight — an “Accept ➔ ForeFlight” button on clearance suggestions and a send button in the flight bag. App-to-app on this device, so it works offline (no cell or internet needed). Loaded departures and arrivals are sent as their individual fixes; approaches are not sent (load those in ForeFlight itself). Review the route in ForeFlight before using it."
+                     : "Send flight plans to ForeFlight from the flight bag. App-to-app on this device, so it works offline (no cell or internet needed). Loaded departures and arrivals are sent as their individual fixes; approaches are not sent (load those in ForeFlight itself). Review the route in ForeFlight before using it.")
                     .font(.dsLabelS).foregroundStyle(p.textDim)
                 if !model.foreflightInstalled {
                     Text("ForeFlight isn't installed on this device — the buttons stay hidden until it is.")
@@ -443,14 +447,21 @@ struct SettingsSheet: View {
                     .font(.dsLabelS).foregroundStyle(p.textDim)
             }
         }
-        Card(title: "Display") {
-            VStack(alignment: .leading, spacing: 10) {
-                Toggle(isOn: $model.showDebug) {
-                    Text("Show performance data").font(.dsLabel).foregroundStyle(p.text)
+        // The WHOLE card, not just its copy: in an EFB build `showDebug` has no consumer left. Its
+        // only readers are TranscriptView (gone with the transcript) and a dev print; the Latency
+        // widget it mentions is `isTranscription` and is filtered out of the Widgets menu. A switch
+        // that cannot change anything, under a paragraph describing per-transmission timings that do
+        // not exist, is worse than an absent one — it invites a bug report.
+        if Features.transcription {
+            Card(title: "Display") {
+                VStack(alignment: .leading, spacing: 10) {
+                    Toggle(isOn: $model.showDebug) {
+                        Text("Show performance data").font(.dsLabel).foregroundStyle(p.text)
+                    }
+                    .accessibilityIdentifier("show-debug-toggle")
+                    Text("Shows the per-transmission speed and latency (RTF) next to each line, color-coded green / amber / red as the device keeps up or falls behind. Off by default. The Latency widget can also be added to the sidebar by long-pressing it.")
+                        .font(.dsLabelS).foregroundStyle(p.textDim)
                 }
-                .accessibilityIdentifier("show-debug-toggle")
-                Text("Shows the per-transmission speed and latency (RTF) next to each line, color-coded green / amber / red as the device keeps up or falls behind. Off by default. The Latency widget can also be added to the sidebar by long-pressing it.")
-                    .font(.dsLabelS).foregroundStyle(p.textDim)
             }
         }
         #if canImport(MapLibre)

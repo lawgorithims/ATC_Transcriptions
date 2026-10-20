@@ -510,8 +510,21 @@ struct DownloadsView: View {
             Label("Cycle \(cycle) — restart to use", systemImage: "checkmark.circle.fill")
                 .font(.dsLabelS).foregroundStyle(p.good)
         case .failed(let why):
-            Label(why, systemImage: "exclamationmark.triangle.fill")
-                .font(.dsLabelS).foregroundStyle(p.bad)
+            // A dead end before: the label rendered and nothing ever cleared `states`, so a download
+            // that failed once could not be retried without relaunching the app. On a cockpit
+            // connection a first attempt failing is ordinary, not terminal.
+            HStack(spacing: 6) {
+                Label(why, systemImage: "exclamationmark.triangle.fill")
+                    .font(.dsLabelS).foregroundStyle(p.bad)
+                Button {
+                    Haptics.impact(.light)
+                    navLibrary.retry(d)
+                } label: {
+                    Text("Retry").font(.dsLabelBold).foregroundStyle(p.accent)
+                }
+                .buttonStyle(.plainHaptic)
+                .accessibilityIdentifier("nav-retry-\(d.rawValue)")
+            }
         case .idle, .none:
             if let u = update {
                 Button {

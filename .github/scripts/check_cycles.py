@@ -56,22 +56,46 @@ def chart_cycles(today, ahead=2):
     return d, [d + datetime.timedelta(days=56 * (i + 1)) for i in range(ahead)]
 
 
-def check_charts(today):
-    """Has the FAA posted a chart cycle beyond the one in force?
+def check_charts(today, shipped=None):
+    """Is the chart cycle we PUBLISH behind the one in force?
 
-    The FAA posts roughly one cycle ahead, so this normally finds the NEXT cycle available well
-    before it takes effect — which is the useful warning, not an alarm.
+    ⚠️ `new` KEYS OFF WHAT WE SHIP, NOT ON WHAT EXISTS. It used to be `bool(out["available"])` —
+    true whenever the FAA had posted any future cycle. The FAA posts roughly one cycle ahead
+    permanently, so that was true essentially every day: the workflow would have opened an issue,
+    kept it open forever, and taught everyone to ignore it. A daily alarm that is always on is the
+    state this watcher exists to escape.
+
+    Upcoming cycles are still REPORTED — they are useful, and building ahead is correct — they just
+    do not raise the alarm on their own. The alarm is for "the cycle in force is not the one we
+    publish", which is the condition that actually reaches a pilot.
     """
     current, future = chart_cycles(today)
-    out = {"source": "FAA raster charts", "current": current.strftime("%m-%d-%Y"),
+    cur = current.strftime("%m-%d-%Y")
+    out = {"source": "FAA raster charts", "current": cur, "shipped": shipped,
            "expires": (current + datetime.timedelta(days=56)).isoformat(), "available": []}
     for f in future:
         c = f.strftime("%m-%d-%Y")
         if _exists(CHART_PROBE.format(cycle=c)):
-            out["available"].append({"cycle": c, "effective": f.isoformat()})
-    days_left = (current + datetime.timedelta(days=56) - today).days
-    out["days_until_expiry"] = days_left
-    out["new"] = bool(out["available"])
+            out["available"].append({"cycle": c, "effective": f.isoformat(), "in_force": False})
+    out["days_until_expiry"] = (current + datetime.timedelta(days=56) - today).days
+    # BEHIND, not merely different. Publishing a cycle AHEAD of the one in force is a normal,
+    # correct state — the packs are built early and publish_packs.py refuses to serve them until
+    # they are effective — so it must not raise the alarm. Compared as DATES: "10-29-2026" sorts
+    # before "09-03-2026" as text, so a string compare here would invert the answer exactly when it
+    # matters. Unknown `shipped` is NOT "fine": it means we could not read our own published state.
+    if not shipped:
+        out["new"] = True
+        out["note"] = "could not read the published chart cycle"
+        return out
+    try:
+        shipped_d = datetime.datetime.strptime(shipped, "%m-%d-%Y").date()
+    except ValueError:
+        out["new"] = True
+        out["note"] = f"published cycle {shipped!r} is not MM-DD-YYYY"
+        return out
+    out["new"] = shipped_d < current
+    if shipped_d > current:
+        out["note"] = "publishing ahead of the cycle in force, which is fine"
     return out
 
 
@@ -121,13 +145,14 @@ def check_dtpp(today, shipped=None):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--shipped-charts", help="the chart cycle we publish, MM-DD-YYYY (from charts.conf)")
     ap.add_argument("--shipped-cifp", help="effective date of the cifp.sqlite we ship, YYYY-MM-DD")
     ap.add_argument("--shipped-dtpp", help="cycle of the procedures.json we ship, e.g. 2610")
     a = ap.parse_args()
 
     today = datetime.date.today()
     report, failed = {"checked": today.isoformat(), "sources": []}, False
-    for fn, kw in ((check_charts, {}),
+    for fn, kw in ((check_charts, {"shipped": a.shipped_charts}),
                    (check_cifp, {"shipped": a.shipped_cifp}),
                    (check_dtpp, {"shipped": a.shipped_dtpp})):
         try:
@@ -154,6 +179,8 @@ def main():
             if s.get("days_until_expiry") is not None:
                 extra = f"  (expires in {s['days_until_expiry']}d)"
             print(f"  {tag} {s['source']}: current {s.get('current')}{extra}")
+            if s.get("note"):
+                print(f"        note: {s['note']}")
             for av in s.get("available", []):
                 label = av.get("cycle") or av.get("file")
                 force = "" if av.get("in_force", True) else "  [not in force yet]"

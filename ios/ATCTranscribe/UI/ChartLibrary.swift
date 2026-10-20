@@ -354,9 +354,12 @@ final class ChartLibrary: ObservableObject {
     /// NEVER a PINNED pack (an explicit offline download). At an AIRAC rollover the pilot often opens the
     /// map while briefly online BEFORE the new cycle is downloaded; the old code then wiped the whole pinned
     /// US kit in the background, and if signal dropped they'd fly with zero charts (a red-hat finding). A
-    /// pinned old-cycle pack is kept as a labeled-expired fallback — the reader only ever opens the
-    /// current-cycle filename, so a lingering old pack is never silently served as current. Incidental
-    /// (un-pinned) prefetch packs are still pruned to reclaim space.
+    /// pinned old-cycle pack is kept as a labeled-expired fallback, and `readableURL` now actually
+    /// serves it when this cycle's file is absent — the Downloads screen reports it as an older cycle
+    /// (`stalePackCount`) and offers the re-download, so it is never silently passed off as current.
+    /// (This comment used to claim the reader only ever opened the current-cycle filename. It did,
+    /// which is precisely why a cycle roll blanked the map.) Incidental un-pinned prefetch packs are
+    /// still pruned to reclaim space.
     private func pruneOldCycleFiles() {
         guard let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else { return }
         let suffix = "-\(cycle).mbtiles"

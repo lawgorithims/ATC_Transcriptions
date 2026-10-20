@@ -40,14 +40,25 @@ jobs:
         id: shipped
         run: |
           set -euo pipefail
+          # The PUBLISHED chart cycle, read from the live manifest — not charts.conf, which is the
+          # BUILD config and is legitimately bumped ahead of a publish. Comparing the build config
+          # would alarm for the whole window between building a cycle and it taking effect.
+          CHARTS=$(python3 -c "
+          import json, urllib.request
+          try:
+              u='https://huggingface.co/datasets/SingularityUS/faa-charts/resolve/main/index.json'
+              print(json.load(urllib.request.urlopen(u, timeout=30))['cycle'])
+          except Exception:
+              print('')")
           DTPP=$(python3 -c "import json;print(json.load(open('ios/ATCTranscribe/Resources/nav/procedures.json'))['cycle'])")
           CIFP=$(python3 -c "
           import sqlite3
           c=sqlite3.connect('file:ios/ATCTranscribe/Resources/nav/cifp.sqlite?mode=ro',uri=True)
           print(dict(c.execute('select key,value from meta').fetchall()).get('effective',''))")
+          echo "charts=$CHARTS" >> "$GITHUB_OUTPUT"
           echo "dtpp=$DTPP" >> "$GITHUB_OUTPUT"
           echo "cifp=$CIFP" >> "$GITHUB_OUTPUT"
-          echo "shipping d-TPP $DTPP, CIFP effective $CIFP"
+          echo "published charts $CHARTS | shipping d-TPP $DTPP, CIFP effective $CIFP"
 
       - name: Probe the FAA
         id: probe
@@ -60,6 +71,7 @@ jobs:
           # like coverage.
           set +e
           python3 .github/scripts/check_cycles.py \
+            --shipped-charts "${{ steps.shipped.outputs.charts }}" \
             --shipped-cifp "${{ steps.shipped.outputs.cifp }}" \
             --shipped-dtpp "${{ steps.shipped.outputs.dtpp }}" > report.txt 2>&1
           status=$?

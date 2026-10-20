@@ -85,7 +85,17 @@ final class NavDataLibrary: ObservableObject {
                 problem = "The nav-data server returned an unexpected response."
                 return false
             }
-            catalog = try JSONDecoder().decode(Catalog.self, from: data)
+            let decoded = try JSONDecoder().decode(Catalog.self, from: data)
+            // Refuse a manifest from the future, the way LZPackCatalog does. A schema bump means
+            // fields this build does not understand; installing from it would be acting on a
+            // contract we cannot read, and the bundled data is a safe place to stay.
+            guard decoded.schema == 1 else {
+                problem = "This app is too old to read the nav-data catalog (schema "
+                    + "\(decoded.schema)). Update the app to get new procedures and airports."
+                catalog = nil
+                return false
+            }
+            catalog = decoded
             problem = nil
             return true
         } catch {
@@ -115,6 +125,13 @@ final class NavDataLibrary: ObservableObject {
 
     // MARK: Download + install
 
+    /// Clear a failed state and try again. Nothing else resets `states`, so without this a single
+    /// failure was permanent for the life of the process.
+    func retry(_ d: NavDataUpdate.Dataset) {
+        states[d.rawValue] = nil
+        update(d)
+    }
+
     func update(_ d: NavDataUpdate.Dataset) {
         guard tasks[d.rawValue] == nil, let e = catalog?.datasets[d.rawValue] else { return }
         states[d.rawValue] = .checking
@@ -140,6 +157,10 @@ final class NavDataLibrary: ObservableObject {
             states[d.rawValue] = .downloading(0)
             let (tmp, resp) = try await URLSession.shared.download(from: url)
             guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
+                // The caller owns the file `download(from:)` wrote, even on a non-200 — returning
+                // without removing it leaks a full-size temp per failed attempt, and a retry loop on
+                // a flaky link would fill the caches directory with copies of an error page.
+                try? FileManager.default.removeItem(at: tmp)
                 states[d.rawValue] = .failed("The server did not return the database."); return
             }
             if FileManager.default.fileExists(atPath: staged.path) {

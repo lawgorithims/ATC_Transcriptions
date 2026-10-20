@@ -151,7 +151,10 @@ def main():
     except ValueError:
         raise SystemExit(f"REFUSING: CYCLE {CYCLE!r} is not MM-DD-YYYY, so its effective date cannot "
                          f"be checked.")
-    today = datetime.date.today()
+    # UTC, not the runner's local date. FAA cycles turn at 0901Z and a CI runner can be hours
+    # either side of that; a local date makes "is this effective yet" wrong for a whole day around
+    # every rollover, in whichever direction the runner happens to sit.
+    today = datetime.datetime.now(datetime.timezone.utc).date()
     if eff > today and not a.publish_early:
         raise SystemExit(
             f"REFUSING: cycle {CYCLE} takes effect {eff} — {(eff - today).days} days from now "

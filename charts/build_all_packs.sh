@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # build_all_packs.sh — build EVERY per-chart pack for CONUS (VFR sectionals + IFR-low enroute) as its
-# own MBTiles, plus an index.json manifest carrying each pack's geographic bounds, then upload to
-# HuggingFace. This is what the app's route-aware + free-pan chart loading pulls from: it fetches the
-# manifest, then downloads only the packs a route crosses / the map is panned over.
+# own MBTiles. BUILD ONLY: the manifest and the upload belong to publish_packs.py (see the note on
+# up() below for why there is exactly one publisher now). The app's route-aware + free-pan loading
+# reads that manifest and fetches only the packs a route crosses.
 #
 # Resumable (skips packs already built). Run on a box bootstrapped by `bootstrap.sh build`.
 #   UPLOAD=0 ./build_all_packs.sh     # build locally without pushing to HF

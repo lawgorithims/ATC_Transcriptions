@@ -160,6 +160,14 @@ def main():
     else:
         prev_features, meta = prev.get("features", []), {k: prev.get(k) for k in ("cycle", "from", "to")}
     classrows = [r for r in prev_features if r.get("c") in ("B", "C", "D")]  # keep class airspace
+    # The SUA floor below guards the fetch; this guards the half it does not. If the file we are
+    # merging into has lost its class airspace, writing would compound one loss into two — and the
+    # whole reason this script re-reads the file is that build_airspace_db.py put those rows there.
+    MIN_CLASS = 800
+    if len(classrows) < MIN_CLASS:
+        sys.exit(f"REFUSING to write: the existing airspace file holds only {len(classrows)} class "
+                 f"B/C/D rows (expected >= {MIN_CLASS}). Run build_airspace_db.py first — merging "
+                 f"into a thinned file would lose what is left of it.")
     if not meta.get("cycle"):
         sys.exit("the airspace file carries no cycle — run build_airspace_db.py first. Merging SUA "
                  "into an undated file would produce exactly the undated artifact that made 2,829 "
