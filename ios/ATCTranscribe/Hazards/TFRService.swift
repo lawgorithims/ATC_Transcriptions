@@ -22,7 +22,7 @@ struct LiveTFRFetcher: TFRFetching {
     func fetchActive() async throws -> [TFR] {
         var req = URLRequest(url: Self.listURL, timeoutInterval: 30)
         req.setValue("CommSight/1.0", forHTTPHeaderField: "User-Agent")
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        let (data, resp) = try await NetworkActivity.data(for: req, "TFRs", .hazards)
         guard (resp as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
         let stubs = TFRParser.list(data)
         guard !stubs.isEmpty else { return [] }
@@ -56,7 +56,7 @@ struct LiveTFRFetcher: TFRFetching {
         var req = URLRequest(url: u, timeoutInterval: 25)
         req.setValue("CommSight/1.0", forHTTPHeaderField: "User-Agent")
         do {
-            let (d, resp) = try await URLSession.shared.data(for: req)
+            let (d, resp) = try await NetworkActivity.data(for: req, "TFRs", .hazards)
             guard (resp as? HTTPURLResponse)?.statusCode == 200, let xml = String(data: d, encoding: .utf8)
             else { return .failure(URLError(.badServerResponse)) }
             return .success(TFRParser.detail(xml, stub: s))

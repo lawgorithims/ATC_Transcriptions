@@ -22,7 +22,7 @@ struct LiveWindGribFetcher: WindGribFetching {
     func fetch(_ url: URL) async throws -> Data {
         var req = URLRequest(url: url, timeoutInterval: 60)
         req.setValue("CommSight/1.0", forHTTPHeaderField: "User-Agent")
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        let (data, resp) = try await NetworkActivity.data(for: req, "Winds aloft", .weather)
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
         if code == 404 { throw WindFetchError.notFound }
         guard code == 200 else { throw WindFetchError.badResponse }

@@ -119,7 +119,7 @@ struct LiveNotamFetcher: NotamFetching {
         req.setValue(cred.clientSecret, forHTTPHeaderField: "client_secret")
         req.setValue("CommSight/1.0", forHTTPHeaderField: "User-Agent")
         do {
-            let (data, resp) = try await URLSession.shared.data(for: req)
+            let (data, resp) = try await NetworkActivity.data(for: req, "NOTAMs", .hazards)
             let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
             if code == 401 || code == 403 { throw NotamFetchError.unauthorized }
             guard code == 200 else { throw NotamFetchError.transport("HTTP \(code)") }

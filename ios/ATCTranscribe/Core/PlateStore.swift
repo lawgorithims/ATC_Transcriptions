@@ -47,7 +47,7 @@ enum PlateStore {
         do {
             var req = URLRequest(url: remote, timeoutInterval: 30)
             req.setValue("CommSight/1.0", forHTTPHeaderField: "User-Agent")
-            let (tmp, resp) = try await URLSession.shared.download(for: req)
+            let (tmp, resp) = try await NetworkActivity.download(for: req, "Approach plate", .plates, .urgent)
             guard (resp as? HTTPURLResponse)?.statusCode == 200, isPDF(tmp) else { return nil }
             try? FileManager.default.removeItem(at: dst)
             try FileManager.default.moveItem(at: tmp, to: dst)

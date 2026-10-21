@@ -72,7 +72,7 @@ final class LZPackLibrary: ObservableObject {
             do {
                 var req = URLRequest(url: url)
                 req.cachePolicy = .reloadRevalidatingCacheData
-                let (data, resp) = try await URLSession.shared.data(for: req)
+                let (data, resp) = try await NetworkActivity.data(for: req, "Landability pack", .landability, .background)
                 guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
                     return adoptCached(reason: "catalog server returned an error")
                 }

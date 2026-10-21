@@ -130,7 +130,7 @@ struct RadarRegion: Equatable {
     private func refresh() async {
         guard let url = URL(string: "https://api.rainviewer.com/public/weather-maps.json") else { return }
         var req = URLRequest(url: url); req.timeoutInterval = 12
-        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+        guard let (data, resp) = try? await NetworkActivity.data(for: req, "Radar imagery", .radar, .urgent),
               (resp as? HTTPURLResponse)?.statusCode == 200 else {
             failed = (tileTemplate == nil); return
         }
@@ -237,7 +237,7 @@ struct RadarRegion: Equatable {
                     .replacingOccurrences(of: "{y}", with: "\(job.tile.y)")
                 if let u = URL(string: url) {
                     var r = URLRequest(url: u); r.timeoutInterval = 10
-                    _ = try? await URLSession.shared.data(for: r)  // warms URLCache; result ignored
+                    _ = try? await NetworkActivity.data(for: r, "Radar — next frames", .radar, .background)  // warms URLCache
                 }
                 if Task.isCancelled { return }                    // don't write a stale % after a newer prefetch reset it
                 done += 1

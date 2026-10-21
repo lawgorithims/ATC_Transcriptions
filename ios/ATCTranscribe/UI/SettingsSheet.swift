@@ -42,6 +42,11 @@ struct SettingsSheet: View {
                                  id: "settings-cat-downloads") {
                         DownloadsView(bag: model.plateBag).environmentObject(model)
                     }
+                    categoryLink("Data activity", "wifi.exclamationmark",
+                                 "What the app is downloading \u{00B7} pause \u{00B7} prioritise",
+                                 id: "settings-cat-netactivity") {
+                        NetworkActivityView().environmentObject(model)
+                    }
                     categoryLink("Satellites", "antenna.radiowaves.left.and.right",
                                  "Predicted GPS geometry · interference check",
                                  id: "settings-cat-satellites") {

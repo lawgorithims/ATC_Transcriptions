@@ -218,7 +218,7 @@ extension Int {
                             URLQueryItem(name: "hours", value: String(trendWindowHours))]
         guard let url = comps.url else { return nil }
         var req = URLRequest(url: url); req.timeoutInterval = 12
-        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+        guard let (data, resp) = try? await NetworkActivity.data(for: req, "METARs", .weather, .urgent),
               (resp as? HTTPURLResponse)?.statusCode == 200,
               let list = try? JSONDecoder().decode([Metar].self, from: data) else { return nil }
         return Dictionary(list.filter { !$0.icaoId.isEmpty }.map { ($0.icaoId.uppercased(), $0) },
@@ -237,7 +237,7 @@ extension Int {
                             URLQueryItem(name: "hours", value: String(trendWindowHours))]
         guard let url = comps.url else { return nil }
         var req = URLRequest(url: url); req.timeoutInterval = 15
-        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+        guard let (data, resp) = try? await NetworkActivity.data(for: req, "METARs", .weather, .urgent),
               (resp as? HTTPURLResponse)?.statusCode == 200,
               let list = try? JSONDecoder().decode([Metar].self, from: data) else { return nil }
         var out: [String: [Metar]] = [:]

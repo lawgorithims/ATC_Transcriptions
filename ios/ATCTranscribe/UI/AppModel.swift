@@ -3994,6 +3994,8 @@ final class AppModel: ObservableObject {
             // HEAT/BATTERY: launch prefetch can pull hundreds of MB of packs (around-me + route). Let
             // the launch settle first, and never do it uninvited on a cellular/hotspot path — the
             // on-demand path still downloads whatever the map actually needs when the pilot looks.
+            // Set the queue depth before any bulk work is scheduled, not after.
+            await NetworkActivity.shared.refreshLimitFromPath()
             try? await Task.sleep(nanoseconds: 8_000_000_000)
             if await !NetPath.isExpensive() {
                 if let here = await ChartLibrary.shared.nearestFix(preferring: stratux) {

@@ -94,7 +94,7 @@ final class NavDataLibrary: ObservableObject {
         req.cachePolicy = .reloadRevalidatingCacheData
         req.timeoutInterval = 30
         do {
-            let (data, resp) = try await URLSession.shared.data(for: req)
+            let (data, resp) = try await NetworkActivity.data(for: req, "Nav data index", .navData)
             guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
                 problem = "The nav-data server returned an unexpected response."
                 return false
@@ -222,7 +222,9 @@ final class NavDataLibrary: ObservableObject {
         do {
             try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             set(.downloading(0))
-            let (tmp, resp) = try await URLSession.shared.download(from: url)
+            let (tmp, resp) = try await NetworkActivity.download(
+                from: url, "\(d.displayName) \(e.cycle)", .navData,
+                { if case .stage = dest { return .background } else { return .normal } }())
             guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
                 // The caller owns the file `download(from:)` wrote, even on a non-200 — returning
                 // without removing it leaks a full-size temp per failed attempt, and a retry loop on

@@ -92,7 +92,7 @@ struct WXCachedImage {
     private func download(_ urlString: String) async -> WXCachedImage? {
         guard let url = URL(string: urlString) else { return nil }
         var req = URLRequest(url: url); req.timeoutInterval = 20
-        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+        guard let (data, resp) = try? await NetworkActivity.data(for: req, "Weather imagery", .weather, .urgent),
               let http = resp as? HTTPURLResponse, http.statusCode == 200,
               data.count > 500,                        // reject error stubs
               let img = UIImage(data: data) else { return nil }

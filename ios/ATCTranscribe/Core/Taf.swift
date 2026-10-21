@@ -314,7 +314,7 @@ private extension Double {
                             URLQueryItem(name: "format", value: "json")]
         guard let url = comps.url else { return nil }
         var req = URLRequest(url: url); req.timeoutInterval = 12
-        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+        guard let (data, resp) = try? await NetworkActivity.data(for: req, "TAFs", .weather),
               (resp as? HTTPURLResponse)?.statusCode == 200 else { return nil }
         // The API returns a JSON array; decode each element as a TAF (one call can request several idents).
         guard let raw = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return nil }

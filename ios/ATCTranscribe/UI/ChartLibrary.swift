@@ -177,7 +177,8 @@ final class ChartLibrary: ObservableObject {
         if let w = warming { return await w.value }
         let task = Task { [weak self] () -> Bool in
             do {
-                let (data, resp) = try await URLSession.shared.data(from: ChartCatalog.url)
+                let (data, resp) = try await NetworkActivity.data(
+                    for: URLRequest(url: ChartCatalog.url), "Chart index", .charts)
                 guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return self?.adoptCachedCatalog() ?? false }
                 let cat = try JSONDecoder().decode(ChartCatalog.self, from: data)
                 guard let self else { return false }
@@ -469,12 +470,15 @@ final class ChartLibrary: ObservableObject {
     /// look. Since `build_chart.sh` stamps the cycle into every pack, the device can hold the
     /// publisher to its claim for the cost of one `metadata` read it is already doing.
     @discardableResult
-    func ensureOnDisk(_ e: ChartCatalog.Entry, cycle: String, expectStamp: String?) async -> URL? {
+    func ensureOnDisk(_ e: ChartCatalog.Entry, cycle: String, expectStamp: String?,
+                      priority: NetworkActivity.Priority = .normal) async -> URL? {
         let dst = localURL(e.id, cycle: cycle)
         if FileManager.default.fileExists(atPath: dst.path) { return dst }   // verified at write time
         guard let remote = e.remote else { return nil }   // malformed path (L13) → pack simply unavailable
         do {
-            let (tmp, resp) = try await URLSession.shared.download(from: remote)
+            let (tmp, resp) = try await NetworkActivity.download(
+                from: remote, "Chart pack: \(e.id.replacingOccurrences(of: "_", with: " "))",
+                .charts, priority)
             guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
                 // The caller owns the file `download(from:)` wrote even on a non-200. Returning without
                 // removing it leaks a full-size temp per failed attempt, and the retry paths above will
@@ -524,7 +528,7 @@ final class ChartLibrary: ObservableObject {
             if todo.count > cap { todo = Array(todo.prefix(cap)) }
             for e in todo {
                 inFlight.insert(e.id)
-                _ = await ensureOnDisk(e)
+                _ = await ensureOnDisk(e, cycle: cycle, expectStamp: nil, priority: .background)
                 inFlight.remove(e.id)
             }
         }
@@ -797,7 +801,8 @@ final class ChartLibrary: ObservableObject {
             // faa_cycle stamp is the exact artifact `publish_packs.read_pack` refuses to upload, and
             // the one failure that would otherwise surface as a pilot briefing off last cycle's chart
             // with the app calling it current.
-            if await ensureOnDisk(e, cycle: staged.cycle, expectStamp: staged.cycle) != nil { done += 1 }
+            if await ensureOnDisk(e, cycle: staged.cycle, expectStamp: staged.cycle,
+                                   priority: .background) != nil { done += 1 }
             precache = .running(done: done, total: todo.count)
         }
         let onDisk = have + done, want = have + todo.count
