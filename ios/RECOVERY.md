@@ -9,6 +9,10 @@ deleted. This is the exact path that shipped **build 1 (2026-06-27)**.
 
 ---
 
+> **Before you ship anything, read [`RELEASING.md`](RELEASING.md).** That is the pre-submission
+> checklist — bundled nav currency, which cycle to bundle, the suites that must pass, the build
+> number rule. This file is about getting a machine able to ship at all.
+
 ## 0. What you need that is NOT in this repo
 
 | Thing | Where it lives | Notes |

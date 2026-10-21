@@ -1,0 +1,14 @@
+# Binary data files, marked explicitly.
+#
+# With an empty .gitattributes git falls back to `text=auto`, which means it SNIFFS each file to
+# decide whether to normalise line endings. Sniffing is reliable for these (they all contain NUL
+# early), so nothing has actually been corrupted — but the safety of a 22 MB SQLite database should
+# not rest on a heuristic, and `git diff` wasting time generating a textual diff of a tile pack is
+# its own small tax. These are also the files that dominate repository size, so being explicit about
+# what they are is worth the four lines.
+*.sqlite   binary
+*.mbtiles  binary
+*.lzpack   binary
+*.zip      binary
+*.p8       binary
+*.pdf      binary

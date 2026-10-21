@@ -29,8 +29,14 @@ Plus one rule of its own:
      device-side guard in NavDataUpdate.isNotYetEffective is the backstop, but publishing it as live
      would make every client depend on that backstop being correct.
 
-  CYCLE_SANITY=1 python3 nav/publish_nav.py --dry-run
-  python3 nav/publish_nav.py --publish
+  CYCLE_SANITY=1 python3 nav/publish_nav.py --dry-run --publish      # rehearse
+  python3 nav/publish_nav.py --publish                               # the in-force cycle, live
+  python3 nav/publish_nav.py --stage-next --from-dir <next-cycle>    # a future cycle, for pre-download
+
+Flags match charts/publish_packs.py: the ACTION (--publish / --stage-next) is exclusive and
+--dry-run modifies whichever one you pick. There is no --promote here, unlike the chart publisher:
+nav payloads are ~31 MiB, so promoting a staged cycle is just --publish on the same directory once
+it is in force, which re-uploads to the canonical paths and drops the `next` block.
 """
 import os, sys, json, sqlite3, hashlib, argparse, datetime, urllib.request, urllib.error
 
@@ -159,11 +165,21 @@ def hosted_manifest():
 
 def main():
     ap = argparse.ArgumentParser()
+    # ⚠️ SAME SHAPE AS charts/publish_packs.py, DELIBERATELY. These two scripts do the same job for
+    # different data and used to disagree about their own flags: here `--stage-next` modified
+    # `--publish`, there it WAS the action. So `--publish --stage-next` was required by one and
+    # rejected by the other, and the only way to find out was to run it — which, for a publisher, is
+    # the worst possible place to learn the interface. The ACTION is exclusive; `--dry-run` modifies
+    # whichever action is chosen, so every mode can be rehearsed.
     g = ap.add_mutually_exclusive_group(required=True)
-    g.add_argument("--dry-run", action="store_true")
-    g.add_argument("--publish", action="store_true")
-    ap.add_argument("--stage-next", action="store_true",
-                    help="publish a not-yet-effective cycle under `next` instead of refusing")
+    g.add_argument("--publish", action="store_true",
+                   help="upload the in-force cycle and make it live")
+    g.add_argument("--stage-next", action="store_true",
+                   help="host a FUTURE cycle under `next` for pre-download, leaving the live cycle "
+                        "untouched. On its effective date, --publish promotes it")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="compose + validate, upload nothing. Combine with --publish / --stage-next "
+                         "to rehearse either without touching the hosted manifest")
     ap.add_argument("--from-dir", default=NAV,
                     help="where to read the databases from (default: the app's bundled Resources/nav). "
                          "Point this at a build directory to publish a freshly built cycle WITHOUT "

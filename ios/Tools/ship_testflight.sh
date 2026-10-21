@@ -27,6 +27,9 @@
 #                   0 = archive whatever is in Resources/Models (a big, fully-offline build).
 #   XCODEGEN        path to xcodegen (default ~/.xcodegen/.../xcodegen or PATH)
 #
+# ⚠️ Pre-submission checklist is ios/RELEASING.md — bundled nav currency (and WHICH cycle to
+#    bundle, which is the one with a cockpit consequence), the suites that must pass, build number.
+#
 # Usage:
 #   ASC_KEY_ID=... ASC_ISSUER_ID=... ASC_KEY_PATH=~/AuthKey_XXXX.p8 TEAM_ID=... \
 #   BUILD_NUMBER=2 bash Tools/ship_testflight.sh
