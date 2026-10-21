@@ -142,6 +142,21 @@ def verify_anonymous(remote_path):
     return True, "ok"
 
 
+def hosted_manifest():
+    """The live index.json exactly as a device sees it.
+
+    `--stage-next` has to ADD to this, not replace it. The manifest is otherwise composed purely from
+    the LOCAL build directory, and on a staging run every local database is a future cycle — so each
+    one took the `continue` into `staged` and `datasets` came out EMPTY. Uploading that removed the
+    live entries from the hosted manifest: a device with no nav data installed had nothing to download,
+    and `available()` returned [] for the honest-looking reason that the catalog listed nothing. One
+    pre-download run would have taken the whole live delivery path down with it.
+    """
+    req = urllib.request.Request(f"{BASE}/index.json", headers={"User-Agent": "commsight-publisher"})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
 def main():
     ap = argparse.ArgumentParser()
     g = ap.add_mutually_exclusive_group(required=True)
@@ -212,7 +227,26 @@ def main():
             plan.append((path, remote))
 
     if staged:
+        # Seed from the HOSTED manifest, then let anything in force locally override it. A staging run
+        # must leave the live block exactly as it found it for every dataset it is not publishing live.
+        try:
+            live = hosted_manifest().get("datasets", {})
+        except Exception as ex:
+            raise SystemExit(
+                f"REFUSING: --stage-next must merge into the hosted manifest, and it could not be "
+                f"read ({type(ex).__name__}: {ex}).\n"
+                f"  Publishing the locally-composed manifest instead would drop the live `datasets` "
+                f"entries for every dataset staged in this run.")
+        if not live:
+            raise SystemExit(
+                "REFUSING: the hosted manifest has no `datasets` block to preserve. Publish a live "
+                "cycle first (--publish), then stage the next one.")
+        merged = dict(live)
+        merged.update(manifest["datasets"])      # locally-in-force wins over hosted
+        manifest["datasets"] = merged
         manifest["next"] = staged
+        print(f"  (preserved {len(live)} live dataset entr{'y' if len(live) == 1 else 'ies'} "
+              f"from the hosted manifest)")
     if not manifest["datasets"] and not staged:
         raise SystemExit("REFUSING: nothing to publish.")
 

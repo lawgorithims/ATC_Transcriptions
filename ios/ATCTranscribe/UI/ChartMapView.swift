@@ -276,13 +276,69 @@ struct ChartCatalog: Decodable {
     let ifrHighRaw: [Entry]?
     var ifrHigh: [Entry] { ifrHighRaw ?? [] }
 
+    /// The next cycle, published ahead of its effective date so devices can pre-cache it. Nil until
+    /// `publish_packs.py --stage-next` has run for a future cycle.
+    let next: Staged?
+
     /// Every pack in the catalog, across all layers — what a cycle update has to work from, since the
     /// pilot's installed packs are identified by id and do not remember which layer they came from.
     var entries: [Entry] { sectional + ifrLow + ifrHigh }
 
     private enum CodingKeys: String, CodingKey {
-        case cycle, sectional, ifrLow
+        case cycle, sectional, ifrLow, next
         case ifrHighRaw = "ifrHigh"
+    }
+
+    /// Hand-written so a MALFORMED `next` BLOCK CANNOT TAKE THE CATALOG DOWN WITH IT.
+    ///
+    /// With the synthesized initialiser, `next` being present but unreadable — a schema the publisher
+    /// changed, a truncated upload, a key renamed — throws out of the whole decode. `warm()` treats a
+    /// decode failure as "no catalog", and a nil catalog means `ChartStore.load` draws NO charts at
+    /// all, even though every pack is sitting on disk. A pre-cache convenience must never be able to
+    /// blank the map; it is the one part of this manifest a pilot can fly without.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        cycle = try c.decode(String.self, forKey: .cycle)
+        sectional = try c.decode([Entry].self, forKey: .sectional)
+        ifrLow = try c.decode([Entry].self, forKey: .ifrLow)
+        ifrHighRaw = try c.decodeIfPresent([Entry].self, forKey: .ifrHighRaw)
+        next = (try? c.decodeIfPresent(Staged.self, forKey: .next)) ?? nil
+    }
+
+    /// A cycle staged ahead of its effective date. Carries its own `effective` date rather than
+    /// deriving one: the client must be able to refuse to ACTIVATE a staged pack early, and deriving
+    /// the date from the cycle string would make the publisher's claim unfalsifiable.
+    struct Staged: Decodable {
+        let cycle: String
+        let effective: String                   // ISO yyyy-MM-dd, UTC
+        let sectional: [Entry]
+        let ifrLow: [Entry]
+        let ifrHighRaw: [Entry]?
+        var ifrHigh: [Entry] { ifrHighRaw ?? [] }
+        var entries: [Entry] { sectional + ifrLow + ifrHigh }
+
+        private enum CodingKeys: String, CodingKey {
+            case cycle, effective, sectional, ifrLow
+            case ifrHighRaw = "ifrHigh"
+        }
+
+        /// The staged cycle's effective instant, or nil when the date is unparseable — in which case
+        /// callers must treat the block as unusable rather than guessing.
+        var effectiveDate: Date? {
+            var cal = Calendar(identifier: .gregorian)
+            cal.timeZone = TimeZone(identifier: "UTC") ?? .current
+            let f = DateFormatter()
+            f.calendar = cal; f.timeZone = cal.timeZone
+            f.locale = Locale(identifier: "en_US_POSIX"); f.dateFormat = "yyyy-MM-dd"
+            return f.date(from: effective)
+        }
+
+        /// Is this staged cycle in force yet? FAA charts cut over at 0901Z on the effective date, the
+        /// same boundary `NavDataUpdate` uses.
+        func isInForce(asOf now: Date = Date()) -> Bool {
+            guard let d = effectiveDate else { return false }
+            return now >= d.addingTimeInterval(9 * 3600 + 60)
+        }
     }
 
     /// Where these packs came from and when they stop being valid.

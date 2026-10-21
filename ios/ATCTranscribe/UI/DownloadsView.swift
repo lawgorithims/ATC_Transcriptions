@@ -18,6 +18,7 @@ struct DownloadsView: View {
     @ObservedObject var library = ChartLibrary.shared
     @ObservedObject var lzLibrary = LZPackLibrary.shared
     @ObservedObject var navLibrary = NavDataLibrary.shared
+    @ObservedObject var policy = DownloadPolicy.shared
     @ObservedObject var bag: PlateBag
 
     @State private var warming = true
@@ -28,6 +29,10 @@ struct DownloadsView: View {
     @State private var confirmRemoveCharts = false
     @State private var confirmRemovePlates = false
     @State private var confirmLZRegion: LZPackCatalog.Region?
+    /// A download the Wi-Fi-only setting is holding back, and the pilot may release anyway.
+    @State private var meteredPack: ChartCatalog.Entry?
+    @State private var meteredReason: String = ""
+    @State private var confirmDropStaged = false
 
     /// Downloaded-vs-total plate count for a region (computed off-main — a region is hundreds of airports).
     struct PlateRegionStatus: Equatable { var total: Int; var downloaded: Int }
@@ -39,6 +44,7 @@ struct DownloadsView: View {
         let p = model.palette
         List {
             chartsSection
+            downloadSettingsSection
             ForEach(Self.rasterLayers, id: \.self) { chartLayerSection($0) }
             landabilitySection
             platesSection
@@ -68,7 +74,16 @@ struct DownloadsView: View {
             await navLibrary.refresh()
             warming = false
             await refreshPlateStatus()
+            // Opening this screen is the pilot asking about their offline kit, which makes it the
+            // right moment to top up the next cycle — and the only moment they will see it happen.
+            await library.precacheNextCycle()
+            await navLibrary.precacheNext()
         }
+        .modifier(NextCycleDialogs(library: library,
+                                   meteredPack: $meteredPack,
+                                   meteredReason: meteredReason,
+                                   confirmDropStaged: $confirmDropStaged,
+                                   size: size))
         .onChange(of: bag.isRunning) { _, running in
             if !running { Task { await refreshPlateStatus() } }   // a plate job finished → refresh region counts
         }
@@ -89,11 +104,13 @@ struct DownloadsView: View {
                                                  set: { if !$0 { confirmBulkLayer = nil } }),
                             presenting: confirmBulkLayer) { layer in
             Button("Download \(layer.title) — \(size(library.remainingBytes([layer])))") {
-                library.startBulkDownload(layers: [layer])
+                library.startBulkDownload(layers: [layer], allowMetered: true)
             }
             Button("Cancel", role: .cancel) {}
         } message: { layer in
-            Text("You're on a cellular connection. Downloading every \(layer.title) region (\(size(library.remainingBytes([layer])))) may use your mobile data.")
+            Text("You're not on Wi-Fi. Downloading every \(layer.title) region "
+                 + "(\(size(library.remainingBytes([layer])))) may use your mobile data. "
+                 + "This override applies to this download only.")
         }
         .confirmationDialog("Download over cellular?",
                             isPresented: Binding(get: { confirmLZRegion != nil },
@@ -325,8 +342,13 @@ struct DownloadsView: View {
         return Button {
             Haptics.impact(.light)
             Task {
-                if await library.isExpensiveConnection() { confirmBulkLayer = layer }
-                else { library.startBulkDownload(layers: [layer]) }
+                // The policy, not a bare cellular test: with Wi-Fi-only on, a metered path is a
+                // refusal the pilot has already asked for, and the dialog is how they release it.
+                if (await DownloadPolicy.shared.verdict(.userInitiated)).isAllowed {
+                    library.startBulkDownload(layers: [layer])
+                } else {
+                    confirmBulkLayer = layer
+                }
             }
         } label: {
             HStack {
@@ -361,7 +383,20 @@ struct DownloadsView: View {
                         .font(.dsLabelSBold).foregroundStyle(p.good)
                 }
             } else {
-                Button { Task { await library.download(e) } } label: {
+                Button {
+                    Task {
+                        // Ask the policy BEFORE starting, so a refusal becomes an explained dialog with
+                        // an override instead of a button that does nothing. `download` enforces it
+                        // again as a backstop.
+                        let verdict = await DownloadPolicy.shared.verdict(.userInitiated)
+                        if verdict.isAllowed {
+                            await library.download(e)
+                        } else {
+                            meteredReason = verdict.explanation ?? ""
+                            meteredPack = e
+                        }
+                    }
+                } label: {
                     Image(systemName: "arrow.down.circle").font(.body).foregroundStyle(p.accent)
                 }
                 .buttonStyle(.plainHaptic)
@@ -466,7 +501,9 @@ struct DownloadsView: View {
             ForEach(NavDataUpdate.Dataset.allCases, id: \.rawValue) { d in
                 let serving = NavDataUpdate.activeURL(d).map { NavDataUpdate.meta($0) } ?? [:]
                 let update = updates.first { $0.dataset == d }?.entry
-                let state = navLibrary.states[d.rawValue]
+                // The live update state wins; the pre-load state is what the row says when there is
+                // no update to offer, so a staged cycle is visible rather than silent.
+                let state = navLibrary.states[d.rawValue] ?? navLibrary.staging[d.rawValue]
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
                         Label(d.displayName,
@@ -508,6 +545,14 @@ struct DownloadsView: View {
             ProgressView().controlSize(.mini)
         case .installed(let cycle):
             Label("Cycle \(cycle) — restart to use", systemImage: "checkmark.circle.fill")
+                .font(.dsLabelS).foregroundStyle(p.good)
+        case .staged(let cycle):
+            // NOT "installed", and the wording has to carry that. Nothing is being read from this
+            // file: it is downloaded, fully verified, and deliberately not in use until its effective
+            // date — a row that claimed otherwise would have a pilot believe they are briefing off a
+            // cycle the app is pointedly ignoring.
+            Label("Cycle \(cycle) pre-loaded — starts on its effective date",
+                  systemImage: "calendar.badge.checkmark")
                 .font(.dsLabelS).foregroundStyle(p.good)
         case .failed(let why):
             // A dead end before: the label rendered and nothing ever cleared `states`, so a download
@@ -712,6 +757,107 @@ struct DownloadsView: View {
         }
     }
 
+    /// The pilot's two standing answers about network use, and what pre-caching is currently doing.
+    ///
+    /// Deliberately ABOVE the per-layer download sections rather than buried at the bottom: these two
+    /// switches govern every button below them, and a pilot who taps "Download IFR-low — 1.2 GB" and
+    /// gets "Waiting for Wi-Fi" should have already seen why.
+    private var downloadSettingsSection: some View {
+        let p = model.palette
+        return Section {
+            Toggle(isOn: $policy.wifiOnly) {
+                Label("Download over Wi-Fi only", systemImage: "wifi")
+            }
+            .tint(p.accent)
+            .accessibilityIdentifier("downloads-wifi-only-toggle")
+
+            Toggle(isOn: $policy.precacheNextCycle) {
+                Label("Pre-load the next cycle", systemImage: "calendar.badge.clock")
+            }
+            .tint(p.accent)
+            .accessibilityIdentifier("downloads-precache-toggle")
+            .onChange(of: policy.precacheNextCycle) { _, on in
+                // Turning it ON acts immediately — a setting that waits for the next launch to do
+                // anything reads as broken. Turning it OFF only stops future work; the staged packs
+                // are the pilot's to drop, below, because deleting a gigabyte on a toggle flip is
+                // not a decision a switch should make silently.
+                if on { Task { await library.precacheNextCycle(); await navLibrary.precacheNext() } }
+                else { library.cancelPrecache() }
+            }
+
+            precacheStatusRow
+
+            if library.stagedBytes > 0 {
+                Button("Remove pre-loaded cycle (\(size(library.stagedBytes)))", role: .destructive) {
+                    Haptics.impact(.light); confirmDropStaged = true
+                }
+                .accessibilityIdentifier("downloads-drop-staged")
+            }
+        } header: {
+            Text("Downloads")
+        } footer: {
+            Text(downloadSettingsFooter)
+        }
+    }
+
+    private var downloadSettingsFooter: String {
+        var out = policy.wifiOnly
+            ? "Chart and database downloads wait for Wi-Fi. A personal hotspot counts as cellular, "
+              + "because the data comes off your phone's plan. You can still override any single "
+              + "download when you need it."
+            : "Downloads may use cellular data. Full chart coverage is several gigabytes."
+        out += policy.precacheNextCycle
+            ? " The FAA publishes each cycle weeks early, so the charts and databases you already have "
+              + "are downloaded ahead of time and switch over by themselves on the effective date — "
+              + "no download on cycle-change day, in the air or at the field."
+            : " Next cycle will be downloaded only after it takes effect, which can mean a large "
+              + "download on the day it changes."
+        return out
+    }
+
+    @ViewBuilder
+    private var precacheStatusRow: some View {
+        let p = model.palette
+        switch library.precache {
+        case .running(let done, let total):
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.mini)
+                Text("Pre-loading next cycle — \(done) of \(total)")
+                    .font(.caption).foregroundStyle(p.textDim)
+                Spacer()
+                Button("Stop") { library.cancelPrecache() }
+                    .font(.dsLabelSBold).foregroundStyle(p.accent)
+                    .buttonStyle(.plainHaptic)
+            }
+            .accessibilityIdentifier("precache-running")
+        case .ready(let cycle, let packs):
+            Label("Cycle \(cycle) ready — \(packs) pack\(packs == 1 ? "" : "s") waiting",
+                  systemImage: "checkmark.circle.fill")
+                .font(.caption).foregroundStyle(p.good)
+                .accessibilityIdentifier("precache-ready")
+        case .partial(let cycle, let have, let want):
+            Label("Cycle \(cycle) — \(have) of \(want) pre-loaded, will finish on Wi-Fi",
+                  systemImage: "clock.badge.checkmark")
+                .font(.caption).foregroundStyle(p.textDim)
+                .accessibilityIdentifier("precache-partial")
+        case .waiting(let why):
+            Label(why, systemImage: "clock")
+                .font(.caption).foregroundStyle(p.textDim)
+                .accessibilityIdentifier("precache-waiting")
+        case .off, .idle:
+            // Nothing staged by the publisher is the ordinary state for 4 of every 8 weeks, and a row
+            // announcing it would be noise. The staged nav cycles ARE worth naming, because the
+            // databases roll on a different (28-day) clock than the charts.
+            if !navLibrary.stagedReady().isEmpty {
+                let names = navLibrary.stagedReady().map { "\($0.dataset.displayName) \($0.cycle)" }
+                Label("Ready for the next cycle: \(names.joined(separator: ", "))",
+                      systemImage: "checkmark.circle.fill")
+                    .font(.caption).foregroundStyle(p.good)
+                    .accessibilityIdentifier("precache-nav-ready")
+            }
+        }
+    }
+
     private var storageSection: some View {
         let p = model.palette
         return Section("Storage") {
@@ -719,6 +865,17 @@ struct DownloadsView: View {
                 Text("Charts on device").foregroundStyle(p.text)
                 Spacer()
                 Text(size(library.cachedBytes)).font(.caption.monospaced()).foregroundStyle(p.textDim)
+            }
+            // Pre-caching can roughly DOUBLE an offline kit's footprint for up to 56 days, holding two
+            // cycles of the same packs. That is the right trade for a pilot who wants a seamless roll
+            // and the wrong one for a 64 GB iPad, so it is named rather than folded into the total.
+            if library.stagedBytes > 0, let next = library.stagedCycle {
+                HStack {
+                    Text("· of that, next cycle (\(next))").foregroundStyle(p.textDim)
+                    Spacer()
+                    Text(size(library.stagedBytes)).font(.caption.monospaced()).foregroundStyle(p.textDim)
+                }
+                .accessibilityIdentifier("storage-staged-bytes")
             }
             // Landability packs are pin-only — nothing evicts them but the pilot, so this number is
             // the whole story and needs to be obvious rather than derived from a cache policy.
@@ -789,4 +946,47 @@ struct DownloadsView: View {
 
     private func size(_ bytes: Int) -> String { ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file) }
     private func byteStr(_ b: Int64) -> String { ByteCountFormatter.string(fromByteCount: b, countStyle: .file) }
+}
+
+/// The two next-cycle dialogs, as a `ViewModifier` rather than two more links in `DownloadsView`'s
+/// modifier chain.
+///
+/// Not a style choice: adding them inline pushed the chain past what the type checker will solve
+/// ("unable to type-check this expression in reasonable time" — it fails on the LZ dialog's `Binding`,
+/// twelve modifiers earlier, which is what makes this class of error so misleading to read). Each
+/// `.confirmationDialog` wraps the whole accumulated generic type, so the cost is super-linear in
+/// chain length; a modifier type-checks its own body in isolation.
+private struct NextCycleDialogs: ViewModifier {
+    @ObservedObject var library: ChartLibrary
+    @Binding var meteredPack: ChartCatalog.Entry?
+    var meteredReason: String
+    @Binding var confirmDropStaged: Bool
+    let size: (Int) -> String
+
+    func body(content: Content) -> some View {
+        content
+            .confirmationDialog("Download without Wi-Fi?",
+                                isPresented: Binding(get: { meteredPack != nil },
+                                                     set: { if !$0 { meteredPack = nil } }),
+                                presenting: meteredPack) { e in
+                Button("Download \(e.id) — \(size(e.bytes))") {
+                    Task { await library.download(e, allowMetered: true) }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: { e in
+                Text(meteredReason + " " + e.id + " is " + size(e.bytes)
+                     + ". Downloading it now may use your mobile data.")
+            }
+            .confirmationDialog("Remove the pre-loaded next cycle?",
+                                isPresented: $confirmDropStaged, titleVisibility: .visible) {
+                Button("Remove " + size(library.stagedBytes), role: .destructive) {
+                    library.removeStagedPacks()
+                    for d in NavDataUpdate.Dataset.allCases { NavDataUpdate.removeStaged(d) }
+                }
+                Button("Keep", role: .cancel) {}
+            } message: {
+                Text("Frees the space now. The next cycle will then have to be downloaded after it "
+                     + "takes effect, which may be a large download on the day it changes.")
+            }
+    }
 }

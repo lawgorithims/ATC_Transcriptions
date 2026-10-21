@@ -4000,6 +4000,14 @@ final class AppModel: ObservableObject {
                 await ChartLibrary.shared.prefetchAround(here, layers: layers)
             }
             prefetchRouteCharts()
+            // Pre-load the NEXT cycle last, and only after the around-me and route packs the pilot
+            // needs TODAY are on disk. Both run under `DownloadPolicy`; this one covers only packs
+            // they already downloaded, so it cannot grow the kit — only keep it current.
+            await ChartLibrary.shared.precacheNextCycle()
+            // The nav manifest was previously fetched ONLY when the pilot opened the Downloads
+            // screen, so a device that never visits it could not discover a staged cycle at all.
+            await NavDataLibrary.shared.refresh()
+            await NavDataLibrary.shared.precacheNext()
         }
     }
 

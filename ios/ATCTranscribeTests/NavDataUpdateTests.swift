@@ -24,6 +24,9 @@ final class NavDataUpdateTests: XCTestCase {
         // bound the shared handle to that tiny fixture — starving every later CIFP-backed test in the
         // process. Reopen against the now-reverted (bundled) path so the leak cannot cross the class
         // boundary. (revert alone is not enough once the handle is already bound.)
+        // Staged fixtures must not outlive their test: `activateStagedIfDue` is wired to the first
+        // nav read, so a file left in the slot can install itself under an unrelated test.
+        for d in NavDataUpdate.Dataset.allCases { NavDataUpdate.removeStaged(d) }
         CIFP.reopenForTests()
         AirportData.reopenForTests()
         // Airways reads the airway table out of the SAME cifp.sqlite and now resolves it through
@@ -186,6 +189,103 @@ final class NavDataUpdateTests: XCTestCase {
     func testAnUndatedCandidateIsNotTreatedAsNotYetEffective() throws {
         let db = try makeCIFP(cycle: "2699", effective: "")
         XCTAssertFalse(NavDataUpdate.isNotYetEffective(db), "no effective date means no opinion")
+    }
+
+    // MARK: Pre-downloading the next cycle (the staging slot)
+
+    /// The exemption exists for exactly one caller and must not leak into the live path.
+    func testStagingVerifiesEverythingExceptTheEffectiveDate() throws {
+        let future = Self.iso(daysFromNow: 9)
+        let db = try makeCIFP(cycle: "2699", effective: future)
+        XCTAssertEqual(NavDataUpdate.verify(db, as: .cifp), .notYetEffective,
+                       "the live path still refuses a cycle that has not started")
+        XCTAssertNil(NavDataUpdate.verify(db, as: .cifp, allowNotYetEffective: true),
+                     "the staging path accepts it — that is the whole point of pre-downloading")
+    }
+
+    /// The exemption must not become a way to smuggle a BROKEN database past the real checks. This is
+    /// the test that would fail if someone "simplified" staging to skip verification entirely.
+    func testStagingStillRefusesADatabaseThatFailsItsInvariants() throws {
+        let future = Self.iso(daysFromNow: 9)
+        let gutted = try makeCIFP(cycle: "2699", effective: future, legs: false)
+        XCTAssertEqual(NavDataUpdate.verify(gutted, as: .cifp, allowNotYetEffective: true),
+                       .failsInvariants,
+                       "a procedure with no legs is not flyable whenever it becomes effective")
+    }
+
+    /// A staged cycle waits, and is not installed a day early.
+    func testStagedCycleIsNotActivatedBeforeItsEffectiveDate() throws {
+        let future = Self.iso(daysFromNow: 9)
+        let db = try makeCIFP(cycle: "2699", effective: future)
+        try stage(db, as: .cifp, cycle: "2699")
+
+        XCTAssertEqual(NavDataUpdate.stagedCycle(.cifp), "2699", "it is waiting")
+        XCTAssertEqual(NavDataUpdate.activateStagedIfDue(), [],
+                       "nothing is due, so nothing is installed")
+        XCTAssertFalse(NavDataUpdate.isOverridden(.cifp), "the bundle must still be serving")
+        XCTAssertEqual(NavDataUpdate.stagedCycle(.cifp), "2699", "and it must still be waiting")
+    }
+
+    /// …and then activates by itself, with no second download, and is actually SERVED.
+    ///
+    /// Dated yesterday on purpose, against the real clock. That is the true shape of the event: a
+    /// staged file waits until its date has passed, so by the time anything activates it the date is
+    /// behind us — and it lets this test assert the end state (`isOverridden`, which has no injectable
+    /// clock) instead of only that `install` returned nil.
+    func testStagedCycleActivatesAndIsServedOnceItsDateHasPassed() throws {
+        let db = try makeCIFP(cycle: "2699", effective: Self.iso(daysFromNow: -1))
+        try stage(db, as: .cifp, cycle: "2699")
+
+        XCTAssertEqual(NavDataUpdate.activateStagedIfDue(), [.cifp])
+        XCTAssertTrue(NavDataUpdate.isOverridden(.cifp), "it is now the database being served")
+        XCTAssertEqual(NavDataUpdate.readCycle(NavDataUpdate.installedURL(.cifp)), "2699")
+        XCTAssertNil(NavDataUpdate.stagedCycle(.cifp),
+                     "and the staging slot is cleared, so it cannot be installed twice")
+    }
+
+    /// Midnight UTC on the effective date is NOT the cutover — 0901Z is. A staged cycle must sit
+    /// through those nine hours rather than going live with the date change.
+    func testStagedCycleStillWaitsAtMidnightOnItsEffectiveDate() throws {
+        let db = try makeCIFP(cycle: "2699", effective: Self.iso(daysFromNow: 0))
+        try stage(db, as: .cifp, cycle: "2699")
+
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "UTC")!
+        let midnightZ = cal.startOfDay(for: Date())
+
+        XCTAssertEqual(NavDataUpdate.activateStagedIfDue(asOf: midnightZ.addingTimeInterval(8 * 3600)),
+                       [], "0800Z is still the previous cycle")
+        XCTAssertEqual(NavDataUpdate.stagedCycle(.cifp), "2699", "it waits, it is not discarded")
+        XCTAssertEqual(NavDataUpdate.activateStagedIfDue(asOf: midnightZ.addingTimeInterval(10 * 3600)),
+                       [.cifp], "1000Z is past the cutover, so now it installs")
+    }
+
+    /// A staged file that cannot pass the full install is discarded rather than retried every launch.
+    func testAnUnusableStagedFileIsDroppedRatherThanRetriedForever() throws {
+        let past = Self.iso(daysFromNow: -1)
+        // Due, but gutted: `install`'s own verify must refuse it.
+        let bad = try makeCIFP(cycle: "2699", effective: past, legs: false)
+        try stage(bad, as: .cifp, cycle: "2699")
+
+        XCTAssertEqual(NavDataUpdate.activateStagedIfDue(), [], "it must not install")
+        XCTAssertFalse(NavDataUpdate.isOverridden(.cifp))
+        XCTAssertNil(NavDataUpdate.stagedCycle(.cifp),
+                     "a staged file that cannot pass is not going to start passing — it is removed")
+    }
+
+    /// Activation is called from a `static let` on the read path, so it has to be safe to call twice.
+    func testActivationIsIdempotent() throws {
+        XCTAssertEqual(NavDataUpdate.activateStagedIfDue(), [])
+        XCTAssertEqual(NavDataUpdate.activateStagedIfDue(), [])
+    }
+
+    /// Put a file in the staging slot the way `NavDataLibrary.run` does.
+    private func stage(_ url: URL, as d: NavDataUpdate.Dataset, cycle: String) throws {
+        try FileManager.default.createDirectory(at: NavDataUpdate.stagedDirectory,
+                                                withIntermediateDirectories: true)
+        let slot = NavDataUpdate.stagedURL(d, cycle: cycle)
+        try? FileManager.default.removeItem(at: slot)
+        try FileManager.default.copyItem(at: url, to: slot)
     }
 
     private static func iso(daysFromNow: Int) -> String {

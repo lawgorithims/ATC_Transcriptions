@@ -59,11 +59,78 @@ enum NavDataUpdate {
         directory.appendingPathComponent("\(d.rawValue).\(d.fileExtension)")
     }
 
+    /// Where a cycle downloaded AHEAD of its effective date waits.
+    ///
+    /// WHY IT NEEDS ITS OWN SLOT, UNLIKE CHART PACKS. A staged chart pack can live in the ordinary
+    /// chart directory under the next cycle's filename, because `localURL` keys off the catalog's
+    /// cycle and simply will not look at it until the manifest rolls. Nav data has no such name: there
+    /// is ONE `cifp.sqlite`, and `activeURL` reads whatever is at that path. So an early download
+    /// cannot be installed — `verify` refuses `.notYetEffective`, correctly, because a file sitting at
+    /// the live path is a file that will be served. It waits here instead, and `activateStagedIfDue`
+    /// installs it through the ordinary verified path on the morning it becomes legal.
+    ///
+    /// In Application Support, NOT caches: this is held for up to 28 days, and iOS purges caches under
+    /// storage pressure — which would quietly undo the pre-download the pilot is relying on.
+    static var stagedDirectory: URL { directory.appendingPathComponent("staged", isDirectory: true) }
+
+    static func stagedURL(_ d: Dataset, cycle: String) -> URL {
+        stagedDirectory.appendingPathComponent("\(d.rawValue)-\(cycle).\(d.fileExtension)")
+    }
+
+    /// The staged file for `d`, whatever cycle it is, or nil when nothing is waiting.
+    static func stagedFile(_ d: Dataset) -> URL? {
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: stagedDirectory, includingPropertiesForKeys: nil) else { return nil }
+        return files.first {
+            $0.lastPathComponent.hasPrefix("\(d.rawValue)-") && $0.pathExtension == d.fileExtension
+        }
+    }
+
+    /// The cycle waiting in the staging slot for `d`, read from the file's own provenance rather than
+    /// its name — the name is a convenience, the `meta` table is the claim.
+    static func stagedCycle(_ d: Dataset) -> String? {
+        guard let f = stagedFile(d) else { return nil }
+        let c = readCycle(f)
+        return c.isEmpty ? nil : c
+    }
+
+    static func removeStaged(_ d: Dataset) {
+        if let f = stagedFile(d) { try? FileManager.default.removeItem(at: f) }
+    }
+
+    /// Install any staged cycle that has now taken effect, and return what was activated.
+    ///
+    /// Idempotent and safe to call on every launch: a staged file that is not due yet is left alone,
+    /// and one that is due goes through the FULL `install` — including the effective-date check it was
+    /// staged to avoid, which by then passes honestly. If it is refused for any other reason the file
+    /// is removed rather than retried forever; a staged database that cannot pass verification is not
+    /// going to start passing, and keeping it would hold disk and hide the ordinary download path.
+    ///
+    /// ⚠️ CALL THIS BEFORE ANY READER OPENS. `activeURL` is resolved once per launch per reader
+    /// (`CIFP.dbHandle`, `Airways.dbHandle`, `Procedures.dataStore`), so a cycle activated after a
+    /// reader has already resolved takes effect on the NEXT launch — correct, but a day late.
+    @discardableResult
+    static func activateStagedIfDue(asOf now: Date = Date()) -> [Dataset] {
+        var activated: [Dataset] = []
+        for d in Dataset.allCases {
+            guard let staged = stagedFile(d) else { continue }
+            guard !isNotYetEffective(staged, asOf: now) else { continue }      // still waiting
+            if let bad = install(from: staged, as: d, asOf: now) {
+                NSLog("CommSight: staged %@ could not be activated — %@", d.rawValue, bad.reason)
+            } else {
+                activated.append(d)
+            }
+            try? FileManager.default.removeItem(at: staged)
+        }
+        return activated
+    }
+
     /// The database to actually open: a verified download when one is installed, else the bundle.
     ///
     /// Called once per launch from each reader's lazy `open()`, so a swap takes effect on the next
     /// launch rather than under a query already in flight.
     static func activeURL(_ d: Dataset) -> URL? {
+        _ = activationOnce
         let installed = installedURL(d)
         if FileManager.default.fileExists(atPath: installed.path),
            !readCycle(installed).isEmpty,
@@ -76,6 +143,24 @@ enum NavDataUpdate {
         }
         return d.bundledURL
     }
+
+    /// Promote any pre-downloaded cycle that has become effective, exactly once per process, BEFORE
+    /// the first reader resolves.
+    ///
+    /// WHY IT HANGS OFF `activeURL` RATHER THAN APP LAUNCH. The three readers resolve their database
+    /// once each, lazily, on first query (`CIFP.dbHandle`, `Airways.dbHandle`, `Procedures.dataStore`)
+    /// — and the first of those queries can happen during `AppModel.init`, before any code a launch
+    /// hook could reasonably live in has run. An activation that loses that race is not wrong, but it
+    /// is a day late: the pilot flies the previous cycle for one more session, on the one morning the
+    /// new one matters. Hanging it off the read path makes the ordering a property of the code rather
+    /// than of startup sequencing, and a `static let` is initialised exactly once, thread-safely.
+    ///
+    /// Costs one directory listing per launch when nothing is staged, which is every launch but three
+    /// or four a year. Nothing here calls back into `activeURL`, so there is no initialisation cycle.
+    private static let activationOnce: Void = {
+        _ = activateStagedIfDue()
+        return ()
+    }()
 
     /// Cycle identifier from a database's `meta` table, or "" if it has none.
     static func readCycle(_ url: URL) -> String {
@@ -159,8 +244,19 @@ enum NavDataUpdate {
 
     /// Verify a candidate BEFORE it replaces anything. Mirrors the builder's own self-checks, so a file
     /// that was truncated in transit, or built by a broken pipeline, never becomes the active database.
-    static func verify(_ url: URL, as d: Dataset) -> Rejection? {
-        if d == .procedures { return verifyProcedures(url) }
+    /// `allowNotYetEffective` is for the STAGING path only: a cycle downloaded ahead of time has to
+    /// pass every other check at download time (that is the point of checking it then), but failing it
+    /// for not having started yet would make pre-downloading impossible. It is re-checked, without the
+    /// exemption, by `install` when the staged file is activated — and by `activeURL` on every launch.
+    /// `asOf` exists so a caller that reasons about a clock can hand the SAME clock to the check that
+    /// acts on it. `activateStagedIfDue(asOf:)` decides a file is due and then calls `install`, whose
+    /// verify re-checks the effective date — against `Date()` if it has no choice, which is a function
+    /// that accepts a clock and then ignores it at the one step that matters.
+    static func verify(_ url: URL, as d: Dataset, allowNotYetEffective: Bool = false,
+                       asOf now: Date = Date()) -> Rejection? {
+        if d == .procedures {
+            return verifyProcedures(url, allowNotYetEffective: allowNotYetEffective, asOf: now)
+        }
         var db: OpaquePointer?
         guard sqlite3_open_v2(url.path, &db, SQLITE_OPEN_READONLY, nil) == SQLITE_OK else { return .unopenable }
         defer { sqlite3_close(db) }
@@ -173,7 +269,7 @@ enum NavDataUpdate {
         guard !m.isEmpty else { return .noMeta }
         guard !(m["cycle"] ?? "").isEmpty else { return .noCycle }
         if isOlderThanBundle(url, d) { return .olderThanBundle }
-        if isNotYetEffective(url) { return .notYetEffective }
+        if !allowNotYetEffective, isNotYetEffective(url, asOf: now) { return .notYetEffective }
 
         // The same invariants navdb.py verifies, so a database that would have failed the build cannot
         // pass here either. Every one of these was a real defect at some point in this project's life.
@@ -194,7 +290,7 @@ enum NavDataUpdate {
             // Spelled out rather than covered by a `default:` on purpose: a `default` here would
             // silently absorb the NEXT dataset someone adds, letting it install having had no corpus
             // check at all, which is the one thing this function exists to prevent.
-            return verifyProcedures(url)
+            return verifyProcedures(url, allowNotYetEffective: allowNotYetEffective, asOf: now)
         }
         for (sql, atLeast) in checks {
             guard count(db, sql) >= atLeast else { return .failsInvariants }
@@ -214,7 +310,8 @@ enum NavDataUpdate {
     /// provenance that can be dated, and enough airports to be the real thing rather than a stub. A
     /// 3,197-airport index silently replaced by one holding four would leave most of the country with
     /// no plates and nothing saying why.
-    private static func verifyProcedures(_ url: URL) -> Rejection? {
+    private static func verifyProcedures(_ url: URL, allowNotYetEffective: Bool = false,
+                                        asOf now: Date = Date()) -> Rejection? {
         guard let data = try? Data(contentsOf: url),
               let o = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         else { return .unopenable }
@@ -225,14 +322,14 @@ enum NavDataUpdate {
             return .failsInvariants
         }
         if isOlderThanBundle(url, .procedures) { return .olderThanBundle }
-        if isNotYetEffective(url) { return .notYetEffective }
+        if !allowNotYetEffective, isNotYetEffective(url, asOf: now) { return .notYetEffective }
         return nil
     }
 
     /// Install a verified database atomically. Returns the rejection when it was refused.
     @discardableResult
-    static func install(from staged: URL, as d: Dataset) -> Rejection? {
-        if let bad = verify(staged, as: d) {
+    static func install(from staged: URL, as d: Dataset, asOf now: Date = Date()) -> Rejection? {
+        if let bad = verify(staged, as: d, asOf: now) {
             NSLog("CommSight: nav update REFUSED for %@ — %@", d.rawValue, bad.reason)
             return bad
         }

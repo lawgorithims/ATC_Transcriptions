@@ -1,34 +1,18 @@
 import Foundation
 import MapKit
 import CoreLocation
-import Network
 
-/// One-shot network-path probe for the BACKGROUND prefetchers: bulk chart-pack downloads must not burn
-/// a cellular/hotspot allowance (or the battery) uninvited. On-demand downloads (the pilot opens the
-/// map / taps download) are never gated. Resolves once and cancels the monitor.
+/// Legacy shim for the BACKGROUND prefetchers' "is this link metered" question.
+///
+/// The probe itself now lives in `DownloadPolicy.currentPath()`. There used to be THREE independent
+/// `NWPathMonitor` implementations in the app — this one, `ChartLibrary.isExpensiveConnection()`, and
+/// nothing at all in `NavDataLibrary` — which is how the same question got three different answers
+/// depending on which button the pilot pressed. Kept as a named entry point because "expensive" is a
+/// weaker test than the pilot's Wi-Fi-only setting and a few internal callers still want exactly it.
 enum NetPath {
     static func isExpensive() async -> Bool {
-        await withCheckedContinuation { cont in
-            let monitor = NWPathMonitor()
-            let once = OnceFlag()
-            monitor.pathUpdateHandler = { path in
-                guard once.trySet() else { return }        // the handler can fire more than once
-                cont.resume(returning: path.isExpensive || path.isConstrained)
-                monitor.cancel()
-            }
-            monitor.start(queue: .global(qos: .utility))
-        }
-    }
-
-    /// Tiny thread-safe once-latch.
-    private final class OnceFlag: @unchecked Sendable {
-        private let lock = NSLock()
-        private var fired = false
-        func trySet() -> Bool {
-            lock.lock(); defer { lock.unlock() }
-            if fired { return false }
-            fired = true; return true
-        }
+        let path = await DownloadPolicy.currentPath()
+        return path.expensive || path.constrained
     }
 }
 
@@ -62,12 +46,30 @@ final class ChartLibrary: ObservableObject {
     @Published var bulk: BulkDownload = .idle
     /// Total bytes of chart packs currently on disk (drives the "stored on device" readout).
     @Published private(set) var cachedBytes: Int = 0
+    /// Of `cachedBytes`, how much belongs to the pre-cached NEXT cycle. Published rather than computed
+    /// on demand because the Downloads screen shows it: a directory scan inside a SwiftUI body runs on
+    /// every layout pass, and this one would run beside a list of 86 rows.
+    @Published private(set) var stagedBytes: Int = 0
     /// Pack ids currently downloading via the per-region Downloads page (drives per-row spinners).
     @Published private(set) var downloadingIDs: Set<String> = []
+    /// Progress of the next-cycle pre-cache, for the Downloads UI.
+    @Published private(set) var precache: Precache = .idle
+
+    /// What the next-cycle pre-cache is doing. `.ready` is the state this feature exists to reach: the
+    /// pilot's whole kit is on disk for a cycle that has not started, and the roll will cost nothing.
+    enum Precache: Equatable {
+        case idle                                       // nothing staged by the publisher (the usual state)
+        case off                                        // the pilot turned pre-caching off
+        case waiting(String)                            // staged, but the policy says not now
+        case running(done: Int, total: Int)
+        case ready(cycle: String, packs: Int)
+        case partial(cycle: String, have: Int, want: Int)
+    }
 
     private var inFlight: Set<String> = []
     private var warming: Task<Bool, Never>?
     private var bulkTask: Task<Void, Never>?
+    private var precacheTask: Task<Void, Never>?
     /// Bumped per bulk run so a finishing run only releases its OWN handle.
     private var bulkGeneration = 0
     private let location = OneShotLocation()
@@ -155,14 +157,13 @@ final class ChartLibrary: ObservableObject {
     func updateInstalledPacks(_ ids: Set<String>, allowExpensive: Bool = false) async -> Bool {
         let wanted = (catalog?.entries ?? []).filter { ids.contains($0.id) && !isCached($0) }
         guard !wanted.isEmpty else { bulk = .idle; return true }
-        if !allowExpensive, await NetPath.isExpensive() { return false }
+        if !allowExpensive, !(await DownloadPolicy.shared.verdict(.userInitiated)).isAllowed { return false }
         // Record the pilot's INTENT before a single byte moves. loadPinned() clears the pin set on a
         // cycle change, so the first completed download used to rewrite UserDefaults with only that one
         // id — and an update interrupted after 3 of 40 packs left the app believing the pilot had ever
         // wanted 3. pruneOldCycleFiles then deleted the other 37 old-cycle files, which were the only
         // copies they still had. Their coverage must survive a cancelled or crashed update.
-        pinned.formUnion(ids)
-        savePinned()
+        addIntent(ids)                     // intent first; `pinned` follows each pack that lands
         bulkTask?.cancel()
         bulkGeneration &+= 1
         let gen = bulkGeneration
@@ -271,8 +272,17 @@ final class ChartLibrary: ObservableObject {
     ///
     /// This is the WRITE path and the "is it current" path. For READING, use `readableURL` — see the
     /// note there for why the two must differ.
-    func localURL(_ e: ChartCatalog.Entry) -> URL {
-        dir.appendingPathComponent("\(e.id)-\(cycle).mbtiles")
+    func localURL(_ e: ChartCatalog.Entry) -> URL { localURL(e.id, cycle: cycle) }
+
+    /// The on-disk path a pack for `id` takes at an ARBITRARY cycle — the pre-cache writes the NEXT
+    /// cycle's file here.
+    ///
+    /// This is what makes activation free. A staged pack is stored under the name the catalog will ask
+    /// for once the cycle rolls, so promotion on the device is not a copy, a move, or a re-download —
+    /// `localURL` simply starts resolving to a file that is already there. Nothing has to run at
+    /// 0901Z, which matters because nothing reliably does.
+    func localURL(_ id: String, cycle: String) -> URL {
+        dir.appendingPathComponent("\(id)-\(cycle).mbtiles")
     }
 
     /// The pack file to actually OPEN: this cycle's if it is there, else the newest older-cycle copy
@@ -319,6 +329,32 @@ final class ChartLibrary: ObservableObject {
             .map { dir.appendingPathComponent($0) }
     }
 
+    /// The cycle string out of an on-disk `<id>-<cycle>.mbtiles` name, by the same shape rules as
+    /// `packID` — which is to say never by position, because a pack id may itself contain dashes.
+    nonisolated static func packCycle(_ name: String) -> String? {
+        guard name.hasSuffix(".mbtiles") else { return nil }
+        let stem = String(name.dropLast(".mbtiles".count))
+        let parts = stem.split(separator: "-", omittingEmptySubsequences: false)
+        let digits = { (s: Substring, n: Int) in s.count == n && s.allSatisfy(\.isNumber) }
+        if parts.count >= 4 {
+            let t = Array(parts.suffix(3))
+            if digits(t[0], 2), digits(t[1], 2), digits(t[2], 4) { return t.joined(separator: "-") }
+        }
+        if parts.count >= 2, let last = parts.last, digits(last, 4) { return String(last) }
+        return nil
+    }
+
+    /// Is this on-disk pack from a cycle that has NOT started yet?
+    ///
+    /// Only the `MM-DD-YYYY` form can be dated; the legacy `YYNN` form predates the rename and is
+    /// always in the past, so it reports false. An unparseable name reports false too — "cannot tell"
+    /// must not promote a file into the not-yet-effective class, because that class is excluded from
+    /// the fallback and excluding a real old pack would blank the map.
+    nonisolated static func isFuturePack(_ name: String, asOf now: Date) -> Bool {
+        guard let cyc = packCycle(name), let eff = ChartCatalog.cycleDate(cyc) else { return false }
+        return now < eff.addingTimeInterval(9 * 3600 + 60)        // 0901Z on the effective date
+    }
+
     /// Which on-disk file to fall back to for `id` when this cycle's pack is absent.
     ///
     /// Ordered by modification date, NOT by the cycle string. Two cycle shapes coexist on disk —
@@ -328,12 +364,21 @@ final class ChartLibrary: ObservableObject {
     ///
     /// Excludes the current cycle: callers reach here only when that file is missing, and including it
     /// would let a zero-byte or half-written current file win on recency.
+    ///
+    /// ⚠️ AND IT EXCLUDES CYCLES THAT HAVE NOT STARTED. Pre-caching puts NEXT cycle's pack on disk
+    /// days early, under next cycle's filename. "Newest file for this id from any other cycle" matches
+    /// it — and because it is the most recently downloaded file on disk it wins every time. A missing
+    /// current pack would then be served from a chart that is not in effect yet, labeled as an OLDER
+    /// cycle by `isServedStale`, with the currency banner reporting the current cycle's dates. That is
+    /// strictly worse than the blank map this fallback exists to prevent: a blank map tells the truth.
     nonisolated static func chooseOlderCyclePack(
-        id: String, currentCycle: String, candidates: [(name: String, modified: Date)]
+        id: String, currentCycle: String, candidates: [(name: String, modified: Date)],
+        asOf now: Date = Date()
     ) -> String? {
         let currentName = "\(id)-\(currentCycle).mbtiles"
         return candidates
             .filter { $0.name != currentName && packID($0.name) == id }
+            .filter { !isFuturePack($0.name, asOf: now) }         // see the note below
             .max { $0.modified < $1.modified }?
             .name
     }
@@ -411,15 +456,41 @@ final class ChartLibrary: ObservableObject {
     /// rows) before it's kept. Returns the on-disk URL, or nil on failure.
     @discardableResult
     func ensureOnDisk(_ e: ChartCatalog.Entry) async -> URL? {
-        let dst = localURL(e)
+        await ensureOnDisk(e, cycle: cycle, expectStamp: nil)
+    }
+
+    /// Download `e` to the file name for `cycle`, if it is not already there.
+    ///
+    /// `expectStamp` is checked against the pack's own `faa_cycle` metadata when non-nil. The
+    /// pre-cache passes it; the ordinary path does not, and the asymmetry is deliberate. A staged
+    /// pack is fetched from a path that, by construction, nothing else has verified for this device:
+    /// `publish_packs.py` guards the host against publishing last cycle's bytes under a new cycle
+    /// number, but a pack pulled days early and then activated silently weeks later gets no second
+    /// look. Since `build_chart.sh` stamps the cycle into every pack, the device can hold the
+    /// publisher to its claim for the cost of one `metadata` read it is already doing.
+    @discardableResult
+    func ensureOnDisk(_ e: ChartCatalog.Entry, cycle: String, expectStamp: String?) async -> URL? {
+        let dst = localURL(e.id, cycle: cycle)
         if FileManager.default.fileExists(atPath: dst.path) { return dst }   // verified at write time
         guard let remote = e.remote else { return nil }   // malformed path (L13) → pack simply unavailable
         do {
             let (tmp, resp) = try await URLSession.shared.download(from: remote)
-            guard (resp as? HTTPURLResponse)?.statusCode == 200 else { return nil }
+            guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
+                // The caller owns the file `download(from:)` wrote even on a non-200. Returning without
+                // removing it leaks a full-size temp per failed attempt, and the retry paths above will
+                // hammer the same URL — on a captive-portal Wi-Fi that is an error page per pack, per
+                // attempt, filling the device with copies of it. (Same defect, same fix, as
+                // NavDataLibrary.run.)
+                try? FileManager.default.removeItem(at: tmp)
+                return nil
+            }
             try? FileManager.default.removeItem(at: dst)
             try FileManager.default.moveItem(at: tmp, to: dst)
             guard let r = MBTilesReader(path: dst.path), r.hasTiles else {   // integrity: openable + has tiles
+                try? FileManager.default.removeItem(at: dst)
+                return nil
+            }
+            if let want = expectStamp, let got = r.metadata["faa_cycle"], got != want {
                 try? FileManager.default.removeItem(at: dst)
                 return nil
             }
@@ -441,6 +512,13 @@ final class ChartLibrary: ObservableObject {
     /// never mass-download the country. Silently no-ops when offline / catalog unavailable.
     func prefetch(rects: [MKMapRect], layers: [ChartLayer], cap: Int = 8) async {
         guard !rects.isEmpty, await warm() else { return }
+        // ⚠️ THIS CHECK WAS MISSING ENTIRELY. `NetPath`'s own comment said it existed "for the
+        // BACKGROUND prefetchers", and `updateInstalledPacks` did consult it — but route and
+        // around-me prefetch, the two paths that run unprompted on launch and while the pilot pans,
+        // went straight to `ensureOnDisk`. Up to 8 packs per call, 30–70 MB each, on whatever link
+        // happened to be up. That is the single most expensive thing this app can do without being
+        // asked, and it was the one bulk path with no opinion about the connection at all.
+        guard await DownloadPolicy.shared.verdict(.background).isAllowed else { return }
         for layer in layers where layer.isRaster {
             var todo = packsCovering(rects, layer: layer).filter { !isCached($0) && !inFlight.contains($0.id) }
             if todo.count > cap { todo = Array(todo.prefix(cap)) }
@@ -496,9 +574,19 @@ final class ChartLibrary: ObservableObject {
 
     /// Total on-disk size of all chart packs (drives the "stored on device" readout).
     func refreshCachedBytes() {
-        guard let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.fileSizeKey]) else { cachedBytes = 0; return }
-        cachedBytes = files.filter { $0.pathExtension == "mbtiles" }
-            .reduce(0) { $0 + ((try? $1.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) }
+        guard let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.fileSizeKey]) else {
+            cachedBytes = 0; stagedBytes = 0; return
+        }
+        func size(_ u: URL) -> Int { (try? u.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0 }
+        let packs = files.filter { $0.pathExtension == "mbtiles" }
+        cachedBytes = packs.reduce(0) { $0 + size($1) }
+        if let staged = catalog?.next?.cycle {
+            stagedBytes = packs
+                .filter { Self.packCycle($0.lastPathComponent) == staged }
+                .reduce(0) { $0 + size($1) }
+        } else {
+            stagedBytes = 0
+        }
     }
 
     /// Catalog bytes for the given raster layers (the full download size), and the not-yet-cached remainder.
@@ -513,9 +601,9 @@ final class ChartLibrary: ObservableObject {
 
     /// Start downloading every US pack for the chosen layers (idempotent — skips what's already on disk).
     /// Downloaded packs are **pinned** so the LRU cap never evicts them. No-op while one is already running.
-    func startBulkDownload(layers: [ChartLayer]) {
+    func startBulkDownload(layers: [ChartLayer], allowMetered: Bool = false) {
         guard bulkTask == nil else { return }
-        bulkTask = Task { await self.runBulk(layers: layers) }
+        bulkTask = Task { await self.runBulk(layers: layers, allowMetered: allowMetered) }
     }
 
     func cancelBulkDownload() {
@@ -543,7 +631,7 @@ final class ChartLibrary: ObservableObject {
         refreshCachedBytes()
     }
 
-    private func runBulk(layers: [ChartLayer]) async {
+    private func runBulk(layers: [ChartLayer], allowMetered: Bool = false) async {
         guard await warm() else { bulk = .failed("Chart index unavailable"); bulkTask = nil; return }
         let all = entries(for: layers)
         let total = all.count
@@ -551,9 +639,21 @@ final class ChartLibrary: ObservableObject {
         bulk = .running(done: 0, total: total)
         for e in all {
             if Task.isCancelled { bulk = .idle; bulkTask = nil; return }
+            // RE-CHECKED EVERY PACK, not just at the start. A full-country download is ~2 GB over
+            // tens of minutes; an iPad that began on home Wi-Fi and is now in a car on a hotspot has
+            // changed the answer, and a promise about data cost that is only evaluated once is not a
+            // promise. The probe is a few milliseconds against a pack that takes seconds.
+            if !allowMetered {
+                let verdict = await DownloadPolicy.shared.verdict(.userInitiated)
+                if !verdict.isAllowed {
+                    bulk = .failed(verdict.explanation ?? "Paused.")
+                    bulkTask = nil
+                    return
+                }
+            }
             var ok = isCached(e)
             if !ok, await ensureOnDisk(e) != nil { ok = true; added += 1 }
-            if ok { pinned.insert(e.id); savePinned() }      // persist each so a mid-download kill keeps its pins
+            if ok { markDownloaded(e.id) }                  // persist each so a mid-download kill keeps its pins
             done += 1
             bulk = .running(done: done, total: total)
             refreshCachedBytes()
@@ -570,20 +670,30 @@ final class ChartLibrary: ObservableObject {
     /// Download one pack for offline use and pin it (exempt from the LRU cap). Idempotent; safe to call
     /// on an already-cached pack (just pins it). Returns whether the pack is on disk afterwards.
     @discardableResult
-    func download(_ e: ChartCatalog.Entry) async -> Bool {
+    func download(_ e: ChartCatalog.Entry, allowMetered: Bool = false) async -> Bool {
         guard !downloadingIDs.contains(e.id) else { return isCached(e) }
+        // A backstop, not the primary gate: the Downloads row asks the policy first so it can offer
+        // the pilot an explicit override. Enforced here too because "Wi-Fi only" has to be true of
+        // every caller, including ones added later.
+        if !allowMetered, !isCached(e),
+           !(await DownloadPolicy.shared.verdict(.userInitiated)).isAllowed { return false }
         downloadingIDs.insert(e.id)
         defer { downloadingIDs.remove(e.id) }
         var ok = isCached(e)
         if !ok { ok = await ensureOnDisk(e) != nil }
-        if ok { pinned.insert(e.id); savePinned(); refreshCachedBytes() }
+        if ok { markDownloaded(e.id); refreshCachedBytes() }
         return ok
     }
 
     /// Remove one downloaded pack and unpin it.
     func remove(_ e: ChartCatalog.Entry) {
         try? FileManager.default.removeItem(at: localURL(e))
-        pinned.remove(e.id); savePinned(); refreshCachedBytes()
+        // Also the staged copy, if the pre-cache already fetched next cycle's pack: "remove this
+        // download" has to mean it, or the pack reappears by itself at the roll.
+        if let staged = catalog?.next?.cycle {
+            try? FileManager.default.removeItem(at: localURL(e.id, cycle: staged))
+        }
+        dropIntent(e.id); refreshCachedBytes()
     }
 
     /// Delete every cached pack (incidental + pinned offline downloads) and clear the pins — the
@@ -592,23 +702,140 @@ final class ChartLibrary: ObservableObject {
         if let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) {
             for f in files where f.pathExtension == "mbtiles" { try? FileManager.default.removeItem(at: f) }
         }
-        pinned.removeAll(); savePinned(); refreshCachedBytes()
+        pinned.removeAll()
+        UserDefaults.standard.set([String](), forKey: pinnedKey)
+        UserDefaults.standard.set(cycle, forKey: pinnedCycleKey)
+        refreshCachedBytes()
         if case .finished = bulk { bulk = .idle }
     }
 
     /// True when the current network path is cellular / a personal hotspot (so the UI can confirm before a
     /// ~2 GB bulk download). One-shot: reads the first path update, then tears the monitor down.
     func isExpensiveConnection() async -> Bool {
-        await withCheckedContinuation { (c: CheckedContinuation<Bool, Never>) in
-            let monitor = NWPathMonitor()
-            let box = ResumeOnce(c)
-            monitor.pathUpdateHandler = { path in
-                box.fire(path.isExpensive || path.usesInterfaceType(.cellular))
-                monitor.cancel()
-            }
-            monitor.start(queue: DispatchQueue(label: "chartlib.path"))
-        }
+        let path = await DownloadPolicy.currentPath()
+        return path.expensive || !path.wifi
     }
+
+    // MARK: Next-cycle pre-cache
+
+    /// Download the NEXT cycle's packs before it takes effect, so the roll costs the pilot nothing.
+    ///
+    /// THE PROBLEM. FAA chart cycles roll every 56 days at 0901Z. The moment the publisher's new
+    /// index.json goes live, `localURL` starts asking for `<id>-<newCycle>.mbtiles` — a file that does
+    /// not exist — and the pilot's entire offline kit has to come down again, several gigabytes of it.
+    /// `readableURL` keeps the map alive by serving last cycle's pack in the meantime, loudly labeled
+    /// expired, which is the right failure but it is still a failure: the pilot discovers it when they
+    /// open the app, which for a rollover that happens overnight means at the airport, on whatever
+    /// connection the FBO has, possibly none.
+    ///
+    /// THE FIX, AND WHY IT IS ALMOST FREE. The publisher stages the new cycle under its own prefix
+    /// weeks early (`publish_packs.py --stage-next`) and advertises it in the live manifest's `next`
+    /// block. This downloads the staged packs — only the ones the pilot already chose — under the
+    /// filename the catalog WILL ask for. Activation is then not an event: no copy, no move, no
+    /// re-download, nothing scheduled for 0901Z. `localURL` simply begins resolving to a file that has
+    /// been sitting there for a fortnight. Pre-caching 40 packs and pre-caching none differ only in
+    /// what the map looks like the morning after.
+    ///
+    /// Runs under the pilot's two settings (`DownloadPolicy`), re-checked per pack, and never touches
+    /// a pack they did not already download — pre-caching is for keeping a kit current, never for
+    /// building one.
+    @discardableResult
+    func precacheNextCycle(now: Date = Date()) async -> Precache {
+        guard precacheTask == nil else { return precache }
+        guard DownloadPolicy.shared.precacheNextCycle else { precache = .off; return precache }
+        guard await warm(), let staged = catalog?.next else { precache = .idle; return precache }
+        // An undateable staged block is unusable (we could not refuse to activate it early); one
+        // already in force, or one that IS the live cycle, is the ordinary path's business, not ours.
+        guard staged.effectiveDate != nil, !staged.isInForce(asOf: now), staged.cycle != cycle else {
+            precache = .idle; return precache
+        }
+        let wanted = installedPackIDs()
+        let mine = staged.entries.filter { wanted.contains($0.id) }
+        guard !mine.isEmpty else { precache = .idle; return precache }
+
+        let todo = mine.filter {
+            !FileManager.default.fileExists(atPath: localURL($0.id, cycle: staged.cycle).path)
+        }
+        guard !todo.isEmpty else {
+            precache = .ready(cycle: staged.cycle, packs: mine.count); return precache
+        }
+
+        let need = todo.reduce(0) { $0 + $1.bytes }
+        guard hasHeadroom(for: need) else {
+            precache = .waiting("Not enough free space to pre-cache \(staged.cycle) "
+                                + "(needs \(ByteCountFormatter.string(fromByteCount: Int64(need), countStyle: .file))).")
+            return precache
+        }
+        let verdict = await DownloadPolicy.shared.verdict(.background)
+        guard verdict.isAllowed else {
+            precache = .waiting(verdict.explanation ?? "Waiting.")
+            return precache
+        }
+        let have = mine.count - todo.count
+        precacheTask = Task { [weak self] in await self?.runPrecache(staged, todo: todo, have: have) }
+        return precache
+    }
+
+    func cancelPrecache() {
+        precacheTask?.cancel()
+        precacheTask = nil
+        precache = .idle
+    }
+
+    private func runPrecache(_ staged: ChartCatalog.Staged, todo: [ChartCatalog.Entry], have: Int) async {
+        defer { precacheTask = nil }
+        var done = 0
+        precache = .running(done: 0, total: todo.count)
+        for e in todo.prefix(4096) {                                       // bounded (rule 2)
+            if Task.isCancelled { precache = .idle; return }
+            let verdict = await DownloadPolicy.shared.verdict(.background)
+            guard verdict.isAllowed else {                                 // left Wi-Fi mid-run
+                precache = .waiting(verdict.explanation ?? "Waiting.")
+                return
+            }
+            // `expectStamp` holds the publisher to its claim — a staged pack carrying the OLD cycle's
+            // faa_cycle stamp is the exact artifact `publish_packs.read_pack` refuses to upload, and
+            // the one failure that would otherwise surface as a pilot briefing off last cycle's chart
+            // with the app calling it current.
+            if await ensureOnDisk(e, cycle: staged.cycle, expectStamp: staged.cycle) != nil { done += 1 }
+            precache = .running(done: done, total: todo.count)
+        }
+        let onDisk = have + done, want = have + todo.count
+        precache = onDisk == want
+            ? .ready(cycle: staged.cycle, packs: want)
+            : .partial(cycle: staged.cycle, have: onDisk, want: want)
+        refreshCachedBytes()
+    }
+
+    /// The staged cycle the publisher is advertising, if any.
+    var stagedCycle: String? { catalog?.next?.cycle }
+
+    /// Delete the staged cycle's packs — the pilot turning pre-caching off and reclaiming the space.
+    func removeStagedPacks() {
+        guard let staged = catalog?.next?.cycle,
+              let files = try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
+        else { return }
+        for f in files where f.pathExtension == "mbtiles" && Self.packCycle(f.lastPathComponent) == staged {
+            try? FileManager.default.removeItem(at: f)
+        }
+        precache = .idle
+        refreshCachedBytes()
+    }
+
+    /// Is there room for `bytes` with a reserve left over?
+    ///
+    /// Pre-caching is a convenience that runs unprompted, so it must never be the reason a device
+    /// fills up — a full disk on an EFB takes the logbook, the plates and the track log with it. The
+    /// 2 GB reserve is deliberately larger than any single pack. Proceeds when the volume cannot be
+    /// queried: that is a missing answer, not a negative one, and `ensureOnDisk` cleans up after a
+    /// download that cannot complete.
+    private func hasHeadroom(for bytes: Int) -> Bool {
+        guard let free = try? dir.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+            .volumeAvailableCapacityForImportantUsage else { return true }
+        return Int64(bytes) + Self.precacheReserveBytes < free
+    }
+
+    static let precacheReserveBytes: Int64 = 2 * 1024 * 1024 * 1024
 
     // MARK: Pinned-pack persistence
 
@@ -629,29 +856,53 @@ final class ChartLibrary: ObservableObject {
         return (UserDefaults.standard.stringArray(forKey: pinnedKey) ?? []).contains(id)
     }
 
+    /// TWO SETS, ONE STORE, AND THE DIFFERENCE MATTERS.
+    ///
+    /// `pinned` (in memory) answers "is this pack downloaded at the CURRENT cycle" and drives the UI.
+    /// The persisted ids answer "which packs does this pilot want offline" — an INTENT that outlives
+    /// any one cycle, and the only record `pruneOldCycleFiles` has of which old-cycle files to keep as
+    /// fallbacks and `updateInstalledPacks` has of what to re-download.
+    ///
+    /// They used to be the same set written through one `savePinned()`, which was survivable only
+    /// because the in-memory set was simply EMPTIED on a cycle roll. Pre-caching breaks that: after a
+    /// roll some packs genuinely are present at the new cycle, so the in-memory set has to be
+    /// repopulated — and the moment it is, a shared writer would shrink the persisted intent to
+    /// whatever happened to be on disk. One pack downloaded after a partial pre-cache would drop the
+    /// other thirty-odd ids from the intent record, and the next `adopt` would delete their old-cycle
+    /// files: the pilot loses the stale-but-readable fallback for every pack the pre-cache missed.
+    /// So intent is only ever added to, and only removed when the pilot deletes a pack.
     private func loadPinned() {
-        // Pins are cycle-specific — a new cycle's files are different, so drop stale pins.
+        let intent = installedPackIDs()
         if UserDefaults.standard.string(forKey: pinnedCycleKey) == cycle {
-            pinned = Set(UserDefaults.standard.stringArray(forKey: pinnedKey) ?? [])
+            pinned = intent
         } else {
-            pinned = []
+            // A cycle roll. Anything the pre-cache already landed under the NEW cycle's name is
+            // present and stays "downloaded" — that is the whole point of pre-caching, and reporting
+            // it as absent would offer the pilot a re-download of bytes they already have.
+            pinned = intent.filter { FileManager.default.fileExists(atPath: localURL($0, cycle: cycle).path) }
+            UserDefaults.standard.set(cycle, forKey: pinnedCycleKey)
         }
     }
 
-    private func savePinned() {
-        UserDefaults.standard.set(Array(pinned), forKey: pinnedKey)
+    /// Record that `id` is on disk at the current cycle, and that the pilot wants it offline.
+    private func markDownloaded(_ id: String) {
+        pinned.insert(id)
+        addIntent([id])
+    }
+
+    /// Union into the persisted intent. Never a replace — see `loadPinned`.
+    private func addIntent(_ ids: Set<String>) {
+        guard !ids.isEmpty else { return }
+        let merged = installedPackIDs().union(ids)
+        UserDefaults.standard.set(Array(merged), forKey: pinnedKey)
         UserDefaults.standard.set(cycle, forKey: pinnedCycleKey)
     }
-}
 
-/// Resumes a continuation at most once, even if `NWPathMonitor` reports several path updates.
-private final class ResumeOnce: @unchecked Sendable {
-    private var cont: CheckedContinuation<Bool, Never>?
-    private let lock = NSLock()
-    init(_ c: CheckedContinuation<Bool, Never>) { cont = c }
-    func fire(_ value: Bool) {
-        lock.lock(); defer { lock.unlock() }
-        cont?.resume(returning: value); cont = nil
+    /// The pilot deleted a pack: drop it from both sets, so prune may reclaim its old-cycle copies.
+    private func dropIntent(_ id: String) {
+        pinned.remove(id)
+        UserDefaults.standard.set(Array(installedPackIDs().subtracting([id])), forKey: pinnedKey)
+        UserDefaults.standard.set(cycle, forKey: pinnedCycleKey)
     }
 }
 
