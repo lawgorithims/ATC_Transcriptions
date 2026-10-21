@@ -91,13 +91,20 @@ final class NavDataUpdateTests: XCTestCase {
 
     /// The regression this whole project is haunted by: a build that dropped the final approach fix
     /// looked fine by row count. A candidate with no F or M markers must not install.
+    /// ⚠️ THE EFFECTIVE DATE IS RELATIVE, AND HAS TO BE. These fixtures were dated "2026-08-06",
+    /// which was newer than the bundle when they were written. Refreshing the bundled CIFP to cycle
+    /// 2610 made them OLDER than it, and `verify` checks `isOlderThanBundle` before the corpus — so
+    /// both tests started reporting `.olderThanBundle` and stopped exercising the invariant they
+    /// exist for. A fixture that pins a date against a bundle that moves is a test with an expiry
+    /// date of its own; `daysFromNow: -1` is newer than any bundle, because `BundledNavDataTests`
+    /// forbids shipping one dated in the future.
     func testRefusesADatabaseWithNoPublishedSegmentMarkers() throws {
-        let url = try makeCIFP(cycle: "2608", effective: "2026-08-06", marks: false)
+        let url = try makeCIFP(cycle: "2699", effective: Self.iso(daysFromNow: -1), marks: false)
         XCTAssertEqual(NavDataUpdate.verify(url, as: .cifp), .failsInvariants)
     }
 
     func testRefusesADatabaseWithALeglessProcedure() throws {
-        let url = try makeCIFP(cycle: "2608", effective: "2026-08-06", orphanProcedure: true)
+        let url = try makeCIFP(cycle: "2699", effective: Self.iso(daysFromNow: -1), orphanProcedure: true)
         XCTAssertEqual(NavDataUpdate.verify(url, as: .cifp), .failsInvariants,
                        "a named, selectable procedure with nothing to fly")
     }

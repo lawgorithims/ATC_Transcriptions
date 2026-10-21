@@ -105,11 +105,31 @@ final class DataProvenanceTests: XCTestCase {
 
     /// The shipped CIFP is what the approach legs come from, so its currency is the one the Activate
     /// sheet's badge reports. It must be a real cycle with a real expiry, not an inferred one.
-    func testShippedCIFPCycleAndExpiryAgree() {
+    ///
+    /// Asserts the RELATIONSHIP, not the literals. This used to pin "2607" / "2026-07-09" /
+    /// "2026-08-06", so refreshing the bundled database — which has to happen every release — failed
+    /// it three times over with nothing actually wrong. A test that must be edited whenever the data
+    /// it describes is updated correctly teaches people to edit it without reading it. What matters
+    /// is that the cycle is real, is dated, and that the expiry is the next cycle's start rather than
+    /// something inferred; WHICH cycle ships is `BundledNavDataTests`' business.
+    func testShippedCIFPCycleAndExpiryAgree() throws {
         let p = CIFP.provenance
-        XCTAssertEqual(p.cycle, "2607")
-        XCTAssertEqual(p.effective.map(DataProvenance.iso), "2026-07-09")
-        XCTAssertEqual(p.expires.map(DataProvenance.iso), "2026-08-06",
-                       "28 days after the effective date — the next cycle's start")
+        let cycle = try XCTUnwrap(p.cycle)
+        XCTAssertEqual(cycle.count, 4, "a CIFP cycle is YYNN, e.g. 2610 — got \(cycle)")
+        XCTAssertTrue(cycle.allSatisfy(\.isNumber), "a CIFP cycle is numeric — got \(cycle)")
+
+        let eff = try XCTUnwrap(p.effective, "the shipped CIFP must carry an effective date")
+        let exp = try XCTUnwrap(p.expires, "and a real expiry, not an inferred one")
+        XCTAssertEqual(exp.timeIntervalSince(eff), 28 * 24 * 3600,
+                       "the expiry is 28 days after the effective date — the next cycle's start")
+
+        // The cycle number's YY must be the effective date's year, which is what catches the failure
+        // that matters here: a database relabelled with a cycle it is not.
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "UTC")!
+        let yy = String(format: "%02d", cal.component(.year, from: eff) % 100)
+        XCTAssertEqual(String(cycle.prefix(2)), yy,
+                       "cycle \(cycle) does not belong to the year of its effective date "
+                       + "\(DataProvenance.iso(eff))")
     }
 }
