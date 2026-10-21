@@ -22,7 +22,7 @@ APT_RWY.csv, APT_RWY_END.csv, FRQ.csv and ATC_BASE.csv.
 Follows build_cifp.py's contract: the effective date is read from the DATA, absent stays NULL, and the
 build REFUSES to write if a table regresses against the CSV row count it came from.
 """
-import argparse, csv, datetime as dt, io, os, sqlite3, sys, urllib.error, urllib.request, zipfile
+import argparse, csv, datetime as dt, io, os, sqlite3, sys, time, urllib.error, urllib.request, zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_OUT = os.path.join(HERE, "..", "ATCTranscribe", "Resources", "nav", "apt.sqlite")
@@ -64,6 +64,18 @@ def fetch_subscription(date, cache_dir):
     arguably worse than none: the datasets would disagree about which cycle they describe.
 
     Cached because it is ~239 MiB and a re-run after a parse failure should not re-fetch it.
+
+    ⚠️ RESUMES, AND RETRIES. This used to be one `urlopen` straight into `.part`: a quarter-gigabyte
+    from a server that delivers it at a few hundred KB/s, with no resume and no retry. One dropped
+    read — `TimeoutError: The read operation timed out`, observed here at 73 of 250 MiB after eight
+    minutes — threw the whole transfer away, and the next attempt started again at zero. For the
+    unattended rebuild this function was written to make possible, that is not a rare failure; it is
+    the expected one, retried forever at full cost.
+
+    `.part` is kept between attempts and continued with a Range request. A server that ignores Range
+    answers 200 instead of 206, which is detected and restarted from zero rather than appending a
+    second copy of the file onto the first — the corruption this would otherwise cause is invisible
+    until the zip fails to open.
     """
     os.makedirs(cache_dir, exist_ok=True)
     dest = os.path.join(cache_dir, f"28DaySubscription_Effective_{date}.zip")
@@ -71,21 +83,49 @@ def fetch_subscription(date, cache_dir):
         print(f"  using cached {dest} ({os.path.getsize(dest) / 2**20:.0f} MiB)")
         return dest
     url = NASR_URL.format(date=date)
-    print(f"  downloading {url} …", flush=True)
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
-    try:
-        with urllib.request.urlopen(req, timeout=900) as r, open(dest + ".part", "wb") as f:
-            while True:                                   # bounded by content length
-                chunk = r.read(1 << 20)
-                if not chunk:
-                    break
-                f.write(chunk)
-    except urllib.error.HTTPError as ex:
-        if ex.code == 404:
-            sys.exit(f"no NASR subscription published for {date} (HTTP 404). Cycles are 28 days — is "
-                     f"that a real effective date?")
-        raise
-    os.replace(dest + ".part", dest)                      # never leave a half file looking complete
+    part = dest + ".part"
+    attempts = 6
+
+    for attempt in range(1, attempts + 1):
+        have = os.path.getsize(part) if os.path.exists(part) else 0
+        headers = {"User-Agent": UA}
+        if have:
+            headers["Range"] = f"bytes={have}-"
+        print(f"  downloading {url} … (attempt {attempt}/{attempts}"
+              + (f", resuming at {have / 2**20:.0f} MiB)" if have else ")"), flush=True)
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=300) as r:
+                # 206 = our Range was honoured, so append. Anything else means the server sent the
+                # whole file; truncate and take it from the top.
+                mode = "ab" if (have and r.status == 206) else "wb"
+                if mode == "wb" and have:
+                    print("    server ignored Range — restarting from zero", flush=True)
+                with open(part, mode) as f:
+                    while True:                           # bounded by content length
+                        chunk = r.read(1 << 20)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+            break
+        except urllib.error.HTTPError as ex:
+            if ex.code == 404:
+                sys.exit(f"no NASR subscription published for {date} (HTTP 404). Cycles are 28 days — "
+                         f"is that a real effective date?")
+            if ex.code == 416:        # asked past the end: what we have is already the whole file
+                break
+            raise
+        except (TimeoutError, urllib.error.URLError, ConnectionError, OSError) as ex:
+            got = os.path.getsize(part) if os.path.exists(part) else 0
+            if attempt == attempts:
+                sys.exit(f"NASR download failed after {attempts} attempts ({type(ex).__name__}: {ex}). "
+                         f"{got / 2**20:.0f} MiB is kept at {part} and the next run resumes from it.")
+            print(f"    {type(ex).__name__}: {ex} — have {got / 2**20:.0f} MiB, retrying", flush=True)
+            time.sleep(min(30, 2 ** attempt))
+
+    # Only now is it a complete file. Never promote a partial one: a truncated zip that LOOKS cached
+    # is worse than no cache, because every later run skips the download and fails to open it.
+    os.replace(part, dest)
     print(f"  downloaded {os.path.getsize(dest) / 2**20:.0f} MiB")
     return dest
 
