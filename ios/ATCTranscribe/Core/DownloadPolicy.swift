@@ -39,6 +39,16 @@ final class DownloadPolicy: ObservableObject {
     }
 
     init() {
+        // `--reset-download-settings` clears both keys so a UI test can meet the FRESH defaults.
+        // Matching `--reset-widgets`, which exists for the same reason. Passing the keys as plain
+        // launch arguments does not work and fails misleadingly: `-atc.download.wifiOnly <value>`
+        // lands in UserDefaults' ARGUMENT domain, which outranks everything, is read-only, and makes
+        // any non-numeric value read back as `false` — so an attempt to clear a default-ON setting
+        // sets it off instead, and the test fails blaming the feature.
+        if CommandLine.arguments.contains("--reset-download-settings") {
+            UserDefaults.standard.removeObject(forKey: Key.wifiOnly)
+            UserDefaults.standard.removeObject(forKey: Key.precacheNext)
+        }
         wifiOnly = Self.defaultsTrue(Key.wifiOnly)
         precacheNextCycle = Self.defaultsTrue(Key.precacheNext)
     }
