@@ -68,7 +68,9 @@ def embedded_georef(path):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--procedures", default=os.path.join(NAV, "procedures.json"))
-    ap.add_argument("--cache", default="/Users/bsusl/CommSight/plate-georef-out/plates_cache")
+    # REQUIRED, and no default: the old default pointed at a single shared cache, which is how a
+    # 2607 PDF gets read while the index says 2610. One dir per cycle — see fetch_plates.py.
+    ap.add_argument("--cache", required=True, help="cycle-scoped dir of plate PDFs (fetch_plates.py)")
     ap.add_argument("--out", default="/Users/bsusl/CommSight/plate-georef-out/plate_georef_embedded.json")
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--iap-only", action="store_true")

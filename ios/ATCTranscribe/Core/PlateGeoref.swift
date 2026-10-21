@@ -49,9 +49,13 @@ struct PlateGeorefEntry {
 }
 
 /// Bundled lookup of the offline plate-georeference table (`nav/plate_georef.json`, built by
-/// `Tools/build_plate_georef` — OCR the plate, match its fixes to CIFP coords, solve a similarity).
-/// Only high-confidence fits are in the table, so a hit means the plate can be auto-aligned; a miss
-/// means the pilot hand-aligns it. Load-once, like `NavMeta`/`Procedures`.
+/// `Tools/fetch_plates.py` + `Tools/build_plate_georef_embedded.py` — read the FAA's own embedded
+/// page→ground transform out of each geospatial plate PDF). A hit means the plate can be
+/// auto-aligned; a miss means the pilot hand-aligns it, and ~10% of IAPs are a permanent miss
+/// because the FAA does not publish them as geospatial PDFs at all (mostly military and
+/// high-altitude charts). The table MUST be built from the same cycle as `procedures.json` —
+/// see `PlateGeorefTests.testTableCycleMatchesTheBundledPlateIndex`. Load-once, like
+/// `NavMeta`/`Procedures`.
 enum PlateGeoref {
     private struct DTO: Decodable {
         let cycle: String

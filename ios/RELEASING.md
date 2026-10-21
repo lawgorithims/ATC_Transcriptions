@@ -24,6 +24,28 @@ python3 ios/Tools/build_apt.py        --date <YYYY-MM-DD> --out ios/ATCTranscrib
 python3 ios/Tools/build_procedures.py                     --out ios/ATCTranscribe/Resources/nav/procedures.json
 ```
 
+`plate_georef.json` rolls **with** `procedures.json`, never on its own. It stores a page→ground
+transform per plate PDF, and the app fetches that PDF from the cycle `procedures.json` names — so if
+the two disagree, the overlay gets a transform for geometry the pilot is not looking at. Measured on
+the 2607→2610 roll: of 9,007 plates in both, 24 had a transform that moved — 22 by more than 500 m,
+14 by more than 2 km, the worst (`00095VA.PDF`) by 17.6 km on a ~68 km-wide page. Every one of those
+24 rows stays comfortably inside `isPlausible`, so nothing at runtime can catch it: a stale table
+misplaces silently rather than gapping. Needs PyMuPDF + numpy (no system python here has `fitz` — there is a venv at
+`~/CommSight/plate-georef-venv`), ~2.6 GB of plate PDFs and about 10 minutes at 16 workers:
+
+```bash
+CACHE=<scratch>/plates_cache_<cycle>            # one dir PER CYCLE — contents differ, filenames don't
+python3 ios/Tools/fetch_plates.py --cycle <cycle> --cache "$CACHE"   # re-run until it exits 0
+python3 ios/Tools/build_plate_georef_embedded.py --cache "$CACHE" --iap-only \
+        --out ios/ATCTranscribe/Resources/nav/plate_georef.json
+```
+
+The builder counts an uncached plate as a silent skip, so a half-finished download yields a valid,
+correctly-shaped, half-empty table. `PlateGeorefTests` holds the floor (>85% of the index, cycles
+equal, no orphan rows); cycle 2610 covers 9,987 of 11,140 IAPs (89.7%). The missing ~10% carry no
+`/VP` viewport at all — the FAA does not publish them as geospatial PDFs, mostly military and
+high-altitude charts — and those correctly fall back to hand-align.
+
 Then confirm the counts did not collapse. A builder that fetches a bad source and writes a valid,
 nearly-empty database is the failure mode that has actually happened here (`build_sua.py`, 2026-10-19,
 2,829 → 1,286 features), so compare against the outgoing file before you commit:
