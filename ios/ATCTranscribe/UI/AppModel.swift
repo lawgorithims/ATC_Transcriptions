@@ -3995,14 +3995,21 @@ final class AppModel: ObservableObject {
             // the launch settle first, and never do it uninvited on a cellular/hotspot path — the
             // on-demand path still downloads whatever the map actually needs when the pilot looks.
             try? await Task.sleep(nanoseconds: 8_000_000_000)
-            guard await !NetPath.isExpensive() else { return }
-            if let here = await ChartLibrary.shared.nearestFix(preferring: stratux) {
-                await ChartLibrary.shared.prefetchAround(here, layers: layers)
+            if await !NetPath.isExpensive() {
+                if let here = await ChartLibrary.shared.nearestFix(preferring: stratux) {
+                    await ChartLibrary.shared.prefetchAround(here, layers: layers)
+                }
+                prefetchRouteCharts()
             }
-            prefetchRouteCharts()
-            // Pre-load the NEXT cycle last, and only after the around-me and route packs the pilot
-            // needs TODAY are on disk. Both run under `DownloadPolicy`; this one covers only packs
-            // they already downloaded, so it cannot grow the kit — only keep it current.
+            // OUTSIDE that guard, deliberately. `NetPath.isExpensive` is a fixed opinion from before
+            // the pilot had a say; `DownloadPolicy` is the pilot's own, and the pre-cache must obey
+            // THAT or the Wi-Fi-only switch does not mean what it says in either direction — a pilot
+            // who turns it off is asking for cellular to be used, and this would still have refused.
+            // The policy refuses on its own when the switch is on, so nothing is lost by asking it.
+            //
+            // Last, and only after the around-me and route packs the pilot needs TODAY are on disk.
+            // Covers only packs they already downloaded, so it cannot grow the kit — only keep it
+            // current.
             await ChartLibrary.shared.precacheNextCycle()
             // The nav manifest was previously fetched ONLY when the pilot opened the Downloads
             // screen, so a device that never visits it could not discover a staged cycle at all.
