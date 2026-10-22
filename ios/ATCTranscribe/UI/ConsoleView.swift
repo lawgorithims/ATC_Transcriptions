@@ -875,8 +875,27 @@ struct TopBar: View {
 
     // Centralized sizing so the whole bar scales together (the "bigger + roomier" ask).
     private let iconSize: CGFloat = 19        // ~+10% over the old 15–17pt icons
-    private let barSpacing: CGFloat = 14      // ~+15% over the old 12pt
     private let hit = CGSize(width: 30, height: 30)
+
+    /// ⚠️ THIS BAR DOES NOT FIT ON AN iPhone, AND DID NOT BEFORE THE DATA-ACTIVITY ICON.
+    ///
+    /// Measured (NSHostingView intrinsicContentSize of the EFB-only bar): 406pt incompressible with
+    /// the clock at zero, 451.5pt ideal. The widest iPhone in portrait is 440pt and the narrowest
+    /// supported is 375pt, so it was already over budget everywhere — and it overflows by BLEEDING
+    /// OFF BOTH EDGES. There is no `.clipped()`, and `.background(p.surface)` is sized to the
+    /// overflowing content, so the opaque bar runs off-screen with the controls: at 375pt the
+    /// Settings gear and the brand mark each lose 4.5pt with nothing on screen saying so. A
+    /// half-off-screen button is also a half-size tap target, which is worse than a hidden one
+    /// because it still looks present.
+    ///
+    /// Three things give the eighth control its room, in order of what is least missed:
+    ///   * the clock and the brand mark are dropped at compact width (below),
+    ///   * the GAPS tighten from 14pt to 8pt here.
+    ///
+    /// The gaps, not `hit`. Shrinking the 30pt targets would spend the exact ergonomics this bar was
+    /// sized for ("bigger + roomier", for a bumpy flight deck); shrinking the air between them costs
+    /// nothing a finger can feel. Measured result at 375pt: 358pt, inside the width with room spare.
+    private var barSpacing: CGFloat { hSize == .compact ? 8 : 14 }
 
     var body: some View {
         let p = model.palette
@@ -885,8 +904,17 @@ struct TopBar: View {
             Spacer(minLength: 8)
             // Zulu + local, left of the controls. Sits in the bar rather than a widget because it
             // is the one readout that is true regardless of what the map is doing.
-            BarClock(compact: hSize == .compact)
-                .padding(.trailing, 10)
+            //
+            // REGULAR WIDTH ONLY, because at compact width it is not a readout at all. `compact:`
+            // removes the local-time ROW; it does nothing to the Zulu row's width, and measurement
+            // showed the clock being squeezed to 2.00pt at 375pt — both Texts truncated away, 2pt of
+            // HStack spacing left — and to a mid-truncated "00…" at 440pt. It has been showing
+            // nothing on every iPhone; this stops pretending otherwise and spends the space on
+            // controls that work.
+            if hSize == .regular {
+                BarClock(compact: false)
+                    .padding(.trailing, 10)
+            }
             HStack(spacing: barSpacing) {
                 // Only 2 of this bar's 10 controls are transcription — the input toggle here and the
                 // PowerButton below. Everything else (flight bag, map search, layers, widgets, theme,
@@ -909,6 +937,9 @@ struct TopBar: View {
                 if Features.transcription {
                     PowerButton()
                 }
+                // Next to Settings, because that is where it used to live: the pilot who learned
+                // "Settings → Data activity" finds it one slot earlier. Ungated — it is EFB.
+                DataActivityButton(iconSize: iconSize)
                 iconButton(p, "gearshape.fill", id: "settings-button", label: "Settings") {
                     model.showSettings = true
                 }
@@ -922,9 +953,15 @@ struct TopBar: View {
 
     @ViewBuilder private func brand(_ p: Palette) -> some View {
         HStack(spacing: 10) {
-            Image("BrandMark").resizable().scaledToFit()
-                .frame(width: 30, height: 30)
-                .clipShape(RoundedRectangle(cornerRadius: DS.Radius.r2))
+            // The logo is the only element in this bar that does nothing. At compact width the
+            // wordmark beside it is already hidden, and the 40pt the mark occupies is the cheapest
+            // 40pt available — it buys the data-activity control its place without costing a
+            // control, a readout or a tap target. The emergency arm stays: it is not decoration.
+            if hSize == .regular {
+                Image("BrandMark").resizable().scaledToFit()
+                    .frame(width: 30, height: 30)
+                    .clipShape(RoundedRectangle(cornerRadius: DS.Radius.r2))
+            }
             // Wordmark + subtitle only where there's room (iPad / regular width). On iPhone the logo
             // stands alone so the larger control icons fit one row.
             if hSize == .regular {

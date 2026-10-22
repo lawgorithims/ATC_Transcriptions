@@ -110,6 +110,14 @@ final class NetworkActivity: ObservableObject {
     @Published private(set) var jobs: [Job] = []
     /// Categories the pilot has switched off. Jobs in them queue and wait rather than failing —
     /// a paused download that silently errored would be worse than one that visibly waits.
+    ///
+    /// DELIBERATELY NOT PERSISTED, unlike the two `DownloadPolicy` settings beside it. Pausing here
+    /// is triage — "not right now, I need the radar" — not a standing preference, and the categories
+    /// most worth pausing on a bad link are the ones most dangerous to leave off: radar, weather,
+    /// TFRs. A pause that survived relaunch would mean a pilot who silenced weather once over the
+    /// Rockies takes off a week later with it still silenced and nothing but a small amber icon
+    /// saying so. Resetting on launch fails safe. If this is ever persisted, the expiry banner and
+    /// the currency sweep need to learn about it first.
     @Published private(set) var pausedCategories: Set<Category> = []
     /// How many jobs may run at once. Lowered on a metered or constrained link, where parallelism
     /// is actively harmful: the same bytes arrive either way, but serialised they arrive in an order
