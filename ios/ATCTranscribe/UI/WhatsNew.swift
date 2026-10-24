@@ -47,6 +47,14 @@ enum WhatsNew {
                     title: "Live ATC transcription is put away for now",
                     detail: "The radio side needs a piece of cockpit hardware that is not finished, so rather than ship a feature you cannot use, it is hidden — along with the speech-model download it used to ask for on first launch, which is why this build starts straight on the chart. Nothing was deleted; it comes back when the hardware does."),
                 WhatsNewHighlight(
+                    icon: "point.topleft.down.to.point.bottomright.curvepath",
+                    title: "How much of your route has no runway in glide",
+                    detail: "File a route with a cruise altitude and the flight-plan strip's new OUT OF GLIDE cell says how much of it is beyond gliding distance of every runway, and how long the worst stretch lasts. Tap it for the list of gaps and the altitude that would shorten the worst one; on the map the gaps are striped under the route line. Direct Las Cruces to Tucson at 8,500 ft is out of glide for about three quarters of the way, and 2,000 ft higher for about 60%. Runways only — off-field ground is not counted — with forecast headwinds charged and tailwinds never credited."),
+                WhatsNewHighlight(
+                    icon: "arrow.uturn.left.circle",
+                    title: "Glide range that never flatters",
+                    detail: "The nearest-airport list and the glide bands now spend the turn onto each airport (300 ft per 180°) before the glide starts, and take the wind as the average over the whole descent rather than at one level. A headwind shortens reach in full; a tailwind is never credited, because stretching a glide is the classic fatal mistake. Winds more than six hours old are ignored, and the list says when it is working in still air. Airports and terrain use one standard: 1,000 ft above the field on arrival, and 500 ft more before anything is called comfortable."),
+                WhatsNewHighlight(
                     icon: "exclamationmark.triangle",
                     title: "Off-field landability is paused",
                     detail: "The landability shading was tested against real ground for the first time — orchards, solar farms, power lines, fences, runways and dry lakebeds, mapped independently — and it was not good enough to put in front of a pilot. It offered most of the solar farms and over half of the orchards and vineyards tested as landing candidates, and ground directly under power lines a quarter of the time. The shading and the ranked field list are now a developer preview while they are reworked. The emergency button still brings up the nearest airports first and still draws how far you can glide over terrain. If you downloaded landability packs, Downloads can remove them."),

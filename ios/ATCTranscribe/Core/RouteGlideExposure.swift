@@ -160,4 +160,34 @@ enum RouteGlideExposure {
         if let s = start, let end = along.last { gaps.append(Gap(fromNm: s, toNm: end)) }
         return gaps
     }
+
+    // MARK: - drawing
+
+    /// A gap as a polyline along the route it was measured on: the stretch the map draws. The walk
+    /// repeats `densify`'s arithmetic (the same `Geo.nmBetween` per leg, the same running sum), so a
+    /// drawn gap starts and ends where the samples said it did, and bends at the route's own corners.
+    /// Fewer than two points for a zero-length gap: there is nothing to draw.
+    static func polyline(of gap: Gap, along route: [Coord]) -> [Coord] {
+        assert(gap.toNm >= gap.fromNm, "polyline: inverted gap")
+        var out = [Coord]()
+        var along = 0.0
+        for (a, b) in zip(route, route.dropFirst()) {                 // bounded by the route
+            let leg = Geo.nmBetween(a, b)
+            let legStart = along
+            along += leg
+            guard leg > 0, along > gap.fromNm, legStart < gap.toNm else { continue }
+            let f0 = max(0, (gap.fromNm - legStart) / leg)
+            let f1 = min(1, (gap.toNm - legStart) / leg)
+            if out.isEmpty { out.append(Geo.interpolate(a, b, fraction: f0)) }
+            out.append(Geo.interpolate(a, b, fraction: f1))
+        }
+        assert(out.count <= route.count + 1, "polyline: more points than the route has corners")
+        return out
+    }
+
+    /// Every gap of `result` as a drawable polyline along `route`; zero-length gaps are dropped.
+    static func gapLines(_ result: Result?, along route: [Coord]) -> [[Coord]] {
+        guard let result else { return [] }
+        return result.gaps.map { polyline(of: $0, along: route) }.filter { $0.count >= 2 }
+    }
 }

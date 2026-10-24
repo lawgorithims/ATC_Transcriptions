@@ -878,6 +878,24 @@ struct ChartMapView: UIViewRepresentable {
             }
         }
 
+        // The filed route's stretches out of glide of every runway (`RouteGlideExposure`): striped, under
+        // the route line like the breadcrumb. Keyed on the geometry, so a plan that sits unchanged for the
+        // whole flight is drawn once — MapKit re-tessellates an overlay on every remove/re-add.
+        let gaps = model.showRouteGlideGaps ? model.routeGlideGapLines : []
+        let gapKey = gaps.map { $0.map { "\($0.lat),\($0.lon)" }.joined(separator: "|") }.joined(separator: "/")
+        if gapKey != c.lastGlideGapKey {
+            c.lastGlideGapKey = gapKey
+            mv.removeOverlays(c.glideGapOverlays); c.glideGapOverlays = []
+            for line in gaps where line.count >= 2 {                              // bounded by the gaps
+                let coords = line.map { $0.clCoordinate }
+                let band = GlideGapPolyline(coordinates: coords, count: coords.count)
+                if let ro = c.routeOverlay { mv.insertOverlay(band, below: ro) }   // route stays on top
+                else { mv.addOverlay(band, level: .aboveLabels) }
+                c.glideGapOverlays.append(band)
+            }
+            assert(c.glideGapOverlays.count <= gaps.count, "glide gaps: drew more bands than gaps")
+        }
+
         // Incrementally reconcile the raster overlays to `readers` (they come and go as you pan). Tiles
         // sit at the bottom of the label level so airspace outlines + the route line draw over the chart.
         // With the live map background OFF the FAA raster replaces the Apple base outright (see
@@ -1059,6 +1077,8 @@ struct ChartMapView: UIViewRepresentable {
         var lastProcKey: [String] = []
         var trackOverlay: TrackPolyline?             // flight-recorder breadcrumb
         var lastTrackCount = -1                       // count = the change signature (append-only + reset)
+        var glideGapOverlays: [GlideGapPolyline] = [] // route stretches out of glide of every runway
+        var lastGlideGapKey = ""                      // their geometry, as the change signature
         var routeIdents: Set<String> = []
         var didFrame = false
         var didContext = false
@@ -1278,6 +1298,7 @@ struct ChartMapView: UIViewRepresentable {
             lastRouteKey = []; lastProcKey = []                       // rebuilt by the same update pass
             if let to = trackOverlay { mv.removeOverlay(to); trackOverlay = nil }
             lastTrackCount = -1
+            mv.removeOverlays(glideGapOverlays); glideGapOverlays = []; lastGlideGapKey = ""
             refreshContext(mv)                                        // repopulate airspace/airways recolored
         }
 
@@ -1581,6 +1602,14 @@ struct ChartMapView: UIViewRepresentable {
                 let r = MKPolylineRenderer(polyline: track)
                 r.strokeColor = mapTheme.track
                 r.lineWidth = 4
+                return r
+            }
+            if let band = overlay as? GlideGapPolyline {          // route out of glide — wide stripes
+                let r = MKPolylineRenderer(polyline: band)
+                r.strokeColor = mapTheme.glideGap
+                r.lineWidth = 12
+                r.lineDashPattern = [12, 10]
+                r.lineCap = .butt
                 return r
             }
             if let line = overlay as? MKPolyline {
@@ -2208,6 +2237,10 @@ final class NearbyMarkerView: MKAnnotationView {
 /// The flight-recorder breadcrumb polyline — a distinct subclass so the renderer types it (translucent
 /// orange) rather than treating it as the magenta filed route.
 final class TrackPolyline: MKPolyline {}
+
+/// A stretch of the filed route out of glide of every runway (`RouteGlideExposure`) — its own subclass so
+/// the renderer draws it as the striped band rather than as the magenta route.
+final class GlideGapPolyline: MKPolyline {}
 
 /// The RainViewer precipitation-radar tile overlay — a distinct subclass so the renderer draws it
 /// translucent (not as an opaque chart layer). RainViewer tiles use a standard {z}/{x}/{y} URL template,

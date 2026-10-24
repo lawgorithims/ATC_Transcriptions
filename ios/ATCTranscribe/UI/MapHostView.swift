@@ -448,6 +448,9 @@ struct MapHostView: View {
             layer: model.chartLayer,
             routeCoords: route.map { CLLocationCoordinate2D(latitude: $0.coord.lat, longitude: $0.coord.lon) },
             breadcrumbCoords: breadcrumb.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) },
+            glideGapLines: model.showRouteGlideGaps
+                ? model.routeGlideGapLines.map { $0.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) } }
+                : [],
             radarTemplate: radarTemplate,
             // Only the holds actually being FLOWN reach the map — a skipped course reversal is not
             // drawn, so the chart shows what the pilot is doing rather than everything published.

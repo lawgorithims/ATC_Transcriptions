@@ -60,6 +60,31 @@ final class MapThemeSyncTests: XCTestCase {
     }
 
     /// The night airspace ramp must keep TFR the brightest mark on the map (safety hierarchy).
+    /// The route's out-of-glide band sits UNDER the route line and beside the breadcrumb, on every base
+    /// and in every theme. So it must be translucent (the route reads through it), its own colour — never
+    /// the route's, the breadcrumb's, TFR red or alert-area amber — and untouched by the chart-brightness slider.
+    func testGlideGapBandIsItsOwnTranslucentMark() {
+        let themes = AppTheme.allCases.map { ("\($0.rawValue) chart", MapTheme.forTheme($0)) }
+            + AppTheme.allCases.map { ("\($0.rawValue) dark base", MapTheme.smartDark(appTheme: $0)) }
+        func distance(_ a: [CGFloat], _ b: [CGFloat]) -> CGFloat {
+            sqrt(zip(a, b).map { ($0 - $1) * ($0 - $1) }.reduce(0, +))
+        }
+        for (label, t) in themes {
+            let alpha = t.glideGap.cgColor.alpha
+            XCTAssertLessThan(alpha, 0.7, "\(label): the band hides the route under it")
+            XCTAssertGreaterThan(alpha, 0.2, "\(label): the band is invisible")
+            for (name, other) in [("route", t.route), ("breadcrumb", t.track), ("TFR", t.airspaceColor("TFR")),
+                                  ("alert area", t.airspaceColor("A"))] {
+                XCTAssertGreaterThan(distance(rgb(t.glideGap), rgb(other)), 0.15,
+                                     "\(label): the band reads as the \(name)")
+            }
+        }
+        for theme in AppTheme.allCases {
+            XCTAssertEqual(MapTheme.forTheme(theme, chartBrightness: 0.5).glideGap,
+                           MapTheme.forTheme(theme).glideGap, "the band must not dim with the chart")
+        }
+    }
+
     func testNightTFRBrightest() {
         let t = MapTheme.forTheme(.night)
         let tfr = rgb(t.airspaceColor("TFR")).reduce(0, +)

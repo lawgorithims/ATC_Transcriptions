@@ -70,6 +70,12 @@ struct RouteGlideGapView: View {
                      + "\(Int(g.lengthNm.rounded())) NM\(tas.map { " · \(Int((g.lengthNm / $0 * 60).rounded())) min" } ?? "")")
                     .font(.system(.caption, design: .monospaced)).foregroundStyle(p.text)
             }
+            Text(model.showRouteGlideGaps
+                 ? "Striped on the map, under the route line."
+                 : "Turn on \u{201C}Route out of glide\u{201D} in Map layers to see these on the map.")
+                .font(.dsLabelS).foregroundStyle(p.textDim)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 2)
         }
     }
 

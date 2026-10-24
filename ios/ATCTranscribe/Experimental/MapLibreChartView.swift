@@ -21,6 +21,7 @@ struct MapLibreChartView: UIViewRepresentable {
     var layer: ChartLayer = .sectional               // FAA base layer (sectional / IFR-low / IFR-high)
     var routeCoords: [CLLocationCoordinate2D]
     var breadcrumbCoords: [CLLocationCoordinate2D] = []   // flight-recorder trail (translucent orange)
+    var glideGapLines: [[CLLocationCoordinate2D]] = []    // route stretches out of glide of every runway
     var radarTemplate: String? = nil                      // live precipitation-radar tile URL (nil = off)
     /// Published holding patterns on the active approach, already filtered to the ones being FLOWN
     /// (a skipped course reversal never reaches the map).
@@ -130,6 +131,7 @@ struct MapLibreChartView: UIViewRepresentable {
         c.inLZEnergyBands = lzEnergyBands
         c.inLZGlidePlan = lzGlidePlan
         c.onLZEnergyRendered = onLZEnergyRendered
+        c.inGlideGaps = glideGapLines
         c.cacheInputs(layer: layer, routeCoords: routeCoords, breadcrumbCoords: breadcrumbCoords,
                       radarTemplate: radarTemplate, holds: holds, ownship: ownship, ownshipCourse: ownshipCourse,
                       ownshipAccuracyM: ownshipAccuracyM, ownshipIntegrity: ownshipIntegrity,
@@ -182,6 +184,7 @@ struct MapLibreChartView: UIViewRepresentable {
         var inLZProvider: ((String, Int, Int, Int) -> Data?)?
         var inLZProbe: ((Coord) -> LZSampleInfo?)?     // the tap-card sampler; nil when the layer is off
         var inLZEnergyBands: [LZEnergyBand] = []      // live arrival-energy footprint; [] = nothing to draw
+        var inGlideGaps: [[CLLocationCoordinate2D]] = []   // `AppModel.routeGlideGapLines`; [] = nothing
         var inLZGlidePlan: LZGlidePlan?               // the rehearsed glide the pilot ARMED; nil = none
         var onLZEnergyRendered: ((Int) -> Void)? = nil
         private var installedLZSignature: String??   // double-optional: distinguishes "never installed"
@@ -343,6 +346,7 @@ struct MapLibreChartView: UIViewRepresentable {
             // @MainActor → hop, matching ensureVisiblePacks). Signature-gated, so a no-op when the set is unchanged.
             Task { @MainActor [weak self, weak map] in guard let self, let map else { return }; self.syncFAASource(on: map) }
             updateRoute(inRoute, on: map)
+            updateGlideGaps(inGlideGaps, on: map)
             updateRouteWaypoints(inRouteLegs, on: map)
             updateHolds(inHolds, on: map)
             updateTrack(inBreadcrumb, on: map)
@@ -668,6 +672,8 @@ struct MapLibreChartView: UIViewRepresentable {
                                                  // into the throwaway style and never drawn on the real one
             appliedRouteSig = nil                // same class (pre-existing): an unchanged ROUTE applied to
                                                  // the throwaway style never re-uploads to the real one
+            appliedGlideGapSig = nil             // …and so do its out-of-glide stretches, for as long as
+                                                 // the plan is unchanged
             appliedOwnSig = nil                  // and a PARKED aircraft's ownship (inside the ~12 m/3°
                                                  // dead band) could stay invisible; motion self-heals,
                                                  // sitting still must not
@@ -679,6 +685,7 @@ struct MapLibreChartView: UIViewRepresentable {
             setupOverlayLayers(style)            // airspace/airways/nav + TFR/route/traffic/ownship (empty)
             applyMapThemeIfNeeded(on: mapView)   // recolor the fresh layers for the active theme
             updateRoute(routeCoords, on: mapView)
+            updateGlideGaps(inGlideGaps, on: mapView)
             updateRouteWaypoints(inRouteLegs, on: mapView)
             applyRouteWptVisibility(on: mapView) // fresh layers default to visible → hide off the dark base
             updateHolds(inHolds, on: mapView)
@@ -780,7 +787,7 @@ struct MapLibreChartView: UIViewRepresentable {
         private func clearManagedStyle(_ style: MLNStyle) {
             let layers = ["plate-raster", "ownship-sym", "accuracy-fill", "accuracy-line", "traffic-sym",
                           "route-wpt-spd", "route-wpt-alt", "route-wpt-sym",
-                          "hold-line", "route-line", "track-line",
+                          "hold-line", "route-line", "route-glide-gap-line", "track-line",
                           "wxradar-layer", "lz-glide-line", "lz-layer",
                           "lz-energy-line", "lz-energy-fill",
                           "tfr-label", "tfr-outline", "tfr-fill", "nav-sym",
@@ -789,7 +796,8 @@ struct MapLibreChartView: UIViewRepresentable {
             for id in layers where style.layer(withIdentifier: id) != nil {          // bounded (rule 2)
                 if let l = style.layer(withIdentifier: id) { style.removeLayer(l) }
             }
-            let sources = ["plate", "ownship", "accuracy", "traffic", "route-wpt", "holds", "route", "track",
+            let sources = ["plate", "ownship", "accuracy", "traffic", "route-wpt", "holds", "route",
+                           "route-glide-gap", "track",
                            "wxradar", "lz", "lz-glide", "lz-energy", "tfr-labels", "tfr",
                            "nav", "airspace-labels", "airspace", "airways", "night-veil", "land"]
             for id in sources where style.source(withIdentifier: id) != nil {        // bounded (rule 2)
@@ -1047,6 +1055,18 @@ struct MapLibreChartView: UIViewRepresentable {
             track.lineWidth = NSExpression(forConstantValue: 4.0)
             track.lineCap = NSExpression(forConstantValue: "round"); track.lineJoin = NSExpression(forConstantValue: "round")
             style.addLayer(track)
+
+            // The filed route's stretches out of glide of every runway (`RouteGlideExposure`): wide
+            // translucent STRIPES under the route line, so the magenta stays readable through them and the
+            // band cannot be taken for a second line. Butt caps: a stripe ends where the gap does.
+            let gapSrc = MLNShapeSource(identifier: "route-glide-gap", shape: nil, options: nil)
+            style.addSource(gapSrc)
+            let gap = MLNLineStyleLayer(identifier: "route-glide-gap-line", source: gapSrc)
+            gap.lineColor = NSExpression(forConstantValue: UIColor(red: 1.0, green: 0.84, blue: 0.04, alpha: 0.42))
+            gap.lineWidth = NSExpression(forConstantValue: 12.0)
+            gap.lineDashPattern = NSExpression(forConstantValue: [1.0, 0.8])     // in line widths
+            gap.lineCap = NSExpression(forConstantValue: "butt"); gap.lineJoin = NSExpression(forConstantValue: "round")
+            style.addLayer(gap)
 
             // Route (persistent source so ownship/traffic can sit above it).
             let routeSrc = MLNShapeSource(identifier: "route", shape: nil, options: nil); style.addSource(routeSrc)
@@ -1772,6 +1792,8 @@ struct MapLibreChartView: UIViewRepresentable {
                 NSExpression(forConstantValue: t.track)
             (style.layer(withIdentifier: "route-line") as? MLNLineStyleLayer)?.lineColor =
                 NSExpression(forConstantValue: t.route)
+            (style.layer(withIdentifier: "route-glide-gap-line") as? MLNLineStyleLayer)?.lineColor =
+                NSExpression(forConstantValue: t.glideGap)
             // Alpha < 1 (0.95): set as a UIColor through NSExpression, never through MapTheme.hexString,
             // which asserts opacity because style-JSON colors must be opaque.
             (style.layer(withIdentifier: "hold-line") as? MLNLineStyleLayer)?.lineColor =
@@ -2057,6 +2079,25 @@ struct MapLibreChartView: UIViewRepresentable {
             src.shape = MLNPolylineFeature(coordinates: &c, count: UInt(c.count))
         }
 
+        /// The route's out-of-glide stretches. Signature-gated like the route: a filed plan's gaps sit
+        /// unchanged for the whole flight, so an unchanged set must cost nothing per tick.
+        func updateGlideGaps(_ lines: [[CLLocationCoordinate2D]], on mapView: MLNMapView) {
+            guard let src = mapView.style?.source(withIdentifier: "route-glide-gap") as? MLNShapeSource else { return }
+            assert(lines.count <= RouteGlideExposure.maxSamples, "updateGlideGaps: more gaps than samples")
+            let sig = lines.map { line in
+                line.map { "\(Self.q($0.latitude)),\(Self.q($0.longitude))" }.joined(separator: "|")
+            }.joined(separator: "/")
+            guard sig != appliedGlideGapSig else { return }
+            appliedGlideGapSig = sig
+            let features: [MLNPolylineFeature] = lines.compactMap { line in   // bounded by the gaps
+                guard line.count >= 2 else { return nil }
+                var c = line
+                return MLNPolylineFeature(coordinates: &c, count: UInt(c.count))
+            }
+            assert(features.count <= lines.count, "updateGlideGaps: invented a line")
+            src.shape = features.isEmpty ? nil : MLNShapeCollectionFeature(shapes: features)
+        }
+
         /// The active approach's holding patterns, drawn as racetracks. Signature-gated like the route so
         /// an unchanged set costs nothing per tick. nonisolated-safe geometry: the racetrack is pure math
         /// on the pattern, no map state.
@@ -2204,6 +2245,7 @@ struct MapLibreChartView: UIViewRepresentable {
         // These are the map inputs' identity, distinct from the last-INPUT caches above (which exist so
         // didFinishLoading can re-apply). Set ONLY after a real apply, so the first post-style apply still runs.
         private var appliedRouteSig: String?
+        private var appliedGlideGapSig: String?
         private var appliedHoldSig: String?
         private var appliedOwnSig: String?
         private var appliedTrafficSig: String?

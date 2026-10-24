@@ -84,6 +84,44 @@ final class RouteGlideExposureTests: XCTestCase {
         XCTAssertLessThanOrEqual(huge.count, RouteGlideExposure.maxSamples, "the walk is unbounded")
     }
 
+    // MARK: - drawing
+
+    /// A gap inside one leg is two points, at the gap's own distances along the route.
+    func testAGapInsideOneLegIsDrawnBetweenItsDistances() {
+        let line = RouteGlideExposure.polyline(of: .init(fromNm: 10, toNm: 20), along: route)
+        XCTAssertEqual(line.count, 2)
+        XCTAssertEqual(Geo.nmBetween(start, line[0]), 10, accuracy: 0.01)
+        XCTAssertEqual(Geo.nmBetween(start, line[1]), 20, accuracy: 0.01)
+    }
+
+    /// A gap that spans a turn bends with the route: it keeps the corner, never cutting across it.
+    func testAGapAcrossACornerKeepsTheCorner() {
+        let corner = Coord(lat: start.lat + 0.5, lon: start.lon)                      // ~30 NM north
+        let dogleg = [start, corner, Geo.destination(from: corner, bearingDeg: 90, distanceNm: 30)]
+        let first = Geo.nmBetween(dogleg[0], dogleg[1])
+        let line = RouteGlideExposure.polyline(of: .init(fromNm: first - 10, toNm: first + 10), along: dogleg)
+        XCTAssertEqual(line.count, 3, "start, the corner, end: \(line)")
+        XCTAssertEqual(line[1].lat, corner.lat, accuracy: 1e-9)
+        XCTAssertEqual(line[1].lon, corner.lon, accuracy: 1e-9)
+        XCTAssertEqual(Geo.nmBetween(corner, line[2]), 10, accuracy: 0.01)
+    }
+
+    /// What the map draws comes from the same distances the samples measured: the drawn gap of the
+    /// empty-middle route starts and ends where `evaluate` says it does. A gap of no length draws nothing.
+    func testTheDrawnGapsAreTheMeasuredOnes() throws {
+        let r = try XCTUnwrap(RouteGlideExposure.evaluate(
+            route: route, altitudeFtMSL: 6_000, glideRatio: 9, bestGlideKts: 65,
+            world: world([field("SRT", nmNorth: 0), field("END", nmNorth: 60)])))
+        let lines = RouteGlideExposure.gapLines(r, along: route)
+        XCTAssertEqual(lines.count, r.gaps.count)
+        let gap = try XCTUnwrap(r.gaps.first), line = try XCTUnwrap(lines.first)
+        XCTAssertEqual(Geo.nmBetween(start, try XCTUnwrap(line.first)), gap.fromNm, accuracy: 0.01)
+        XCTAssertEqual(Geo.nmBetween(start, try XCTUnwrap(line.last)), gap.toNm, accuracy: 0.01)
+        let end = Geo.nmBetween(route[0], route[1])
+        XCTAssertTrue(RouteGlideExposure.polyline(of: .init(fromNm: end, toNm: end), along: route).count < 2)
+        XCTAssertTrue(RouteGlideExposure.gapLines(nil, along: route).isEmpty)
+    }
+
     // MARK: - real data
 
     /// KLRU → KTUS direct, against the bundled airport database and terrain grid — the route the deep

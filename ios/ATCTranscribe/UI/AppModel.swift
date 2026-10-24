@@ -3919,9 +3919,17 @@ final class AppModel: ObservableObject {
     /// cruise altitude, or before the first computation lands. See `RouteGlideExposure`.
     @Published private(set) var routeGlideExposure: RouteGlideExposure.Result?
     @Published private(set) var routeGlideSuggestion: RouteGlideExposure.Result?
+    /// The exposed stretches as polylines along the route they were measured on — what both map engines
+    /// draw (see `RouteGlideExposure.gapLines`). Empty with no exposure.
+    @Published private(set) var routeGlideGapLines: [[Coord]] = []
+    /// Map-layers switch for those stretches. On by default: they only exist once a pilot files a route
+    /// with a cruise altitude, and then they are the point.
+    @Published var showRouteGlideGaps = (UserDefaults.standard.object(forKey: "atc.map.glideGaps") as? Bool) ?? true {
+        didSet { UserDefaults.standard.set(showRouteGlideGaps, forKey: "atc.map.glideGaps") }
+    }
     private var routeGlideEpoch = 0
     /// A gap shorter than this at cruise is not worth climbing for — the suggestion's target.
-    static let glideGapTargetMinutes = 10.0
+    nonisolated static let glideGapTargetMinutes = 10.0     // read inside the detached assessment
 
     /// Recompute the exposure OFF-MAIN — one airport-list assessment per route mile, plus a climb search.
     /// Epoch-guarded like `refreshTripStats`, so an edit mid-computation discards the stale answer.
@@ -3931,6 +3939,7 @@ final class AppModel: ObservableObject {
         guard route.count >= 2, let alt = flightPlan?.cruiseAltitudeFt.map(Double.init), alt > 0 else {
             routeGlideExposure = nil
             routeGlideSuggestion = nil
+            routeGlideGapLines = []
             return
         }
         let ratio = selectedAircraft?.glideRatio ?? NearestAirports.defaultGlideRatio
@@ -3941,7 +3950,8 @@ final class AppModel: ObservableObject {
         let winds = windAloft.freshFieldSet                              // Sendable snapshot, or nil
         Task {
             let out = await Task.detached(priority: .utility) { () -> (RouteGlideExposure.Result?,
-                                                                       RouteGlideExposure.Result?) in
+                                                                       RouteGlideExposure.Result?,
+                                                                       [[Coord]]) in
                 let world = RouteGlideExposure.World(
                     airportsNear: { AirportData.airportsNear($0, radiusNm: $1, limit: 256) },
                     runwaysFor: { AirportData.runways(airport: $0) },
@@ -3960,11 +3970,12 @@ final class AppModel: ObservableObject {
                         glideRatio: ratio, bestGlideKts: vbg, acceptsWater: water,
                         acceptsLand: land, world: world)
                     : nil
-                return (now, better)
+                return (now, better, RouteGlideExposure.gapLines(now, along: route))
             }.value
             guard epoch == routeGlideEpoch else { return }               // superseded → discard
             routeGlideExposure = out.0
             routeGlideSuggestion = out.1
+            routeGlideGapLines = out.2
         }
     }
 

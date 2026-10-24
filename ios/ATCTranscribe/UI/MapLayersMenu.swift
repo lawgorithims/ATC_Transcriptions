@@ -64,6 +64,10 @@ struct MapLayersPanel: View {
                     layerToggle($model.showSmoke, "Smoke & satellite (NASA)", "smoke", p, id: "layer-smoke")
                     layerToggle($model.showWxRadar, "Weather radar (precip)", "cloud.rain", p, id: "layer-radar")
                     layerToggle($model.showWindAloft, "Winds aloft (animated)", "wind", p, id: "layer-wind")
+                    // Striped stretches of the FILED route with no runway in glide at the filed
+                    // altitude — the map half of the flight-plan strip's OUT OF GLIDE cell.
+                    layerToggle($model.showRouteGlideGaps, "Route out of glide of any runway",
+                                "exclamationmark.triangle", p, id: "layer-glide-gaps")
 
                     // Off-field landability — DEVELOPER-ONLY AGAIN as of build 110. It was un-gated
                     // once packs became downloadable; the first ground-truth test then found it

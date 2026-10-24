@@ -34,6 +34,12 @@ struct MapTheme: Equatable {
     /// Holding-pattern racetrack on the active approach. Part of the procedure, so it tracks the route's
     /// color family rather than the chart furniture.
     let hold: UIColor
+    /// The stretches of the filed route that are out of glide of every runway at the planned altitude
+    /// (`RouteGlideExposure`): a wide, translucent, STRIPED band under the route line. The stripes carry
+    /// the meaning in every theme, so the hue only has to stay clear of the two lines it sits with —
+    /// the route and the breadcrumb — and of TFR red, which must remain the most alarming mark.
+    /// NOTE: alpha < 1 — apply via `NSExpression(forConstantValue:)`, never `hexString`.
+    let glideGap: UIColor
     /// Route-waypoint ident text (the `.smartDark` route-fix labels). Night trims label EMISSION only —
     /// the base, terrain and route line are identical in every theme — so the mode keeps the app's
     /// "red-only emission where practical" dark-adaptation stance without changing its look by day.
@@ -146,7 +152,8 @@ struct MapTheme: Equatable {
             airway: airway, airwayLabelText: airwayLabelText, airwayLabelHalo: airwayLabelHalo,
             navLabelText: navLabelText, navLabelHalo: navLabelHalo,
             airspace: airspace, route: route, track: track, procedure: procedure,
-            hold: hold, routeWptText: routeWptText, routeWptAlt: routeWptAlt, routeWptSpeed: routeWptSpeed,
+            hold: hold, glideGap: glideGap,
+            routeWptText: routeWptText, routeWptAlt: routeWptAlt, routeWptSpeed: routeWptSpeed,
             routeWptIAF: routeWptIAF, routeWptFAF: routeWptFAF, routeWptMAP: routeWptMAP,
             rasterBrightnessMax: rasterBrightnessMax * scale,
             rasterSaturation: rasterSaturation, rasterContrast: rasterContrast,
@@ -179,6 +186,8 @@ struct MapTheme: Equatable {
             track: rgb(0xFF9F1C, 0.45),                 // breadcrumb, deliberately quieter than the route
             procedure: rgb(0x29C7F0),                   // classic engine's dashed preview only
             hold: rgb(0xFF9F1C, 0.95),                  // part of the procedure → route's color family
+            // The route is amber here, so the band goes cool: a slate that reads on near-black.
+            glideGap: night ? rgb(0xC08A94, 0.45) : rgb(0x9FB0BE, 0.45),
             routeWptText: night ? rgb(0xF2B0A0) : .white,
             routeWptAlt: night ? rgb(0xC08A94) : rgb(0x4FC3F7),
             routeWptSpeed: night ? rgb(0xC77FB0) : rgb(0xE040FB),
@@ -205,7 +214,7 @@ struct MapTheme: Equatable {
                 navLabelText: .white, navLabelHalo: UIColor.black.withAlphaComponent(0.85),
                 airspace: chartAirspace,
                 route: rgb(0xF23D9E), track: rgb(0xFF9E33, 0.85), procedure: rgb(0x29C7F0),
-                hold: legacyHold,
+                hold: legacyHold, glideGap: rgb(0xFFD60A, 0.42),     // caution yellow under the magenta
                 routeWptText: .white, routeWptAlt: rgb(0x4FC3F7), routeWptSpeed: rgb(0xE040FB),
                 routeWptIAF: rgb(0x7FE0A0), routeWptFAF: rgb(0xFFC24B), routeWptMAP: rgb(0xFF6B6B),
                 rasterBrightnessMax: 0.95, rasterSaturation: 0, rasterContrast: 0,
@@ -222,7 +231,7 @@ struct MapTheme: Equatable {
                 navLabelText: rgb(0x17242E), navLabelHalo: UIColor.white.withAlphaComponent(0.9),
                 airspace: chartAirspace,
                 route: rgb(0xF23D9E), track: rgb(0xFF9E33, 0.85), procedure: rgb(0x29C7F0),
-                hold: legacyHold,
+                hold: legacyHold, glideGap: rgb(0xFFD60A, 0.55),     // highlighter yellow, stronger on the light base
                 routeWptText: rgb(0x17242E), routeWptAlt: rgb(0x0B6C93), routeWptSpeed: rgb(0x8E1FA0),
                 routeWptIAF: rgb(0x11703C), routeWptFAF: rgb(0x8A5200), routeWptMAP: rgb(0xB3261E),
                 rasterBrightnessMax: 1.0, rasterSaturation: 0, rasterContrast: 0,
@@ -241,7 +250,7 @@ struct MapTheme: Equatable {
                 navLabelText: rgb(0xF2B0A0), navLabelHalo: UIColor.black.withAlphaComponent(0.85),
                 airspace: nightAirspace,
                 route: rgb(0xFF5A3C), track: rgb(0xB0521E, 0.85), procedure: rgb(0xE07A5A),
-                hold: legacyHold,
+                hold: legacyHold, glideGap: rgb(0xF2B0A0, 0.35),     // the night label tint, dim: clear of the brown breadcrumb
                 routeWptText: rgb(0xF2B0A0), routeWptAlt: rgb(0xC08A94), routeWptSpeed: rgb(0xC77FB0),
                 routeWptIAF: rgb(0xD98A72), routeWptFAF: rgb(0xFF7040), routeWptMAP: rgb(0xFF3B24),
                 rasterBrightnessMax: 0.55, rasterSaturation: -0.65, rasterContrast: 0.10,
