@@ -198,16 +198,18 @@ enum CIFP {
     static func legs(procedureID: Int) -> [CIFPLeg] {
         guard let db else { return [] }
         var st: OpaquePointer?
-        guard sqlite3_prepare_v2(db, """
+        let prep = sqlite3_prepare_v2(db, """
               SELECT seq,fix,lat,lon,leg_type,course_mag,alt,COALESCE(wp_desc,''),
                      COALESCE(alt_desc,''),COALESCE(alt2,''),speed_limit,vertical_angle,rnp,
                      COALESCE(turn,''),COALESCE(recd_navaid,''),rf_lat,rf_lon
               FROM leg WHERE procedure_id=?1 ORDER BY seq
-              """, -1, &st, nil) == SQLITE_OK else { return [] }
+              """, -1, &st, nil)
+        guard prep == SQLITE_OK else { noteReadFailure(prep, "legs query"); return [] }
         defer { sqlite3_finalize(st) }
         sqlite3_bind_int64(st, 1, Int64(procedureID))
         var out: [CIFPLeg] = []
-        while sqlite3_step(st) == SQLITE_ROW {
+        var rc = sqlite3_step(st)
+        while rc == SQLITE_ROW {                                        // bounded by the procedure's legs
             let hasCoord = sqlite3_column_type(st, 2) != SQLITE_NULL
             out.append(CIFPLeg(seq: Int(sqlite3_column_int(st, 0)), fix: text(st, 1),
                                coord: hasCoord ? Coord(lat: sqlite3_column_double(st, 2), lon: sqlite3_column_double(st, 3)) : nil,
@@ -223,7 +225,9 @@ enum CIFP {
                                arcCentre: sqlite3_column_type(st, 15) != SQLITE_NULL
                                    ? Coord(lat: sqlite3_column_double(st, 15),
                                            lon: sqlite3_column_double(st, 16)) : nil))
+            rc = sqlite3_step(st)
         }
+        if rc != SQLITE_DONE { noteReadFailure(rc, "legs read") }
         return out
     }
 
@@ -385,9 +389,12 @@ enum CIFP {
     static var procedureCount: Int {
         guard let db else { return 0 }
         var st: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM procedure", -1, &st, nil) == SQLITE_OK else { return 0 }
+        let prep = sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM procedure", -1, &st, nil)
+        guard prep == SQLITE_OK else { noteReadFailure(prep, "count"); return 0 }
         defer { sqlite3_finalize(st) }
-        return sqlite3_step(st) == SQLITE_ROW ? Int(sqlite3_column_int64(st, 0)) : 0
+        let rc = sqlite3_step(st)
+        guard rc == SQLITE_ROW else { noteReadFailure(rc, "count"); return 0 }
+        return Int(sqlite3_column_int64(st, 0))
     }
 
     // MARK: helpers
@@ -401,12 +408,28 @@ enum CIFP {
     private static func bind<T>(_ sql: String, _ airport: String, _ row: (OpaquePointer?) -> T) -> [T] {
         guard let db else { return [] }
         var st: OpaquePointer?
-        guard sqlite3_prepare_v2(db, sql, -1, &st, nil) == SQLITE_OK else { return [] }
+        let prep = sqlite3_prepare_v2(db, sql, -1, &st, nil)
+        guard prep == SQLITE_OK else { noteReadFailure(prep, "query"); return [] }
         defer { sqlite3_finalize(st) }
         sqlite3_bind_text(st, 1, airport.trimmingCharacters(in: .whitespaces).uppercased(), -1, SQLITE_TRANSIENT)
         var out: [T] = []
-        while sqlite3_step(st) == SQLITE_ROW { out.append(row(st)) }
+        var rc = sqlite3_step(st)
+        while rc == SQLITE_ROW { out.append(row(st)); rc = sqlite3_step(st) }   // bounded by the result set
+        if rc != SQLITE_DONE { noteReadFailure(rc, "read") }
         return out
+    }
+
+    /// Every caller reads a failed query as "no rows", so an unreadable database looks exactly like an
+    /// airport with no procedures. Say so in the device log — once per launch, with SQLite's own reason.
+    /// The case that prompted it: Apple's libsqlite3 invalidates a connection whose file was replaced or
+    /// deleted under it ("vnode unlinked while in use"), after which every query here failed silently
+    /// (see `NavDataUpdate.installedURL`).
+    private static var loggedReadFailure = false
+    private static func noteReadFailure(_ rc: Int32, _ what: String) {
+        guard !loggedReadFailure else { return }
+        loggedReadFailure = true
+        NSLog("CommSight: CIFP %@ failed — %@ (%d). Procedure lookups may be empty for the rest of this launch.",
+              what, String(cString: sqlite3_errstr(rc)), rc)
     }
 
     private static func text(_ st: OpaquePointer?, _ i: Int32) -> String {
