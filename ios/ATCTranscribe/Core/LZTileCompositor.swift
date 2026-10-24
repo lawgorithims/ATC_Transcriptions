@@ -192,6 +192,21 @@ final class LZTileCompositor {
 
     /// Numeric score for the card. `nil` means the layer makes no claim; `0` means it actively
     /// excludes the cell — the card must distinguish those, so this cannot collapse them either.
+    /// One pixel's verdict as a number — −2 unknown, −1 excluded, otherwise the score.
+    ///
+    /// Exists for `LZScoreGoldenTests`, which recomputes `lz/eval/golden_scores.json` on THIS code.
+    /// The offline evaluator (`lz/eval_groundtruth.py`) must reproduce those numbers exactly; the pin
+    /// is the only thing that stops it measuring a different layer from the one a pilot sees.
+    func verdictCode(cls: UInt8, conf: UInt8, slope: UInt8, rough: UInt8, hazard: UInt8,
+                     flags: UInt8, coarse: Bool, extent: UInt8?) -> Int {
+        switch verdict(cls: cls, conf: conf, slope: slope, rough: rough, hazard: hazard,
+                       flags: flags, coarse: coarse, extent: extent) {
+        case .unknown: return -2
+        case .excluded: return -1
+        case .scored(let s): return s
+        }
+    }
+
     private func scoreValue(_ v: Verdict) -> Int? {
         switch v {
         case .unknown: return nil
