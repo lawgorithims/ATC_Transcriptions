@@ -225,10 +225,28 @@ final class NetworkActivity: ObservableObject {
                 return
             }
             update(id) { $0.state = pausedCategories.contains($0.category) ? .paused : .queued }
-            await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-                waiters[id] = c
+            // ⚠️ CANCELLATION HAS TO REACH A PARKED JOB. A caller that cancels its own Task while
+            // this one is waiting for a turn would otherwise leave the continuation un-resumed
+            // forever: the task never finishes, its `defer` never runs, and the row sits in the
+            // queue as "waiting" with nothing left to wait for. Nothing exercised that until a
+            // caller with its own Cancel button was wired in — the landability packs — because
+            // every earlier caller runs to completion once queued.
+            await withTaskCancellationHandler {
+                await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                    guard !Task.isCancelled else { return c.resume() }
+                    waiters[id] = c
+                }
+            } onCancel: {
+                Task { @MainActor [weak self] in self?.noteCancelled(id) }
             }
         }
+    }
+
+    /// Mark a job cancelled from outside the actor and wake it, so `waitForTurn` re-evaluates,
+    /// sees `.cancelled` and lets `run` throw. Safe if the job already finished or was resumed.
+    private func noteCancelled(_ id: UUID) {
+        if let i = index(id), jobs[i].state != .running { jobs[i].state = .cancelled }
+        pump()
     }
 
     /// Wake every waiter so each re-evaluates the rule. Called whenever the answer could have

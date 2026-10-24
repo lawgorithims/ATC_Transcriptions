@@ -146,6 +146,27 @@ final class NetworkActivityTests: XCTestCase {
         if case .success = result { XCTFail("a stopped job must report failure, not success") }
     }
 
+    /// ⚠️ CANCELLING A PARKED JOB MUST NOT HANG IT. `waitForTurn` suspends on a continuation; a
+    /// caller that cancels its own Task while the job is waiting for a turn would, without a
+    /// cancellation handler, leave that continuation un-resumed forever — the task never finishes,
+    /// its `defer` never runs, and the row sits in the queue as "waiting" with nothing left to wait
+    /// for. Every caller before the landability packs ran to completion once queued, so nothing
+    /// exercised it. Without the handler this test does not fail; it times out.
+    @MainActor
+    func testCancellingTheCallersTaskReleasesAJobThatIsStillWaiting() async {
+        let q = NetworkActivity()
+        q.setPaused(.landability, true)          // guarantee it parks rather than running
+        var ran = false
+        let task = Task { try await q.run("pack", category: .landability) { ran = true } }
+        await Task.yield()
+        XCTAssertEqual(q.activeJobs.first?.state, .paused, "the job should be parked")
+
+        task.cancel()
+        let result = await task.result            // hangs here if the continuation is orphaned
+        XCTAssertFalse(ran, "cancelled work must not run")
+        if case .success = result { XCTFail("a cancelled job must report failure") }
+    }
+
     /// A finished queue reports nothing, so the UI can stay out of the way when there is no problem.
     @MainActor
     func testSummaryIsNilWhenIdle() {
