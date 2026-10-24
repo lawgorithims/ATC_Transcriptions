@@ -3884,6 +3884,7 @@ final class AppModel: ObservableObject {
         guard let plan = flightPlan, !plan.isEmpty else {
             tripStats = nil; resolvedRoute = []
             constraintRoute = []; dismissedConstraintFix = nil    // else the ALT advisory judges a route that is gone
+            refreshRouteGlideExposure(route: [])
             return
         }
         let epoch = tripStatsEpoch
@@ -3902,6 +3903,59 @@ final class AppModel: ObservableObject {
             tripStats = out.0
             resolvedRoute = out.1                                         // cached for the live GPS-bar ETAs
             constraintRoute = out.2
+            refreshRouteGlideExposure(route: out.1.map(\.coord))
+        }
+    }
+
+    // MARK: Route glide exposure (preflight)
+
+    /// How much of the filed route is out of glide of every runway at the planned altitude, and the
+    /// lowest altitude that brings the longest gap under `glideGapTargetMinutes`. Nil with no plan, no
+    /// cruise altitude, or before the first computation lands. See `RouteGlideExposure`.
+    @Published private(set) var routeGlideExposure: RouteGlideExposure.Result?
+    @Published private(set) var routeGlideSuggestion: RouteGlideExposure.Result?
+    private var routeGlideEpoch = 0
+    /// A gap shorter than this at cruise is not worth climbing for — the suggestion's target.
+    static let glideGapTargetMinutes = 10.0
+
+    /// Recompute the exposure OFF-MAIN — one airport-list assessment per route mile, plus a climb search.
+    /// Epoch-guarded like `refreshTripStats`, so an edit mid-computation discards the stale answer.
+    func refreshRouteGlideExposure(route: [Coord]) {
+        routeGlideEpoch += 1
+        let epoch = routeGlideEpoch
+        guard route.count >= 2, let alt = flightPlan?.cruiseAltitudeFt.map(Double.init), alt > 0 else {
+            routeGlideExposure = nil
+            routeGlideSuggestion = nil
+            return
+        }
+        let ratio = selectedAircraft?.glideRatio ?? NearestAirports.defaultGlideRatio
+        let vbg = Double(selectedAircraft?.bestGlideKts ?? 65)
+        let tas = selectedAircraft?.cruiseKts.map(Double.init)
+        let winds = windAloft.freshFieldSet                              // Sendable snapshot, or nil
+        Task {
+            let out = await Task.detached(priority: .utility) { () -> (RouteGlideExposure.Result?,
+                                                                       RouteGlideExposure.Result?) in
+                let world = RouteGlideExposure.World(
+                    airportsNear: { AirportData.airportsNear($0, radiusNm: $1, limit: 256) },
+                    runwaysFor: { AirportData.runways(airport: $0) },
+                    terrain: Self.nrstTerrain,
+                    windAt: { c, from, ground in
+                        winds?.descentMeanWind(at: c.lat, lon: c.lon, fromFtMSL: from, groundFt: ground)
+                    })
+                let now = RouteGlideExposure.evaluate(route: route, altitudeFtMSL: alt, glideRatio: ratio,
+                                                      bestGlideKts: vbg, world: world)
+                let target = (tas ?? 90) * Self.glideGapTargetMinutes / 60
+                let better = (now?.longestGapNm ?? 0) > target
+                    ? RouteGlideExposure.lowestAltitude(
+                        closingGapsTo: target, route: route,
+                        startFtMSL: alt + RouteGlideExposure.altitudeStepFt,
+                        glideRatio: ratio, bestGlideKts: vbg, world: world)
+                    : nil
+                return (now, better)
+            }.value
+            guard epoch == routeGlideEpoch else { return }               // superseded → discard
+            routeGlideExposure = out.0
+            routeGlideSuggestion = out.1
         }
     }
 

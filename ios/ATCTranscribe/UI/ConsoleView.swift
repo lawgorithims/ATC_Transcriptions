@@ -1337,6 +1337,7 @@ struct FlightPlanBar: View {
     @State private var alternateText = ""
     @State private var editingAircraft: AircraftProfile?
     @State private var confirmClear = false
+    @State private var showGlideGaps = false
     @State private var fplURL: URL?
     @State private var showFPLImporter = false
     @State private var commitTask: Task<Void, Never>?
@@ -1362,6 +1363,11 @@ struct FlightPlanBar: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(p.bg)
         .barSeparator(p)
+        // ⚠️ `.contain` FIRST, or the strip's identifier is pushed down onto every control inside it.
+        // Without it `plan-route`, `plan-altitude`, `plan-glide-exposure` and the rest all answered to
+        // "flight-plan-bar", so no UI test could target a single control in this strip — the
+        // screenshot test's fallback to the bar's own identifier is what hid it.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("flight-plan-bar")
         .onAppear { syncFromModel() }
         .onChange(of: model.flightPlan) { _, _ in reconcileWithModel() }
@@ -1645,6 +1651,16 @@ struct FlightPlanBar: View {
                 stat(p, "ETA", model.tripStats?.etaText(from: context.date) ?? "–")
             }
             stat(p, "FUEL", model.tripStats?.fuelText ?? "–")
+            // How much of the route has no runway in glide at the filed altitude — the preflight half
+            // of the reach model (see `RouteGlideExposure`). Tap for the gaps and a climb suggestion.
+            Button { showGlideGaps = true } label: {
+                stat(p, "OUT OF GLIDE", RouteGlideGapView.cellText(
+                    model.routeGlideExposure, tas: model.selectedAircraft?.cruiseKts.map(Double.init)))
+            }
+            .buttonStyle(.plain)
+            .disabled(model.routeGlideExposure == nil)
+            .accessibilityIdentifier("plan-glide-exposure")
+            .popover(isPresented: $showGlideGaps) { RouteGlideGapView().environmentObject(model) }
             stat(p, "WIND", "–")
             Spacer(minLength: 4)
             if model.flightPlan?.isStale == true {
@@ -1655,6 +1671,7 @@ struct FlightPlanBar: View {
                     .font(.dsLabelS).foregroundStyle(p.textDim)
             }
         }
+        .accessibilityElement(children: .contain)     // keep the cells' own identifiers (see the bar)
         .accessibilityIdentifier("plan-stats")
     }
 

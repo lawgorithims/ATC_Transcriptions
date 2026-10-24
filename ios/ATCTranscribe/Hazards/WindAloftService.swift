@@ -269,15 +269,14 @@ enum WindFetchPlan {
     /// extrapolates them underground, which is a number about nothing.
     func descentMeanWind(at lat: Double, lon: Double, fromFtMSL: Double, groundFt: Double)
         -> (fromDeg: Double, kts: Double)? {
+        freshFieldSet?.descentMeanWind(at: lat, lon: lon, fromFtMSL: fromFtMSL, groundFt: groundFt)
+    }
+
+    /// The held run, but only while it is close enough to now to describe this flight — a Sendable
+    /// snapshot that background work (the route glide-gap planner) can carry off the main actor.
+    var freshFieldSet: WindFieldSet? {
         guard let set = fieldSet, glideWindAgeS(set) <= GlideAllowance.maxWindAgeS else { return nil }
-        var levels = [WindProfile.Level]()
-        for level in WindLevel.allCases {                              // bounded: 10 levels
-            guard let w = wind(at: lat, lon: lon, level: level) else { continue }
-            let h = level.standardAltitudeFt ?? (groundFt + 33)       // the surface level is 10 m AGL
-            guard h >= groundFt else { continue }
-            levels.append(.init(altitudeFtMSL: h, fromDeg: Double(w.fromDeg), kts: Double(w.kt)))
-        }
-        return WindProfile.layerMean(levels, topFtMSL: fromFtMSL, bottomFtMSL: groundFt)
+        return set
     }
 
     /// How far the held run's valid time is from now, in seconds (either side). Infinity with no run.
