@@ -239,7 +239,9 @@ final class LZPackLibrary: ObservableObject {
         let expected = cell.sha256
         let ok: Bool = await Task.detached(priority: .utility) {
             guard let r = MBTilesReader(path: dest.path), r.hasTiles else { return false }
-            guard r.metadata["lz_schema"] == String(LZPack.schema) else { return false }
+            // READABLE, NOT EQUAL — see `LZPack.installable(schemaMetadata:)` for why the
+            // catalog, the store and this check have to answer the same question.
+            guard LZPack.installable(schemaMetadata: r.metadata["lz_schema"]) else { return false }
             guard let expected, !expected.isEmpty else { return true }   // catalog published none
             return Self.sha256(of: dest)?.caseInsensitiveCompare(expected) == .orderedSame
         }.value

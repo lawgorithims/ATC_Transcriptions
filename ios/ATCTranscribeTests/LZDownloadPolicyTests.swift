@@ -87,6 +87,36 @@ final class LZDownloadPolicyTests: XCTestCase {
         activity.setPaused(.landability, false)
     }
 
+    // MARK: the three schema judgements must agree
+
+    /// ⚠️ A PACK THE CATALOG OFFERS MUST BE A PACK THE INSTALL KEEPS. `accept` used strict equality
+    /// with the CURRENT schema while `Cell.isReadable` offered everything in `readableSchemas`, so
+    /// the catalog advertised packs the installer deleted: 88 MB spent for "failed its integrity
+    /// check", which reads to a pilot as a server fault. Every published cell is schema 2 today so
+    /// it has never fired — it fires on the next bump, when every hosted pack is one behind.
+    func testEverySchemaTheCatalogOffersIsOneTheInstallKeeps() {
+        for schema in LZPack.readableSchemas {
+            XCTAssertTrue(LZPack.installable(schemaMetadata: String(schema)),
+                          "schema \(schema) is offered for download but refused on install")
+        }
+        XCTAssertTrue(LZPack.installable(schemaMetadata: String(LZPack.schema)),
+                      "the schema this build WRITES must be one it will install")
+    }
+
+    /// A schema this build does not know is refused — the guard still has to guard.
+    func testAnUnknownSchemaIsStillRefused() {
+        let future = (LZPack.readableSchemas.max() ?? 2) + 1
+        XCTAssertFalse(LZPack.installable(schemaMetadata: String(future)))
+    }
+
+    /// "Cannot tell" is not "fine". A pack that cannot state its own format is not one to mount.
+    func testAPackThatCannotStateItsFormatIsRefused() {
+        XCTAssertFalse(LZPack.installable(schemaMetadata: nil))
+        XCTAssertFalse(LZPack.installable(schemaMetadata: ""))
+        XCTAssertFalse(LZPack.installable(schemaMetadata: "two"))
+        XCTAssertFalse(LZPack.installable(schemaMetadata: "2.0"))
+    }
+
     /// The category exists, is pausable, and is not treated as flight-critical — off-field terrain
     /// is advisory ground data, unlike radar or weather.
     func testLandabilityIsAPausableNonCriticalCategory() {
