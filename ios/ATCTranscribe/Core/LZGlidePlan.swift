@@ -9,7 +9,7 @@ import Foundation
 /// The app already models published approaches, and it would have been quick to express this as
 /// one. It would also have been a lie. `ApproachProfile` speaks in FAF, MAP, DA and MDA — a
 /// vocabulary that means an obstacle-assessed, surveyed, published procedure. None of that exists
-/// for a field inferred from 10 m land cover. Reusing the type would have imported that authority
+/// for a field inferred from 30 m land cover. Reusing the type would have imported that authority
 /// wholesale, in a place where the whole design effort has been to avoid claiming it.
 ///
 /// So this has its own words. A `keyPosition`, not a FAF. A `touchdownArea`, not a threshold. What
@@ -93,7 +93,7 @@ struct LZGlidePlan: Equatable {
     /// Travels with the plan, exactly as it travels with a candidate. A profile drawn to a tenth of
     /// a mile is the single most survey-like thing this feature produces.
     var unknowns: String {
-        "Inferred from 10 m land cover and terrain — not surveyed. This is a rehearsal, not a "
+        "Inferred from 30 m land cover and 10 m terrain — not surveyed. This is a rehearsal, not a "
         + "published procedure: no obstacle assessment exists for this ground, and the circuit "
         + "assumes nothing in the way that the data cannot see."
     }
@@ -261,8 +261,8 @@ enum LZGlidePlanner {
                           glideRatio: ratioFor(finalHeading)))
 
         if candidate.coarseTerrain {
-            warnings.append("This ground is on 10 m elevation — the ditch and berm checks could "
-                            + "not run here, so the surface is less known than the profile looks.")
+            warnings.append("This ground has only 10 m elevation (no lidar), so its roughness is "
+                            + "unknown and the surface is less known than the profile looks.")
         }
 
         let commit = commitPoint(origin: origin, altitudeFtMSL: altitudeFtMSL,

@@ -41,11 +41,15 @@ enum WhatsNew {
                 WhatsNewHighlight(
                     icon: "map.fill",
                     title: "An electronic flight bag you can hand to anyone",
-                    detail: "This build is the flight bag by itself: the moving map with offline VFR sectional, IFR low and IFR high charts, approach and departure plates, coded FAA procedures, the flight plan with ForeFlight hand-off, off-field landability, hazards and airport climate. Charts are current to the 03 September 2026 cycle."),
+                    detail: "This build is the flight bag by itself: the moving map with offline VFR sectional, IFR low and IFR high charts, approach and departure plates, coded FAA procedures, the flight plan with ForeFlight hand-off, your glide range over terrain, hazards and airport climate. Charts are current to the 03 September 2026 cycle."),
                 WhatsNewHighlight(
                     icon: "waveform.slash",
                     title: "Live ATC transcription is put away for now",
                     detail: "The radio side needs a piece of cockpit hardware that is not finished, so rather than ship a feature you cannot use, it is hidden — along with the speech-model download it used to ask for on first launch, which is why this build starts straight on the chart. Nothing was deleted; it comes back when the hardware does."),
+                WhatsNewHighlight(
+                    icon: "exclamationmark.triangle",
+                    title: "Off-field landability is paused",
+                    detail: "The landability shading was tested against real ground for the first time — orchards, solar farms, power lines, fences, runways and dry lakebeds, mapped independently — and it was not good enough to put in front of a pilot. It offered most of the solar farms and over half of the orchards and vineyards tested as landing candidates, and ground directly under power lines a quarter of the time. The shading and the ranked field list are now a developer preview while they are reworked. The emergency button still brings up the nearest airports first and still draws how far you can glide over terrain. If you downloaded landability packs, Downloads can remove them."),
             ]),
         ReleaseNote(
             build: 109, version: "1.0", headline: "The landability layer now covers the Southwest",
@@ -161,7 +165,7 @@ enum WhatsNew {
                 WhatsNewHighlight(
                     icon: "square.grid.3x3.square",
                     title: "Off-field landability, scored for your aeroplane (preview)",
-                    detail: "Groundwork for a terrain layer that scores open ground the way a forced landing would care about: surface, slope, roughness, and a hazard field built from towers, roads and transmission corridors. The data is aircraft-agnostic and the scoring is not — your glide ratio and best-glide speed re-tint the same ground, so switching aircraft visibly changes the map. Tapping a cell lists the rules behind its score by name. NOT YET USABLE IN THIS BUILD: it needs a regional data pack, and there is no way to download one yet — the switch is present and will stay dark. Turning it on tells you that, rather than showing you an unchanged map. The glide energy bands above need no pack and work now. ADVISORY ONLY when it does arrive: it scores candidate ground, never a landing recommendation, and surface condition, fences, livestock and current obstructions are not modelled."),
+                    detail: "Groundwork for a terrain layer that scores open ground the way a forced landing would care about: surface, slope, roughness, and a hazard field built from charted obstacles (roads only in New Mexico cells; transmission lines were never included — corrected in build 110). The data is aircraft-agnostic and the scoring is not — your glide ratio and best-glide speed re-tint the same ground, so switching aircraft visibly changes the map. Tapping a cell lists the rules behind its score by name. NOT YET USABLE IN THIS BUILD: it needs a regional data pack, and there is no way to download one yet — the switch is present and will stay dark. Turning it on tells you that, rather than showing you an unchanged map. The glide energy bands above need no pack and work now. ADVISORY ONLY when it does arrive: it scores candidate ground, never a landing recommendation, and surface condition, fences, livestock and current obstructions are not modelled."),
             ]),
         ReleaseNote(
             build: 103, version: "1.0", headline: "Data the app had all along, finally reaching the chart",

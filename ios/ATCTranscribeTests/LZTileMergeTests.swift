@@ -1,4 +1,5 @@
 import XCTest
+import MapKit
 @testable import ATCTranscribe
 
 /// Merging one tile across several packs.
@@ -218,5 +219,94 @@ final class LZTileMergeTests: XCTestCase {
 
     func testNoPacksYieldNothing() {
         XCTAssertNil(LZPackStore.merge([]))
+    }
+
+    // MARK: - ownership at the seams
+
+    /// A tile filled uniformly — every pixel known, one hazard value — the way a pack's tile looks
+    /// across its own cell AND its margin.
+    private func uniform(hazard: UInt8, terrain: UInt8 = LZPack.terrainFine) -> LZTilePlanes {
+        var planes = [[UInt8]](repeating: [UInt8](repeating: 0, count: n), count: LZPack.planeCount)
+        planes[LZPack.planeClass] = [UInt8](repeating: LZPack.classCrop, count: n)
+        planes[LZPack.planeSlope] = [UInt8](repeating: 5, count: n)
+        planes[LZPack.planeHazard] = [UInt8](repeating: hazard, count: n)
+        return LZTilePlanes(planes: planes, terrainSource: terrain)
+    }
+
+    private func tile(containing lon: Double, _ lat: Double, z: Int) -> (rect: MKMapRect, px: Int, py: Int) {
+        let p = MKMapPoint(CLLocationCoordinate2D(latitude: lat, longitude: lon))
+        let side = MKMapSize.world.width / Double(1 << z)
+        let tx = Int(p.x / side), ty = Int(p.y / side)
+        let rect = LZPackStore.tileRect(z: z, x: tx, y: ty)
+        let px = Int((p.x - rect.minX) / rect.width * Double(LZPack.side))
+        let py = Int((p.y - rect.minY) / rect.height * Double(LZPack.side))
+        return (rect, px, py)
+    }
+
+    /// ⚠️ THE BUG THIS PINS. Every pack carries a ~2 km margin past its own cell, but obstacles are
+    /// read only INSIDE the cell — so a margin knows the ground and none of the neighbour's towers.
+    /// The merge took the first pack (by filename) that knew a pixel, and n33w107's margin
+    /// overwrote n33w108's own ground at the seam: measured, 62% of charted-obstacle pixels in
+    /// shared tiles lost their flag. This is the exact pixel the audit measured — hazard 255 in
+    /// its own pack, served as 28.
+    func testASeamPixelComesFromThePackThatOwnsItWhicheverMountsFirst() throws {
+        let t = tile(containing: -107.00452, 32.69898, z: 13)
+        let east = (planes: uniform(hazard: 0), cell: LZPackStore.cellRect(forPackID: "n33w107"))
+        let west = (planes: uniform(hazard: 255), cell: LZPackStore.cellRect(forPackID: "n33w108"))
+        for parts in [[east, west], [west, east]] {
+            let m = try XCTUnwrap(LZPackStore.mergeOwned(parts, tile: t.rect))
+            XCTAssertEqual(m.value(plane: LZPack.planeHazard, x: t.px, y: t.py), 255,
+                           "a neighbour's margin overwrote the owning pack's obstacle at the seam")
+            // And the east side of the seam keeps ITS owner's answer.
+            XCTAssertEqual(m.value(plane: LZPack.planeHazard, x: LZPack.side - 1, y: t.py), 0)
+        }
+    }
+
+    /// Four cells meeting at a corner must partition a tile exactly once — no pixel owned twice,
+    /// none falling between. A gap would draw a seam; an overlap would bring the order bug back.
+    func testOwnershipPartitionsATileAtAFourCellCornerExactlyOnce() {
+        let t = tile(containing: -107.0, 33.0, z: 10)
+        var owner = [Int](repeating: 0, count: n)
+        for id in ["n33w107", "n33w108", "n34w107", "n34w108"] {
+            guard let cell = LZPackStore.cellRect(forPackID: id) else { return XCTFail("\(id) did not parse") }
+            let r = LZPackStore.ownedPixels(of: cell, in: t.rect)
+            XCTAssertFalse(r.isEmpty, "\(id) owns nothing of a tile that contains its corner")
+            for y in r.y0..<r.y1 { for x in r.x0..<r.x1 { owner[y * LZPack.side + x] += 1 } }
+        }
+        XCTAssertTrue(owner.allSatisfy { $0 == 1 },
+                      "\(owner.filter { $0 == 0 }.count) pixels unowned, \(owner.filter { $0 > 1 }.count) owned twice")
+    }
+
+    /// Margins are never served, even when nothing else is mounted: the ground a margin describes
+    /// was measured without the neighbour's obstacles, so it is not this pack's to report.
+    func testAPackNeverServesItsOwnMargin() throws {
+        let t = tile(containing: -107.00452, 32.69898, z: 13)
+        let east = (planes: uniform(hazard: 0), cell: LZPackStore.cellRect(forPackID: "n33w107"))
+        let m = try XCTUnwrap(LZPackStore.mergeOwned([east], tile: t.rect))
+        XCTAssertEqual(m.value(plane: LZPack.planeClass, x: t.px, y: t.py), LZPack.classUnknown,
+                       "a margin pixel west of the cell edge was served as known ground")
+        XCTAssertEqual(m.value(plane: LZPack.planeClass, x: LZPack.side - 1, y: t.py), LZPack.classCrop)
+    }
+
+    /// Coarse provenance stays sticky under ownership, as it was under the old fill.
+    func testCoarseStaysStickyUnderOwnership() throws {
+        let t = tile(containing: -107.00452, 32.69898, z: 13)
+        let m = try XCTUnwrap(LZPackStore.mergeOwned(
+            [(planes: uniform(hazard: 0), cell: LZPackStore.cellRect(forPackID: "n33w107")),
+             (planes: uniform(hazard: 0, terrain: LZPack.terrainCoarse),
+              cell: LZPackStore.cellRect(forPackID: "n33w108"))], tile: t.rect))
+        XCTAssertTrue(m.isCoarseTerrain, "a coarse owner was laundered by its fine neighbour")
+    }
+
+    /// The USGS NW-corner convention, and refusals for anything that is not a CONUS cell.
+    func testCellIdsParseTheUSGSConventionAndNothingElse() throws {
+        let r = try XCTUnwrap(LZPackStore.cellRect(forPackID: "n33w107.lzpack"))
+        let nw = r.origin.coordinate
+        let se = MKMapPoint(x: r.maxX, y: r.maxY).coordinate
+        XCTAssertEqual(nw.latitude, 33, accuracy: 1e-9); XCTAssertEqual(nw.longitude, -107, accuracy: 1e-9)
+        XCTAssertEqual(se.latitude, 32, accuracy: 1e-9); XCTAssertEqual(se.longitude, -106, accuracy: 1e-9)
+        for bad in ["lz_fixture.lzpack", "x33w107", "n91w107", "n33w0", "n33", "w107", ""] {
+            XCTAssertNil(LZPackStore.cellRect(forPackID: bad), "\(bad) parsed as a cell")
+        }
     }
 }

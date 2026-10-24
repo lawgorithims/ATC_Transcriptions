@@ -239,11 +239,11 @@ struct MapHostView: View {
         // the map rather than leaving stale scores on screen. Cheap when nothing changed (the controller
         // gates on a key of aircraft + theme + pack count), and re-mounted when the layer is switched on
         // so a pack copied in while the app was running is picked up without a relaunch.
-        .task(id: LZRefreshKey(on: model.showLZRisk,
+        .task(id: LZRefreshKey(on: model.lzRiskVisible,
                                theme: model.theme,
                                glide: model.selectedAircraft?.glideRatio,
                                vbg: model.selectedAircraft?.bestGlideKts)) {
-            guard model.showLZRisk else { return }
+            guard model.lzRiskVisible else { return }
             lzController.mount()
             lzController.refresh(aircraft: model.selectedAircraft, theme: model.theme)
         }
@@ -284,7 +284,7 @@ struct MapHostView: View {
         // changes when a transfer completes — so without this the pilot watches an 88 MB download
         // finish and the map not change, which is indistinguishable from a broken layer.
         .onReceive(LZPackLibrary.shared.packsChanged) { _ in
-            guard model.showLZRisk else { return }
+            guard model.lzRiskVisible else { return }
             lzController.packsChangedOnDisk(aircraft: model.selectedAircraft, theme: model.theme)
         }
         // Publish reported flight categories to the symbol builder, so an airport's glyph carries the
@@ -513,7 +513,7 @@ struct MapHostView: View {
             // Off-field landability. A nil signature removes the layer, which is also what happens
             // when no pack is installed or the ruleset fails to compile — a heatmap that cannot
             // explain itself must not draw.
-            lzSignature: model.showLZRisk ? lzController.signature : nil,
+            lzSignature: model.lzRiskVisible ? lzController.signature : nil,
             lzMinZoom: lzController.minZoom,
             lzMaxZoom: lzController.maxZoom,
             lzProvider: lzController.provider,
@@ -521,7 +521,7 @@ struct MapHostView: View {
             // offered "Off-field landability" for ground the pilot had switched the shading OFF
             // for — an answer about a layer that is not on screen, arriving in the disambiguation
             // list beside things that are. Turning a layer off should mean it stops speaking.
-            lzProbe: model.showLZRisk
+            lzProbe: model.lzRiskVisible
                 ? { [lzController] c in lzController.sample(lon: c.lon, lat: c.lat) }
                 : nil,
             lzEnergyBands: model.showLZEnergy ? lzController.energyBands : [],
@@ -568,7 +568,7 @@ struct MapHostView: View {
     /// Distinguishes "no coverage published here" from "published, just not downloaded". They look
     /// identical on the map (nothing drawn) and are completely different problems.
     @ViewBuilder private var lzCoveragePill: some View {
-        if model.showLZRisk, !lzController.packAvailable || lzMissingHere > 0 {
+        if model.lzRiskVisible, !lzController.packAvailable || lzMissingHere > 0 {
             if lzMissingHere > 0 {
                 Button {
                     Haptics.impact(.light)

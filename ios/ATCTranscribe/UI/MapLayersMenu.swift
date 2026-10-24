@@ -65,35 +65,35 @@ struct MapLayersPanel: View {
                     layerToggle($model.showWxRadar, "Weather radar (precip)", "cloud.rain", p, id: "layer-radar")
                     layerToggle($model.showWindAloft, "Winds aloft (animated)", "wind", p, id: "layer-wind")
 
-                    // Off-field landability. NO LONGER DEV-GATED: the data is downloadable from the
-                    // Downloads screen, so hiding the switch behind a developer flag would only mean
-                    // a pilot could fetch 89 MB and then not find the layer it feeds.
-                    //
-                    // It stayed gated while there was no way to get a pack, which was the honest
-                    // position then — an ordinary switch that cannot work is worse than an absent
-                    // one. The gate went away with the reason for it.
-                    //
-                    // The wording below is deliberate and gets STRONGER here, not weaker, because a
-                    // non-developer now meets it: "candidate ground", never "safe", never "landing
-                    // site". The layer describes terrain; it does not recommend anything.
+                    // Off-field landability — DEVELOPER-ONLY AGAIN as of build 110. It was un-gated
+                    // once packs became downloadable; the first ground-truth test then found it
+                    // offering solar farms and orchards as landing candidates and ranking town edges
+                    // above farmland (see `AppModel.showLZRisk`). The glide-energy bands are the half
+                    // the evidence supports, and they stay here for every pilot.
                     Group {
-                        layerToggle($model.showLZRisk, "Off-field landability",
-                                    "square.grid.3x3.square", p, id: "layer-lz")
+                        if model.offFieldLayerAvailable {
+                            layerToggle($model.showLZRisk, "Off-field landability (developer)",
+                                        "square.grid.3x3.square", p, id: "layer-lz")
+                        }
                         layerToggle($model.showLZEnergy, "Glide energy bands",
                                     "scope", p, id: "layer-lz-energy")
-                        Text("ADVISORY ONLY — scored candidate ground, never a landing "
-                             + "recommendation. Surface condition, fences, livestock, crops in season "
-                             + "and current obstructions are not modelled, and the absence of a "
-                             + "depicted hazard is not evidence that none is there. Needs a "
-                             + "landability pack from Downloads; MapLibre engine only.")
+                        Text("ADVISORY ONLY — how far a glide reaches over terrain from where you are "
+                             + "now. It is not a landing recommendation, and wind, turns and a "
+                             + "windmilling propeller all shorten a real glide.")
                             .font(.dsLabelS).foregroundStyle(p.textDim)
                             .fixedSize(horizontal: false, vertical: true)
                             .accessibilityIdentifier("layers-lz-note")
+                        if model.offFieldLayerAvailable {
+                            Text("Landability shading is a developer preview: it is built from 30 m "
+                                 + "land cover and cannot see wires, fences, ditches, orchards or solar "
+                                 + "farms. Absence of a depicted hazard is not evidence none is there.")
+                                .font(.dsLabelS).foregroundStyle(p.warn)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .accessibilityIdentifier("layers-lz-dev-note")
+                        }
                         // Opens the ranked list. DELIBERATELY NOT on the emergency button: that
-                        // already raises NRST, and a runway beats a field every time — stacking a
-                        // second floating panel over it in the worst moment of a flight would bury
-                        // the better answer under the fallback one.
-                        if model.showLZRisk {
+                        // already raises NRST, and a runway beats a field every time.
+                        if model.lzRiskVisible {
                             Button {
                                 Haptics.impact(.light)
                                 model.widgetStore.reveal(.landable)
@@ -108,10 +108,8 @@ struct MapLayersPanel: View {
                             .buttonStyle(.plainHaptic)
                             .accessibilityIdentifier("layer-lz-list")
                         }
-                        // Which packs answered, or why none did. Switching the heatmap on with no
-                        // pack installed leaves the map looking exactly as it did — identical to the
-                        // layer being broken — and this line is the only thing that tells them apart.
-                        if model.showLZRisk, !model.lzPackStatus.isEmpty {
+                        // Which packs answered, or why none did — only where the shading can draw.
+                        if model.lzRiskVisible, !model.lzPackStatus.isEmpty {
                             Text("Landability data: \(model.lzPackStatus)")
                                 .font(.dsLabelS).foregroundStyle(p.textDim)
                                 .fixedSize(horizontal: false, vertical: true)

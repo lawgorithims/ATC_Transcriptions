@@ -209,48 +209,75 @@ final class LZLayerUITests: XCTestCase {
         waitForExpectations(timeout: 10)
     }
 
-    /// The trap-door guard. The layer rows are dev-gated for DISCOVERY, but the emergency button arms
-    /// the layers for any pilot — so whenever a layer is on, its row must be there to turn it off,
-    /// diagnostics or not. A layer a pilot can switch on but cannot find to switch off is a trap.
-    func testALayerThatIsOnCanAlwaysBeSwitchedOff() {
+    /// The trap-door guard, inverted in build 110. The shading used to draw for any pilot, so a row
+    /// had to exist to switch it off. Now a persisted flag — a tester who had it on in 109 — must draw
+    /// NOTHING without diagnostics: no row, no ranked-list control, no data line. A layer that cannot
+    /// draw needs no off switch, and a layer that draws with no way to find its switch is the trap.
+    func testAPersistedLandabilityFlagDrawsNothingWithoutDiagnostics() {
         let app = launch(["-atc.map.lz", "YES"])          // note: diagnostics NOT unlocked
         openLayersPanel(app)
-        let risk = app.switches["layer-lz"]
-        XCTAssertTrue(risk.waitForExistence(timeout: 8),
-                      "the landability row is hidden while its layer is ON — no way to turn it off")
-        XCTAssertTrue(isOn(risk))
-        risk.tap()
-        XCTAssertFalse(isOn(risk), "the row would not switch the layer off")
+        XCTAssertTrue(app.switches["layer-lz-energy"].waitForExistence(timeout: 8),
+                      "the layers panel did not open")
+        XCTAssertFalse(app.switches["layer-lz"].exists,
+                       "the landability shading is offered to a pilot without developer diagnostics")
+        XCTAssertFalse(app.buttons["layer-lz-list"].exists,
+                       "the ranked off-field list is reachable without developer diagnostics")
+        XCTAssertFalse(app.staticTexts["layers-lz-status"].exists,
+                       "the heatmap reports data as if it were drawing")
     }
 
-    /// Both layers are ORDINARY now — no developer flag anywhere in this launch. They were gated
-    /// while there was no way to obtain a pack, which was honest then: a switch that cannot work is
-    /// worse than an absent one. The Downloads screen made packs obtainable, so the gate went with
-    /// its reason. A pilot who downloads 89 MB must be able to find the layer it feeds.
-    func testTheLayersAreOfferedWithoutDeveloperDiagnostics() {
+    /// The glide-energy bands are the half the evidence supports, and stay ordinary — no developer
+    /// flag anywhere in this launch. The landability shading is the half that is not.
+    func testOnlyTheGlideBandsAreOfferedWithoutDeveloperDiagnostics() {
         let app = launch()                                 // no -atc.diagnosticsEnabled at all
         openLayersPanel(app)
-        XCTAssertTrue(app.switches["layer-lz"].waitForExistence(timeout: 8),
-                      "off-field landability is still hidden behind developer diagnostics")
-        XCTAssertTrue(app.switches["layer-lz-energy"].exists,
-                      "the glide energy layer is still hidden behind developer diagnostics")
+        XCTAssertTrue(app.switches["layer-lz-energy"].waitForExistence(timeout: 8),
+                      "the glide energy layer is hidden from ordinary pilots")
+        XCTAssertFalse(app.switches["layer-lz"].exists,
+                       "the landability shading is offered without developer diagnostics")
     }
 
-    /// The advisory framing is what a NON-developer now meets, so it must carry the limits, not just
-    /// the label. Each clause here is a specific thing the data does not know.
-    func testTheAdvisoryNoteNamesWhatIsNotModelled() {
+    /// Arming without diagnostics: NRST up, the glide bands on, and the button reads ARMED — it must
+    /// not wait forever for a landability layer this pilot cannot have.
+    func testArmingWithoutDiagnosticsLightsTheGlideBandsAndNearest() {
+        let app = launch()
+        let emergency = app.buttons["emergency-button"]
+        XCTAssertTrue(emergency.waitForExistence(timeout: 30))
+        emergency.tap()
+        XCTAssertTrue(waitForNRST(app), "arming did not bring up the nearest airports")
+        expectation(for: NSPredicate(format: "value == %@", "Armed"), evaluatedWith: emergency)
+        waitForExpectations(timeout: 10)
+        openLayersPanel(app)
+        XCTAssertTrue(isOn(app.switches["layer-lz-energy"]), "arming left the glide bands off")
+        XCTAssertFalse(app.switches["layer-lz"].exists, "arming surfaced the landability shading")
+    }
+
+    /// What an ordinary pilot now meets is the glide note, and it must say what shortens a real glide
+    /// rather than promise ground.
+    func testTheAdvisoryNoteNamesWhatShortensAGlide() {
         let app = launch()
         openLayersPanel(app)
-        let note = app.staticTexts["layers-lz-note"].label
-        XCTAssertTrue(note.contains("ADVISORY ONLY"), note)
-        XCTAssertTrue(note.lowercased().contains("candidate ground"), note)
-        XCTAssertTrue(note.lowercased().contains("never a landing recommendation"), note)
-        for missing in ["fences", "livestock", "surface condition", "obstructions"] {
-            XCTAssertTrue(note.lowercased().contains(missing),
-                          "the note no longer says \(missing) is unmodelled: \(note)")
+        let note = app.staticTexts["layers-lz-note"].label.lowercased()
+        XCTAssertTrue(note.contains("advisory only"), note)
+        XCTAssertTrue(note.contains("not a landing recommendation"), note)
+        for factor in ["wind", "turns", "windmilling"] {
+            XCTAssertTrue(note.contains(factor), "the glide note no longer names \(factor): \(note)")
         }
-        XCTAssertTrue(note.lowercased().contains("absence of a depicted hazard"),
-                      "the note dropped the strongest clause it has: \(note)")
+        XCTAssertFalse(note.contains("safe"), "the glide note calls something 'safe': \(note)")
+        XCTAssertFalse(app.staticTexts["layers-lz-dev-note"].exists,
+                       "the developer landability caveat is showing without diagnostics")
+    }
+
+    /// The developer preview carries the limits the ground-truth test found, by name.
+    func testTheDeveloperPreviewNamesWhatTheDataCannotSee() {
+        let app = launch(["-atc.diagnosticsEnabled", "YES"])
+        openLayersPanel(app)
+        let dev = app.staticTexts["layers-lz-dev-note"]
+        XCTAssertTrue(dev.waitForExistence(timeout: 8), "the developer preview has no caveat")
+        let text = dev.label.lowercased()
+        for blind in ["wires", "fences", "ditches", "orchards", "solar farms", "absence of a depicted hazard"] {
+            XCTAssertTrue(text.contains(blind), "the preview caveat no longer names \(blind): \(text)")
+        }
     }
 
     // MARK: - the energy layer, actually drawing
@@ -347,8 +374,6 @@ final class LZLayerUITests: XCTestCase {
         // pins the casing fails on an edit that strengthened the very thing it guards.
         XCTAssertTrue(text.lowercased().contains("advisory only"),
                       "the advisory caption is missing: \(text)")
-        XCTAssertTrue(text.lowercased().contains("candidate ground"),
-                      "the caption no longer says 'candidate ground': \(text)")
         // The word "safe" must never appear about this ground. Kept here because the sibling test
         // checks what the note DOES say; this checks the one thing it must never say.
         XCTAssertFalse(text.lowercased().contains("safe"),

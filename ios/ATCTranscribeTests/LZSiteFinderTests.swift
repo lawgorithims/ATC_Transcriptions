@@ -127,7 +127,10 @@ final class LZSiteFinderTests: XCTestCase {
         for c in out {
             let u = c.unknowns.lowercased()
             XCTAssertTrue(u.contains("not surveyed"), c.unknowns)
-            for missing in ["fences", "ditches", "crop", "wires", "livestock", "surface condition"] {
+            // "orchards" and "solar farms" joined in build 110: the first ground-truth test found the
+            // device offering 53% of the orchards and 79% of the solar farms it was shown.
+            for missing in ["fences", "ditches", "crop", "wires", "livestock", "surface condition",
+                            "orchards", "solar farms"] {
                 XCTAssertTrue(u.contains(missing), "unknowns dropped \(missing): \(c.unknowns)")
             }
         }

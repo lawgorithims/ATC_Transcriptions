@@ -58,7 +58,12 @@ final class AppModel: ObservableObject {
     /// The buried Clearance Test Bench is unlocked (Settings → tap the version 7×). Persisted so it
     /// stays available once found, but it never surfaces to a user who hasn't deliberately unlocked it.
     @Published var diagnosticsEnabled = UserDefaults.standard.bool(forKey: "atc.diagnosticsEnabled") {
-        didSet { UserDefaults.standard.set(diagnosticsEnabled, forKey: "atc.diagnosticsEnabled") }
+        didSet {
+            UserDefaults.standard.set(diagnosticsEnabled, forKey: "atc.diagnosticsEnabled")
+            // The ranked off-field list is developer-only (see `showLZRisk`); its floating panel's
+            // visibility persists, so locking diagnostics must take it down with the shading.
+            if !diagnosticsEnabled { widgetStore.dismiss(.landable) }
+        }
     }
     /// A test-bench session is live — drives the TEST MODE banner and gates the sandbox behavior.
     @Published var diagnosticActive = false
@@ -860,11 +865,14 @@ final class AppModel: ObservableObject {
     /// aircraft). ADVISORY ONLY — not a navigation or landing-guidance product. Default off, and it
     /// renders only on the MapLibre engine.
     ///
-    /// GATING: `diagnosticsEnabled` gates DISCOVERY (whether the layers panel offers the row), not
-    /// rendering. These two flags alone decide whether the layer draws, because the emergency button
-    /// arms them for any pilot and a flag that were also gated on a dev switch would arm silently and
-    /// draw nothing. The panel row is shown whenever the flag is on, however it got there, so a layer
-    /// that is up can always be taken back down (see `MapLayersPanel`).
+    /// GATING — REVERSED IN BUILD 110. This used to gate only DISCOVERY and draw for any pilot, and
+    /// the emergency button armed it for everyone. A ground-truth test (the first the packs ever had)
+    /// then sampled the device's own verdict at independently mapped ground: it offered 79% of solar
+    /// farms and 53% of Fresno's orchards and vineyards as landing candidates, served ground directly
+    /// under transmission lines 27% of the time, and ranked town edges above farmland. The
+    /// shading and its ranked list are therefore DEVELOPER-ONLY until they are reworked: whether the
+    /// heatmap draws is `lzRiskVisible`, never this flag alone, so a tester who had it on in 109 does
+    /// not keep seeing it. The glide-energy bands below are unaffected and stay on for every pilot.
     @Published var showLZRisk = UserDefaults.standard.bool(forKey: "atc.map.lz") {
         didSet {
             UserDefaults.standard.set(showLZRisk, forKey: "atc.map.lz")
@@ -880,7 +888,15 @@ final class AppModel: ObservableObject {
             if !showLZRisk && oldValue { widgetStore.dismiss(.landable) }
         }
     }
-    /// Live glide/arrival-energy bands from ownship state. Same gating as above.
+    /// Whether the off-field landability SHADING and its ranked list may appear at all. One place,
+    /// so the map, the layers panel, the list, Downloads and the emergency button cannot disagree.
+    var offFieldLayerAvailable: Bool { diagnosticsEnabled }
+
+    /// Whether the heatmap actually draws: switched on AND available. Read this, never `showLZRisk`.
+    var lzRiskVisible: Bool { showLZRisk && offFieldLayerAvailable }
+
+    /// Live glide/arrival-energy bands from ownship state. NOT developer-gated — reach is the half of
+    /// this layer the evidence supports, and the emergency button arms it for every pilot.
     @Published var showLZEnergy = UserDefaults.standard.bool(forKey: "atc.map.lzEnergy") {
         didSet { UserDefaults.standard.set(showLZEnergy, forKey: "atc.map.lzEnergy") }
     }
@@ -910,7 +926,7 @@ final class AppModel: ObservableObject {
     func emergencyArmed(compact: Bool, widgets: WidgetStore) -> Bool {
         let nrstUp = compact ? showNRSTSheet
             : (widgets.isVisible(.nrst) || widgets.leftPane == .nrst || widgets.rightPane == .nrst)
-        return nrstUp && showLZRisk && showLZEnergy
+        return nrstUp && showLZEnergy && (!offFieldLayerAvailable || showLZRisk)
     }
 
     /// The engine-out arm: put the map up, light the off-field layers, and bring the nearest-airport
@@ -922,10 +938,12 @@ final class AppModel: ObservableObject {
     /// down is a deliberate long press (`standDownEmergency`), or the layers panel.
     func armEmergency(compact: Bool) {
         selectedTab = .map
-        showLZRisk = true
+        // The shading only where it is available at all (developer builds) — see `showLZRisk`.
+        if offFieldLayerAvailable { showLZRisk = true }
         showLZEnergy = true
         if compact { showNRSTSheet = true } else { widgetStore.reveal(.nrst) }
-        assert(showLZRisk && showLZEnergy, "arming must leave both LZ layers on")
+        assert(showLZEnergy && (!offFieldLayerAvailable || showLZRisk),
+               "arming must leave the glide bands on, and the shading wherever it is available")
         assert(selectedTab == .map, "arming must leave the map in front")
         assert(!compact || showNRSTSheet, "compact arming must raise the NRST sheet")
     }
@@ -1749,6 +1767,10 @@ final class AppModel: ObservableObject {
             Task { @MainActor in self?.applyThermal(serious: hot) }
         }
         if args.contains("--thermal") { thermalSerious = true }
+        // The ranked off-field list is developer-only from build 110, and a floating panel's
+        // visibility PERSISTS — a list left open in 109 would reappear on the first launch of 110,
+        // naming ground the map no longer draws. `didSet` does not run at launch, so do it here.
+        if !offFieldLayerAvailable { widgetStore.dismiss(.landable) }
         evaluateWhatsNew()     // decide whether to greet this launch with the "What's new" popup
     }
 

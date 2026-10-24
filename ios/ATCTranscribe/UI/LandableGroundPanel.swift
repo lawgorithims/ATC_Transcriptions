@@ -163,7 +163,7 @@ struct LandableGroundPanelView: View {
                  + String(format: "%03.0f°", c.runHeadingDeg))
                 .font(.dsLabelS).foregroundStyle(p.textDim)
             if c.coarseTerrain {
-                Text("10 m elevation here — the ditch and berm checks could not run")
+                Text("10 m elevation here (no lidar) — roughness unknown")
                     .font(.dsLabelS).foregroundStyle(p.warn)
             }
             // The same named rules the tap card shows, so the list and the map agree about why.
@@ -243,7 +243,7 @@ struct LandableGroundPanelView: View {
         // shading switched off it kept naming fields the map was not drawing — an answer about a
         // layer that is not on screen. AppModel dismisses this widget when the layer goes off; this
         // is the second half of the same rule, for any other way the panel might be raised.
-        guard model.showLZRisk else {
+        guard model.lzRiskVisible else {
             notice = "The off-field landability layer is switched off. Turn it on in Map layers to "
                    + "rank reachable ground."
             candidates = []

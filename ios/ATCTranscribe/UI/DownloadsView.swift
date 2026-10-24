@@ -609,7 +609,39 @@ struct DownloadsView: View {
         return line + " · " + source
     }
 
+    /// Developer-only since build 110 (see `AppModel.showLZRisk`). A pilot who downloaded packs while
+    /// the layer was public gets a way to take the storage back instead of a section that vanished
+    /// with hundreds of MB still on the device.
     @ViewBuilder private var landabilitySection: some View {
+        if model.offFieldLayerAvailable {
+            landabilityCatalogSection
+        } else if lzLibrary.installedBytes > 0 {
+            landabilityPausedSection
+        }
+    }
+
+    private var landabilityPausedSection: some View {
+        let p = model.palette
+        return Section("Off-field landability") {
+            Text("Paused while it is reworked. A ground-truth test found the shading offering solar "
+                 + "farms, orchards and ground under power lines as landing candidates, so it is now a "
+                 + "developer preview. The packs on this device feed nothing you can see. The glide "
+                 + "range bands do not need them.")
+                .font(.dsLabelS).foregroundStyle(p.textDim)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("downloads-lz-paused")
+            Button(role: .destructive) {
+                Haptics.impact(.medium)
+                lzLibrary.removeAllInstalled()
+            } label: {
+                Label("Remove \(lzLibrary.installedIDs.count) pack(s) · \(byteStr(lzLibrary.installedBytes))",
+                      systemImage: "trash")
+            }
+            .accessibilityIdentifier("downloads-lz-remove-all")
+        }
+    }
+
+    @ViewBuilder private var landabilityCatalogSection: some View {
         let p = model.palette
         if let catalog = lzLibrary.catalog, !catalog.regions.isEmpty {
             ForEach(catalog.regions) { region in

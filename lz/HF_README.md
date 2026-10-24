@@ -27,10 +27,10 @@ Six `uint8` planes per 256×256 tile, plus the tile's DEM provenance byte:
 | plane | what it is |
 |---|---|
 | `class` | surface class (water, wetland, developed, canopy, crop, range, barren…) |
-| `conf` | confidence in that class, scaled by the source's own confidence band |
+| `conf` | a fixed confidence per source rule (NLCD / NWI / canopy) — not a per-pixel measurement |
 | `slope` | median slope, 0–50.8° |
 | `rough` | detrended surface roughness (residual σ) |
-| `hazard` | fused obstacle/hazard field from towers, roads and transmission corridors |
+| `hazard` | obstacle/hazard field from FAA charted obstacles; roads only in New Mexico cells; transmission lines NOT included |
 | `flags` | bitfield — charted obstacle, corridor, road buffer, water, wetland, coarse terrain |
 
 **Facts, never verdicts.** Nothing here knows what aircraft is flying. Scoring happens on the
@@ -56,11 +56,10 @@ available, where the ditch- and berm-scale checks **cannot run** and the score i
 | source | licence |
 |---|---|
 | USGS 3DEP elevation (1 m where published, else 1/3″) | public domain (US Gov) |
-| USGS Annual NLCD land cover + confidence | public domain (US Gov) |
-| USDA NASS Cropland Data Layer | public domain (US Gov) |
-| USFWS National Wetlands Inventory | public domain (US Gov) |
+| USGS Annual NLCD land cover (30 m) | public domain (US Gov) |
+| USFWS National Wetlands Inventory (New Mexico cells only) | public domain (US Gov) |
 | FAA Digital Obstacle File | public domain (US Gov) |
-| US Census TIGER/Line roads | public domain (US Gov) |
+| US Census TIGER/Line roads (New Mexico cells only) | public domain (US Gov) |
 | **Meta / WRI canopy height** | **CC-BY-4.0 — attribution required** |
 
 Canopy height data © Meta Platforms, Inc. and World Resources Institute, used under
