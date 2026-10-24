@@ -20,6 +20,7 @@ struct AircraftSheet: View {
     @State private var mtowText = ""
     @State private var spanText = ""
     @State private var isRotorcraft = false
+    @State private var waterOps: AircraftProfile.WaterOps?
     @State private var showPicker = false
     /// Which catalogue entry filled the form, so the sheet can say where the numbers came from.
     ///
@@ -84,6 +85,24 @@ struct AircraftSheet: View {
                                    + "judge the space; the layer shows surface, slope and room."
                                  : "Recorded for reference. Weight and span do not feed the "
                                    + "landability scoring today.")
+                                .font(.dsLabelS).foregroundStyle(p.textDim)
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            // Water operations. THREE states, because the nearest-airport list has
+                            // to give three different answers: a landplane must not be sent to a
+                            // lake, a straight floatplane must not be sent to asphalt, and only an
+                            // amphibian may be offered both.
+                            Picker(selection: $waterOps) {
+                                Text("Landplane").tag(AircraftProfile.WaterOps?.none)
+                                ForEach(AircraftProfile.WaterOps.allCases) { w in
+                                    Text(w.title).tag(AircraftProfile.WaterOps?.some(w))
+                                }
+                            } label: {
+                                Text("Lands on").font(.dsLabel).foregroundStyle(p.text)
+                            }
+                            .pickerStyle(.segmented)
+                            .accessibilityIdentifier("aircraft-water-ops")
+                            Text(waterOpsNote)
                                 .font(.dsLabelS).foregroundStyle(p.textDim)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
@@ -185,6 +204,7 @@ struct AircraftSheet: View {
         mtowText = profile.mtowLb.map(String.init) ?? ""
         spanText = profile.spanFt.map { String(format: "%g", $0) } ?? ""
         isRotorcraft = profile.isRotorcraft ?? false
+        waterOps = profile.waterOps
     }
 
     /// Persist through the model (add-or-update by id) and fly the aircraft.
@@ -209,12 +229,29 @@ struct AircraftSheet: View {
         updated.spanFt = Double(spanText.replacingOccurrences(of: ",", with: "."))
             .flatMap { $0 >= 5 && $0 <= 300 ? $0 : nil }
         updated.isRotorcraft = isRotorcraft ? true : nil
+        updated.waterOps = waterOps
         // ⚠️ A ROTORCRAFT CARRIES NO FIXED-WING LANDING DISTANCE. Autorotation touches down in a
         // fraction of the ground an aeroplane needs, so keeping a book over-50-ft figure here would
         // make the landability layer demand a runway's worth of open ground from a helicopter.
         if isRotorcraft { updated.landingOver50Ft = nil }
         model.saveAircraft(updated)
         dismiss()
+    }
+
+    /// What changes when the pilot picks a water configuration. Says what the app will DO, not
+    /// what the aircraft is — the nearest-airport list is the only thing that behaves differently.
+    private var waterOpsNote: String {
+        switch waterOps {
+        case .none:
+            return "Nearest airports will offer runways only. Seaplane bases stay hidden."
+        case .amphibian:
+            return "Nearest airports will offer both runways and water landing areas — 561 seaplane "
+                 + "bases ship with the app, and 77 ordinary airports have a water lane beside the "
+                 + "asphalt."
+        case .floatOnly:
+            return "Nearest airports will offer water only. Paved and turf runways are excluded, "
+                 + "including at fields that have both."
+        }
     }
 
     // MARK: building blocks (match the strip / settings styling)

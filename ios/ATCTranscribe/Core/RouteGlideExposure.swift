@@ -56,7 +56,8 @@ enum RouteGlideExposure {
 
     /// One evaluation at one altitude. Nil for a route with fewer than two points or a dead grid.
     static func evaluate(route: [Coord], altitudeFtMSL: Double, glideRatio: Double,
-                         bestGlideKts: Double, world: World) -> Result? {
+                         bestGlideKts: Double, acceptsWater: Bool = false, acceptsLand: Bool = true,
+                         world: World) -> Result? {
         guard route.count >= 2, world.terrain.isReady, glideRatio > 0 else { return nil }
         let samples = densify(route)
         guard samples.count >= 2 else { return nil }
@@ -65,7 +66,8 @@ enum RouteGlideExposure {
         var sawWind = false
         for s in samples {                                            // bounded by maxSamples
             let ok = isCovered(s, altitudeFtMSL: altitudeFtMSL, glideRatio: glideRatio,
-                               bestGlideKts: bestGlideKts, world: world, sawWind: &sawWind)
+                               bestGlideKts: bestGlideKts, acceptsWater: acceptsWater,
+                               acceptsLand: acceptsLand, world: world, sawWind: &sawWind)
             covered.append(ok)
         }
         let gaps = gapsFrom(samples.map(\.distanceNm), covered)
@@ -78,13 +80,15 @@ enum RouteGlideExposure {
     /// The lowest altitude, climbing from `startFtMSL` in `altitudeStepFt` steps up to
     /// `maxSuggestedAltitudeFt`, at which no gap is longer than `maxGapNm` — or nil if none is.
     static func lowestAltitude(closingGapsTo maxGapNm: Double, route: [Coord], startFtMSL: Double,
-                               glideRatio: Double, bestGlideKts: Double, world: World) -> Result? {
+                               glideRatio: Double, bestGlideKts: Double, acceptsWater: Bool = false,
+                               acceptsLand: Bool = true, world: World) -> Result? {
         assert(maxGapNm >= 0, "lowestAltitude: negative gap threshold")
         var alt = startFtMSL
         var steps = 0
         while alt <= maxSuggestedAltitudeFt && steps < 20 {           // bounded (rule 2)
             guard let r = evaluate(route: route, altitudeFtMSL: alt, glideRatio: glideRatio,
-                                   bestGlideKts: bestGlideKts, world: world) else { return nil }
+                                   bestGlideKts: bestGlideKts, acceptsWater: acceptsWater,
+                                   acceptsLand: acceptsLand, world: world) else { return nil }
             if r.longestGapNm <= maxGapNm { return r }
             alt += altitudeStepFt
             steps += 1
@@ -119,9 +123,13 @@ enum RouteGlideExposure {
     }
 
     private static func isCovered(_ s: Sample, altitudeFtMSL: Double, glideRatio: Double,
-                                  bestGlideKts: Double, world: World, sawWind: inout Bool) -> Bool {
+                                  bestGlideKts: Double, acceptsWater: Bool, acceptsLand: Bool,
+                                  world: World, sawWind: inout Bool) -> Bool {
+        // The same surfaces the airport list would offer this aircraft: a seaplane base only counts
+        // for something that can alight on water (see `GlideSituation.acceptsWater`).
         var g = GlideSituation(coord: s.coord, altitudeFtMSL: altitudeFtMSL, glideRatio: glideRatio,
-                               isDefaultGlideRatio: false, verticalAccuracyM: nil)
+                               isDefaultGlideRatio: false, verticalAccuracyM: nil,
+                               acceptsWater: acceptsWater, acceptsLand: acceptsLand)
         g.trackDeg = s.courseDeg
         g.bestGlideKts = bestGlideKts
         let groundFt = world.terrain.sampleElevationFt(at: s.coord) ?? 0

@@ -193,7 +193,17 @@ enum AirportData {
         var isCertificated: Bool { !far139.isEmpty }
         /// True when the record is known to be a non-airplane facility. An empty siteType (older DB
         /// cycle) is UNKNOWN, not airplane — callers needing certainty must also inspect runways.
+        ///
+        /// NOTE the "C" in here is a seaplane base, and it is excluded because this app has always
+        /// assumed a landplane. For an aircraft that can alight on water a seaplane base is not a
+        /// non-airplane facility at all — it is the destination. Callers that know the aircraft
+        /// should branch on `isSeaplaneBase` FIRST and only then consult this. See
+        /// `NearestAirports.candidate`.
         var isNonAirplaneFacility: Bool { ["H", "C", "B", "U"].contains(siteType.uppercased()) }
+
+        /// A NASR seaplane base — SITE_TYPE_CODE "C". 561 of them ship in `apt.sqlite` today,
+        /// built and cycled by the same NASR pipeline as every other field.
+        var isSeaplaneBase: Bool { siteType.uppercased() == "C" }
     }
 
     /// `site_type`/`far139` shipped with the 2026-07-09 rebuild, but `NavDataUpdate` can resolve to a

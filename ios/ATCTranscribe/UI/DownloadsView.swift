@@ -33,6 +33,8 @@ struct DownloadsView: View {
     @State private var meteredPack: ChartCatalog.Entry?
     @State private var meteredReason: String = ""
     @State private var confirmDropStaged = false
+    @State private var meteredLZCell: LZPackCatalog.Cell?
+    @State private var meteredLZReason: String = ""
 
     /// Downloaded-vs-total plate count for a region (computed off-main — a region is hundreds of airports).
     struct PlateRegionStatus: Equatable { var total: Int; var downloaded: Int }
@@ -80,8 +82,11 @@ struct DownloadsView: View {
             await navLibrary.precacheNext()
         }
         .modifier(NextCycleDialogs(library: library,
+                                   lzLibrary: lzLibrary,
                                    meteredPack: $meteredPack,
                                    meteredReason: meteredReason,
+                                   meteredLZCell: $meteredLZCell,
+                                   meteredLZReason: meteredLZReason,
                                    confirmDropStaged: $confirmDropStaged,
                                    size: size))
         .onChange(of: bag.isRunning) { _, running in
@@ -118,7 +123,9 @@ struct DownloadsView: View {
                             presenting: confirmLZRegion) { region in
             let cells = lzLibrary.catalog?.cells(in: region) ?? []
             Button("Download \(region.title) — \(size(lzLibrary.remainingBytes(cells)))") {
-                for c in cells where !lzLibrary.isInstalled(c.id) { lzLibrary.download(c) }
+                for c in cells where !lzLibrary.isInstalled(c.id) {
+                    lzLibrary.download(c, allowMetered: true)
+                }
             }
             Button("Cancel", role: .cancel) {}
         } message: { region in
@@ -714,10 +721,15 @@ struct DownloadsView: View {
         return Button {
             Haptics.impact(.light)
             Task {
-                // Gated on the SAME metered check the background chart paths trust. A region is
-                // several hundred megabytes; asking first is not a formality.
-                if await NetPath.isExpensive() { confirmLZRegion = region }
-                else { for c in cells where !lzLibrary.isInstalled(c.id) { lzLibrary.download(c) } }
+                // The pilot's own setting, not a fixed cellular test. `NetPath.isExpensive()` is a
+                // weaker, older question: it ignores "Wi-Fi only" entirely and misses a constrained
+                // (Low Data Mode) path that is not technically expensive. A region is several
+                // hundred megabytes; it should obey the same switch every other download does.
+                if (await DownloadPolicy.shared.verdict(.userInitiated)).isAllowed {
+                    for c in cells where !lzLibrary.isInstalled(c.id) { lzLibrary.download(c) }
+                } else {
+                    confirmLZRegion = region
+                }
             }
         } label: {
             HStack {
@@ -774,13 +786,13 @@ struct DownloadsView: View {
             case .failed(let why):
                 VStack(alignment: .trailing, spacing: 2) {
                     Text(why).font(.dsLabelS).foregroundStyle(p.bad)
-                    Button("Retry") { lzLibrary.download(cell) }
+                    Button("Retry") { startLZ(cell) }
                         .font(.dsLabelSBold).foregroundStyle(p.accent)
                         .buttonStyle(.plainHaptic)
                 }
                 .accessibilityIdentifier("downloads-lz-failed-\(cell.id)")
             case .notDownloaded:
-                Button { lzLibrary.download(cell) } label: {
+                Button { startLZ(cell) } label: {
                     Image(systemName: "arrow.down.circle").font(.body).foregroundStyle(p.accent)
                 }
                 .buttonStyle(.plainHaptic)
@@ -890,6 +902,21 @@ struct DownloadsView: View {
         }
     }
 
+    /// Start one landability pack, asking the download policy first so a refusal becomes an
+    /// explained dialog with an override rather than a button that silently does nothing. This row
+    /// was previously ungated altogether — the only one of its size in the app.
+    private func startLZ(_ cell: LZPackCatalog.Cell) {
+        Task {
+            let verdict = await DownloadPolicy.shared.verdict(.userInitiated)
+            if verdict.isAllowed {
+                lzLibrary.download(cell)
+            } else {
+                meteredLZReason = verdict.explanation ?? ""
+                meteredLZCell = cell
+            }
+        }
+    }
+
     private var storageSection: some View {
         let p = model.palette
         return Section("Storage") {
@@ -990,8 +1017,11 @@ struct DownloadsView: View {
 /// chain length; a modifier type-checks its own body in isolation.
 private struct NextCycleDialogs: ViewModifier {
     @ObservedObject var library: ChartLibrary
+    @ObservedObject var lzLibrary: LZPackLibrary
     @Binding var meteredPack: ChartCatalog.Entry?
     var meteredReason: String
+    @Binding var meteredLZCell: LZPackCatalog.Cell?
+    var meteredLZReason: String
     @Binding var confirmDropStaged: Bool
     let size: (Int) -> String
 
@@ -1007,6 +1037,18 @@ private struct NextCycleDialogs: ViewModifier {
                 Button("Cancel", role: .cancel) {}
             } message: { e in
                 Text(meteredReason + " " + e.id + " is " + size(e.bytes)
+                     + ". Downloading it now may use your mobile data.")
+            }
+            .confirmationDialog("Download without Wi-Fi?",
+                                isPresented: Binding(get: { meteredLZCell != nil },
+                                                     set: { if !$0 { meteredLZCell = nil } }),
+                                presenting: meteredLZCell) { cell in
+                Button("Download " + cell.id + " — " + size(cell.bytes)) {
+                    lzLibrary.download(cell, allowMetered: true)
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: { cell in
+                Text(meteredLZReason + " " + cell.id + " is " + size(cell.bytes)
                      + ". Downloading it now may use your mobile data.")
             }
             .confirmationDialog("Remove the pre-loaded next cycle?",

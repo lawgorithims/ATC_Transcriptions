@@ -3559,7 +3559,12 @@ final class AppModel: ObservableObject {
                                        glideRatio: glideRatio,
                                        isDefaultGlideRatio: ratio == nil,
                                        verticalAccuracyM: altitude.sigmaM,
-                                       altitudeAgeS: altitude.ageS)
+                                       altitudeAgeS: altitude.ageS,
+                                       // No profile selected is a landplane, not an unknown: the
+                                       // list must not start offering water because nobody filled
+                                       // in an aircraft.
+                                       acceptsWater: selectedAircraft?.canLandOnWater ?? false,
+                                       acceptsLand: selectedAircraft?.canLandOnLand ?? true)
         // The turn onto each airport and the headwind toward it — the same allowances the glide bands
         // apply (see `GlideAllowance`). Both drop out cleanly: no usable track, no turn charge; no
         // fresh winds aloft, still air — and the panel header says which.
@@ -3931,6 +3936,8 @@ final class AppModel: ObservableObject {
         let ratio = selectedAircraft?.glideRatio ?? NearestAirports.defaultGlideRatio
         let vbg = Double(selectedAircraft?.bestGlideKts ?? 65)
         let tas = selectedAircraft?.cruiseKts.map(Double.init)
+        let water = selectedAircraft?.canLandOnWater ?? false            // as NRST judges it
+        let land = selectedAircraft?.canLandOnLand ?? true
         let winds = windAloft.freshFieldSet                              // Sendable snapshot, or nil
         Task {
             let out = await Task.detached(priority: .utility) { () -> (RouteGlideExposure.Result?,
@@ -3943,13 +3950,15 @@ final class AppModel: ObservableObject {
                         winds?.descentMeanWind(at: c.lat, lon: c.lon, fromFtMSL: from, groundFt: ground)
                     })
                 let now = RouteGlideExposure.evaluate(route: route, altitudeFtMSL: alt, glideRatio: ratio,
-                                                      bestGlideKts: vbg, world: world)
+                                                      bestGlideKts: vbg, acceptsWater: water,
+                                                      acceptsLand: land, world: world)
                 let target = (tas ?? 90) * Self.glideGapTargetMinutes / 60
                 let better = (now?.longestGapNm ?? 0) > target
                     ? RouteGlideExposure.lowestAltitude(
                         closingGapsTo: target, route: route,
                         startFtMSL: alt + RouteGlideExposure.altitudeStepFt,
-                        glideRatio: ratio, bestGlideKts: vbg, world: world)
+                        glideRatio: ratio, bestGlideKts: vbg, acceptsWater: water,
+                        acceptsLand: land, world: world)
                     : nil
                 return (now, better)
             }.value

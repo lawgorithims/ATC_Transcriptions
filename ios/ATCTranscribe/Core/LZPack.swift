@@ -40,6 +40,25 @@ enum LZPack {
     /// the app can decline what it cannot read instead of downloading 90 MB and rejecting it.
     static let readableSchemas: Set<Int> = [1, 2]
 
+    /// Whether a pack on disk, declaring `raw` as its `lz_schema` MBTiles metadata, may be
+    /// installed.
+    ///
+    /// THREE PLACES JUDGE A PACK'S SCHEMA AND THEY MUST AGREE: `LZPackStore` mounts anything in
+    /// `readableSchemas`, `LZPackCatalog.Cell.isReadable` offers anything in that set for download,
+    /// and `LZPackLibrary.accept` decides what survives the install. That last one used strict
+    /// equality with the CURRENT schema, so the catalog advertised packs the installer then
+    /// deleted — 88 MB spent for "failed its integrity check", which reads to a pilot as a server
+    /// fault. Every published cell is schema 2 today so it has never fired; it fires on the next
+    /// bump, when every pack already hosted is suddenly one behind. Expressed here as one function
+    /// so the three cannot drift again.
+    ///
+    /// Absent, empty or non-numeric is REFUSED: a pack that cannot state its own format is not a
+    /// pack this build should mount, and "cannot tell" is not "fine".
+    static func installable(schemaMetadata raw: String?) -> Bool {
+        guard let raw, let n = Int(raw) else { return false }
+        return readableSchemas.contains(n)
+    }
+
     static let side = 256
     /// Planes in the CURRENT schema. A schema-1 pack has six; see `planeCount(forSchema:)`.
     static let planeCount = 7

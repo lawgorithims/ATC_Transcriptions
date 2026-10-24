@@ -175,7 +175,16 @@ final class LZPackLibrary: ObservableObject {
     }
 
     /// Download one cell. Explicit only — never called from a background prefetch.
-    func download(_ cell: LZPackCatalog.Cell) {
+    /// Download one pack.
+    ///
+    /// ⚠️ THESE BYTES USED TO ESCAPE BOTH OF THE PILOT'S DOWNLOAD CONTROLS. A pack is ~88 MB, and
+    /// this path went straight to `FileDownloader`: it never consulted `DownloadPolicy`, so a pilot
+    /// who had set "Wi-Fi only" could still pull it over cellular from the per-cell row, and it
+    /// never registered with `NetworkActivity`, so the single largest transfer the app makes was
+    /// the one thing absent from the Data activity queue — invisible, unpausable, and not counted
+    /// against the concurrency limit that exists to stop a weak link being split six ways. Only the
+    /// catalog fetch, a few kilobytes, was ever in either.
+    func download(_ cell: LZPackCatalog.Cell, allowMetered: Bool = false) {
         guard tasks[cell.id] == nil else { return }
         guard let url = cell.remote(base: Self.base) else {
             states[cell.id] = .failed("this pack has no usable download address")
@@ -186,11 +195,24 @@ final class LZPackLibrary: ObservableObject {
         let t = Task { [weak self] in
             defer { Task { @MainActor [weak self] in self?.tasks[cell.id] = nil } }
             do {
-                try await LiveModelDownloader().downloadFile(from: url, to: dest) { p in
-                    Task { @MainActor [weak self] in
-                        // Late progress from a cancelled transfer must not resurrect a finished row.
-                        guard let self, case .downloading = self.state(cell.id) else { return }
-                        self.states[cell.id] = .downloading(min(max(p, 0), 1))
+                // A backstop, not the primary gate: the Downloads rows ask first so they can offer
+                // an explicit override. Enforced here too so every caller is covered, including
+                // ones added later.
+                if !allowMetered {
+                    let verdict = await DownloadPolicy.shared.verdict(.userInitiated)
+                    guard verdict.isAllowed else {
+                        self?.states[cell.id] = .failed(verdict.explanation ?? "Paused.")
+                        return
+                    }
+                }
+                try await NetworkActivity.shared.run("Landability pack \(cell.id)",
+                                                     category: .landability) {
+                    try await LiveModelDownloader().downloadFile(from: url, to: dest) { p in
+                        Task { @MainActor [weak self] in
+                            // Late progress from a cancelled transfer must not resurrect a finished row.
+                            guard let self, case .downloading = self.state(cell.id) else { return }
+                            self.states[cell.id] = .downloading(min(max(p, 0), 1))
+                        }
                     }
                 }
                 try await self?.accept(cell, at: dest)
@@ -217,7 +239,9 @@ final class LZPackLibrary: ObservableObject {
         let expected = cell.sha256
         let ok: Bool = await Task.detached(priority: .utility) {
             guard let r = MBTilesReader(path: dest.path), r.hasTiles else { return false }
-            guard r.metadata["lz_schema"] == String(LZPack.schema) else { return false }
+            // READABLE, NOT EQUAL — see `LZPack.installable(schemaMetadata:)` for why the
+            // catalog, the store and this check have to answer the same question.
+            guard LZPack.installable(schemaMetadata: r.metadata["lz_schema"]) else { return false }
             guard let expected, !expected.isEmpty else { return true }   // catalog published none
             return Self.sha256(of: dest)?.caseInsensitiveCompare(expected) == .orderedSame
         }.value
