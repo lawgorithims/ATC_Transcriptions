@@ -17,13 +17,32 @@ final class RouteGlideExposureUITests: XCTestCase {
         let allow = springboard.buttons["Allow While Using App"]
         if allow.waitForExistence(timeout: 3) { allow.tap() }
 
+        // By identifier, whatever its element type: the route box is a multi-line field, which
+        // XCUITest exposes as a text VIEW — `textFields["plan-route"]` never matches it.
+        func el(_ id: String) -> XCUIElement { app.descendants(matching: .any).matching(identifier: id).firstMatch }
+        // The plan and the strip's visibility both PERSIST, and whatever suite runs next inherits
+        // them: a strip left open with this route filed moved the map's overlays under
+        // WidgetMultiTouchUITests' drag. Leave the app as a fresh install has it — popover closed,
+        // plan cleared, strip collapsed — even when an assertion below stops the test early.
+        addTeardownBlock {
+            if app.state != .runningForeground { app.launch() }
+            let dismiss = app.descendants(matching: .any)["PopoverDismissRegion"]
+            if dismiss.exists { dismiss.tap() }               // a tap outside a popover only closes it
+            _ = el("glide-gap-detail").waitForNonExistence(timeout: 5)
+            let clear = el("plan-clear")
+            if clear.waitForExistence(timeout: 3) {
+                clear.tap()
+                let confirm = app.alerts.buttons["Clear"]
+                if confirm.waitForExistence(timeout: 3) { confirm.tap() }
+            }
+            let done = el("plan-bar-done")
+            if done.waitForExistence(timeout: 3) { done.tap() }
+        }
+
         let bag = app.buttons["flight-bag-button"]
         XCTAssertTrue(bag.waitForExistence(timeout: 30), "no flight-plan control")
         // The strip's visibility PERSISTS, so a previous run may have left it open — and the
         // briefcase is a toggle. Open it only if it is not already showing.
-        // By identifier, whatever its element type: the route box is a multi-line field, which
-        // XCUITest exposes as a text VIEW — `textFields["plan-route"]` never matches it.
-        func el(_ id: String) -> XCUIElement { app.descendants(matching: .any).matching(identifier: id).firstMatch }
         let route = el("plan-route")
         if !route.waitForExistence(timeout: 3) { bag.tap() }
         guard route.waitForExistence(timeout: 10) else {

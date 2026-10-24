@@ -214,7 +214,8 @@ final class LZLayerUITests: XCTestCase {
     /// NOTHING without diagnostics: no row, no ranked-list control, no data line. A layer that cannot
     /// draw needs no off switch, and a layer that draws with no way to find its switch is the trap.
     func testAPersistedLandabilityFlagDrawsNothingWithoutDiagnostics() {
-        let app = launch(["-atc.map.lz", "YES"])          // note: diagnostics NOT unlocked
+        // Diagnostics stated OFF, never inherited: the flag persists, and a unit test once left it on.
+        let app = launch(["-atc.map.lz", "YES", "-atc.diagnosticsEnabled", "NO"])
         openLayersPanel(app)
         XCTAssertTrue(app.switches["layer-lz-energy"].waitForExistence(timeout: 8),
                       "the layers panel did not open")
@@ -229,7 +230,7 @@ final class LZLayerUITests: XCTestCase {
     /// The glide-energy bands are the half the evidence supports, and stay ordinary — no developer
     /// flag anywhere in this launch. The landability shading is the half that is not.
     func testOnlyTheGlideBandsAreOfferedWithoutDeveloperDiagnostics() {
-        let app = launch()                                 // no -atc.diagnosticsEnabled at all
+        let app = launch(["-atc.diagnosticsEnabled", "NO"])    // stated, not inherited (it persists)
         openLayersPanel(app)
         XCTAssertTrue(app.switches["layer-lz-energy"].waitForExistence(timeout: 8),
                       "the glide energy layer is hidden from ordinary pilots")
@@ -240,7 +241,7 @@ final class LZLayerUITests: XCTestCase {
     /// Arming without diagnostics: NRST up, the glide bands on, and the button reads ARMED — it must
     /// not wait forever for a landability layer this pilot cannot have.
     func testArmingWithoutDiagnosticsLightsTheGlideBandsAndNearest() {
-        let app = launch()
+        let app = launch(["-atc.diagnosticsEnabled", "NO"])
         let emergency = app.buttons["emergency-button"]
         XCTAssertTrue(emergency.waitForExistence(timeout: 30))
         emergency.tap()
@@ -255,7 +256,7 @@ final class LZLayerUITests: XCTestCase {
     /// What an ordinary pilot now meets is the glide note, and it must say what shortens a real glide
     /// rather than promise ground.
     func testTheAdvisoryNoteNamesWhatShortensAGlide() {
-        let app = launch()
+        let app = launch(["-atc.diagnosticsEnabled", "NO"])
         openLayersPanel(app)
         let note = app.staticTexts["layers-lz-note"].label.lowercased()
         XCTAssertTrue(note.contains("advisory only"), note)

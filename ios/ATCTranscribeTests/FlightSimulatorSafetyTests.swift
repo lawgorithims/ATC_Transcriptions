@@ -11,6 +11,20 @@ import XCTest
 @MainActor
 final class FlightSimulatorSafetyTests: XCTestCase {
 
+    /// ⚠️ `diagnosticsEnabled` PERSISTS to UserDefaults, and unit tests run inside the app on the same
+    /// simulator the UI suite launches. Setting it here without putting it back left every later
+    /// launch with developer diagnostics ON — invisible until a UI test asserted something was
+    /// ABSENT without diagnostics (the landability shading, build 110), and then four failed.
+    private var savedDiagnostics: Any?
+    override func setUp() {
+        super.setUp()
+        savedDiagnostics = UserDefaults.standard.object(forKey: "atc.diagnosticsEnabled")
+    }
+    override func tearDown() {
+        UserDefaults.standard.set(savedDiagnostics, forKey: "atc.diagnosticsEnabled")
+        super.tearDown()
+    }
+
     /// Locked developer diagnostics is the outermost gate, and it is checked before anything else so a
     /// normal install can never reach the rest of the machinery.
     func testItRefusesWithDiagnosticsLocked() {
