@@ -3555,11 +3555,23 @@ final class AppModel: ObservableObject {
             nrstAssessment = nil; nrstBlocked = .noAltitude; return
         }
         nrstBlocked = nil
-        let situation = GlideSituation(coord: coord, altitudeFtMSL: altitude.ftMSL,
+        var situation = GlideSituation(coord: coord, altitudeFtMSL: altitude.ftMSL,
                                        glideRatio: glideRatio,
                                        isDefaultGlideRatio: ratio == nil,
                                        verticalAccuracyM: altitude.sigmaM,
                                        altitudeAgeS: altitude.ageS)
+        // The turn onto each airport and the headwind toward it — the same allowances the glide bands
+        // apply (see `GlideAllowance`). Both drop out cleanly: no usable track, no turn charge; no
+        // fresh winds aloft, still air — and the panel header says which.
+        situation.trackDeg = GlideAllowance.usableTrack(trackDeg: readout.trackDeg,
+                                                        groundSpeedKt: readout.groundSpeedKt)
+        situation.bestGlideKts = Double(selectedAircraft?.bestGlideKts ?? 65)
+        let groundFt = TerrainElevation.shared.sampleElevationFt(at: coord) ?? 0
+        if let w = windAloft.descentMeanWind(at: coord.lat, lon: coord.lon,
+                                             fromFtMSL: altitude.ftMSL, groundFt: groundFt) {
+            situation.windFromDeg = w.fromDeg
+            situation.windKts = w.kts
+        }
         nrstRefreshInFlight = true
         let result = await Task.detached(priority: .userInitiated) { () -> (NRSTAssessment, Bool) in
             let radius = NearestAirports.searchRadiusNm(for: situation)

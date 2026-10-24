@@ -53,6 +53,25 @@ enum WindLevel: Int, CaseIterable, Codable, Sendable {
         }
     }
 
+    /// Standard-atmosphere pressure altitude of the level, in feet — nil for the surface level, which
+    /// sits 10 m above whatever the ground is. Used to place each level in the column a glide descends
+    /// through (`WindProfile.layerMean`). ISA heights, so a hot or cold day shifts the real level a few
+    /// hundred feet; that is far inside the error of a forecast wind.
+    var standardAltitudeFt: Double? {
+        switch self {
+        case .surface: return nil
+        case .mb925: return 2_500
+        case .mb850: return 4_781
+        case .mb700: return 9_882
+        case .mb600: return 13_801
+        case .mb500: return 18_289
+        case .mb400: return 23_574
+        case .mb300: return 30_065
+        case .mb250: return 33_999
+        case .mb200: return 38_662
+        }
+    }
+
     /// The slider's tick label — standard-atmosphere altitude, in the form a pilot reads it.
     var shortLabel: String {
         switch self {

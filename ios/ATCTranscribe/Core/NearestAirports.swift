@@ -53,8 +53,8 @@ extension TerrainElevation: TerrainSampling {
 /// live state mid-computation — the caller freezes the fix once, on the main actor, and hands it over.
 struct GlideSituation: Equatable, Sendable {
     let coord: Coord
-    let altitudeFtMSL: Double        // orthometric MSL feet (same datum as the terrain grid)
-    let glideRatio: Double           // best-glide L/D actually used (profile's, or the default)
+    var altitudeFtMSL: Double        // orthometric MSL feet (same datum as the terrain grid)
+    var glideRatio: Double           // best-glide L/D actually used (profile's, or the default)
     let isDefaultGlideRatio: Bool    // true when no profile number existed — the UI must say so
     let verticalAccuracyM: Double?   // GPS vertical 1-sigma; nil = unknown (assume coarse)
     /// Age of the altitude this situation was built from. 0 = a live GPS altitude. Non-zero means the
@@ -63,6 +63,31 @@ struct GlideSituation: Equatable, Sendable {
     /// estimate about a number nobody is currently measuring.
     var altitudeAgeS: Double = 0
     var isAltitudeCarried: Bool { altitudeAgeS > 0 }
+
+    /// GPS track worth charging turns against (see `GlideAllowance.usableTrack`); nil = no turn charge.
+    var trackDeg: Double? = nil
+    /// The descent-mean wind (`WindAloftService.descentMeanWind`); nil = still air, and the panel says so.
+    var windFromDeg: Double? = nil
+    var windKts: Double? = nil
+    var bestGlideKts: Double = 65
+
+    var windApplied: Bool { windKts != nil && windFromDeg != nil }
+
+    /// This situation as it stands for a glide toward `bearingDeg`: the turn onto that bearing is spent
+    /// first, and the glide ratio is cut by any headwind along it. The SAME two functions shape the
+    /// glide bands, so an airport and a field at the same place are judged by one standard.
+    func toward(bearingDeg: Double) -> GlideSituation {
+        var s = self
+        s.altitudeFtMSL = altitudeFtMSL - GlideAllowance.turnLossFt(fromTrackDeg: trackDeg,
+                                                                   toBearingDeg: bearingDeg)
+        s.glideRatio = glideRatio * GlideAllowance.windScale(bearingDeg: bearingDeg,
+                                                             windFromDeg: windFromDeg,
+                                                             windKts: windKts,
+                                                             bestGlideKts: bestGlideKts)
+        assert(s.altitudeFtMSL <= altitudeFtMSL && s.glideRatio <= glideRatio * 1.000_1,
+               "toward(bearingDeg:) must never flatter reach")
+        return s
+    }
 }
 
 /// Per-station weather the ranker consumes, pre-resolved by the caller (the engine stays sync + pure;
@@ -198,8 +223,9 @@ struct NRSTEngagement: Equatable, Codable {
 /// always outranks any combination of runway/facility/terrain advantages — "two airports in glide,
 /// one visual: the visual one", even against a Part-139 field with a 12,000 ft runway. Tiers 3–5
 /// then combine as a weighted score whose weights descend in hierarchy order, with the still-air
-/// arrival margin as a small tiebreak. The still-air assumption is deliberate: the app has no
-/// offline wind source, and the conservative default ratio plus the arrival reserve absorb it.
+/// arrival margin as a small tiebreak. Reach is charged for the TURN onto each airport's bearing and
+/// for any HEADWIND along it (a tailwind is never credited) — see `GlideAllowance`, which the glide
+/// bands share. With no usable track and no fresh winds aloft this reduces to the old still-air sweep.
 enum NearestAirports {
 
     // Named constants (rule 2: every loop bound and physical assumption has a name).
@@ -398,9 +424,12 @@ enum NearestAirports {
 
         let distanceNm = Geo.nmBetween(situation.coord, airport.coord)
         let bearing = Geo.bearing(situation.coord, airport.coord)
-        let rangeNm = stillAirRangeNm(situation, fieldElevFt: fieldElevFt)
-        let marginFt = (rangeNm - distanceNm) / situation.glideRatio * ftPerNm
-        let reach = reachability(situation: situation, to: airport.coord, distanceNm: distanceNm,
+        // The turn onto this bearing and the headwind along it, before anything is measured. With no
+        // track and no wind this is the original situation, unchanged.
+        let glide = situation.toward(bearingDeg: bearing)
+        let rangeNm = stillAirRangeNm(glide, fieldElevFt: fieldElevFt)
+        let marginFt = (rangeNm - distanceNm) / glide.glideRatio * ftPerNm
+        let reach = reachability(situation: glide, to: airport.coord, distanceNm: distanceNm,
                                  inGlide: distanceNm <= rangeNm, arrivalMarginFt: marginFt, terrain: terrain)
 
         let wx = weather[wxIdent(for: airport) ?? ""]

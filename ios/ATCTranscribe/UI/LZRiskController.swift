@@ -177,7 +177,8 @@ final class LZRiskController: ObservableObject {
     /// drawn against a position the integrity monitor has disowned, or an altitude that is minutes
     /// old, they are a claim about a situation that no longer exists.
     func refreshEnergy(coord: Coord?, altitudeFtMSL: Double?, aircraft: AircraftProfile?,
-                       wind: (fromDeg: Double, kts: Double)?, verticalAccuracyM: Double?) async {
+                       wind: (fromDeg: Double, kts: Double)?, verticalAccuracyM: Double?,
+                       trackDeg: Double? = nil) async {
         // Distinguish the two reasons. They are different problems with different fixes, and
         // lumping them together sends a pilot looking for a GPS fault when the receiver is fine
         // and it is the altitude that is missing (exactly what the Simulator does — CoreLocation
@@ -200,7 +201,8 @@ final class LZRiskController: ObservableObject {
             isDefaultGlideRatio: aircraft?.glideRatio == nil,
             bestGlideKts: Double(aircraft?.bestGlideKts ?? 65),
             windFromDeg: wind?.fromDeg, windKts: wind?.kts,
-            verticalAccuracyM: verticalAccuracyM)
+            verticalAccuracyM: verticalAccuracyM,
+            trackDeg: trackDeg)
 
         // Off the main actor: a 64-ray sweep over an mmapped grid is not render-loop work.
         let field = await Task.detached(priority: .utility) {
@@ -220,7 +222,9 @@ final class LZRiskController: ObservableObject {
         energyBands = field.bands
         energyFieldSnapshot = field
         var parts = [String]()
-        parts.append(field.usedWind ? "wind applied" : "still air")
+        // Say what the footprint was charged for, the same words the airport list uses.
+        parts.append(field.usedWind ? "headwind applied" : "still air (no current winds)")
+        if trackDeg != nil { parts.append("turns included") }
         if field.isDefaultGlideRatio { parts.append("default \(Int(ratio)):1 — set your glide ratio") }
         if field.sawHole { parts.append("terrain coverage incomplete") }
         parts.append(String(format: "%.0f nm", field.maxRangeNm))

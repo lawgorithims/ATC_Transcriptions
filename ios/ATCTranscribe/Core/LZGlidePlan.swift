@@ -316,15 +316,14 @@ enum LZGlidePlanner {
         windKts * cos((track - windFromDeg) * .pi / 180)
     }
 
-    /// The same first-order wind distortion the energy footprint uses, so the plan and the shading
-    /// cannot disagree about how far the aeroplane goes. Bounded identically.
+    /// The same wind rule the energy footprint and the airport list use — `GlideAllowance.windScale`,
+    /// headwind charged, tailwind never credited — so the plan and the shading cannot disagree about
+    /// how far the aeroplane goes.
     static func windAdjustedRatio(_ ratio: Double, bestGlideKts: Double, headingDeg: Double,
                                   windFromDeg: Double?, windKts: Double?) -> Double {
-        guard let from = windFromDeg, let kts = windKts, kts > 0 else { return ratio }
-        let vbg = max(20.0, bestGlideKts > 0 ? bestGlideKts : LZGlideField.defaultBestGlideKts)
-        let tail = kts * cos((headingDeg - (from + 180.0)) * .pi / 180.0)
-        let scale = min(LZGlideField.windRatioMax, max(LZGlideField.windRatioMin, (vbg + tail) / vbg))
-        return ratio * scale
+        let vbg = bestGlideKts > 0 ? bestGlideKts : LZGlideField.defaultBestGlideKts
+        return ratio * GlideAllowance.windScale(bearingDeg: headingDeg, windFromDeg: windFromDeg,
+                                                windKts: windKts, bestGlideKts: vbg)
     }
 
     /// Walk the run-in and find the LAST point from which some other candidate is still reachable.

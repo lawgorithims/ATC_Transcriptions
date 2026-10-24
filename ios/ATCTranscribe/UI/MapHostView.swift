@@ -262,15 +262,26 @@ struct MapHostView: View {
                 // to AppModel for good reasons, and an ambient layer should hide rather than guess.
                 let readout = GPSReadout.merge(stratux: model.freshStratuxGPS,
                                                device: model.deviceLocation.fix)
-                let wind = model.windAloft.wind(at: model.presentPosition?.lat ?? 0,
-                                                lon: model.presentPosition?.lon ?? 0,
-                                                level: WindLevel.at(index: model.windLevelIndex))
+                // ⚠️ THE DESCENT-MEAN WIND, NOT THE SLIDER'S LEVEL. This read the wind at whatever level
+                // the map's wind slider sat on — the surface, by default — of any age. A glide meets
+                // every level between here and the ground; stale runs are refused (still air).
+                let pos = model.presentPosition
+                let groundFt = pos.flatMap { TerrainElevation.shared.sampleElevationFt(at: $0) } ?? 0
+                let wind = pos.flatMap { p in readout.altitudeFtMSL.flatMap { alt in
+                    model.windAloft.descentMeanWind(at: p.lat, lon: p.lon, fromFtMSL: alt,
+                                                    groundFt: groundFt) } }
                 await lzController.refreshEnergy(
-                    coord: model.presentPosition,
+                    coord: pos,
                     altitudeFtMSL: readout.altitudeFtMSL,
                     aircraft: model.selectedAircraft,
-                    wind: wind.map { (fromDeg: Double($0.fromDeg), kts: Double($0.kt)) },
-                    verticalAccuracyM: model.deviceLocation.fix?.verticalAccuracyM)
+                    wind: wind,
+                    // The sigma that describes THIS altitude: a Stratux altitude carries none, and
+                    // pairing it with the iPad's (often WAAS-tight) sigma shrank the clearance buffer
+                    // using an error bar for a different instrument. NRST already refuses that pairing.
+                    verticalAccuracyM: readout.source == .device
+                        ? model.deviceLocation.fix?.verticalAccuracyM : nil,
+                    trackDeg: GlideAllowance.usableTrack(trackDeg: readout.trackDeg,
+                                                         groundSpeedKt: readout.groundSpeedKt))
                 try? await Task.sleep(nanoseconds: Self.lzEnergyPeriodNs)
             }
         }
