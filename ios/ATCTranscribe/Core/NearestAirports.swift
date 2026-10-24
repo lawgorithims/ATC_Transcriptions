@@ -63,6 +63,14 @@ struct GlideSituation: Equatable, Sendable {
     /// estimate about a number nobody is currently measuring.
     var altitudeAgeS: Double = 0
     var isAltitudeCarried: Bool { altitudeAgeS > 0 }
+
+    /// Which surfaces this aircraft may alight on, from `AircraftProfile.waterOps`.
+    ///
+    /// Defaulted so every existing caller — and every test written before water operations existed —
+    /// keeps the landplane behaviour it was written against. A seaplane base only enters the ranking
+    /// when something affirmatively says the aircraft can use one.
+    var acceptsWater: Bool = false
+    var acceptsLand: Bool = true
 }
 
 /// Per-station weather the ranker consumes, pre-resolved by the caller (the engine stays sync + pure;
@@ -382,18 +390,44 @@ enum NearestAirports {
                               candidates: Array(out.prefix(maxCandidates)))
     }
 
-    /// Build one ranked candidate, or nil when the facility is not a place an airplane lands
-    /// (closed, heliport/seaplane/balloon/ultralight, or nothing but helipads and water in NASR).
+    /// Build one ranked candidate, or nil when the facility is not a place THIS aircraft lands —
+    /// closed, a heliport/balloonport/ultralight field, or holding no runway whose surface the
+    /// aircraft can use. Water counts for an aircraft that floats and not otherwise; see
+    /// `GlideSituation.acceptsWater`.
     private static func candidate(for airport: AirportData.Airport, situation: GlideSituation,
                                   runwaysFor: (String) -> [AirportData.Runway],
                                   weather: [String: NRSTWeather],
                                   terrain: TerrainSampling, now: Date) -> NRSTCandidate? {
-        guard airport.isOperational, !airport.isNonAirplaneFacility else { return nil }
+        guard airport.isOperational else { return nil }
+        // Reject what no fixed-wing aircraft lands on, whatever it floats on. NOTE this is
+        // deliberately NOT `isNonAirplaneFacility`, which also excludes "C" — a seaplane base is
+        // the destination for an aircraft that alights on water, not a rejection.
+        let siteType = airport.siteType.uppercased()
+        guard !["H", "B", "U"].contains(siteType) else { return nil }
+
         let runways = runwaysFor(airport.ident)
-        let usable = runways.filter { !$0.isHelipad && !$0.isFailed && $0.surface.uppercased() != "WATER" }
-        // NASR has runway rows for ~every airplane field; a record with rows but none usable is a
-        // heliport/seaplane in disguise (pre-site_type DB cycles). No rows at all = unknown, keep it.
-        guard runways.isEmpty || !usable.isEmpty else { return nil }
+        // ⚠️ THE SURFACE DECIDES, NOT THE SITE TYPE. 77 ordinary airports in the shipped NASR cycle
+        // carry a water runway beside their asphalt — Leesburg Intl has a 15,000 ft water lane — and
+        // 11 seaplane bases have a turf or gravel strip. Gating on `site_type` would hand a
+        // float-only aircraft nothing at those 77 fields and offer a landplane a lake at the 11.
+        let usable = runways.filter { r in
+            guard !r.isHelipad, !r.isFailed else { return false }
+            if r.surface.uppercased() == "WATER" { return situation.acceptsWater }
+            // A NON-WATER RUNWAY AT A SEAPLANE BASE IS NOT AN AEROPLANE RUNWAY. NASR lists 11 of
+            // them as turf, gravel, concrete or snow; at a water landing area that is a beach, a
+            // ramp or a ski strip, not a field. The site type is the stronger signal in this
+            // direction, so a landplane is never sent to a seaplane base — which is also the
+            // behaviour every existing caller has relied on.
+            return situation.acceptsLand && !airport.isSeaplaneBase
+        }
+        // NASR has runway rows for ~every airplane field, so "rows but none usable" means nothing
+        // here takes this aircraft. With NO rows the surface is unknown, and the site type is the
+        // only other thing the record tells us — which is also what caught pre-site_type DB cycles
+        // where a heliport or seaplane base had no usable rows at all.
+        let surfaceTakesThisAircraft = runways.isEmpty
+            ? (airport.isSeaplaneBase ? situation.acceptsWater : situation.acceptsLand)
+            : !usable.isEmpty
+        guard surfaceTakesThisAircraft else { return nil }
         guard let fieldElevFt = airport.elevationFt ?? terrain.sampleElevationFt(at: airport.coord) else { return nil }
 
         let distanceNm = Geo.nmBetween(situation.coord, airport.coord)

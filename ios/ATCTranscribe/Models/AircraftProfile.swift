@@ -51,6 +51,31 @@ struct AircraftProfile: Codable, Equatable, Identifiable {
     /// glider that needs a runway.
     var isRotorcraft: Bool?
 
+    /// What this aircraft can put down on.
+    ///
+    /// ⚠️ THREE STATES, NOT A BOOLEAN, AND THAT IS THE WHOLE POINT. The nearest-airport list exists
+    /// to answer "where can I put it down", and the three answers genuinely differ: a landplane must
+    /// not be offered water, a STRAIGHT FLOATPLANE MUST NOT BE OFFERED ASPHALT, and only an
+    /// amphibian may be offered both. Collapsing the last two into one `isSeaplane` flag would hand
+    /// a float-only pilot a paved runway during an engine-out — a confident wrong answer on the one
+    /// screen that exists for the worst minute of a flight.
+    ///
+    /// `nil` means land only, so every profile written before water operations existed keeps exactly
+    /// the behaviour it has today rather than silently acquiring 561 seaplane bases.
+    var waterOps: WaterOps?
+
+    enum WaterOps: String, Codable, CaseIterable, Identifiable {
+        case amphibian      // wheels plus floats or a hull — both surfaces
+        case floatOnly      // straight floats or a flying boat — water only
+        var id: String { rawValue }
+        var title: String { self == .amphibian ? "Amphibian" : "Floats (water only)" }
+    }
+
+    /// Can this aircraft alight on water at all?
+    var canLandOnWater: Bool { waterOps != nil }
+    /// Can it use a conventional runway? Everything except a straight floatplane.
+    var canLandOnLand: Bool { waterOps != .floatOnly }
+
     /// True when there's nothing worth keeping (drives add-sheet validation).
     var isEmpty: Bool { callsign.isEmpty && type.isEmpty }
 

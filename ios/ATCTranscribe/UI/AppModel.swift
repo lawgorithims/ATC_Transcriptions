@@ -3537,7 +3537,12 @@ final class AppModel: ObservableObject {
                                        glideRatio: glideRatio,
                                        isDefaultGlideRatio: ratio == nil,
                                        verticalAccuracyM: altitude.sigmaM,
-                                       altitudeAgeS: altitude.ageS)
+                                       altitudeAgeS: altitude.ageS,
+                                       // No profile selected is a landplane, not an unknown: the
+                                       // list must not start offering water because nobody filled
+                                       // in an aircraft.
+                                       acceptsWater: selectedAircraft?.canLandOnWater ?? false,
+                                       acceptsLand: selectedAircraft?.canLandOnLand ?? true)
         nrstRefreshInFlight = true
         let result = await Task.detached(priority: .userInitiated) { () -> (NRSTAssessment, Bool) in
             let radius = NearestAirports.searchRadiusNm(for: situation)
