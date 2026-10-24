@@ -26,7 +26,11 @@ final class WidgetMultiTouchUITests: XCTestCase {
 
     func testSingleFingerDragStillMovesWidget() throws {
         let app = XCUIApplication()
-        app.launchArguments += ["-atc.onboardingDismissed", "YES", "--reset-widgets"]
+        // State every overlay that can sit over the GPS widget's header, rather than inherit it: these
+        // flags PERSIST, and a winds-aloft toggle left on by WindOverlayUITests put the altitude slider
+        // and legend exactly where this drag starts — a "regression" that was only leftover state.
+        app.launchArguments += ["-atc.onboardingDismissed", "YES", "--reset-widgets",
+                                "-atc.map.wind", "NO", "-atc.bar.plan", "NO"]
         app.launch()
 
         let h = header(app)

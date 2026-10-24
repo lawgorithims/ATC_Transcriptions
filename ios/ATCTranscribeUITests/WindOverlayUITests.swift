@@ -53,6 +53,19 @@ final class WindOverlayUITests: XCTestCase {
     /// The toggle exists in the layers panel and turning it on raises the slider.
     func testLayersToggleRaisesTheAltitudeSlider() {
         let app = launchMap(windOn: false)
+        // The toggle tap below PERSISTS `atc.map.wind`; the launch argument only outranks it for THIS
+        // run. Left on, every later launch on this simulator came up with the altitude slider and legend
+        // drawn over the GPS widget's header, and WidgetMultiTouchUITests' drag landed on them instead
+        // ("single-finger drag no longer moves the widget", 2026-10-24). Switch it back off through the
+        // same control — this runs even when an assertion below stops the test.
+        addTeardownBlock {
+            guard app.state == .runningForeground else { return }
+            let dismiss = app.otherElements["PopoverDismissRegion"]
+            if dismiss.exists { dismiss.tap() }
+            app.buttons["map-layers-menu"].tap()
+            let t = app.switches["layer-wind"]
+            if t.waitForExistence(timeout: 5), (t.value as? String) == "1" { t.tap() }
+        }
         XCTAssertTrue(app.buttons["map-zoom-in"].waitForExistence(timeout: 30), "map did not come up")
         XCTAssertFalse(element(app, "wind-altitude-slider").exists, "the slider must be off by default")
 
