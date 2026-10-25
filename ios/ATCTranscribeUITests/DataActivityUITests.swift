@@ -23,12 +23,6 @@ final class DataActivityUITests: XCTestCase {
         app.descendants(matching: .any).matching(identifier: id).firstMatch
     }
 
-    /// Tap a Form toggle on its SWITCH, not the middle of the row — the identifier lands on the
-    /// row, whose centre is the label. See DownloadSettingsUITests for the full story.
-    private func flip(_ app: XCUIApplication, _ id: String) {
-        el(app, id).coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
-    }
-
     /// One tap from the map. Not three through Settings.
     func testDataActivityIsOneTapFromTheMap() throws {
         let app = launch()
@@ -58,8 +52,12 @@ final class DataActivityUITests: XCTestCase {
         XCTAssertFalse(before.contains("paused"), "nothing is paused yet, but the icon says \(before)")
 
         button.tap()
-        XCTAssertTrue(el(app, "netq-toggle-radar").waitForExistence(timeout: 10))
-        flip(app, "netq-toggle-radar")
+        let radar = el(app, "netq-toggle-radar")
+        XCTAssertTrue(radar.waitForExistence(timeout: 10))
+        // Verified, not fire-and-forget. This switch has dropped taps under XCUITest (see
+        // `UITestToggle`), and an unverified tap failed below as an icon reading "idle", which is
+        // indistinguishable from the bug this test exists to catch.
+        UITestToggle.flip(radar)
 
         // Dismiss the popover by tapping the map behind it — the gesture this presentation exists
         // to give a pilot who is one-handed in turbulence.
@@ -71,7 +69,9 @@ final class DataActivityUITests: XCTestCase {
         XCTAssertTrue(spoken.contains("paused"),
                       "the bar icon says \"\(spoken)\" after the pilot paused Radar. With an empty "
                       + "queue nothing else on screen remembers that choice.")
-        XCTAssertTrue(spoken.contains("Radar"), "the icon should name what is paused: \"\(spoken)\"")
+        // EXACTLY Radar. `flip` retries a dropped tap, and a tap that slipped onto the next row would
+        // pause Weather as well: still "paused", still naming Radar, and wrong.
+        XCTAssertEqual(spoken, "paused: Radar", "the icon should name what is paused, and only that")
     }
 
     /// The control is EFB, not transcription, so it must survive the beta gate — this is the file
