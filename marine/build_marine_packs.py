@@ -245,6 +245,32 @@ def build_band_gpkg(cells, band, bbox, gpkg_path):
     # pack that still advertised bounds covering the water those rocks are in.
     fx0, fx1, fy0, fy1 = clip.GetEnvelope()
     filter_rect = (fx0, fy0, fx1, fy1)
+    # The clip is an AXIS-ALIGNED RECTANGLE, so a feature whose envelope sits inside that
+    # rectangle is itself inside it — exactly, not approximately. That makes an O(1) envelope
+    # comparison a drop-in replacement for clip.Contains(g), which calls into GEOS and costs time
+    # proportional to the vertex count.
+    #
+    # ⚠️ This is a correctness-preserving fast path only because the clip is a rectangle. If
+    # clip_geom() ever returns a non-rectangular polygon (an M_COVR cutline, say), DELETE this
+    # path: bbox-inside-polygon does not imply geometry-inside-polygon for a concave shape, and
+    # features would be carried through unclipped.
+    #
+    # Worth having, but small: measured over 15,003 real inland_rivers geometries it is 10x faster
+    # than clip.Contains (192 ms -> 19 ms) and agreed with it on every single one, with a 100%
+    # hit rate — not one of those features needed clipping.
+    #
+    # ⚠️ IT DOES NOT EXPLAIN inland_rivers. That region took 9,815 s against 7-462 s for every
+    # other region in the 2026-10-21 North America build, 60% of the whole build. This fast path
+    # is worth about 6 s of it. The containment test was the author's hypothesis and the
+    # measurement refuted it; do not go looking here again.
+    #
+    # The remaining suspect is the MVT writer, whose cost scales with the number of TILES each
+    # feature touches rather than the feature count. inland_rivers carries 477k features in 147k
+    # tiles — both mid-range — but they are Mississippi-system river and depth polygons that run
+    # for tens of kilometres, so a single one intersects hundreds of z16 tiles and is re-clipped
+    # into every one. southeast_alaska has MORE tiles (199k) and built in 462 s because its
+    # harbour features are compact. That is inherent to the data rather than a defect, so any fix
+    # means splitting long geometries before tiling — unmeasured, and not attempted here.
     for c in cells:
         # gdal.UseExceptions() is on, so ogr.Open RAISES on a bad cell rather than returning None.
         # An `if src is None` branch here was dead code, and one truncated cell therefore aborted
@@ -298,7 +324,9 @@ def build_band_gpkg(cells, band, bbox, gpkg_path):
                 g = feat.GetGeometryRef()
                 if g is None or g.IsEmpty():
                     continue
-                if not clip.Contains(g):
+                gx0, gx1, gy0, gy1 = g.GetEnvelope()
+                inside_fast = (gx0 >= fx0 and gx1 <= fx1 and gy0 >= fy0 and gy1 <= fy1)
+                if not inside_fast:
                     try:
                         g = g.Intersection(clip)
                     except Exception as ex:
@@ -672,19 +700,13 @@ def main(argv=None):
             continue
         t0 = time.time()
         bands = sorted({c["band"] for c in cells})
-        windows = encspec.band_windows(bands)
         print(f"\n▸ {r['name']} — {r['label']}")
         print(f"   {len(cells)} cells, bands {bands}")
-        stretched = [b for b in bands if windows[b] != encspec.BAND_ZOOM[b]]
-        if stretched:
-            print("   ·  " + ", ".join(
-                f"band {b} covers z{windows[b][0]}-{windows[b][1]} instead of "
-                f"z{encspec.BAND_ZOOM[b][0]}-{encspec.BAND_ZOOM[b][1]}" for b in stretched)
-                + " (this region has no cells in the band(s) below, so the finer band fills the gap)")
 
         work = os.path.join(args.work, r["name"])
         os.makedirs(work, exist_ok=True)
         band_packs, total_counts, band_gpkgs = {}, {}, {}
+        pending = {}      # band -> (gpkg, counts, n_cells); tiled in pass 2, see below
         for band in bands:
             bcells = [c for c in cells if c["band"] == band]
             gpkg = os.path.join(work, f"band{band}.gpkg")
@@ -694,6 +716,14 @@ def main(argv=None):
                     print(f"   !! unreadable cell {ident}: {why}", file=sys.stderr)
                 failures.append(f"{r['name']}: band {band}: {len(unreadable)} cell(s) could not be "
                                 f"read, so their charted water is in no pack")
+            # ⚠️ TEST THE FEATURE TOTAL, NOT THE DICT. build_band_gpkg creates a destination
+            # layer (and so a counts key) for every class the INDEX says the cell holds, before it
+            # knows whether any feature survives the spatial filter. So a band that contributes
+            # nothing still returns a dict of 14-odd zero counts, which is truthy — guam_marianas
+            # went through this branch with "3 cells, 0 features, 14 layers", claimed the z10-11
+            # window, emitted an empty MVT, and was quarantined for advertising a zoom range with
+            # a hole in it. Twice: the first fix moved the window calculation but left this test.
+            counts = {ln: k for ln, k in counts.items() if k}
             if not counts:
                 print(f"   band {band}: no features in region bbox — skipped")
                 continue
@@ -726,14 +756,35 @@ def main(argv=None):
                       f"overlap the region edge and are clipped, so are not comparable")
             for ln, k in counts.items():
                 total_counts[ln] = total_counts.get(ln, 0) + k
+            band_gpkgs[band] = gpkg
+            pending[band] = (gpkg, counts, len(bcells))
+
+        # ── Windows are derived from the bands that PRODUCED FEATURES, not the bands whose cells
+        # exist. Those are different sets, and the difference shipped a holed pack.
+        #
+        # guam_marianas HAS three band-3 cells, so deriving windows from `bands` gave band 3 the
+        # z10-11 slot — but all three yielded zero features inside the region box, the band was
+        # skipped, and z10-11 came out empty inside a pack advertising z4-16. The guard caught it
+        # and quarantined the pack, which is the right outcome but a wasted build. Deciding the
+        # windows here, once the GeoPackages are in hand, closes the gap instead: band 4 stretches
+        # down to z10 exactly as it does for the Great Lakes.
+        windows = encspec.band_windows(sorted(pending))
+        stretched = [b for b in sorted(pending) if windows[b] != encspec.BAND_ZOOM[b]]
+        if stretched:
+            print("   ·  " + ", ".join(
+                f"band {b} covers z{windows[b][0]}-{windows[b][1]} instead of "
+                f"z{encspec.BAND_ZOOM[b][0]}-{encspec.BAND_ZOOM[b][1]}" for b in stretched)
+                + " (no band below it produced features here, so the finer band fills the gap)")
+
+        for band in sorted(pending):
+            gpkg, counts, ncells = pending[band]
             zlo, zhi = windows[band]
             mb = os.path.join(work, f"band{band}.mbtiles")
             band_to_mvt(gpkg, band, mb, r["name"], windows[band])
             band_packs[band] = mb
-            band_gpkgs[band] = gpkg
             nf = sum(counts.values())
             print(f"   band {band} {encspec.BAND_NAME[band]:9s} z{zlo}-{zhi}  "
-                  f"{len(bcells):4d} cells  {nf:8,} features  {len(counts)} layers")
+                  f"{ncells:4d} cells  {nf:8,} features  {len(counts)} layers")
 
         out = os.path.join(args.out, f"{r['name']}.mbtiles")
         if not band_packs:
