@@ -386,6 +386,26 @@ struct ChartCatalog: Decodable {
             let raw = "\(ChartCatalog.base)/\(path)"
             return URL(string: raw) ?? raw.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed).flatMap(URL.init)
         }
+
+        /// Which tier this pack belongs to, derived from the remote subdirectory in `path`.
+        ///
+        /// The prefixes are set by `charts/publish_packs.py`'s `FAMILIES` table — `sectional/`,
+        /// `ifr/`, `ifrhigh/` — and are constant per pack, so reading them here keeps the mapping
+        /// correct even when an `Entry` arrives on its own (which is exactly how
+        /// `ChartLibrary.ensureOnDisk` receives one, with no catalog section to tell it apart).
+        ///
+        /// ⚠️ AN UNKNOWN PREFIX REQUIRES THE TOP TIER, and asserts. This is the safe polarity for a
+        /// download gate: over-gating a new layer is loud and instantly reported ("I'm on Pro and
+        /// can't download X"), while under-gating silently gives paid content away to everyone. The
+        /// assert means a new family added to `publish_packs.py` without a line here fails in debug
+        /// and in the test suite rather than shipping either way.
+        var capability: Capability {
+            if path.hasPrefix("sectional/") { return .vfrCharts }
+            if path.hasPrefix("ifrhigh/")   { return .ifrHighCharts }   // before "ifr/" — it is a prefix of it
+            if path.hasPrefix("ifr/")       { return .ifrLowCharts }
+            assertionFailure("ChartCatalog.Entry: unmapped chart family in path '\(path)' — add it to `capability`")
+            return .ifrHighCharts
+        }
     }
 
     static let base = "https://huggingface.co/datasets/SingularityUS/faa-charts/resolve/main"

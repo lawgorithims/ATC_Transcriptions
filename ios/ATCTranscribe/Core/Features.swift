@@ -56,4 +56,16 @@ enum Features {
     /// "strip the cockpit-audio plist entries" would make every connection to the receiver fail
     /// silently, with no permission prompt and no error.
     static let transcriptionOnlyInfoPlistKeys = ["NSMicrophoneUsageDescription"]
+
+    /// The capabilities that cannot be granted unless `transcription` is compiled in, whatever a
+    /// pilot has paid for. `Entitlements.allows` ANDs every one of these against the gate, and
+    /// `TranscriptionGateTests` asserts both the list and the behaviour.
+    ///
+    /// WHY A LIST AND NOT A SINGLE CASE. `transcription` is the obvious member, but the voice
+    /// clearance loader is a second: it exists only to act on a transcript, its UI is compiled out
+    /// with the rest of the presentation layer, and it would be meaningless (and would advertise a
+    /// feature the build does not have) if a tier could switch it on alone. Keeping them in one
+    /// list, next to the plist keys, means the two halves of the gate are read together — a new
+    /// transcription-dependent feature is added here rather than discovered later.
+    static let transcriptionGatedCapabilities: [Capability] = [.transcription]
 }

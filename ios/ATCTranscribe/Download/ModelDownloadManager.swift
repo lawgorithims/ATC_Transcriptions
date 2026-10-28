@@ -64,6 +64,19 @@ final class ModelDownloadManager: ObservableObject {
     @discardableResult
     func download(_ e: ModelEntry) -> Task<Void, Never>? {
         guard tasks[e.id] == nil else { return tasks[e.id] }
+        // The speech and corrector models exist only to serve transcription, so they ride its
+        // capability — which is AND-ed with the COMPILE-time `Features.transcription` gate inside
+        // `Entitlements.allows`. In a build without that symbol this is unreachable anyway (the
+        // whole download UI is compiled out), so it costs nothing today and is the correct seam
+        // for when transcription becomes sellable.
+        //
+        // ⚠️ THE FLIP IS NOW A THREE-PART ATOMIC UNIT, not two: the compilation condition in
+        // `project.yml`, the two Info.plist blocks beside it, AND `Capability.transcription`'s
+        // `minimumTier` in `Core/Entitlements.swift` (which is `nil` — not sold — until the model
+        // licence and the cockpit audio path both clear). Flip only the first two and you get a
+        // transcription UI whose model download refuses, which looks like a bug rather than a
+        // policy. `TranscriptionGateTests` covers the first two; see Entitlements for the third.
+        guard EntitlementStore.shared.can(.transcription) else { return nil }
         states[e.id] = .downloading(0)
         let downloader = self.downloader
         let task = Task { [weak self] in

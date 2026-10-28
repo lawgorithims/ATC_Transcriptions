@@ -11,6 +11,10 @@ struct ATCTranscribeApp: App {
     @StateObject private var forecasts = ForecastStore()
     @StateObject private var tafs = TafStore()
     @StateObject private var battery = BatteryDiagnostics()   // opt-in on-device energy telemetry
+    // What the pilot has paid for. A singleton (the non-view download singletons must read it too)
+    // observed here so the view tree re-renders on a change — see EntitlementStore for why it is
+    // deliberately NOT hung off AppModel.
+    @StateObject private var entitlements = EntitlementStore.shared
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
@@ -57,11 +61,17 @@ struct ATCTranscribeApp: App {
                 .environmentObject(forecasts)           // NWS 7-day outlook for the airport weather tab
                 .environmentObject(tafs)                // TAF (Terminal Aerodrome Forecast) sub-tab
                 .environmentObject(battery)             // battery/energy diagnostics
+                .environmentObject(entitlements)        // tier/capability gate (see EntitlementStore)
                 .onAppear {
                     // Tag each battery sample with what the app is doing (transcription/map/GPS/Stratux).
                     battery.snapshotProvider = { [weak model] in model?.batterySnapshot ?? .placeholder }
                 }
-                .onChange(of: scenePhase) { _, phase in battery.setForegrounded(phase == .active) }
+                .onChange(of: scenePhase) { _, phase in
+                    battery.setForegrounded(phase == .active)
+                    // Re-resolve on foreground: a subscription can lapse, renew or be refunded
+                    // while the app is backgrounded, and from M3 StoreKit reports that here.
+                    if phase == .active { entitlements.refresh() }
+                }
                 // "Open in CommSight" from ForeFlight's share sheet (a Garmin .fpl) imports the route.
                 .onOpenURL { url in
                     guard url.isFileURL else { return }
