@@ -13,6 +13,13 @@ struct ATCTranscribeApp: App {
     @StateObject private var battery = BatteryDiagnostics()   // opt-in on-device energy telemetry
     @Environment(\.scenePhase) private var scenePhase
 
+    init() {
+        #if canImport(MapLibre)
+        // Before ANY map exists, and never anywhere later — see MapLibreAmbientCache.
+        MapLibreAmbientCache.disable()
+        #endif
+    }
+
     /// The MapLibre map is now the app's PRIMARY Map-tab engine (toggle: Settings → General → Map engine),
     /// so the old full-screen standalone globe screen is a debug-only harness reachable ONLY via the explicit
     /// `--maplibre` launch arg. The former `atc.experimentalMapLibreGlobe` UserDefault trigger is retired so a
