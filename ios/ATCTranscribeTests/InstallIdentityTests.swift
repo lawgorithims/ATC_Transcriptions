@@ -152,4 +152,73 @@ final class ChartCapabilityTests: XCTestCase {
                           "\(path) is not one of the families Entry.capability knows about")
         }
     }
+
+    // MARK: Layer ↔ pack agreement, and the dead-button regression
+
+    /// The per-layer button and the per-pack button must gate on the SAME capability.
+    ///
+    /// They are two separate tables (`ChartLayer.capability` and `ChartCatalog.Entry.capability`,
+    /// one keyed on an enum and one on a path prefix) read by two different buttons on the same
+    /// screen. If they disagree, "download all IFR-low" and "download this IFR-low pack" give
+    /// different answers to the same pilot, which is indistinguishable from a bug in billing.
+    func testLayerAndPackCapabilitiesAgree() {
+        let pairs: [(ChartLayer, String)] = [
+            (.sectional, "sectional/Denver_SEC.mbtiles"),
+            (.ifrLow,    "ifr/ENR_L25.mbtiles"),
+            (.ifrHigh,   "ifrhigh/ENR_H06.mbtiles"),
+        ]
+        for (layer, path) in pairs {
+            XCTAssertEqual(layer.capability, entry(path).capability,
+                           "\(layer) and \(path) must gate on one capability, not two")
+        }
+    }
+
+    /// The Apple/bundled base layers download nothing from us, so they have no capability and can
+    /// never be refused for a billing reason.
+    func testUndownloadableLayersHaveNoCapability() {
+        XCTAssertNil(ChartLayer.satellite.capability)
+        XCTAssertNil(ChartLayer.smartDark.capability)
+    }
+
+    /// REGRESSION: the dead Download button.
+    ///
+    /// `DownloadsView` pre-checks the policy before starting, so a refusal becomes an explained
+    /// dialog instead of a button that silently does nothing. That pre-check used to ask only the
+    /// network question, so for an unentitled pack it answered `.allowed` — and then
+    /// `ChartLibrary.download` refused on entitlement and returned false. The button did nothing at
+    /// the per-pack site, and at the per-layer site it offered a mobile-data override for content no
+    /// override can fetch.
+    ///
+    /// Passing the capability is what fixes it, so this asserts the pre-check itself now refuses.
+    func testPreCheckRefusesAnUnentitledPackInsteadOfAllowingIt() {
+        let flightBag = EntitlementGate(tier: .flightBag, currency: .verified(asOf: Date()))
+        let wifi = DownloadPolicy.PathState(satisfied: true, wifi: true,
+                                            expensive: false, constrained: false)
+
+        // Flight Bag includes VFR and nothing above it.
+        XCTAssertEqual(DownloadPolicy.decide(path: wifi, wifiOnly: true, intent: .userInitiated,
+                                             requires: ChartLayer.sectional.capability,
+                                             gate: flightBag),
+                       .allowed)
+        for layer in [ChartLayer.ifrLow, .ifrHigh] {
+            let verdict = DownloadPolicy.decide(path: wifi, wifiOnly: true, intent: .userInitiated,
+                                                requires: layer.capability, gate: flightBag)
+            XCTAssertEqual(verdict, .notEntitled(layer.capability!),
+                           "the pre-check must refuse \(layer) for a Flight Bag subscriber. If this "
+                           + "returns .allowed, the download starts, ChartLibrary refuses it, and the "
+                           + "button does nothing.")
+            XCTAssertNotNil(verdict.upgradeFor,
+                            "the refusal must carry the capability so the notice can name the tier")
+        }
+    }
+
+    /// And the satellite layer is never refused, at any tier — it downloads nothing from us.
+    func testUndownloadableLayersAreNeverRefused() {
+        let wifi = DownloadPolicy.PathState(satisfied: true, wifi: true,
+                                            expensive: false, constrained: false)
+        XCTAssertEqual(DownloadPolicy.decide(path: wifi, wifiOnly: true, intent: .userInitiated,
+                                             requires: ChartLayer.satellite.capability,
+                                             gate: .free),
+                       .allowed)
+    }
 }

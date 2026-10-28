@@ -469,6 +469,21 @@ struct MapCommandRequest: Equatable { let token: Int; let kind: MapCommandKind }
 enum ChartLayer: String, CaseIterable, Identifiable {
     case sectional, ifrLow, ifrHigh, satellite, smartDark
     var id: String { rawValue }
+
+    /// Which tier this layer's downloadable packs belong to, mirroring
+    /// `ChartCatalog.Entry.capability` so a per-layer button and a per-pack button cannot disagree.
+    ///
+    /// `nil` means "nothing to gate", not "free": `satellite` is Apple's imagery and `smartDark` is
+    /// the bundled offline vector base, so neither downloads a pack from us and neither may ever be
+    /// refused for a billing reason.
+    var capability: Capability? {
+        switch self {
+        case .sectional: return .vfrCharts
+        case .ifrLow:    return .ifrLowCharts
+        case .ifrHigh:   return .ifrHighCharts
+        case .satellite, .smartDark: return nil
+        }
+    }
     var short: String {
         switch self {
         case .sectional: return "VFR"; case .ifrLow: return "IFR-L"; case .ifrHigh: return "IFR-H"

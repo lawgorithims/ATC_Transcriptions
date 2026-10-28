@@ -87,6 +87,17 @@ Build inputs the archive needs:
 
 - **`Vendor/llama.xcframework`** (git-ignored, the embedded CPU-LLM framework). Rebuild it:
   `bash Tools/build_llama_xcframework.sh`. This is **required** — the app target embeds it.
+- **`Vendor/MapLibre.xcframework`** (git-ignored) — also **required**: `project.yml` links it
+  unconditionally with `embed: true`, so a fresh clone does not build without it, and there is no
+  script in this repo that produces it. It comes from the **separate** MapLibre fork that adds globe
+  projection, built outside this tree (`~/CommSight/maplibre-native`):
+  `bazelisk build //platform/ios:MapLibre.dynamic --//:renderer=metal --compilation_mode=opt …`
+  (see `project.yml`'s `packages:` note and `docs/GLOBE_FORK_PLAN.md`).
+  **If that fork is not on the machine**, take the documented one-line rollback instead of rebuilding
+  it: uncomment the `MapLibre` SwiftPM package in `project.yml` and swap
+  `- framework: Vendor/MapLibre.xcframework` for `- package: MapLibre / product: MapLibre`. That
+  builds against upstream MapLibre and loses only the globe projection — enough to compile, run the
+  test suite and ship a build, which is the point of a recovery path.
 - **Models** — for the normal **LEAN** TestFlight build you do **NOT** need them: the app
   downloads the Whisper CoreML model + GGUF LLM on first launch from the public HuggingFace
   repos (`SingularityUS/atc-whisperkit` + Qwen). `ship_testflight.sh` (LEAN=1, default) moves
