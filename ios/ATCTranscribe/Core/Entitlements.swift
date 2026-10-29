@@ -121,7 +121,12 @@ extension Capability {
         switch self {
         case .navDataCurrency, .platePDFs, .weatherReports, .tfrs,
              .nearestAirportGlide, .gpsIntegrity, .notesAndLogbook, .flightRecorder:
-            return .none
+            // ⚠️ `Tier.none`, SPELLED OUT. In a `Tier?` context a bare `.none` is
+            // `Optional<Tier>.none` — i.e. nil, i.e. NOT SOLD — which the compiler only warns
+            // about. Written bare, every always-free capability here is refused at every tier and
+            // the paywall eats the safety surfaces. `testAlwaysFreeCapabilitiesAreNeverGated`
+            // catches it, but spell the type out so it never gets that far.
+            return Tier.none
 
         case .vfrCharts:
             return .flightBag
@@ -141,7 +146,7 @@ extension Capability {
         case .transcription:
             return nil
         case .cockpitHardwareLink, .landability:
-            return .none
+            return Tier.none   // free-but-hidden; `Tier.none` spelled out — see the note above
         }
     }
 }

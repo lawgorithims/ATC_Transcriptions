@@ -147,7 +147,7 @@ final class EntitlementsPolicyTests: XCTestCase {
     /// record that it offered solar farms and orchards as landing candidates. It must never appear
     /// in a tier's feature list, and the policy is where that is enforced rather than remembered.
     func testLandabilityIsNotAPaidCapability() {
-        XCTAssertEqual(Capability.landability.minimumTier, .none,
+        XCTAssertEqual(Capability.landability.minimumTier, Tier.none,
                        "landability must not require a paid tier — it is a hidden developer preview, "
                        + "not a feature we sell.")
     }
@@ -156,7 +156,7 @@ final class EntitlementsPolicyTests: XCTestCase {
     /// appliance does not exist as a shipping product and the Stratux path is unresolved, so it
     /// cannot be a paid entitlement.
     func testCockpitHardwareLinkIsNotAPaidCapability() {
-        XCTAssertEqual(Capability.cockpitHardwareLink.minimumTier, .none,
+        XCTAssertEqual(Capability.cockpitHardwareLink.minimumTier, Tier.none,
                        "the hardware link must not be sold — the appliance it depends on is unfinished.")
     }
 
