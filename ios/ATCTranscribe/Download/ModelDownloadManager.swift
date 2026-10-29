@@ -42,10 +42,18 @@ final class ModelDownloadManager: ObservableObject {
     var onReady: ((ModelEntry) -> Void)?
 
     private let downloader: ModelDownloading
+    /// Whether transcription is paid for. Injected for the same reason `downloader` is: the state
+    /// machine has to be testable without the thing it gates. `Capability.transcription` is
+    /// AND-ed with the COMPILE-time gate, so in an EFB-only build the real check is *always*
+    /// false — hardwiring it made every test of this state machine assert against a refusal.
+    /// The default is the real gate, so the app is unaffected.
+    private let isEntitled: @MainActor () -> Bool
     private var tasks: [String: Task<Void, Never>] = [:]
 
-    init(downloader: ModelDownloading = LiveModelDownloader()) {
+    init(downloader: ModelDownloading = LiveModelDownloader(),
+         isEntitled: @escaping @MainActor () -> Bool = { EntitlementStore.shared.can(.transcription) }) {
         self.downloader = downloader
+        self.isEntitled = isEntitled
         refreshStates()
     }
 
@@ -66,9 +74,15 @@ final class ModelDownloadManager: ObservableObject {
         guard tasks[e.id] == nil else { return tasks[e.id] }
         // The speech and corrector models exist only to serve transcription, so they ride its
         // capability — which is AND-ed with the COMPILE-time `Features.transcription` gate inside
-        // `Entitlements.allows`. In a build without that symbol this is unreachable anyway (the
-        // whole download UI is compiled out), so it costs nothing today and is the correct seam
-        // for when transcription becomes sellable.
+        // `Entitlements.allows`. No production caller is reachable in an EFB-only build (the whole
+        // download UI is compiled out), so this costs nothing today and is the correct seam for
+        // when transcription becomes sellable.
+        //
+        // ⚠️ "Unreachable" is NOT "untested". `ModelDownloadManagerTests` drives this state machine
+        // directly in BOTH builds — the engine and its tests deliberately survive the compile gate —
+        // so this check is read through `isEntitled`, injected like `downloader`. Hardwiring
+        // `EntitlementStore.shared` here turned all six of those tests red, because the real answer
+        // in this build is permanently false.
         //
         // ⚠️ THE FLIP IS NOW A THREE-PART ATOMIC UNIT, not two: the compilation condition in
         // `project.yml`, the two Info.plist blocks beside it, AND `Capability.transcription`'s
@@ -76,7 +90,7 @@ final class ModelDownloadManager: ObservableObject {
         // licence and the cockpit audio path both clear). Flip only the first two and you get a
         // transcription UI whose model download refuses, which looks like a bug rather than a
         // policy. `TranscriptionGateTests` covers the first two; see Entitlements for the third.
-        guard EntitlementStore.shared.can(.transcription) else { return nil }
+        guard isEntitled() else { return nil }
         states[e.id] = .downloading(0)
         let downloader = self.downloader
         let task = Task { [weak self] in
