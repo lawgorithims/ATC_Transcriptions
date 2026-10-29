@@ -78,8 +78,9 @@ final class EntitlementStore: ObservableObject {
     /// `--entitlement <none|flightbag|pro|performance>` for UI tests and manual checks.
     ///
     /// ⚠️ `#if DEBUG` ONLY. In a release build this would be a free unlock for anyone who can
-    /// attach a debugger or install a configuration profile. `EntitlementOverrideTests` asserts the
-    /// symbol is unreachable outside DEBUG.
+    /// attach a debugger or install a configuration profile. The `#if` is the whole guarantee —
+    /// a DEBUG-built test target cannot assert the absence of a symbol in a RELEASE build, so
+    /// there is deliberately no test here to lean on. Keep the `#if DEBUG` wrapper when editing.
     ///
     /// Parsed from `CommandLine.arguments`, never through UserDefaults — `DownloadPolicy` documents
     /// why: a `-key value` launch argument lands in UserDefaults' ARGUMENT domain, which outranks

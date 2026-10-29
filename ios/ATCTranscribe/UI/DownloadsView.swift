@@ -1030,14 +1030,6 @@ struct DownloadsView: View {
     private func byteStr(_ b: Int64) -> String { ByteCountFormatter.string(fromByteCount: b, countStyle: .file) }
 }
 
-/// The two next-cycle dialogs, as a `ViewModifier` rather than two more links in `DownloadsView`'s
-/// modifier chain.
-///
-/// Not a style choice: adding them inline pushed the chain past what the type checker will solve
-/// ("unable to type-check this expression in reasonable time" — it fails on the LZ dialog's `Binding`,
-/// twelve modifiers earlier, which is what makes this class of error so misleading to read). Each
-/// `.confirmationDialog` wraps the whole accumulated generic type, so the cost is super-linear in
-/// chain length; a modifier type-checks its own body in isolation.
 /// The "your plan does not include this" notice.
 ///
 /// ITS OWN MODIFIER, for the reason documented on `NextCycleDialogs` below: each dialog modifier
@@ -1071,7 +1063,9 @@ private struct EntitlementDialog: ViewModifier {
         guard let tier = capability.minimumTier, tier > .none else {
             return "This isn't available in this build."
         }
-        return "\(Self.label(for: capability)) is included in \(tier.label). "
+        // Phrased tier-first so the sentence agrees with a plural label: "Pro includes IFR low
+        // enroute charts", not "IFR low enroute charts is included in Pro".
+        return "\(tier.label) includes \(Self.label(for: capability)). "
              + "Charts you've already downloaded stay on your iPad."
     }
 
@@ -1080,11 +1074,19 @@ private struct EntitlementDialog: ViewModifier {
         case .vfrCharts:     return "VFR sectional charts"
         case .ifrLowCharts:  return "IFR low enroute charts"
         case .ifrHighCharts: return "IFR high enroute charts"
-        default:             return "This feature"
+        default:             return "this feature"
         }
     }
 }
 
+/// The two next-cycle dialogs, as a `ViewModifier` rather than two more links in `DownloadsView`'s
+/// modifier chain.
+///
+/// Not a style choice: adding them inline pushed the chain past what the type checker will solve
+/// ("unable to type-check this expression in reasonable time" — it fails on the LZ dialog's `Binding`,
+/// twelve modifiers earlier, which is what makes this class of error so misleading to read). Each
+/// `.confirmationDialog` wraps the whole accumulated generic type, so the cost is super-linear in
+/// chain length; a modifier type-checks its own body in isolation.
 private struct NextCycleDialogs: ViewModifier {
     @ObservedObject var library: ChartLibrary
     @ObservedObject var lzLibrary: LZPackLibrary
