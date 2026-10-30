@@ -15,6 +15,7 @@ struct ATCTranscribeApp: App {
     // observed here so the view tree re-renders on a change — see EntitlementStore for why it is
     // deliberately NOT hung off AppModel.
     @StateObject private var entitlements = EntitlementStore.shared
+    @StateObject private var cloudSync = CloudSyncHost()      // logbook + notes across the pilot's devices
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
@@ -68,9 +69,19 @@ struct ATCTranscribeApp: App {
                 }
                 .onChange(of: scenePhase) { _, phase in
                     battery.setForegrounded(phase == .active)
-                    // Re-resolve on foreground: a subscription can lapse, renew or be refunded
-                    // while the app is backgrounded, and from M3 StoreKit reports that here.
-                    if phase == .active { entitlements.refresh() }
+                    if phase == .active {
+                        // Re-resolve on foreground: a subscription can lapse, renew or be refunded
+                        // while the app is backgrounded, and from M3 StoreKit reports that here.
+                        entitlements.refresh()
+                        // And a sync pass, because the other device's edits land while this one was
+                        // in the bag. A no-op unless Features.cloudSync is on.
+                        Task { await cloudSync.syncNow() }
+                    }
+                }
+                .task {
+                    // Built here rather than as a @StateObject because it needs the two stores — see
+                    // CloudSyncHost. Does nothing at all in a build without the cloud-sync gate.
+                    await cloudSync.start(logbook: model.logbook, notes: notes)
                 }
                 // "Open in CommSight" from ForeFlight's share sheet (a Garmin .fpl) imports the route.
                 .onOpenURL { url in
