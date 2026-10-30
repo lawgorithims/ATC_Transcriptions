@@ -22,10 +22,22 @@ final class ClimateChartsUITests: XCTestCase {
 
     /// Swipe up until `el` renders — the card is a lazily-rendered scrollable list, so the lower chart
     /// sections don't exist in the tree until scrolled into view. Still fully automated (no manual step).
+    /// ⚠️ GENTLE SWIPES, AND GIVE THE LAZY SECTION A MOMENT TO COME BACK.
+    ///
+    /// The first cut swiped at full velocity and read `exists` immediately after each one. Both
+    /// halves of that can miss a section that is really there: a full-velocity swipe on the 13-inch
+    /// iPad carries the list PAST the header, and the section — lazily rendered — unloads again, so
+    /// `exists` stays false all the way to maxSwipes; and a bare `exists` immediately after a swipe
+    /// can beat the row being built. The test then says "best-time-of-day chart section should
+    /// render" about a section that rendered and scrolled by. Measured 1 failure in 3 on iPad Pro
+    /// 13-inch (M5), 2026-10-29.
     @discardableResult
-    private func scrollUntil(_ app: XCUIApplication, _ el: XCUIElement, maxSwipes: Int = 10) -> Bool {
-        var n = 0
-        while !el.exists && n < maxSwipes { app.swipeUp(); n += 1 }
+    private func scrollUntil(_ app: XCUIApplication, _ el: XCUIElement, maxSwipes: Int = 12) -> Bool {
+        if el.waitForExistence(timeout: 2) { return true }     // already on screen
+        for _ in 0..<maxSwipes {
+            app.swipeUp(velocity: .slow)
+            if el.waitForExistence(timeout: 1) { return true }
+        }
         return el.exists
     }
 
