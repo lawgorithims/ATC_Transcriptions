@@ -1,5 +1,4 @@
 import Foundation
-import Security
 
 /// The FAA NOTAM API credential.
 ///
@@ -8,7 +7,10 @@ import Security
 /// container and goes into backups. `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` keeps it readable
 /// to a background refresh after the first unlock without letting it travel to another device.
 enum NotamCredential {
-    private static let service = "com.flycommsight.notamapi"
+    /// The Keychain primitives live in `Core/KeychainBox.swift` now — this was their first and for a
+    /// long time only caller, and monetization needs the same read/write pair for its own secrets.
+    /// The public surface here is unchanged.
+    private static let box = KeychainBox(service: "com.flycommsight.notamapi")
     private static let idKey = "client_id"
     private static let secretKey = "client_secret"
 
@@ -29,36 +31,12 @@ enum NotamCredential {
     }
 
     static func clear() {
-        for key in [idKey, secretKey] {                              // bounded (rule 2)
-            SecItemDelete([kSecClass: kSecClassGenericPassword,
-                           kSecAttrService: service,
-                           kSecAttrAccount: key] as CFDictionary)
-        }
+        box.remove(accounts: [idKey, secretKey])                     // bounded (rule 2)
     }
 
-    private static func read(_ key: String) -> String? {
-        var out: CFTypeRef?
-        let status = SecItemCopyMatching([kSecClass: kSecClassGenericPassword,
-                                          kSecAttrService: service,
-                                          kSecAttrAccount: key,
-                                          kSecReturnData: true,
-                                          kSecMatchLimit: kSecMatchLimitOne] as CFDictionary, &out)
-        guard status == errSecSuccess, let data = out as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
-    }
+    private static func read(_ key: String) -> String? { box.string(key) }
 
-    private static func write(_ key: String, _ value: String) {
-        let query: [CFString: Any] = [kSecClass: kSecClassGenericPassword,
-                                      kSecAttrService: service,
-                                      kSecAttrAccount: key]
-        SecItemDelete(query as CFDictionary)
-        var add = query
-        add[kSecValueData] = Data(value.utf8)
-        add[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        let status = SecItemAdd(add as CFDictionary, nil)
-        assert(status == errSecSuccess || status == errSecDuplicateItem,
-               "NotamCredential.write: keychain refused the item")
-    }
+    private static func write(_ key: String, _ value: String) { box.set(key, string: value) }
 }
 
 /// Network seam, so the store's behaviour is testable without the FAA (a fake in tests).

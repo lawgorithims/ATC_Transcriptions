@@ -74,6 +74,9 @@ final class DownloadPolicy: ObservableObject {
         /// Low Data Mode, declined for background bulk only.
         case lowDataMode
         case offline
+        /// The pilot's tier does not include this content. Carries the capability so the UI can name
+        /// what would unlock it and open the paywall at the right tier.
+        case notEntitled(Capability)
 
         var isAllowed: Bool { self == .allowed }
 
@@ -84,7 +87,16 @@ final class DownloadPolicy: ObservableObject {
             case .needsWiFi:   return "Waiting for Wi-Fi — downloads are set to Wi-Fi only."
             case .lowDataMode: return "Paused while Low Data Mode is on."
             case .offline:     return "No network connection."
+            case .notEntitled(let c):
+                guard let tier = c.minimumTier, tier > .none else { return "Not available." }
+                return "Included in \(tier.label)."
             }
+        }
+
+        /// The capability to offer an upgrade for, when that is why this was refused.
+        var upgradeFor: Capability? {
+            if case .notEntitled(let c) = self { return c }
+            return nil
         }
     }
 
@@ -106,7 +118,20 @@ final class DownloadPolicy: ObservableObject {
     /// `.wifi` interface **and** `isExpensive == true`, because the bytes land on the phone's cellular
     /// plan. Accepting it as Wi-Fi would spend the exact allowance this setting exists to protect, in
     /// the exact situation — a cockpit — where the hotspot is most likely to be the only link.
-    nonisolated static func decide(path: PathState, wifiOnly: Bool, intent: Intent) -> Verdict {
+    ///
+    /// ENTITLEMENT IS CHECKED FIRST, before the network. There is no point telling a pilot to wait
+    /// for Wi-Fi for a pack their tier does not include — and it keeps the refusal honest: "Included
+    /// in Pro" rather than a download that waits forever and then fails.
+    ///
+    /// `requires` is optional and `gate` defaults to `.free` so the thirteen existing call sites and
+    /// `DownloadPolicyTests` are unchanged. The defaults are also the safe polarity: a caller that
+    /// names a capability but forgets the gate gets a refusal, not a free pass. Refusing a NEW
+    /// download fails closed safely — unlike revoking content already on disk, which
+    /// `EntitlementCurrency.grants` explains must never happen.
+    nonisolated static func decide(path: PathState, wifiOnly: Bool, intent: Intent,
+                                   requires capability: Capability? = nil,
+                                   gate: EntitlementGate = .free) -> Verdict {
+        if let capability, !gate.can(capability) { return .notEntitled(capability) }
         guard path.satisfied else { return .offline }
         if wifiOnly, !path.wifi || path.expensive || path.constrained { return .needsWiFi }
         if intent == .background, path.constrained { return .lowDataMode }
@@ -114,8 +139,16 @@ final class DownloadPolicy: ObservableObject {
     }
 
     /// Probe the live path and decide. One-shot: reads the first update, then tears the monitor down.
-    func verdict(_ intent: Intent) async -> Verdict {
-        Self.decide(path: await Self.currentPath(), wifiOnly: wifiOnly, intent: intent)
+    ///
+    /// Pass `requires:` for bulk content that a tier gates, so the single arbiter this type's class
+    /// note promises ("the one place that decides whether a given download is allowed right now")
+    /// covers entitlement too, and every path that already consults it inherits the check.
+    func verdict(_ intent: Intent, requires capability: Capability? = nil) async -> Verdict {
+        // Read the gate BEFORE awaiting the network path: both are main-actor, and sampling it
+        // first keeps the decision a function of one consistent snapshot.
+        let gate = EntitlementStore.shared.gate
+        return Self.decide(path: await Self.currentPath(), wifiOnly: wifiOnly, intent: intent,
+                           requires: capability, gate: gate)
     }
 
     /// One-shot network-path snapshot.

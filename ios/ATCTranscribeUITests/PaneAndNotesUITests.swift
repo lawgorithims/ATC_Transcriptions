@@ -21,8 +21,12 @@ final class PaneAndNotesUITests: XCTestCase {
     // hidden kinds (FloatingWidget.swift) — so the pane correctly refused to render and the failure
     // read "left side pane did not render", which looks like a pane regression and is not one. The
     // subject is the pane's popout/close mechanics; `.gps` and `.nrst` exercise them identically.
-    func testDockedPanePopsOutThenCloses() {
+    func testDockedPanePopsOutThenCloses() throws {
         let app = launch(["--dock-left", "gps"])
+        // Side panes are rendered only from inside FloatingCanvas, which ConsoleView.homeArea
+        // builds `if hSize == .regular`. A phone has no docked panes at all — the compact home is
+        // the map plus a transcript card — so `--dock-left` has nothing to render into.
+        try UITestLayout.requireRegularWidth(app, "Docked side panes")
         let popout = app.buttons["pane-popout-left"]
         XCTAssertTrue(popout.waitForExistence(timeout: 10), "left side pane did not render")
         // ↗ pops it back to a floating widget → the pane (and its buttons) disappear.

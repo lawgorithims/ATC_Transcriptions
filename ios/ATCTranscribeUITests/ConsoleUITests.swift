@@ -225,7 +225,7 @@ final class ConsoleUITests: XCTestCase {
     /// compact (iPhone) the home screen is the map + a bottom transcript card, so the other widgets
     /// aren't rendered and their tests are skipped.
     private func isRegularWidth(_ app: XCUIApplication) -> Bool {
-        app.windows.firstMatch.frame.width >= 700
+        UITestLayout.isRegularWidth(app)   // one threshold, in UITestLayout
     }
 
     // 5. The proof-of-life widget floats over the map by default (regular width); its Run button runs

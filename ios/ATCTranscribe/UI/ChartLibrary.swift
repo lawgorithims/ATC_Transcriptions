@@ -155,7 +155,12 @@ final class ChartLibrary: ObservableObject {
     /// exactly what those checks exist to prevent.
     @discardableResult
     func updateInstalledPacks(_ ids: Set<String>, allowExpensive: Bool = false) async -> Bool {
-        let wanted = (catalog?.entries ?? []).filter { ids.contains($0.id) && !isCached($0) }
+        // Filter by entitlement BEFORE `addIntent`. Recording intent for a pack the download funnel
+        // will refuse would leave the app believing the pilot asked for coverage they cannot have,
+        // and `pruneOldCycleFiles` reasons about that intent set.
+        let wanted = (catalog?.entries ?? []).filter {
+            ids.contains($0.id) && !isCached($0) && EntitlementStore.shared.can($0.capability)
+        }
         guard !wanted.isEmpty else { bulk = .idle; return true }
         if !allowExpensive, !(await DownloadPolicy.shared.verdict(.userInitiated)).isAllowed { return false }
         // Record the pilot's INTENT before a single byte moves. loadPinned() clears the pin set on a
@@ -474,6 +479,16 @@ final class ChartLibrary: ObservableObject {
                       priority: NetworkActivity.Priority = .normal) async -> URL? {
         let dst = localURL(e.id, cycle: cycle)
         if FileManager.default.fileExists(atPath: dst.path) { return dst }   // verified at write time
+        // ENTITLEMENT BACKSTOP. Enforced here as well as at the callers for the same reason the
+        // Wi-Fi rule is ("Enforced here too because 'Wi-Fi only' has to be true of every caller,
+        // including ones added later"): this is the single funnel every chart download passes
+        // through, so a new caller cannot route around the tier check by accident.
+        //
+        // Note the ordering: the on-disk check comes FIRST. A pack already downloaded keeps working
+        // even if the entitlement lapses — only a NEW download is refused. See
+        // `EntitlementCurrency.grants` for why revoking content already on the device is the one
+        // thing this design will not do.
+        guard EntitlementStore.shared.can(e.capability) else { return nil }
         guard let remote = e.remote else { return nil }   // malformed path (L13) → pack simply unavailable
         do {
             let (tmp, resp) = try await NetworkActivity.download(
@@ -648,7 +663,7 @@ final class ChartLibrary: ObservableObject {
             // changed the answer, and a promise about data cost that is only evaluated once is not a
             // promise. The probe is a few milliseconds against a pack that takes seconds.
             if !allowMetered {
-                let verdict = await DownloadPolicy.shared.verdict(.userInitiated)
+                let verdict = await DownloadPolicy.shared.verdict(.userInitiated, requires: e.capability)
                 if !verdict.isAllowed {
                     bulk = .failed(verdict.explanation ?? "Paused.")
                     bulkTask = nil
@@ -680,7 +695,7 @@ final class ChartLibrary: ObservableObject {
         // the pilot an explicit override. Enforced here too because "Wi-Fi only" has to be true of
         // every caller, including ones added later.
         if !allowMetered, !isCached(e),
-           !(await DownloadPolicy.shared.verdict(.userInitiated)).isAllowed { return false }
+           !(await DownloadPolicy.shared.verdict(.userInitiated, requires: e.capability)).isAllowed { return false }
         downloadingIDs.insert(e.id)
         defer { downloadingIDs.remove(e.id) }
         var ok = isCached(e)

@@ -40,8 +40,12 @@ final class MapControlsUITests: XCTestCase {
 
     // 2. The layers menu is a two-column panel: Column A = base maps (selectable rows), Column B = overlay +
     //    control toggles (incl. the zoom-controls switch). Verify both columns render and the toggle flips.
-    func testLayersMenuTwoColumnPanel() {
+    func testLayersMenuTwoColumnPanel() throws {
         let app = launchMap()
+        // MapLayersPanel is a fixed two-column HStack (column A pinned at 190pt) presented in a
+        // .popover. At compact width SwiftUI adapts that popover into a sheet and column B — the
+        // overlay/control toggles this test drives — is squeezed to the point of being undrivable.
+        try UITestLayout.requireRegularWidth(app, "The two-column layers panel")
         XCTAssertTrue(app.buttons["map-zoom-in"].waitForExistence(timeout: 25), "map did not come up")
         let menu = app.buttons["map-layers-menu"]
         XCTAssertTrue(menu.waitForExistence(timeout: 6), "layers menu button missing")
@@ -59,6 +63,12 @@ final class MapControlsUITests: XCTestCase {
         snap(app, "03-layers-panel")
 
         // The zoom-controls toggle flips (UI-test state persists across runs, so assert a change, not a value).
+        // ⚠️ A PLAIN .tap() ON PURPOSE HERE, unlike the winds-aloft row in WindOverlayUITests.
+        // UITestToggle.flip taps at 0.9 of the ROW width, which on this row lands outside the
+        // popover and dismisses it — the next lookup then fails with "No matches found for
+        // Descendants matching type Switch", which reads as a missing control and is not one.
+        // This row centre has been reliable on iPad across every run; the row that actually
+        // dropped taps was layer-wind, and only that one was changed.
         let before = zoomToggle.value as? String
         zoomToggle.tap()
         XCTAssertNotEqual(zoomToggle.value as? String, before, "zoom-controls toggle did not change state")
