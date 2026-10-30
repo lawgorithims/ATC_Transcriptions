@@ -23,6 +23,17 @@ import Security
 /// after the first unlock without letting it travel to another device. For an entitlement that is
 /// doubly load-bearing: it stops an iCloud-backup restore from carrying a paid entitlement *and* its
 /// device binding onto a second iPad. A backup-restorable entitlement is a one-tap site licence.
+///
+/// # A refusal is an answer, not a crash
+///
+/// The Keychain refusing an operation is a fact about the environment, not a bug in the caller, so
+/// nothing here asserts on a status. A device not unlocked since boot answers
+/// `errSecInteractionNotAllowed` (-25308) for anything `...AfterFirstUnlock`; a simulator build made
+/// with `CODE_SIGNING_ALLOWED=NO` carries no entitlements, so no keychain access group, and answers
+/// `errSecMissingEntitlement` (-34018) to everything. `set` used to `assert` on its status, which
+/// crashed the unit suite of every unsigned build (two `InstallIdentityTests`, 2026-10-29). Now a
+/// write reports whether it landed and logs a refusal, and `lookup` tells "nothing is stored" apart
+/// from "the Keychain did not answer".
 struct KeychainBox {
     let service: String
 
@@ -33,14 +44,37 @@ struct KeychainBox {
 
     // MARK: Read
 
-    func data(_ account: String) -> Data? {
+    /// What a read found.
+    ///
+    /// `data(_:)` folds `.absent` and `.unavailable` into one `nil`, which suits a credential the
+    /// pilot can simply enter again. A caller whose answer to "nothing is stored" is to MINT a
+    /// replacement must not make that fold: a Keychain that would not look is not evidence that
+    /// nothing is there.
+    enum Lookup: Equatable {
+        case found(Data)
+        /// The Keychain looked, and there is no such item (`errSecItemNotFound`).
+        case absent
+        /// The Keychain did not look; the status says why. The item may exist all the same.
+        case unavailable(OSStatus)
+    }
+
+    func lookup(_ account: String) -> Lookup {
+        assert(!account.isEmpty, "KeychainBox.lookup(\(service)): empty account")
         var out: CFTypeRef?
         let status = SecItemCopyMatching([kSecClass: kSecClassGenericPassword,
                                          kSecAttrService: service,
                                          kSecAttrAccount: account,
                                          kSecReturnData: true,
                                          kSecMatchLimit: kSecMatchLimitOne] as CFDictionary, &out)
-        guard status == errSecSuccess, let data = out as? Data else { return nil }
+        if status == errSecItemNotFound { return .absent }
+        guard status == errSecSuccess else { return .unavailable(status) }
+        // Success without data is not an answer this query can give; report it rather than trust it.
+        guard let data = out as? Data else { return .unavailable(errSecDecode) }
+        return .found(data)
+    }
+
+    func data(_ account: String) -> Data? {
+        guard case .found(let data) = lookup(account) else { return nil }
         return data
     }
 
@@ -53,9 +87,10 @@ struct KeychainBox {
 
     /// Replace-then-add, because `SecItemUpdate` fails on an absent item and we never care which
     /// case we are in. Returns whether the item landed, so a caller that must not silently lose a
-    /// credential can react; the `assert` catches it in debug either way.
+    /// credential can react. A refusal is logged with its status, never asserted (see the type).
     @discardableResult
     func set(_ account: String, _ data: Data) -> Bool {
+        assert(!account.isEmpty, "KeychainBox.set(\(service)): empty account")
         let query: [CFString: Any] = [kSecClass: kSecClassGenericPassword,
                                       kSecAttrService: service,
                                       kSecAttrAccount: account]
@@ -64,9 +99,12 @@ struct KeychainBox {
         add[kSecValueData] = data
         add[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         let status = SecItemAdd(add as CFDictionary, nil)
-        assert(status == errSecSuccess || status == errSecDuplicateItem,
-               "KeychainBox.set(\(service)/\(account)): keychain refused the item (\(status))")
-        return status == errSecSuccess || status == errSecDuplicateItem
+        guard status == errSecSuccess || status == errSecDuplicateItem else {
+            NSLog("CommSight: the Keychain refused %@/%@ — %@. Nothing was stored.",
+                  service, account, Self.describe(status))
+            return false
+        }
+        return true
     }
 
     @discardableResult
@@ -88,4 +126,26 @@ struct KeychainBox {
     func remove(accounts: [String]) {
         for account in accounts { remove(account) }
     }
+
+    // MARK: Status
+
+    /// A refusal for the log: the number to search for, the words to read, and for -34018 the usual
+    /// cause, because it reads like a bug and is a build setting.
+    static func describe(_ status: OSStatus) -> String {
+        assert(status != errSecSuccess, "KeychainBox.describe: success is not a refusal")
+        let words = SecCopyErrorMessageString(status, nil) as String? ?? "no description"
+        guard status == errSecMissingEntitlement else { return "\(status) (\(words))" }
+        return "\(status) (\(words)) — no keychain access group, which is what a simulator build "
+             + "made with CODE_SIGNING_ALLOWED=NO has"
+    }
 }
+
+/// The Keychain calls `InstallIdentity` makes, as a seam. Its fallback runs only when the Keychain
+/// refuses, which never happens in the signed build the release gate tests, so without a fake
+/// Keychain that path would ship without ever having run.
+protocol KeychainStoring {
+    func lookup(_ account: String) -> KeychainBox.Lookup
+    func set(_ account: String, string value: String) -> Bool
+}
+
+extension KeychainBox: KeychainStoring {}
