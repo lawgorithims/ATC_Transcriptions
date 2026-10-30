@@ -48,6 +48,44 @@ enum Features {
     static let transcription = false
     #endif
 
+    /// Whether cloud sync of the logbook and the note library is switched on.
+    ///
+    /// # Why this is COMPILE-time too, for a different reason than transcription
+    ///
+    /// Transcription's gate exists because its Info.plist keys cannot be added at runtime. This one
+    /// exists because of **entitlements**: CloudKit needs
+    /// `com.apple.developer.icloud-container-identifiers` and a container that actually exists in the
+    /// team's account. A build carrying that entitlement against a container nobody created fails to
+    /// launch, so the entitlement cannot ship speculatively — and a runtime flag would be able to ask
+    /// for a container the binary was never entitled to reach.
+    ///
+    /// So the flag, the entitlement block in `project.yml` and the container id are one unit, the same
+    /// shape as the transcription flip. The polarity matches too: **absent by default**, so the
+    /// default build signs and launches exactly as it did before any of this existed.
+    ///
+    /// The merge, the ledger, the coordinator and `CloudKitTransport` are compiled either way — only
+    /// `CKContainer` instantiation and the launch-time sync are behind this. Same arrangement as the
+    /// transcription engine: the code and its tests survive the gate that hides the behaviour.
+    #if COMMSIGHT_CLOUDSYNC
+    static let cloudSync = true
+    #else
+    static let cloudSync = false
+    #endif
+
+    /// # Not a paid feature
+    ///
+    /// The logbook and the note library are on the never-gate list, so their sync is free too, and the
+    /// usual counter-argument does not apply: this syncs through the **pilot's own** private CloudKit
+    /// database, so the storage is their iCloud quota and costs us nothing to serve. That is the second
+    /// half of the never-gate rationale, not just the safety half. Putting a pilot's own notes behind a
+    /// tier — or worse, stranding them on one iPad when a subscription lapses — is the kind of thing
+    /// the never-gate list exists to prevent.
+    ///
+    /// The CloudKit container backing `cloudSync`. Derived from the bundle id by Apple's convention
+    /// (`iCloud.` + the app's bundle identifier) and must match the entitlement in `project.yml`
+    /// exactly — a mismatch is a runtime failure on the first sync, not a build error.
+    static let cloudSyncContainerID = "iCloud.com.flycommsight.atctranscribe"
+
     /// The Info.plist keys that exist **only** to serve transcription, asserted against
     /// `transcription` by `TranscriptionGateTests`.
     ///

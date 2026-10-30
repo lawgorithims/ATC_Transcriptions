@@ -21,11 +21,23 @@ struct Note: Identifiable, Codable, Equatable {
     private let dir: URL
     private let indexURL: URL
 
-    init() {
-        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
-            ?? URL(fileURLWithPath: NSTemporaryDirectory())
-        dir = docs.appendingPathComponent("Notes", isDirectory: true)
+    /// The sync clock for each note, and the only home for a deleted note's tombstone.
+    let ledger: SyncLedger
+
+    /// `directory` was added when notes became syncable: the merge has to be testable against a real
+    /// store, and this one hardcoded Documents (which is what `Logbook`'s header comment was
+    /// complaining about). A caller that passes a scratch directory gets a scratch `ledger` with it,
+    /// so sync clocks cannot leak between tests or into the real container.
+    init(directory: URL? = nil, ledger: SyncLedger? = nil) {
+        if let directory {
+            dir = directory
+        } else {
+            let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+                ?? URL(fileURLWithPath: NSTemporaryDirectory())
+            dir = docs.appendingPathComponent("Notes", isDirectory: true)
+        }
         indexURL = dir.appendingPathComponent("index.json")
+        self.ledger = ledger ?? (directory == nil ? .shared : SyncLedger(directory: dir))
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         notes = loadIndex()
     }
@@ -67,6 +79,7 @@ struct Note: Identifiable, Codable, Equatable {
         next.insert(Note(id: id, title: name.isEmpty ? Self.defaultTitle(now) : name,
                          createdAt: createdAt, updatedAt: now), at: 0)
         notes = next
+        ledger.touch(.note, id, at: now)
         persistIndex()
         return true
     }
@@ -78,6 +91,8 @@ struct Note: Identifiable, Codable, Equatable {
         thumbCache[note.id] = nil
         #endif
         notes.removeAll { $0.id == note.id }
+        // A tombstone, not a forgetting — see `Logbook.delete`.
+        ledger.markDeleted(.note, note.id)
         persistIndex()
     }
 
@@ -87,6 +102,72 @@ struct Note: Identifiable, Codable, Equatable {
     static func defaultTitle(_ date: Date) -> String {
         let f = DateFormatter(); f.dateStyle = .medium; f.timeStyle = .short
         return "Note · \(f.string(from: date))"
+    }
+
+    // MARK: Sync
+
+    /// A note on the wire: the index row AND its ink. The row alone is useless — a synced note with
+    /// no drawing is a tile that opens blank — so the drawing travels with it, which is also why a
+    /// note payload is the big one of the two kinds.
+    private struct Envelope: Codable {
+        let note: Note
+        let drawing: Data
+        let thumbnail: Data?
+    }
+
+    /// This store's side of a sync pass: every note whose ink is actually on disk, plus tombstones.
+    ///
+    /// A note with no readable drawing is skipped rather than pushed empty: `save` refuses to index a
+    /// note with no backing ink, and sync must not be the back door that does it.
+    func syncRecords() -> [SyncRecord] {
+        let live: [SyncRecord] = notes.compactMap { n in
+            guard let drawing = drawingData(n.id) else { return nil }
+            let env = Envelope(note: n, drawing: drawing,
+                               thumbnail: try? Data(contentsOf: thumbURL(n.id)))
+            guard let payload = try? SyncCoding.encoder.encode(env) else { return nil }
+            return SyncRecord(id: n.id, kind: .note,
+                              modifiedAt: ledger.clock(.note, n.id, fallback: n.updatedAt),
+                              payload: payload)
+        }
+        return live + ledger.tombstones(.note)
+    }
+
+    /// Write merged records in: a tombstone removes the row and both files, anything else writes the
+    /// ink first and indexes it second — the same order and the same reason as `save`.
+    func applySynced(_ records: [SyncRecord]) {
+        // See the same line in `Logbook.applySynced` — a duplicate id in a decoded index must not trap.
+        var byID = Dictionary(notes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        for r in records {
+            if r.deleted {
+                try? FileManager.default.removeItem(at: drawingURL(r.id))
+                try? FileManager.default.removeItem(at: thumbURL(r.id))
+                #if canImport(UIKit)
+                thumbCache[r.id] = nil
+                #endif
+                byID[r.id] = nil
+                continue
+            }
+            guard let payload = r.payload,
+                  let env = try? SyncCoding.decoder.decode(Envelope.self, from: payload),
+                  (try? env.drawing.write(to: drawingURL(r.id), options: .atomic)) != nil else {
+                continue   // no ink written, so no index row — never index a note with no drawing
+            }
+            if let thumb = env.thumbnail { try? thumb.write(to: thumbURL(r.id), options: .atomic) }
+            #if canImport(UIKit)
+            thumbCache[r.id] = env.thumbnail.flatMap(UIImage.init(data:))
+            #endif
+            byID[r.id] = env.note
+        }
+        notes = byID.values.sorted { $0.updatedAt > $1.updatedAt }
+        ledger.adopt(records)
+        persistIndex()
+    }
+
+    /// How the coordinator talks to this store.
+    var syncAdapter: SyncCoordinator.StoreAdapter {
+        SyncCoordinator.StoreAdapter(kind: .note,
+                                     localRecords: { [weak self] in self?.syncRecords() ?? [] },
+                                     apply: { [weak self] in self?.applySynced($0) })
     }
 
     // MARK: storage
