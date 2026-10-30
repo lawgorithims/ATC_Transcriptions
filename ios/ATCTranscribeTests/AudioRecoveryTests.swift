@@ -68,11 +68,18 @@ final class AudioRecoveryTests: XCTestCase {
     // MARK: - L1: AudioMonitor self-heal
 
     #if DEBUG
-    func testPlayHealsAfterEngineStops() {
+    func testPlayHealsAfterEngineStops() throws {
         let monitor = AudioMonitor()
         monitor.start()
         // If the sim's audio host refused to start the engine at all, healing is untestable here.
-        try? XCTSkipUnless(monitor._engineIsRunningForTests, "audio engine unavailable in this environment")
+        //
+        // ⚠️ `try`, NOT `try?`. XCTSkipUnless signals a skip by THROWING, so `try?` discards it and
+        // the guard does nothing: the test runs on regardless, `start()` having silently failed
+        // (`catch { running = false }`), `XCTAssertFalse` below passes for the wrong reason, and the
+        // final assertion fails because `play()` will not heal an engine that never started. That is
+        // an environment failing the build, reported as a logic bug. Every other skip in this suite
+        // is spelled `try` in a `throws` test; this one was the exception.
+        try XCTSkipUnless(monitor._engineIsRunningForTests, "audio engine unavailable in this environment")
         monitor._stopEngineForTests()                       // simulate an interruption stopping it
         XCTAssertFalse(monitor._engineIsRunningForTests)
         monitor.play([Float](repeating: 0, count: 1600))    // one chunk → self-heal fires
