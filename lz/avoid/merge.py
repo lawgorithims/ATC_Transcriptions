@@ -84,16 +84,25 @@ def downsample(children):
 
 
 class RunwayClearer:
-    """Re-clears surveyed runway rectangles at every zoom. The cells cleared them at z12, but at a
-    coarser level a runway's developed neighbours out-vote it and the airport would paint as built-up
-    (the old layer vetoed ~40% of runway centrelines). Nothing on a runway is a reason to avoid it."""
+    """Re-clears runways at every zoom. The cells cleared the surveyed ones at z12, but at a coarser
+    level a runway's developed neighbours out-vote it and the airport would paint as built-up (the old
+    layer vetoed ~40% of runway centrelines).
+
+    Surveyed rectangles (both ends known) clear EVERY reason: nothing on a runway is a reason to avoid
+    it. Estimated ones (`prep_runways_approx`: one-runway fields NASR lists without surveyed ends,
+    mostly private strips) clear only what a runway's own pixels collect — built-up, trees, steep,
+    orchard — never wires, obstacles or solar, because an estimate can sit beside the strip."""
+
+    SOFT = C.DEVELOPED | C.TREES | C.STEEP | C.ORCHARD
 
     def __init__(self):
         from osgeo import gdal, ogr, osr
         self.gdal, self.ogr = gdal, ogr
-        self.ds = ogr.Open(os.path.join(C.SHARED, "runways_3857.gpkg"))
-        assert self.ds is not None, "runways_3857.gpkg missing — run prep.py"
-        self.lyr = self.ds.GetLayer(0)
+        self.layers = []
+        for name, keep in (("runways_3857.gpkg", 0), ("runways_approx_3857.gpkg", 0xFF & ~self.SOFT)):
+            ds = ogr.Open(os.path.join(C.SHARED, name))
+            assert ds is not None, f"{name} missing — run prep.py"
+            self.layers.append((ds, ds.GetLayer(0), keep))
         srs = osr.SpatialReference()
         srs.ImportFromEPSG(3857)
         self.wkt = srs.ExportToWkt()
@@ -101,14 +110,16 @@ class RunwayClearer:
     def clear(self, arr, z, x, y):
         tile_m = 2 * C.ORIGIN / (1 << z)
         xmin, ymax = -C.ORIGIN + x * tile_m, C.ORIGIN - y * tile_m
-        self.lyr.SetSpatialFilterRect(xmin, ymax - tile_m, xmin + tile_m, ymax)
-        if self.lyr.GetFeatureCount() == 0:
-            return
-        mem = self.gdal.GetDriverByName("MEM").Create("", C.TILE, C.TILE, 1, self.gdal.GDT_Byte)
-        mem.SetGeoTransform((xmin, tile_m / C.TILE, 0.0, ymax, 0.0, -tile_m / C.TILE))
-        mem.SetProjection(self.wkt)
-        self.gdal.RasterizeLayer(mem, [1], self.lyr, burn_values=[1], options=["ALL_TOUCHED=TRUE"])
-        arr[mem.GetRasterBand(1).ReadAsArray() > 0] = 0
+        for _, lyr, keep in self.layers:                             # bounded: two layers
+            lyr.SetSpatialFilterRect(xmin, ymax - tile_m, xmin + tile_m, ymax)
+            if lyr.GetFeatureCount() == 0:
+                continue
+            mem = self.gdal.GetDriverByName("MEM").Create("", C.TILE, C.TILE, 1, self.gdal.GDT_Byte)
+            mem.SetGeoTransform((xmin, tile_m / C.TILE, 0.0, ymax, 0.0, -tile_m / C.TILE))
+            mem.SetProjection(self.wkt)
+            self.gdal.RasterizeLayer(mem, [1], lyr, burn_values=[1], options=["ALL_TOUCHED=TRUE"])
+            on = mem.GetRasterBand(1).ReadAsArray() > 0
+            arr[on] &= np.uint8(keep)
 
 
 def open_mbtiles(tmp, meta):

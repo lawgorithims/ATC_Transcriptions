@@ -218,6 +218,86 @@ def prep_runways():
     return discs, {"runway_rectangles": n_rect, "airport_discs": len(discs)}
 
 
+APPROX_HEADING_SLACK_DEG = 6.0   # a designator is rounded to 10° (±5°), plus a degree of variation
+APPROX_ARP_SLACK_M = 40.0        # a private strip's reference point can sit ~100 m off its centreline (7NC3)
+
+
+def _designator_heading(des):
+    """Magnetic heading of a runway's first end, from its designator ("09/27", "13L/31R", "N/S").
+    None for anything that is not one runway on land (helipads, water lanes, three-way names)."""
+    first = des.split("/")[0].strip().upper()
+    if first.endswith("W") and first[:-1].isdigit():
+        return None                                                # a seaplane lane, not land
+    letters = {"N": 0.0, "S": 0.0, "E": 90.0, "W": 90.0, "NE": 45.0, "SW": 45.0, "NW": 135.0, "SE": 135.0}
+    if first in letters:
+        return letters[first]
+    digits = first.rstrip("LRC")
+    if digits.isdigit() and 1 <= int(digits) <= 36:
+        return int(digits) * 10.0
+    return None
+
+
+def _variation_deg(mag_var, lon):
+    """NASR stores the size of the variation without its hemisphere. In the contiguous US it is East
+    west of the agonic line (~90°W) and West east of it; within ~3° of the line the sign error is
+    under the heading slack the rectangle already carries."""
+    try:
+        v = float(mag_var)
+    except (TypeError, ValueError):
+        return 0.0
+    return v if lon < -90.0 else -v
+
+
+def prep_runways_approx():
+    """Runways NASR lists without surveyed ends, at airports with exactly ONE runway: a rectangle on the
+    airport reference point (the runway's centre for a single-runway field), turned to the designator
+    heading, as long as the runway and widened for the designator's rounding.
+
+    It is an estimate, so the merge clears only the reasons a runway's own pixels collect — built-up,
+    trees, steep, orchard — and never wires, obstacles or solar: a misplaced estimate must not erase a
+    real power line beside the strip. Private strips are where these are, and private strips are where
+    an engine-out pilot goes."""
+    db = sqlite3.connect(f"file:{APT_DB}?mode=ro", uri=True)
+    surveyed = {r[0] for r in db.execute("SELECT DISTINCT ident FROM runway_end WHERE lat IS NOT NULL")}
+    rows = db.execute("""SELECT a.ident, a.lat, a.lon, a.mag_var, r.designator, r.length_ft, r.width_ft
+                         FROM airport a JOIN runway r ON r.ident = a.ident
+                         WHERE a.site_type IN ('A', 'G', 'U') AND a.lat IS NOT NULL""").fetchall()
+    per_airport = {}
+    for row in rows:                                               # bounded by the runways (~23k)
+        per_airport.setdefault(row[0], []).append(row)
+    out_ds, out = _new_gpkg(os.path.join(C.SHARED, "runways_approx_3857.gpkg"), "runways_approx", ogr.wkbPolygon)
+    n = skipped = 0
+    out_ds.StartTransaction()
+    for ident, rws in per_airport.items():                         # bounded by the airports
+        if ident in surveyed or len(rws) != 1:
+            continue
+        _, lat, lon, mag_var, des, length_ft, width_ft = rws[0]
+        mag = _designator_heading(des or "")
+        if mag is None or not length_ft or not _in_conus(lon, lat):
+            skipped += 1
+            continue
+        true_hdg = math.radians(mag + _variation_deg(mag_var, lon))
+        half_len = length_ft * 0.3048 / 2.0
+        hl = half_len + 60.0 + APPROX_ARP_SLACK_M
+        hw = ((width_ft or 60.0) * 0.3048 / 2.0 + 20.0 + APPROX_ARP_SLACK_M
+              + half_len * math.tan(math.radians(APPROX_HEADING_SLACK_DEG)))
+        k = 1.0 / max(0.2, math.cos(math.radians(lat)))              # ground → Mercator
+        cx, cy = C.lonlat_to_merc(lon, lat)
+        ux, uy = math.sin(true_hdg), math.cos(true_hdg)              # along the runway (east, north)
+        ring = ogr.Geometry(ogr.wkbLinearRing)
+        for a, b in ((-hl, -hw), (hl, -hw), (hl, hw), (-hl, hw), (-hl, -hw)):
+            ring.AddPoint_2D(cx + (a * ux + b * uy) * k, cy + (a * uy - b * ux) * k)
+        poly = ogr.Geometry(ogr.wkbPolygon)
+        poly.AddGeometry(ring)
+        f = ogr.Feature(out.GetLayerDefn())
+        f.SetGeometry(poly)
+        out.CreateFeature(f)
+        n += 1
+    out_ds.CommitTransaction()
+    assert n > 2000, f"prep_runways_approx: only {n} estimated runways"
+    return {"runway_estimates": n, "runway_estimates_skipped": skipped}
+
+
 def _rect_feature(lyr, la1, lo1, la2, lo2, width_ft):
     """A runway as a Mercator rectangle: centreline end to end + 30 m, half-width + 15 m (ground)."""
     x1, y1 = C.lonlat_to_merc(lo1, la1)
@@ -254,6 +334,14 @@ def prep_dem_vrt():
 
 def main():
     os.makedirs(C.SHARED, exist_ok=True)
+    if sys.argv[1:] == ["--runways-approx"]:                       # added after the cells were built
+        with open(os.path.join(C.SHARED, "inputs.json")) as f:
+            info = json.load(f)
+        info["built_from"]["runway_estimates"] = prep_runways_approx()
+        with open(os.path.join(C.SHARED, "inputs.json"), "w") as f:
+            json.dump(info, f, indent=1)
+        print(json.dumps(info["built_from"]["runway_estimates"]))
+        return
     nlcd = glob.glob(os.path.join(C.SHARED, "nlcd2025", "*.tif"))
     cdl = glob.glob(os.path.join(C.SHARED, "cdl2025", "*.tif"))
     assert nlcd and cdl, "national rasters missing — run fetch_national.sh first"
@@ -269,6 +357,7 @@ def main():
     xs, ys, rs, bits, counts = prep_points()
     print(f"points {time.time() - t0:.0f}s", flush=True)
     discs, rcounts = prep_runways()
+    rcounts.update(prep_runways_approx())
     print(f"runways {time.time() - t0:.0f}s", flush=True)
     np.savez_compressed(os.path.join(C.SHARED, "points.npz"),
                         x=np.array(xs), y=np.array(ys), r=np.array(rs), bit=np.array(bits, np.uint8),

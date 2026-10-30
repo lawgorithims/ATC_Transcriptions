@@ -621,7 +621,8 @@ struct DownloadsView: View {
     /// Developer-only since build 110 (see `AppModel.showLZRisk`). A pilot who downloaded packs while
     /// the layer was public gets a way to take the storage back instead of a section that vanished
     /// with hundreds of MB still on the device.
-    /// The national "where not to go" map: one file, offered, never fetched on its own.
+    /// The national "where not to go" map: longitude bands, offered, never fetched on its own. A
+    /// download that stops part-way keeps what it got, and the button then fetches only the rest.
     private var avoidSection: some View {
         let p = model.palette
         return Section("Where not to go — contiguous US") {
@@ -631,6 +632,11 @@ struct DownloadsView: View {
                  + "unshaded ground is not safe ground.")
                 .font(.dsLabelS).foregroundStyle(p.textDim)
                 .fixedSize(horizontal: false, vertical: true)
+            if let built = avoidLibrary.store.builtAt {
+                Text(avoidInstalledLine(built))
+                    .font(.dsLabelS).foregroundStyle(p.text)
+                    .accessibilityIdentifier("downloads-avoid-installed")
+            }
             switch avoidLibrary.state {
             case .downloading(let f):
                 HStack {
@@ -640,14 +646,11 @@ struct DownloadsView: View {
             case .verifying:
                 Label("Checking the download…", systemImage: "checkmark.shield").font(.dsLabelS)
             case .installed:
-                if let info = avoidLibrary.store.info {
-                    Text("Installed · built \(String(info.builtAt.prefix(10)))")
-                        .font(.dsLabelS).foregroundStyle(p.text)
-                        .accessibilityIdentifier("downloads-avoid-installed")
-                }
                 if avoidLibrary.updateAvailable {
-                    Button { avoidLibrary.download() } label: { Label("Update", systemImage: "arrow.down.circle") }
-                        .accessibilityIdentifier("downloads-avoid-update")
+                    Button { avoidLibrary.download() } label: {
+                        Label("Update · \(byteStr(Int64(avoidLibrary.bytesToDownload)))", systemImage: "arrow.down.circle")
+                    }
+                    .accessibilityIdentifier("downloads-avoid-update")
                 }
                 Button(role: .destructive) { avoidLibrary.remove() } label: {
                     Label("Remove", systemImage: "trash")
@@ -656,6 +659,10 @@ struct DownloadsView: View {
             case .failed(let why):
                 Text(why).font(.dsLabelS).foregroundStyle(p.warn).fixedSize(horizontal: false, vertical: true)
                 avoidDownloadButtons(p, offerMetered: true)
+                if avoidLibrary.store.isInstalled {
+                    Button(role: .destructive) { avoidLibrary.remove() } label: { Label("Remove", systemImage: "trash") }
+                        .accessibilityIdentifier("downloads-avoid-remove")
+                }
             case .idle:
                 avoidDownloadButtons(p, offerMetered: false)
             }
@@ -663,13 +670,23 @@ struct DownloadsView: View {
         .task { await avoidLibrary.refresh() }
     }
 
+    private func avoidInstalledLine(_ built: String) -> String {
+        let date = String(built.prefix(10))
+        if let (have, total) = avoidLibrary.installedOfTotal, have < total {
+            return "Installed: \(have) of \(total) areas · built \(date)"
+        }
+        return "Installed · built \(date)"
+    }
+
     /// The cellular override is offered only after the download policy has held one back: on Wi-Fi it
     /// would be a second button that does the same thing.
     @ViewBuilder private func avoidDownloadButtons(_ p: Palette, offerMetered: Bool) -> some View {
-        if let c = avoidLibrary.catalog {
+        if avoidLibrary.catalog != nil {
+            let what = avoidLibrary.store.isInstalled ? "Download the rest" : "Download"
             Button { avoidLibrary.download() } label: {
-                Label("Download · \(byteStr(Int64(c.map.bytes)))", systemImage: "arrow.down.circle")
+                Label("\(what) · \(byteStr(Int64(avoidLibrary.bytesToDownload)))", systemImage: "arrow.down.circle")
             }
+            .disabled(avoidLibrary.missing.isEmpty)
             .accessibilityIdentifier("downloads-avoid-download")
             if offerMetered {
                 Button { avoidLibrary.download(allowMetered: true) } label: {

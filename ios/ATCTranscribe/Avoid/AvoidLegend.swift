@@ -28,7 +28,8 @@ struct AvoidLegend: View {
             }
             Text("Shows only where NOT to put the aeroplane down — never where to land. Not mapped anywhere: "
                  + "distribution and farm wires, fences, ditches, crops. Unshaded ground is not safe ground. "
-                 + "Power lines: HIFLD, data to Sept 2024.")
+                 + "Power lines: the national HIFLD layer (to Sept 2024), which lacks about 1 in 8 known "
+                 + "transmission lines; solar: plants of 1 MW and up.")
                 .font(.dsLabelS).foregroundStyle(palette.textDim)
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityIdentifier("layers-avoid-note")
@@ -40,9 +41,12 @@ struct AvoidLegend: View {
     }
 
     private var status: String {
-        if let info = library.store.info {
-            return "Contiguous US · built \(info.builtAt.prefix(10)) · hidden when zoomed far out."
+        guard let built = library.store.builtAt else {
+            return "Not downloaded yet — Settings › Downloads › Where not to go."
         }
-        return "Not downloaded yet — Settings › Downloads › Where not to go."
+        if let (have, total) = library.installedOfTotal, have < total {
+            return "\(have) of \(total) areas downloaded — blank elsewhere. Built \(built.prefix(10))."
+        }
+        return "Contiguous US · built \(built.prefix(10)) · hidden when zoomed far out."
     }
 }

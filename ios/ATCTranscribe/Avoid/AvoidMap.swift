@@ -4,8 +4,8 @@ import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers
 
-/// The "where not to go" map: one national file, one byte per ~30 m pixel, each bit a reason NOT to
-/// put an aeroplane down there. Built overnight from national sources (`lz/avoid/` in the repo).
+/// The "where not to go" map: the contiguous US in longitude bands, one byte per ~30 m pixel, each bit
+/// a reason NOT to put an aeroplane down there. Built overnight from national sources (`lz/avoid/`).
 ///
 /// It never says where TO land. Unpainted ground is not endorsed: distribution wires, fences, ditches,
 /// crops, livestock and surface condition are not mapped anywhere public, and the legend says so.
@@ -77,25 +77,33 @@ enum AvoidMap {
     }
 }
 
-/// What the installed map says about itself (its MBTiles metadata).
+/// What one installed band says about itself (its MBTiles metadata).
 struct AvoidMapInfo: Equatable, Sendable {
     let builtAt: String
     let slopeThresholdDeg: String
     let attribution: String
     let caveat: String
     let fileName: String
+    /// The band's name (`w125-w118`) and the z8 tile columns it holds, every zoom below included.
+    /// A file without band metadata is one map of everything: "all", every column.
+    let shardID: String
+    let columns: ClosedRange<Int>
 }
 
-/// The installed national file. One reader, opened once; a new download is swapped in under the lock
-/// and the superseded FILE is left for the next launch to delete — deleting a database that a reader
-/// still has open poisons that connection (Apple's libsqlite3 invalidates it; see NavDataUpdate).
+/// The installed map: one file per longitude band, one reader each, opened once. A band holds whole
+/// z8 tile columns and everything under them, so a tile is always read from exactly ONE file — the band
+/// whose columns hold its z8 ancestor — and bands are never merged.
+///
+/// A new download is swapped in under the lock and a superseded FILE is left for the next launch to
+/// delete: deleting a database that a reader still has open poisons that connection (Apple's
+/// libsqlite3 invalidates it; see NavDataUpdate).
 final class AvoidMapStore: @unchecked Sendable {
     static let shared = AvoidMapStore()
+    static let filePrefix = "avoid_"
 
     let directory: URL
     private let lock = NSLock()
-    private var reader: MBTilesReader?
-    private var _info: AvoidMapInfo?
+    private var bands: [(reader: MBTilesReader, info: AvoidMapInfo)] = []   // sorted by column, never overlapping
 
     init(directory: URL? = nil) {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
@@ -103,36 +111,54 @@ final class AvoidMapStore: @unchecked Sendable {
         self.directory = directory ?? base.appendingPathComponent("avoid", isDirectory: true)
     }
 
-    var info: AvoidMapInfo? { lock.lock(); defer { lock.unlock() }; return _info }
     private var removalMarker: URL { directory.appendingPathComponent("remove-on-launch") }
-    var isInstalled: Bool { info != nil }
 
-    /// Change token for render signatures: a new file is a new map.
-    var fingerprint: String { info.map { "\($0.fileName)|\($0.builtAt)" } ?? "" }
+    /// Every installed band, west to east.
+    var installed: [AvoidMapInfo] { lock.lock(); defer { lock.unlock() }; return bands.map(\.info) }
+    var isInstalled: Bool { !installed.isEmpty }
+    /// The OLDEST installed band's build: what the map as a whole can claim to be current to.
+    var builtAt: String? { installed.map(\.builtAt).min() }
 
-    /// Opens the newest valid map and deletes every other copy. Call at launch, before any tile is
-    /// served — the one moment no reader can have a superseded copy open.
+    /// Change token for render signatures: any band added, replaced or removed is a new map.
+    var fingerprint: String { installed.map { "\($0.fileName)|\($0.builtAt)" }.joined(separator: ",") }
+
+    /// Opens the newest valid file for each band and deletes every other copy. Call at launch, before
+    /// any tile is served — the one moment no reader can have a superseded copy open.
     func reload() {
-        let files = Self.candidates(in: directory)
-        let removing = FileManager.default.fileExists(atPath: removalMarker.path)
-        var opened: (MBTilesReader, AvoidMapInfo)?
-        for url in files {                                          // bounded: files in one directory
-            if removing { try? FileManager.default.removeItem(at: url); continue }
-            if opened == nil, let r = Self.open(url) { opened = r; continue }
+        // A removal names the exact files it removed, so bands downloaded AFTER it survive this launch
+        // while every removed one goes — even one not re-downloaded, which would otherwise come back as
+        // the "newest" copy of its ground.
+        if let listed = try? String(contentsOf: removalMarker, encoding: .utf8) {
+            for name in listed.split(separator: "\n").map(String.init) where Self.isMapFileName(name) {
+                try? FileManager.default.removeItem(at: directory.appendingPathComponent(name))
+            }
+            try? FileManager.default.removeItem(at: removalMarker)
+        }
+        let files = Self.candidates(in: directory)                       // newest first
+        var kept: [(reader: MBTilesReader, info: AvoidMapInfo)] = []
+        for url in files {                                              // bounded: files in one directory
+            // Newest first, so a file overlapping one already kept is the older copy of that ground.
+            if let band = Self.open(url), !kept.contains(where: { $0.info.columns.overlaps(band.1.columns) }) {
+                kept.append((band.0, band.1))
+                continue
+            }
             try? FileManager.default.removeItem(at: url)
         }
-        if removing { try? FileManager.default.removeItem(at: removalMarker) }
-        lock.lock()
-        reader = opened?.0
-        _info = opened?.1
-        lock.unlock()
+        kept.sort { $0.info.columns.lowerBound < $1.info.columns.lowerBound }
+        lock.lock(); bands = kept; lock.unlock()
     }
 
-    /// Adopt a verified download. The old file is NOT deleted here (see the type comment).
+    /// Adopt a verified download as its band, replacing whatever covered those columns. The old file
+    /// is NOT deleted here (see the type comment); the next launch's `reload()` drops it as older.
     @discardableResult
     func install(_ downloaded: URL) throws -> AvoidMapInfo {
+        let id: String
+        do {
+            guard let probe = Self.open(downloaded) else { throw CocoaError(.fileReadCorruptFile) }
+            id = probe.1.shardID
+        }                                                                // the probe closes before the move
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let dest = directory.appendingPathComponent("avoid_conus-\(UUID().uuidString.prefix(8)).mbtiles")
+        let dest = directory.appendingPathComponent("\(Self.filePrefix)\(id)-\(UUID().uuidString.prefix(8)).mbtiles")
         try FileManager.default.moveItem(at: downloaded, to: dest)
         guard let (r, i) = Self.open(dest) else {
             try? FileManager.default.removeItem(at: dest)
@@ -140,37 +166,56 @@ final class AvoidMapStore: @unchecked Sendable {
         }
         var values = URLResourceValues(); values.isExcludedFromBackup = true
         var d = dest; try? d.setResourceValues(values)
-        try? FileManager.default.removeItem(at: removalMarker)       // a fresh install outranks a removal
-        lock.lock(); reader = r; _info = i; lock.unlock()
+        lock.lock()
+        bands.removeAll { $0.info.columns.overlaps(i.columns) }
+        bands.append((r, i))
+        bands.sort { $0.info.columns.lowerBound < $1.info.columns.lowerBound }
+        lock.unlock()
         return i
     }
 
     /// Stop serving now; the files go at the next launch's `reload()`. Not deleted here: a tile
-    /// request in flight may still hold the old reader, and deleting under it poisons the connection.
+    /// request in flight may still hold an old reader, and deleting under it poisons the connection.
     func uninstallKeepingFilesUntilRelaunch() {
-        lock.lock(); reader = nil; _info = nil; lock.unlock()
+        lock.lock(); bands = []; lock.unlock()
+        let pending = (try? String(contentsOf: removalMarker, encoding: .utf8))?.split(separator: "\n").map(String.init) ?? []
+        let names = Set(pending + Self.candidates(in: directory).map(\.lastPathComponent))
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        FileManager.default.createFile(atPath: removalMarker.path, contents: Data())
+        try? names.sorted().joined(separator: "\n").write(to: removalMarker, atomically: true, encoding: .utf8)
     }
 
+    /// Our own band file names only: nothing in the removal list can reach outside this directory.
+    static func isMapFileName(_ name: String) -> Bool {
+        name.hasPrefix(filePrefix) && name.hasSuffix(".mbtiles") && !name.contains("/") && !name.contains("..")
+    }
+
+    /// The band holding a tile, or nil when that ground is not installed.
+    private func reader(z: Int, x: Int) -> MBTilesReader? {
+        guard (AvoidMap.minZoom...AvoidMap.maxZoom).contains(z), x >= 0 else { return nil }
+        let column = x >> (z - AvoidMap.minZoom)
+        lock.lock(); defer { lock.unlock() }
+        return bands.first { $0.info.columns.contains(column) }?.reader
+    }
+
+    func covers(z: Int, x: Int) -> Bool { reader(z: z, x: x) != nil }
+
     func mask(z: Int, x: Int, y: Int) -> [UInt8]? {
-        lock.lock(); let r = reader; lock.unlock()
-        guard let r, (AvoidMap.minZoom...AvoidMap.maxZoom).contains(z) else { return nil }
-        guard let data = r.tileData(z: z, x: x, y: y) else { return nil }
+        guard let r = reader(z: z, x: x), let data = r.tileData(z: z, x: x, y: y) else { return nil }
         return AvoidMap.decode(data)
     }
 
     /// Every reason at a coordinate (z12, the finest level). Empty = mapped and nothing to report;
-    /// nil = no map, or no tile here.
+    /// nil = this ground is not installed.
     func reasons(lon: Double, lat: Double) -> [AvoidReason]? {
-        guard isInstalled, let t = AvoidMap.tilePixel(lon: lon, lat: lat, z: AvoidMap.maxZoom) else { return nil }
+        guard let t = AvoidMap.tilePixel(lon: lon, lat: lat, z: AvoidMap.maxZoom),
+              covers(z: AvoidMap.maxZoom, x: t.x) else { return nil }
         guard let m = mask(z: AvoidMap.maxZoom, x: t.x, y: t.y) else { return [] }
         return AvoidReason.reasons(in: m[t.py * AvoidMap.side + t.px])
     }
 
     static func candidates(in dir: URL) -> [URL] {
         let all = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
-        let maps = all.filter { $0.pathExtension == "mbtiles" && $0.lastPathComponent.hasPrefix("avoid_conus") }
+        let maps = all.filter { $0.pathExtension == "mbtiles" && $0.lastPathComponent.hasPrefix(filePrefix) }
         let dated = maps.map { u in (u, (try? u.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast) }
         return dated.sorted { $0.1 > $1.1 }.map(\.0)                  // newest first
     }
@@ -179,10 +224,20 @@ final class AvoidMapStore: @unchecked Sendable {
         guard let r = MBTilesReader(path: url.path) else { return nil }
         let m = r.metadata
         guard m["format"] == AvoidMap.format, m["avoid_schema"] == AvoidMap.schema else { return nil }
+        guard let columns = columns(m["shard_x8"]) else { return nil }
         let info = AvoidMapInfo(builtAt: m["built_at"] ?? "", slopeThresholdDeg: m["slope_threshold_deg"] ?? "",
                                 attribution: m["attribution"] ?? "", caveat: m["caveat"] ?? "",
-                                fileName: url.lastPathComponent)
+                                fileName: url.lastPathComponent, shardID: m["shard"] ?? "all", columns: columns)
         return (r, info)
+    }
+
+    /// "lo,hi" z8 columns; absent means every column. Anything malformed refuses the file.
+    static func columns(_ text: String?) -> ClosedRange<Int>? {
+        let all = 0...((1 << AvoidMap.minZoom) - 1)
+        guard let text else { return all }
+        let parts = text.split(separator: ",").compactMap { Int($0.trimmingCharacters(in: .whitespaces)) }
+        guard parts.count == 2, parts[0] <= parts[1], all.contains(parts[0]), all.contains(parts[1]) else { return nil }
+        return parts[0]...parts[1]
     }
 }
 

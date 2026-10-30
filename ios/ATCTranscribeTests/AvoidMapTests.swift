@@ -29,21 +29,26 @@ final class AvoidMapTests: XCTestCase {
         return Data("AVD1".utf8) + Data(out.prefix(n))
     }
 
-    /// A one-tile avoid map at z12 around KLRU, with `byte` painted at KLRU's pixel.
-    private func makeMap(_ name: String, byte: UInt8, builtAt: String = "2026-10-30T00:00:00Z") throws -> URL {
+    /// A one-tile avoid map at z12, with `byte` painted at one point's pixel (KLRU unless told). With
+    /// `band`, it is one longitude band as `lz/avoid/shard.py` writes it; without, a map of everything.
+    private func makeMap(_ name: String, byte: UInt8, builtAt: String = "2026-10-30T00:00:00Z",
+                         at point: (lat: Double, lon: Double)? = nil,
+                         band: (id: String, columns: ClosedRange<Int>)? = nil) throws -> URL {
         let url = dir.appendingPathComponent(name)
         var db: OpaquePointer?
         XCTAssertEqual(sqlite3_open(url.path, &db), SQLITE_OK)
         defer { sqlite3_close(db) }
+        let bandRows = band.map { ", ('shard','\($0.id)'), ('shard_x8','\($0.columns.lowerBound),\($0.columns.upperBound)')" } ?? ""
         let ddl = """
         CREATE TABLE metadata (name TEXT, value TEXT);
         CREATE TABLE tiles (zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER, tile_data BLOB);
         INSERT INTO metadata VALUES ('format','avoid1'), ('avoid_schema','1'), ('minzoom','8'), ('maxzoom','12'),
-          ('built_at','\(builtAt)'), ('slope_threshold_deg','10'), ('attribution','test'), ('caveat','test'),
-          ('bounds','-125,24,-66,50');
+          ('built_at','\(builtAt)'), ('slope_threshold_deg','6'), ('attribution','test'), ('caveat','test'),
+          ('bounds','-125,24,-66,50')\(bandRows);
         """
         XCTAssertEqual(sqlite3_exec(db, ddl, nil, nil, nil), SQLITE_OK)
-        let t = try XCTUnwrap(AvoidMap.tilePixel(lon: klru.lon, lat: klru.lat, z: 12))
+        let at = point ?? klru
+        let t = try XCTUnwrap(AvoidMap.tilePixel(lon: at.lon, lat: at.lat, z: 12))
         var mask = [UInt8](repeating: 0, count: 65_536)
         mask[t.py * 256 + t.px] = byte
         let data = blob(mask)
@@ -159,6 +164,101 @@ final class AvoidMapTests: XCTestCase {
                      "a stale signature is refused")
         XCTAssertNil(r.tilePNG(signature: sig, theme: .cockpit, showCover: false, z: 7, x: 0, y: 0),
                      "below the map's minimum zoom there is nothing to draw")
+    }
+
+    // MARK: bands
+
+    /// KLRU is in z8 column 51; this point is in column 53, and one in column 60 is in no band here.
+    private let east = (lat: 32.29, lon: -104.70)
+    private let unmapped = (lat: 35.0, lon: -95.5)
+
+    func testEachBandAnswersOnlyForItsOwnColumns() throws {
+        XCTAssertEqual(AvoidMap.tilePixel(lon: klru.lon, lat: klru.lat, z: 8)?.x, 51)
+        XCTAssertEqual(AvoidMap.tilePixel(lon: east.lon, lat: east.lat, z: 8)?.x, 53)
+        _ = try makeMap("avoid_w108-w104-a.mbtiles", byte: AvoidReason.wires.rawValue, band: ("w108-w104", 50...52))
+        _ = try makeMap("avoid_w104-w100-a.mbtiles", byte: AvoidReason.solar.rawValue, at: east,
+                        band: ("w104-w100", 53...55))
+        let store = AvoidMapStore(directory: dir)
+        store.reload()
+        XCTAssertEqual(store.installed.map(\.shardID), ["w108-w104", "w104-w100"], "west to east")
+        XCTAssertEqual(store.reasons(lon: klru.lon, lat: klru.lat), [.wires])
+        XCTAssertEqual(store.reasons(lon: east.lon, lat: east.lat), [.solar], "read from ITS band, not the first")
+        XCTAssertNil(store.reasons(lon: unmapped.lon, lat: unmapped.lat), "a band not installed: no answer")
+        XCTAssertTrue(store.covers(z: 10, x: 51 << 2), "every zoom under a band's column is that band's")
+        XCTAssertFalse(store.covers(z: 10, x: 60 << 2))
+    }
+
+    func testInstallingABandReplacesThatBandAndNothingElse() throws {
+        let old = try makeMap("avoid_w108-w104-a.mbtiles", byte: AvoidReason.wires.rawValue, band: ("w108-w104", 50...52))
+        _ = try makeMap("avoid_w104-w100-a.mbtiles", byte: AvoidReason.solar.rawValue, at: east,
+                        band: ("w104-w100", 53...55))
+        let store = AvoidMapStore(directory: dir)
+        store.reload()
+        let incoming = try makeMap("incoming.mbtiles", byte: AvoidReason.steep.rawValue,
+                                   builtAt: "2026-11-01T00:00:00Z", band: ("w108-w104", 50...52))
+        try store.install(incoming)
+        XCTAssertEqual(store.reasons(lon: klru.lon, lat: klru.lat), [.steep], "the new band is served at once")
+        XCTAssertEqual(store.reasons(lon: east.lon, lat: east.lat), [.solar], "its neighbour is untouched")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: old.path), "the replaced file outlives this session")
+        store.reload()                                              // the next launch
+        XCTAssertFalse(FileManager.default.fileExists(atPath: old.path), "and goes at the next launch, as the older copy")
+        XCTAssertEqual(store.installed.count, 2)
+        XCTAssertEqual(store.builtAt, "2026-10-30T00:00:00Z", "the map is as current as its OLDEST band")
+    }
+
+    /// Remove, then download only SOME bands, then relaunch: the removed bands must stay gone. When a
+    /// fresh install simply cleared the removal marker, every band not re-downloaded came back.
+    func testARemovedBandStaysRemovedWhenOnlySomeAreDownloadedAgain() throws {
+        let west = try makeMap("avoid_w108-w104-a.mbtiles", byte: AvoidReason.wires.rawValue, band: ("w108-w104", 50...52))
+        let eastFile = try makeMap("avoid_w104-w100-a.mbtiles", byte: AvoidReason.solar.rawValue, at: east,
+                                   band: ("w104-w100", 53...55))
+        let store = AvoidMapStore(directory: dir)
+        store.reload()
+        store.uninstallKeepingFilesUntilRelaunch()
+        let incoming = try makeMap("incoming.mbtiles", byte: AvoidReason.steep.rawValue,
+                                   builtAt: "2026-11-01T00:00:00Z", band: ("w108-w104", 50...52))
+        try store.install(incoming)
+        XCTAssertEqual(store.installed.map(\.shardID), ["w108-w104"], "only what was downloaded since the removal")
+        store.reload()                                              // the next launch
+        XCTAssertFalse(FileManager.default.fileExists(atPath: west.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: eastFile.path), "a removed band came back")
+        XCTAssertEqual(store.installed.map(\.shardID), ["w108-w104"])
+        XCTAssertNil(store.reasons(lon: east.lon, lat: east.lat))
+        XCTAssertFalse(AvoidMapStore.isMapFileName("../avoid_x.mbtiles"), "the removal list stays in its directory")
+    }
+
+    func testAMalformedBandRangeRefusesTheFile() {
+        XCTAssertEqual(AvoidMapStore.columns(nil), 0...255, "no band metadata: a map of everything")
+        XCTAssertEqual(AvoidMapStore.columns("50,52"), 50...52)
+        XCTAssertNil(AvoidMapStore.columns("52,50"))
+        XCTAssertNil(AvoidMapStore.columns("50"))
+        XCTAssertNil(AvoidMapStore.columns("50,999"))
+    }
+
+    @MainActor
+    func testTheLibraryFetchesOnlyMissingOrOlderBandsAndRemembersTheCatalog() throws {
+        _ = try makeMap("avoid_w108-w104-a.mbtiles", byte: AvoidReason.wires.rawValue, band: ("w108-w104", 50...52))
+        let store = AvoidMapStore(directory: dir)
+        store.reload()
+        func catalog(_ builtAt: String) -> Data {
+            Data("""
+            {"schema": 2, "built_at": "\(builtAt)", "shards": [
+              {"id": "w108-w104", "path": "map/avoid_w108-w104.mbtiles", "bytes": 90000000, "sha256": "aa"},
+              {"id": "w104-w100", "path": "map/avoid_w104-w100.mbtiles", "bytes": 60000000, "sha256": "bb"}]}
+            """.utf8)
+        }
+        let lib = AvoidMapLibrary(store: store)
+        XCTAssertTrue(lib.adopt(catalogData: catalog("2026-10-30T00:00:00Z")))
+        XCTAssertEqual(lib.missing.map(\.id), ["w104-w100"], "the band already installed at this build is not fetched again")
+        XCTAssertEqual(lib.bytesToDownload, 60_000_000)
+        XCTAssertTrue(lib.updateAvailable, "part of the map is installed and part is not")
+        XCTAssertEqual(lib.installedOfTotal?.0, 1)
+        XCTAssertEqual(lib.installedOfTotal?.1, 2)
+        XCTAssertTrue(lib.adopt(catalogData: catalog("2026-11-01T00:00:00Z")))
+        XCTAssertEqual(lib.missing.map(\.id), ["w108-w104", "w104-w100"], "a newer build supersedes every band")
+        XCTAssertFalse(lib.adopt(catalogData: Data(#"{"schema": 1, "map": {}}"#.utf8)), "an old-schema catalog is refused")
+        XCTAssertEqual(AvoidMapLibrary(store: store).catalog?.built_at, "2026-11-01T00:00:00Z",
+                       "the catalog survives a relaunch, so an offline pilot still learns the install is partial")
     }
 
     func testTheServerRouteParsesSignedPaths() {

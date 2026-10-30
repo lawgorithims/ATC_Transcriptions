@@ -27,9 +27,19 @@ final class AvoidLayerUITests: XCTestCase {
         let layer = app.switches["layer-avoid"]
         XCTAssertTrue(layer.waitForExistence(timeout: 10), "no Where-not-to-go row for a pilot without diagnostics")
         let wasOn = (layer.value as? String) == "1"
-        // Leave the switch as this test found it, even if an assertion stops it early.
+        // Leave the switch as this test found it, even if an assertion stops it early. The panel may
+        // be gone by then — in the first run the data-currency banner arrived a few seconds after
+        // launch, re-laid out the top bar and closed the popover — and reading a vanished switch's
+        // value FAILS rather than returning nil, so reopen it first.
         addTeardownBlock {
-            if ((layer.value as? String) == "1") != wasOn, layer.exists { UITestToggle.flip(layer) }
+            guard app.state == .runningForeground else { return }
+            if !layer.exists {
+                let dismiss = app.otherElements["PopoverDismissRegion"]
+                if dismiss.exists { dismiss.tap() }
+                if menu.waitForExistence(timeout: 5) { menu.tap() }
+            }
+            guard layer.waitForExistence(timeout: 5) else { return }
+            if ((layer.value as? String) == "1") != wasOn { UITestToggle.flip(layer) }
         }
         if !wasOn { UITestToggle.flip(layer) }
 

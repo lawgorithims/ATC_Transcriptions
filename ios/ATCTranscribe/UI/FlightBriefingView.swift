@@ -160,6 +160,9 @@ struct TurnbackPromptBanner: View {
             .frame(maxWidth: .infinity)
             .background(.ultraThinMaterial)
             .overlay(alignment: .top) { Rectangle().fill(p.border).frame(height: 0.5) }
+            // ⚠️ `.contain` FIRST, or this identifier is pushed down onto both buttons and
+            // `turnback-prompt-set` / `-dismiss` stop existing (the flight-plan strip's lesson).
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("turnback-prompt")
         }
     }
