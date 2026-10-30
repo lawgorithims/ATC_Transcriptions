@@ -139,8 +139,13 @@ final class LZLayerUITests: XCTestCase {
 
     /// The whole point of the control: one press turns on both off-field layers AND brings up the
     /// nearest-airport panel.
-    func testArmingTurnsOnBothLayersAndOpensNearest() {
+    func testArmingTurnsOnBothLayersAndOpensNearest() throws {
         let app = launch(["-atc.diagnosticsEnabled", "YES"])
+        // The NRST panel is a FLOATING WIDGET, and `ConsoleView.homeArea` only builds the floating
+        // canvas at regular width — so on a phone there is no panel chrome to close, nothing to
+        // un-arm from, and the panel that does come up sits over the layers popover this test
+        // then tries to open. See UITestLayout.
+        try UITestLayout.requireRegularWidth(app, "The NRST (nearest-airport) floating panel")
         let emergency = app.buttons["emergency-button"]
         XCTAssertTrue(emergency.waitForExistence(timeout: 30))
         emergency.tap()
@@ -155,8 +160,13 @@ final class LZLayerUITests: XCTestCase {
 
     /// ARM-ONLY. Pressing it a second time must not undo the first — the rule the map's NRST button
     /// documents, and the one that matters most for a control pressed by a startled hand.
-    func testASecondPressNeverUndoesTheFirst() {
+    func testASecondPressNeverUndoesTheFirst() throws {
         let app = launch(["-atc.diagnosticsEnabled", "YES"])
+        // The NRST panel is a FLOATING WIDGET, and `ConsoleView.homeArea` only builds the floating
+        // canvas at regular width — so on a phone there is no panel chrome to close, nothing to
+        // un-arm from, and the panel that does come up sits over the layers popover this test
+        // then tries to open. See UITestLayout.
+        try UITestLayout.requireRegularWidth(app, "The NRST (nearest-airport) floating panel")
         let emergency = app.buttons["emergency-button"]
         XCTAssertTrue(emergency.waitForExistence(timeout: 30))
         emergency.tap()
@@ -171,8 +181,13 @@ final class LZLayerUITests: XCTestCase {
 
     /// Stand-down is a LONG press, and it does take everything back down. The gesture is deliberate
     /// specifically so the tap that must never disarm cannot.
-    func testLongPressStandsDown() {
+    func testLongPressStandsDown() throws {
         let app = launch(["-atc.diagnosticsEnabled", "YES"])
+        // The NRST panel is a FLOATING WIDGET, and `ConsoleView.homeArea` only builds the floating
+        // canvas at regular width — so on a phone there is no panel chrome to close, nothing to
+        // un-arm from, and the panel that does come up sits over the layers popover this test
+        // then tries to open. See UITestLayout.
+        try UITestLayout.requireRegularWidth(app, "The NRST (nearest-airport) floating panel")
         let emergency = app.buttons["emergency-button"]
         XCTAssertTrue(emergency.waitForExistence(timeout: 30))
         emergency.tap()
@@ -189,8 +204,13 @@ final class LZLayerUITests: XCTestCase {
     /// The lit state must report the WORLD, not what the button remembers doing. Closing the panel by
     /// its own ✕ publishes nothing on AppModel — the widget store is a nested observable — so a button
     /// that read it through `model` would stay lit over a panel that is gone. This is that case.
-    func testClosingTheNearestPanelUnArmsTheButton() {
+    func testClosingTheNearestPanelUnArmsTheButton() throws {
         let app = launch(["-atc.diagnosticsEnabled", "YES"])
+        // The NRST panel is a FLOATING WIDGET, and `ConsoleView.homeArea` only builds the floating
+        // canvas at regular width — so on a phone there is no panel chrome to close, nothing to
+        // un-arm from, and the panel that does come up sits over the layers popover this test
+        // then tries to open. See UITestLayout.
+        try UITestLayout.requireRegularWidth(app, "The NRST (nearest-airport) floating panel")
         let emergency = app.buttons["emergency-button"]
         XCTAssertTrue(emergency.waitForExistence(timeout: 30))
         emergency.tap()
@@ -240,8 +260,13 @@ final class LZLayerUITests: XCTestCase {
 
     /// Arming without diagnostics: NRST up, the glide bands on, and the button reads ARMED — it must
     /// not wait forever for a landability layer this pilot cannot have.
-    func testArmingWithoutDiagnosticsLightsTheGlideBandsAndNearest() {
+    func testArmingWithoutDiagnosticsLightsTheGlideBandsAndNearest() throws {
         let app = launch(["-atc.diagnosticsEnabled", "NO"])
+        // The NRST panel is a FLOATING WIDGET, and `ConsoleView.homeArea` only builds the floating
+        // canvas at regular width — so on a phone there is no panel chrome to close, nothing to
+        // un-arm from, and the panel that does come up sits over the layers popover this test
+        // then tries to open. See UITestLayout.
+        try UITestLayout.requireRegularWidth(app, "The NRST (nearest-airport) floating panel")
         let emergency = app.buttons["emergency-button"]
         XCTAssertTrue(emergency.waitForExistence(timeout: 30))
         emergency.tap()
@@ -484,6 +509,22 @@ final class LZLayerUITests: XCTestCase {
                       "the panel neither listed ground nor said why not: " + Self.visibleLabels(app))
         try XCTSkipIf(app.staticTexts["landable-notice"].exists,
                       "the search could not run: \(app.staticTexts["landable-notice"].label)")
+
+        // AN EMPTY LIST HERE IS MISSING DATA, NOT A SHORT SEARCH — and the guard above does not
+        // catch it. That one fires on "no .lzpack", i.e. NOTHING installed. A Simulator holding
+        // some OTHER cell sails past it: the search runs, covers nowhere near the aeroplane, and
+        // returns nothing. That is what was happening here — the only pack installed was n32w112
+        // (Arizona) while this test holds over KLRU (32.2894/-106.9219), which needs n33w107. The
+        // name marks a cell's NORTH-WEST corner and it runs one degree SOUTH, so n33w107 reaches
+        // down to 32°N and covers Las Cruces (lz/lzcommon.py:89).
+        //
+        // THE TEETH STAY. The bug this test exists to catch is a SHORT list — two candidates
+        // inside one field because the selection loop stopped looking — and one or two rows still
+        // fails below. Only the empty case skips, and it names the pack to install.
+        try XCTSkipIf(app.staticTexts["landable-empty"].exists,
+                      "Nothing scored over KLRU: the n33w107 pack is not installed in this "
+                      + "Simulator (the panel reports: \(app.staticTexts["layers-lz-status"].label)). "
+                      + "Run `bash Tools/fetch_lz_pack.sh n33w107` to give this test its teeth back.")
 
         var rows = 0
         for i in 1...5 where el(app, "landable-row-\(i)").exists { rows = i }        // bounded

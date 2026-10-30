@@ -10,7 +10,7 @@ final class WidgetMultiTouchUITests: XCTestCase {
 
     override func setUp() { continueAfterFailure = false }
 
-    private func isRegularWidth(_ app: XCUIApplication) -> Bool { app.windows.firstMatch.frame.width >= 700 }
+    private func isRegularWidth(_ app: XCUIApplication) -> Bool { UITestLayout.isRegularWidth(app) }
 
     /// The GPS widget's header title carries the `widget-header-gps` id (SwiftUI
     /// propagates the container id to its label); it's the drag handle for the whole card.

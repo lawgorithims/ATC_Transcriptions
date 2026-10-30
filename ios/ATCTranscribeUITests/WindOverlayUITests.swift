@@ -51,8 +51,12 @@ final class WindOverlayUITests: XCTestCase {
     }
 
     /// The toggle exists in the layers panel and turning it on raises the slider.
-    func testLayersToggleRaisesTheAltitudeSlider() {
+    func testLayersToggleRaisesTheAltitudeSlider() throws {
         let app = launchMap(windOn: false)
+        // The wind row lives in column B of the two-column layers panel, which is a fixed-width
+        // HStack in a .popover — at compact width that popover becomes a sheet and column B is
+        // squeezed until its switches cannot be driven. See UITestLayout.
+        try UITestLayout.requireRegularWidth(app, "The layers panel's winds-aloft row")
         // The toggle tap below PERSISTS `atc.map.wind`; the launch argument only outranks it for THIS
         // run. Left on, every later launch on this simulator came up with the altitude slider and legend
         // drawn over the GPS widget's header, and WidgetMultiTouchUITests' drag landed on them instead
@@ -73,7 +77,11 @@ final class WindOverlayUITests: XCTestCase {
         let toggle = app.switches["layer-wind"]
         XCTAssertTrue(toggle.waitForExistence(timeout: 8), "winds-aloft toggle missing from the layers panel")
         snap(app, "01-layers-panel-wind-row")
-        toggle.tap()
+        // ⚠️ NOT `toggle.tap()`. `layerToggle` puts the identifier on the Toggle, which names the
+        // ROW; its centre is the label, not the switch at the right edge. A row-centre tap reports
+        // isHittable and changes nothing — exactly the case UITestToggle was written for (PR #7),
+        // and exactly why this test failed on an iPad in one run and passed in the next.
+        UITestToggle.flip(toggle)
 
         // ⚠️ ASSERT THE TOGGLE BEFORE DISMISSING. This test was intermittent, and the old failure said
         // only that the slider never appeared — which reads as a renderer bug when it is not one. The
