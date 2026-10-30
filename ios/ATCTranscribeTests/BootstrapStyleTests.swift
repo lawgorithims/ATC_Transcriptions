@@ -33,14 +33,21 @@ final class BootstrapStyleTests: XCTestCase {
         }
     }
 
-    /// The projection key is read ONCE at style install, so the bootstrap style has to carry it or the
-    /// globe harness comes up flat and then jumps to the sphere when the real style lands.
-    func testGlobeBootstrapCarriesTheProjection() throws {
-        let flat = try bootstrapJSON(globe: false, theme: MapTheme.forTheme(.cockpit))
-        let globe = try bootstrapJSON(globe: true, theme: MapTheme.forTheme(.cockpit))
-        XCTAssertFalse(flat.contains("projection"), "mercator must stay byte-identical to before")
-        XCTAssertTrue(globe.contains("\"projection\""), "the globe harness must boot already spherical")
-        XCTAssertTrue(globe.contains("globe"))
+    /// The bootstrap is FLAT on both projections. The first version carried `projection: globe` so the
+    /// globe would "boot already spherical" — and the globe fork then never drew its sphere at all: the
+    /// fork builds the ocean and the Blue Marble backstop when a style install CHANGES the projection to
+    /// globe, and a globe bootstrap spent that change on a style about to be thrown away. Charts floated
+    /// on black space (sea RGB 2,4,7). Under the globe the bootstrap paints the void colour instead.
+    func testTheBootstrapIsFlatEvenOnTheGlobe() throws {
+        let theme = MapTheme.forTheme(.cockpit)
+        let flat = try bootstrapJSON(globe: false, theme: theme)
+        let globe = try bootstrapJSON(globe: true, theme: theme)
+        XCTAssertFalse(flat.contains("projection"), "mercator must stay flat")
+        XCTAssertFalse(globe.contains("projection"),
+                       "a globe bootstrap leaves the real style's sphere undrawn — the bootstrap must be flat")
+        XCTAssertTrue(flat.contains(MapTheme.hexString(theme.sea)), "mercator boots on its own sea colour")
+        XCTAssertTrue(globe.contains(MapTheme.hexString(theme.space)),
+                      "under the globe the bootstrap paints the void the sphere appears in, not an ocean")
     }
 
     /// The real style is unchanged by this work: it still carries the loopback FAA raster + glyphs.

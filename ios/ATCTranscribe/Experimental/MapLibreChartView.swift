@@ -652,17 +652,24 @@ struct MapLibreChartView: UIViewRepresentable {
         /// Returns a non-optional URL: unlike `writeStyle` there is nothing to fail on but the write itself,
         /// and a nil here would put us straight back on the demo style. If the write fails we hand back a
         /// `data:` URL carrying the same JSON, so the guarantee ("never the default style") holds even then.
+        ///
+        /// ⚠️ FLAT, EVEN UNDER THE GLOBE — no `projection` key. The globe fork builds its sphere (the "bg"
+        /// ocean and the Blue Marble backstop under every chart) when a style install CHANGES the projection
+        /// to globe. A globe-projected bootstrap spent that change on itself, so the real style arrived
+        /// with nothing to change and the sphere was never drawn: charts floating on black space, the sea
+        /// measured RGB(2,4,7) where it should be the ocean (2026-10-30). The real style was always
+        /// installed over a flat one before this — MapLibre's flat demo style — which is why nobody had
+        /// seen it. On the globe the background is the VOID colour instead of the sea, so the ~0.2 s the
+        /// bootstrap is up reads as the space the sphere then appears in, not a full-screen flat ocean.
         private static func writeBootstrapStyle(globe: Bool, theme: MapTheme) -> URL {
-            let sea = MapTheme.hexString(globe ? theme.globeSea : theme.sea)
-            // The projection key has to be here too: it is read once at style install, so a bootstrap style
-            // without it would come up flat and then jump to the sphere on the swap.
-            let projection = globe ? "\"projection\": { \"type\": \"globe\" }, " : ""
+            let fill = MapTheme.hexString(globe ? theme.space : theme.sea)
             let style = """
-            { "version": 8, \(projection)"sources": {}, \
-            "layers": [ { "id": "bg", "type": "background", "paint": { "background-color": "\(sea)" } } ] }
+            { "version": 8, "sources": {}, \
+            "layers": [ { "id": "bg", "type": "background", "paint": { "background-color": "\(fill)" } } ] }
             """
             assert(style.contains("\"sources\": {}"), "the bootstrap style must own no sources")
             assert(!style.contains("demotiles"), "the bootstrap style must never reach the network")
+            assert(!style.contains("projection"), "the bootstrap must be flat or the globe never draws its sphere")
             let url = FileManager.default.temporaryDirectory.appendingPathComponent("maplibre-bootstrap.json")
             if (try? style.write(to: url, atomically: true, encoding: .utf8)) != nil { return url }
             let encoded = style.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
