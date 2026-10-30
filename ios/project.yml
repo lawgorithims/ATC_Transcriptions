@@ -6,7 +6,21 @@
 #     brew install xcodegen          # one-time
 #     cd ios && xcodegen generate    # writes ATCTranscribe.xcodeproj (git-ignored)
 #     xcodebuild -project ATCTranscribe.xcodeproj -scheme ATCTranscribe \
-#                -destination 'platform=iOS Simulator,name=iPhone 15' test
+#                -destination 'platform=iOS Simulator,name=iPhone 16' -only-testing:ATCTranscribeTests test
+#
+# ⚠️ THE TWO SUITES DO NOT SHARE A DESTINATION. The unit suite runs anywhere. The UI suite needs
+# an iPad: the app is universal but not identical at both widths (ConsoleView.homeArea builds the
+# floating canvas, side panes and NRST panel only `if hSize == .regular`, and TopBar drops the bar
+# clock at compact width), and nine UI tests assert that chrome. A plain `test` action on an iPhone
+# therefore reports nine failures that are not regressions. Run the UI suite through the script
+# that pins the destination:
+#
+#     bash Tools/uitests.sh          # iPad Pro 13-inch (M5); see ios/README.md
+#
+# An .xctestplan cannot carry a destination (test plans hold environment, arguments and skipped
+# tests; the destination comes from -destination or Xcode's own run-destination picker, which is
+# per-user in xcuserdata and not shared), so the script plus the tests' own
+# UITestLayout.requireRegularWidth guards are what make a future run land in the right place.
 #
 # WhisperKit is intentionally NOT wired yet — the deterministic core (models,
 # context, corrector) is pure Foundation and builds with no dependencies, so the
