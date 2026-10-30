@@ -23,9 +23,12 @@ struct Metar: Decodable, Equatable, Sendable {
     /// Surface temperature, °C. Needed for the Baro-VNAV temperature limit on an LNAV/VNAV line, which
     /// is a real restriction on the aircraft's vertical guidance rather than a comfort figure.
     let tempC: Double?
+    /// Altimeter setting, hPa (the feed's `altim`; the raw `A2992`/`Q1013` group when it is missing).
+    /// With the temperature it gives the density altitude the takeoff briefing needs.
+    let altimeterHPa: Double?
 
     private enum CodingKeys: String, CodingKey {
-        case icaoId, wdir, wspd, wgst, visib, clouds, rawOb, obsTime, fltCat, temp
+        case icaoId, wdir, wspd, wgst, visib, clouds, rawOb, obsTime, fltCat, temp, altim
     }
 
     init(from decoder: Decoder) throws {
@@ -48,6 +51,24 @@ struct Metar: Decodable, Equatable, Sendable {
         // The feed usually carries `temp`; when it does not, the raw observation always does.
         if let t = try? c.decodeIfPresent(Double.self, forKey: .temp) { tempC = t }
         else { tempC = Self.temperatureFromRaw(rawOb) }
+        altimeterHPa = Self.plausibleHPa((try? c.decodeIfPresent(Double.self, forKey: .altim)) ?? nil)
+            ?? Self.altimeterFromRaw(rawOb)
+    }
+
+    /// hPa as given, or inHg converted (a feed that ever sends 29.92 must not read as 29.92 hPa).
+    static func plausibleHPa(_ v: Double?) -> Double? {
+        guard let v else { return nil }
+        if (25...33).contains(v) { return v * 33.8639 }
+        return (870...1090).contains(v) ? v : nil
+    }
+
+    /// The raw altimeter group: `A2992` (inHg ×100) or `Q1013` (hPa).
+    static func altimeterFromRaw(_ raw: String?) -> Double? {
+        guard let raw, let re = try? NSRegularExpression(pattern: #"(?:^|\s)([AQ])(\d{4})(?=\s|$)"#) else { return nil }
+        let ns = raw as NSString
+        guard let m = re.firstMatch(in: raw, range: NSRange(location: 0, length: ns.length)),
+              let v = Double(ns.substring(with: m.range(at: 2))) else { return nil }
+        return plausibleHPa(ns.substring(with: m.range(at: 1)) == "A" ? v / 100.0 : v)
     }
 
     /// The `TT/DD` group of a raw METAR, where a leading `M` means minus: `M05/M12` is −5 °C.

@@ -18,6 +18,9 @@ struct ATCTranscribeApp: App {
         // Before ANY map exists, and never anywhere later — see MapLibreAmbientCache.
         MapLibreAmbientCache.disable()
         #endif
+        // Before any map exists: the only moment no reader can hold a superseded copy open, so it is
+        // also when superseded copies are deleted (AvoidMapStore.reload).
+        AvoidMapStore.shared.reload()
     }
 
     /// The MapLibre map is now the app's PRIMARY Map-tab engine (toggle: Settings → General → Map engine),

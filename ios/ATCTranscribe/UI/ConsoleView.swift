@@ -1327,6 +1327,7 @@ struct StratuxStatusChip: View {
 /// sends exactly what's on screen. Replaces the old flight-bag popup editor and flight-plan widget.
 struct FlightPlanBar: View {
     @EnvironmentObject var model: AppModel
+    @EnvironmentObject var metars: MetarStore
     @EnvironmentObject var downloads: ModelDownloadManager
     @Environment(\.horizontalSizeClass) private var hSize
 
@@ -1338,6 +1339,7 @@ struct FlightPlanBar: View {
     @State private var editingAircraft: AircraftProfile?
     @State private var confirmClear = false
     @State private var showGlideGaps = false
+    @State private var showBriefing = false
     @State private var fplURL: URL?
     @State private var showFPLImporter = false
     @State private var commitTask: Task<Void, Never>?
@@ -1377,6 +1379,13 @@ struct FlightPlanBar: View {
         .onChange(of: alternateFocused) { _, focused in if !focused { commitAlternate() } }
         .task(id: model.flightPlan) { fplURL = await model.writeFPLFile() }
         .sheet(item: $editingAircraft) { AircraftSheet(profile: $0).environmentObject(model) }
+        // The turn-back prompt banner asks this strip to open the editor (it owns the sheet). A task
+        // keyed on the flag runs on appear too, so a strip opened BY the banner still answers it.
+        .task(id: model.requestTurnbackEdit) {
+            guard model.requestTurnbackEdit else { return }
+            model.requestTurnbackEdit = false
+            if let a = model.turnbackPromptAircraft ?? model.selectedAircraft { editingAircraft = a }
+        }
         .alert("Clear flight plan?", isPresented: $confirmClear) {
             Button("Clear", role: .destructive) { model.flightPlan = nil }
             Button("Cancel", role: .cancel) {}
@@ -1661,6 +1670,23 @@ struct FlightPlanBar: View {
             .disabled(model.routeGlideExposure == nil)
             .accessibilityIdentifier("plan-glide-exposure")
             .popover(isPresented: $showGlideGaps) { RouteGlideGapView().environmentObject(model) }
+            // The pre-flight briefing; its value is the pilot's own turn-back number, or "–" when
+            // there is none (and the briefing then says land ahead).
+            Button { showBriefing = true } label: {
+                stat(p, "BRIEF", model.selectedAircraft?.turnbackMinimumFtAGL.map { "TB \($0.formatted())" } ?? "–")
+            }
+            .buttonStyle(.plain)
+            .disabled(model.flightPlan == nil)
+            .accessibilityIdentifier("plan-briefing")
+            .popover(isPresented: $showBriefing) {
+                FlightBriefingView(onEditAircraft: { a in
+                    showBriefing = false
+                    // A sheet cannot present while the popover is still on screen.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { editingAircraft = a }
+                })
+                .environmentObject(model)
+                .environmentObject(metars)
+            }
             stat(p, "WIND", "–")
             Spacer(minLength: 4)
             if model.flightPlan?.isStale == true {

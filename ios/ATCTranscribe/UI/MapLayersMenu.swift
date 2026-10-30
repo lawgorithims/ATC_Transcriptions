@@ -69,6 +69,21 @@ struct MapLayersPanel: View {
                     layerToggle($model.showRouteGlideGaps, "Route out of glide of any runway",
                                 "exclamationmark.triangle", p, id: "layer-glide-gaps")
 
+                    // The national "where not to go" map. For every pilot: it never names a place to
+                    // land, which is the line the off-field landability layer crossed.
+                    layerToggle($model.showAvoidMap, "Where not to go", "nosign", p, id: "layer-avoid")
+                    if model.showAvoidMap {
+                        layerToggle($model.showAvoidCover, "Also shade trees, water and built-up areas",
+                                    "square.dashed", p, id: "layer-avoid-cover")
+                        AvoidLegend(palette: p, theme: model.theme, showCover: model.showAvoidCover)
+                        if !model.useMapLibreMap {
+                            Text("Draws only on the new GPU map — Settings › Map engine.")
+                                .font(.dsLabelS).foregroundStyle(p.warn)
+                                .padding(.leading, 30)
+                                .accessibilityIdentifier("layers-avoid-engine")
+                        }
+                    }
+
                     // Off-field landability — DEVELOPER-ONLY AGAIN as of build 110. It was un-gated
                     // once packs became downloadable; the first ground-truth test then found it
                     // offering solar farms and orchards as landing candidates and ranking town edges

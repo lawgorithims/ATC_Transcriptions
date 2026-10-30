@@ -18,6 +18,7 @@ struct DownloadsView: View {
     @ObservedObject var library = ChartLibrary.shared
     @ObservedObject var lzLibrary = LZPackLibrary.shared
     @ObservedObject var navLibrary = NavDataLibrary.shared
+    @ObservedObject var avoidLibrary = AvoidMapLibrary.shared
     @ObservedObject var policy = DownloadPolicy.shared
     @ObservedObject var bag: PlateBag
 
@@ -48,6 +49,7 @@ struct DownloadsView: View {
             chartsSection
             downloadSettingsSection
             ForEach(Self.rasterLayers, id: \.self) { chartLayerSection($0) }
+            avoidSection
             landabilitySection
             platesSection
             navDataSection
@@ -619,6 +621,69 @@ struct DownloadsView: View {
     /// Developer-only since build 110 (see `AppModel.showLZRisk`). A pilot who downloaded packs while
     /// the layer was public gets a way to take the storage back instead of a section that vanished
     /// with hundreds of MB still on the device.
+    /// The national "where not to go" map: one file, offered, never fetched on its own.
+    private var avoidSection: some View {
+        let p = model.palette
+        return Section("Where not to go — contiguous US") {
+            Text("Power lines, towers, wind turbines, solar farms, orchards and steep ground, with trees, "
+                 + "water and built-up areas optional. It only ever shows where NOT to put the aeroplane "
+                 + "down. Distribution wires, fences, ditches and crops are not mapped anywhere public, so "
+                 + "unshaded ground is not safe ground.")
+                .font(.dsLabelS).foregroundStyle(p.textDim)
+                .fixedSize(horizontal: false, vertical: true)
+            switch avoidLibrary.state {
+            case .downloading(let f):
+                HStack {
+                    ProgressView(value: f).tint(p.accent)
+                    Button("Cancel") { avoidLibrary.cancel() }.accessibilityIdentifier("downloads-avoid-cancel")
+                }
+            case .verifying:
+                Label("Checking the download…", systemImage: "checkmark.shield").font(.dsLabelS)
+            case .installed:
+                if let info = avoidLibrary.store.info {
+                    Text("Installed · built \(String(info.builtAt.prefix(10)))")
+                        .font(.dsLabelS).foregroundStyle(p.text)
+                        .accessibilityIdentifier("downloads-avoid-installed")
+                }
+                if avoidLibrary.updateAvailable {
+                    Button { avoidLibrary.download() } label: { Label("Update", systemImage: "arrow.down.circle") }
+                        .accessibilityIdentifier("downloads-avoid-update")
+                }
+                Button(role: .destructive) { avoidLibrary.remove() } label: {
+                    Label("Remove", systemImage: "trash")
+                }
+                .accessibilityIdentifier("downloads-avoid-remove")
+            case .failed(let why):
+                Text(why).font(.dsLabelS).foregroundStyle(p.warn).fixedSize(horizontal: false, vertical: true)
+                avoidDownloadButtons(p, offerMetered: true)
+            case .idle:
+                avoidDownloadButtons(p, offerMetered: false)
+            }
+        }
+        .task { await avoidLibrary.refresh() }
+    }
+
+    /// The cellular override is offered only after the download policy has held one back: on Wi-Fi it
+    /// would be a second button that does the same thing.
+    @ViewBuilder private func avoidDownloadButtons(_ p: Palette, offerMetered: Bool) -> some View {
+        if let c = avoidLibrary.catalog {
+            Button { avoidLibrary.download() } label: {
+                Label("Download · \(byteStr(Int64(c.map.bytes)))", systemImage: "arrow.down.circle")
+            }
+            .accessibilityIdentifier("downloads-avoid-download")
+            if offerMetered {
+                Button { avoidLibrary.download(allowMetered: true) } label: {
+                    Label("Download on cellular anyway", systemImage: "antenna.radiowaves.left.and.right")
+                }
+                .font(.dsLabelS)
+                .accessibilityIdentifier("downloads-avoid-download-metered")
+            }
+        } else {
+            Text("The map list could not be reached. Connect to the internet to download it.")
+                .font(.dsLabelS).foregroundStyle(p.textDim)
+        }
+    }
+
     @ViewBuilder private var landabilitySection: some View {
         if model.offFieldLayerAvailable {
             landabilityCatalogSection

@@ -76,6 +76,9 @@ struct MapLibreChartView: UIViewRepresentable {
     var lzMaxZoom: Int = 13
     /// Serves /lz/<sig>/{z}/{x}/{y}. Installed on the tile server once the port binds.
     var lzProvider: ((String, Int, Int, Int) -> Data?)? = nil
+    /// The "where not to go" map: nil = off or not installed. See `updateAvoid`.
+    var avoidSignature: String? = nil
+    var avoidProvider: ((String, Int, Int, Int) -> Data?)? = nil
     /// Samples the fact planes under a tapped coordinate for the object card.
     var lzProbe: ((Coord) -> LZSampleInfo?)? = nil
     /// Live arrival-energy bands. Empty whenever the fix is untrusted — a stale footprint is a
@@ -127,6 +130,8 @@ struct MapLibreChartView: UIViewRepresentable {
         c.inLZMinZoom = lzMinZoom
         c.inLZMaxZoom = lzMaxZoom
         c.setLZProvider(lzProvider, signature: lzSignature)
+        c.inAvoidSignature = avoidSignature
+        c.setAvoidProvider(avoidProvider, signature: avoidSignature)
         c.inLZProbe = lzProbe
         c.inLZEnergyBands = lzEnergyBands
         c.inLZGlidePlan = lzGlidePlan
@@ -179,6 +184,9 @@ struct MapLibreChartView: UIViewRepresentable {
         var inWindPalette: WindRamp.Palette = .auto  // mirrors model.windPalette
         var inWindEnabled = false                    // mirrors the composed wind gate
         var inLZSignature: String?                   // nil = layer off / no pack / ruleset failed
+        var inAvoidSignature: String?                // nil = the avoid map is off or not installed
+        private var installedAvoidSignature: String??
+        private var appliedAvoidSignature: String??
         var inLZMinZoom = 6
         var inLZMaxZoom = 13
         var inLZProvider: ((String, Int, Int, Int) -> Data?)?
@@ -352,6 +360,7 @@ struct MapLibreChartView: UIViewRepresentable {
             updateTrack(inBreadcrumb, on: map)
             updateRadar(inRadarTemplate, on: map)
             updateLZ(inLZSignature, on: map)
+            updateAvoid(inAvoidSignature, on: map)
             updateLZEnergy(inLZEnergyBands, on: map)
             updateLZGlidePlan(inLZGlidePlan, on: map)
             emitSearchPoint(map)               // keep the pulsing search marker glued to its spot
@@ -658,6 +667,7 @@ struct MapLibreChartView: UIViewRepresentable {
             appliedTrackCount = -1               // the "track" source is recreated empty → force a re-apply below
             appliedRadarTemplate = nil           // wxradar source gone after reload → force updateRadar to re-add
             appliedLZSignature = nil             // ditto for the LZ raster — see updateLZ
+            appliedAvoidSignature = nil          // and the avoid raster, for the same reason
             appliedLZEnergySig = nil             // and the energy bands' shape source
             // Same reason, and easy to miss: the map loads TWO styles in its life (MapLibre's default,
             // then the loopback style), so anything applied to the first must be re-applied to the
@@ -700,6 +710,7 @@ struct MapLibreChartView: UIViewRepresentable {
             updateTraffic(lastTraffic, on: mapView)
             updateTFRs(cachedTFRs, on: mapView)
             updatePlate(plateState, on: mapView)
+            updateAvoid(inAvoidSignature, on: mapView)   // a map left unchanged all flight must still draw
         }
 
         /// Load the chart packs under the region the user settles on (as MapHostView does), so panning the
@@ -788,7 +799,7 @@ struct MapLibreChartView: UIViewRepresentable {
             let layers = ["plate-raster", "ownship-sym", "accuracy-fill", "accuracy-line", "traffic-sym",
                           "route-wpt-spd", "route-wpt-alt", "route-wpt-sym",
                           "hold-line", "route-line", "route-glide-gap-line", "track-line",
-                          "wxradar-layer", "lz-glide-line", "lz-layer",
+                          "wxradar-layer", "lz-glide-line", "lz-layer", "avoid-layer",
                           "lz-energy-line", "lz-energy-fill",
                           "tfr-label", "tfr-outline", "tfr-fill", "nav-sym",
                           "airspace-label", "airways-label", "airspace-outline", "airspace-fill",
@@ -798,7 +809,7 @@ struct MapLibreChartView: UIViewRepresentable {
             }
             let sources = ["plate", "ownship", "accuracy", "traffic", "route-wpt", "holds", "route",
                            "route-glide-gap", "track",
-                           "wxradar", "lz", "lz-glide", "lz-energy", "tfr-labels", "tfr",
+                           "wxradar", "lz", "avoid", "lz-glide", "lz-energy", "tfr-labels", "tfr",
                            "nav", "airspace-labels", "airspace", "airways", "night-veil", "land"]
             for id in sources where style.source(withIdentifier: id) != nil {        // bounded (rule 2)
                 if let s = style.source(withIdentifier: id) { style.removeSource(s) }
@@ -1824,7 +1835,7 @@ struct MapLibreChartView: UIViewRepresentable {
                       // The LZ raster is composited with the theme already baked in (the theme is
                       // part of its signature), so dimming it here would theme it TWICE and distort
                       // the risk ramp away from the colours the legend documents.
-                      rl.identifier != "lz-layer" else { continue }
+                      rl.identifier != "lz-layer", rl.identifier != "avoid-layer" else { continue }
                 Self.applyRasterPaint(to: rl, t)
             }
         }
@@ -2053,7 +2064,8 @@ struct MapLibreChartView: UIViewRepresentable {
             // chart re-mounts ABOVE the heatmap on the first pan, download or VFR/IFR switch — the same
             // class of bug the plate comment above documents, and just as invisible (nothing errors;
             // the layer is simply covered).
-            if let lz = style.layer(withIdentifier: "lz-layer") { style.insertLayer(faaRaster, below: lz) }
+            if let av = style.layer(withIdentifier: "avoid-layer") { style.insertLayer(faaRaster, below: av) }
+            else if let lz = style.layer(withIdentifier: "lz-layer") { style.insertLayer(faaRaster, below: lz) }
             else if let radar = style.layer(withIdentifier: "wxradar-layer") { style.insertLayer(faaRaster, below: radar) }
             else if let bottom = style.layer(withIdentifier: "airways-line") { style.insertLayer(faaRaster, below: bottom) }
             else if let plate = style.layer(withIdentifier: "plate-raster") { style.insertLayer(faaRaster, below: plate) }
@@ -2166,6 +2178,47 @@ struct MapLibreChartView: UIViewRepresentable {
         /// exactly when the pilot expects it to re-tint. Called every body eval, hence the gate at all:
         /// the server locks on set, and re-installing on each SwiftUI tick would contend with the
         /// tile queue mid-pan.
+        /// Same signature gate as `setLZProvider`, for the "where not to go" raster.
+        func setAvoidProvider(_ p: ((String, Int, Int, Int) -> Data?)?, signature: String?) {
+            guard installedAvoidSignature == nil || installedAvoidSignature! != signature else { return }
+            installedAvoidSignature = .some(signature)
+            server.setAvoidProvider(p)
+        }
+
+        /// The national "where not to go" map: an ordinary raster layer (see `updateLZ` for why
+        /// raster), above the chart and below every other overlay — faa < avoid < lz < radar < vectors.
+        /// Its colours carry their own alpha, so the layer draws at full opacity. Declared z8–z12, its
+        /// true range: MapLibre magnifies past z12 on the GPU.
+        func updateAvoid(_ signature: String?, on map: MLNMapView) {
+            guard let style = map.style else { return }
+            guard appliedAvoidSignature == nil || appliedAvoidSignature! != signature else { return }
+            guard serverPort > 0 || signature == nil else { return }       // never latch before the port
+            appliedAvoidSignature = .some(signature)
+            if let l = style.layer(withIdentifier: "avoid-layer") { style.removeLayer(l) }
+            if let s = style.source(withIdentifier: "avoid") { style.removeSource(s) }
+            guard let signature else { return }
+            let template = "http://127.0.0.1:\(serverPort)/avoid/\(signature)/{z}/{x}/{y}"
+            let src = MLNRasterTileSource(identifier: "avoid", tileURLTemplates: [template],
+                                          options: [.tileSize: 256,
+                                                    .minimumZoomLevel: AvoidMap.minZoom,
+                                                    .maximumZoomLevel: AvoidMap.maxZoom])
+            style.addSource(src)
+            let layer = MLNRasterStyleLayer(identifier: "avoid-layer", source: src)
+            layer.rasterOpacity = NSExpression(forConstantValue: 1.0)
+            layer.rasterResamplingMode = NSExpression(forConstantValue: "nearest")
+            if let lz = style.layer(withIdentifier: "lz-layer") {
+                style.insertLayer(layer, below: lz)
+            } else if let radar = style.layer(withIdentifier: "wxradar-layer") {
+                style.insertLayer(layer, below: radar)
+            } else if let above = style.layer(withIdentifier: "airways-line") {
+                style.insertLayer(layer, below: above)
+            } else if let plate = style.layer(withIdentifier: "plate-raster") {
+                style.insertLayer(layer, below: plate)
+            } else {
+                style.addLayer(layer)
+            }
+        }
+
         func setLZProvider(_ p: ((String, Int, Int, Int) -> Data?)?, signature: String?) {
             guard installedLZSignature == nil || installedLZSignature! != signature else { return }
             installedLZSignature = .some(signature)

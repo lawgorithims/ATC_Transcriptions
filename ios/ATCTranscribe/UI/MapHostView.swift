@@ -73,6 +73,9 @@ struct MapHostView: View {
     /// `deviceLocation` and `windAloft`, so recompiling does not republish AppModel to every view.
     /// The SHARED controller — the landable-ground panel reads the same sweep this drives.
     @ObservedObject private var lzController = LZRiskController.shared
+    /// Observed so a finished download (or a removal) redraws the map: the avoid signature reads the
+    /// store, which SwiftUI cannot see change on its own.
+    @ObservedObject private var avoidLibrary = AvoidMapLibrary.shared
     /// Screen-point of the search-result highlight (streamed from the active engine, like the plate anchors),
     /// so the SwiftUI pulsing marker rides the map. nil when there's no highlight or it's off-screen-computed.
     @State private var searchPoint: CGPoint?
@@ -531,6 +534,8 @@ struct MapHostView: View {
             lzMinZoom: lzController.minZoom,
             lzMaxZoom: lzController.maxZoom,
             lzProvider: lzController.provider,
+            avoidSignature: model.avoidSignature,
+            avoidProvider: model.avoidProvider,
             // GATED ON THE LAYER, exactly like `lzSignature` above. Without this the tap card
             // offered "Off-field landability" for ground the pilot had switched the shading OFF
             // for — an answer about a layer that is not on screen, arriving in the disambiguation

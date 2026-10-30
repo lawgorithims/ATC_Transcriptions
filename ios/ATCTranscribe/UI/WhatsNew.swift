@@ -36,6 +36,18 @@ enum WhatsNew {
     /// need not be contiguous" is for.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 111, version: "1.0", headline: "Where not to go, and the turn you brief on the ground",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "nosign",
+                    title: "Where not to go — the whole contiguous US",
+                    detail: "A new map layer marks the ground you should NOT put an aeroplane down on: power lines, towers and other charted obstacles, wind turbines, solar farms, orchards, vineyards and hop yards, and steep ground. Trees, water and built-up areas can be added with a second switch. It covers the lower 48 in one download (Settings › Downloads › Where not to go) and works offline. It never shows where to land: distribution and farm wires, fences, ditches and crops are not mapped anywhere public, so unshaded ground is not safe ground. Runways are always left clear. Power lines come from the national HIFLD layer, which stopped updating in September 2024. Draws on the new GPU map."),
+                WhatsNewHighlight(
+                    icon: "arrow.uturn.backward.circle",
+                    title: "Your turn-back altitude, in a takeoff briefing",
+                    detail: "Each aircraft now has an \u{201c}Engine failure after takeoff\u{201d} card for the lowest height at which YOU will turn back to the runway — the number you found practising at a safe altitude with an instructor — plus the density altitude it was set in and when you last practised it. CommSight never calculates or suggests it. The flight-plan strip's new BRIEF cell opens a briefing for the departure: field elevation, wind and the headwind and crosswind on each runway, today's density altitude from the latest METAR, and your number converted to what the altimeter will read. With no number set, or when today's density altitude is higher than when it was set, the briefing says land ahead. A banner asks for the number once a flight is planned."),
+            ]),
+        ReleaseNote(
             build: 110, version: "1.0", headline: "The flight bag, on its own",
             highlights: [
                 WhatsNewHighlight(

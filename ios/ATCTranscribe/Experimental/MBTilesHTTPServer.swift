@@ -79,6 +79,17 @@ final class MBTilesHTTPServer {
         lock.lock(); defer { lock.unlock() }; return lzProvider
     }
 
+    // The "where not to go" map, on "/avoid/<signature>/{z}/{x}/{y}": rendered per request from the
+    // national mask (`AvoidTileRenderer`), the theme and the cover switch carried in the signature for
+    // the same cache reason as /lz/.
+    private var avoidProvider: ((String, Int, Int, Int) -> Data?)?
+    func setAvoidProvider(_ p: ((String, Int, Int, Int) -> Data?)?) {
+        lock.lock(); avoidProvider = p; lock.unlock()
+    }
+    private func currentAvoidProvider() -> ((String, Int, Int, Int) -> Data?)? {
+        lock.lock(); defer { lock.unlock() }; return avoidProvider
+    }
+
     /// Start the loopback listener WITHOUT blocking the caller. `onReady` is invoked on the MAIN queue with
     /// the bound port once the listener reaches `.ready` (or 0 on failure) — the caller installs the MapLibre
     /// style then. This replaces the old synchronous `DispatchSemaphore.wait(timeout: 2)`, which parked the
@@ -134,6 +145,12 @@ final class MBTilesHTTPServer {
                 } else {
                     self.respond(conn, status: "404 Not Found", body: nil)
                 }
+            } else if path.hasPrefix("/avoid/") {
+                if let png = self.avoidTile(forPath: path) {
+                    self.respond(conn, status: "200 OK", contentType: "image/png", body: png)
+                } else {
+                    self.respond(conn, status: "404 Not Found", body: nil)  // clear, no map, or stale sig
+                }
             } else if path.hasPrefix("/lz/") {
                 if let png = self.lzTile(forPath: path) {
                     self.respond(conn, status: "200 OK", contentType: "image/png", body: png)
@@ -170,11 +187,20 @@ final class MBTilesHTTPServer {
         return provider(sig, z, x, y)
     }
 
+    private func avoidTile(forPath path: String) -> Data? {
+        guard let (sig, z, x, y) = Self.signedPath(path, root: "avoid") else { return nil }
+        guard let provider = currentAvoidProvider() else { return nil }
+        return provider(sig, z, x, y)
+    }
+
     /// Pure parser for the LZ path, factored out so it is testable without opening a socket.
     /// Returns nil unless the shape is exactly ["lz", signature, z, x, y] with a plausible zoom.
-    static func lzPath(_ path: String) -> (String, Int, Int, Int)? {
+    static func lzPath(_ path: String) -> (String, Int, Int, Int)? { signedPath(path, root: "lz") }
+
+    /// ["<root>", signature, z, x, y] → its parts, for any signed raster route (/lz/, /avoid/).
+    static func signedPath(_ path: String, root: String) -> (String, Int, Int, Int)? {
         let comps = path.split(separator: "/").map(String.init)
-        guard comps.count >= 5, comps[0] == "lz" else { return nil }
+        guard comps.count >= 5, comps[0] == root else { return nil }
         let sig = comps[1]
         guard !sig.isEmpty, sig.allSatisfy({ $0.isHexDigit && !$0.isUppercase }) else { return nil }
         let tail = comps.suffix(3).map { $0.split(separator: ".").first.map(String.init) ?? $0 }

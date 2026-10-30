@@ -900,6 +900,28 @@ final class AppModel: ObservableObject {
     @Published var showLZEnergy = UserDefaults.standard.bool(forKey: "atc.map.lzEnergy") {
         didSet { UserDefaults.standard.set(showLZEnergy, forKey: "atc.map.lzEnergy") }
     }
+
+    /// The national "where not to go" map (`AvoidMap`). On by default: it draws only once the pilot has
+    /// downloaded it, and it only ever says where NOT to put an aeroplane down.
+    @Published var showAvoidMap = (UserDefaults.standard.object(forKey: "atc.map.avoid") as? Bool) ?? true {
+        didSet { UserDefaults.standard.set(showAvoidMap, forKey: "atc.map.avoid") }
+    }
+    /// Include the broad ground cover (trees, water, built-up, steep) or only the hidden hazards (wires,
+    /// obstacles, solar farms, orchards). In wooded country the cover paints most of the map, and a pilot
+    /// may want the hazards alone.
+    @Published var showAvoidCover = (UserDefaults.standard.object(forKey: "atc.map.avoidCover") as? Bool) ?? false {
+        didSet { UserDefaults.standard.set(showAvoidCover, forKey: "atc.map.avoidCover") }
+    }
+    /// nil = off or not installed; otherwise changes with the file, the theme and the cover switch.
+    var avoidSignature: String? {
+        showAvoidMap ? AvoidTileRenderer.shared.signature(theme: theme, showCover: showAvoidCover) : nil
+    }
+    /// Captures the theme and cover switch the current signature was computed from; the map installs a
+    /// new provider only when the signature changes, so the two always agree.
+    var avoidProvider: ((String, Int, Int, Int) -> Data?)? {
+        let theme = self.theme, cover = showAvoidCover, renderer = AvoidTileRenderer.shared
+        return { sig, z, x, y in renderer.tilePNG(signature: sig, theme: theme, showCover: cover, z: z, x: x, y: y) }
+    }
     /// Mirror of the energy layer's status line, published here so the layers panel can show it
     /// without observing the map's controller. A live layer that silently draws nothing is
     /// indistinguishable from a broken one — this is what tells them apart.
@@ -3843,6 +3865,18 @@ final class AppModel: ObservableObject {
         guard let callsign = flightPlan?.callsign, !callsign.isEmpty else { return nil }
         return aircraftProfiles.first { $0.callsign.caseInsensitiveCompare(callsign) == .orderedSame }
     }
+
+    /// The aircraft the turn-back prompt asks about: a filed departure, a selected fixed-wing aircraft,
+    /// and no turn-back number of the pilot's own. nil otherwise, which keeps the banner silent.
+    var turnbackPromptAircraft: AircraftProfile? {
+        guard let plan = flightPlan, !plan.departure.trimmingCharacters(in: .whitespaces).isEmpty,
+              let a = selectedAircraft, a.isRotorcraft != true, a.turnbackMinimumFtAGL == nil else { return nil }
+        return a
+    }
+    /// Dismissed for the session, like the data-currency banner: a new launch asks again.
+    @Published var turnbackPromptDismissed = false
+    /// Set by the prompt banner; the flight-plan strip, which owns the aircraft editor, answers it.
+    @Published var requestTurnbackEdit = false
 
     /// Fly `profile`: copy its callsign/type into the filed plan (the single source the EFB
     /// ownship gate + corrector grounding read) and refresh the stats its performance drives.

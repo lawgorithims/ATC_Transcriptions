@@ -21,6 +21,10 @@ struct AircraftSheet: View {
     @State private var spanText = ""
     @State private var isRotorcraft = false
     @State private var waterOps: AircraftProfile.WaterOps?
+    @State private var turnbackText = ""
+    @State private var turnbackDAText = ""
+    @State private var turnbackPractised = false
+    @State private var turnbackDate = Date()
     @State private var showPicker = false
     /// Which catalogue entry filled the form, so the sheet can say where the numbers came from.
     ///
@@ -123,6 +127,7 @@ struct AircraftSheet: View {
                                 .font(.dsLabelS).foregroundStyle(p.textDim)
                         }
                     }
+                    turnbackCard(p)
                     Card(title: isRotorcraft ? "Landing (rotorcraft minimum used instead)" : "Landing") {
                         VStack(alignment: .leading, spacing: 10) {
                             labeled("Approach speed", "kts Vref — e.g. 62", $vRefText, keyboard: .numberPad)
@@ -205,6 +210,10 @@ struct AircraftSheet: View {
         spanText = profile.spanFt.map { String(format: "%g", $0) } ?? ""
         isRotorcraft = profile.isRotorcraft ?? false
         waterOps = profile.waterOps
+        turnbackText = profile.turnbackMinimumFtAGL.map(String.init) ?? ""
+        turnbackDAText = profile.turnbackSetAtDensityAltitudeFt.map(String.init) ?? ""
+        turnbackPractised = profile.turnbackSetOn != nil
+        turnbackDate = profile.turnbackSetOn ?? Date()
     }
 
     /// Persist through the model (add-or-update by id) and fly the aircraft.
@@ -230,12 +239,57 @@ struct AircraftSheet: View {
             .flatMap { $0 >= 5 && $0 <= 300 ? $0 : nil }
         updated.isRotorcraft = isRotorcraft ? true : nil
         updated.waterOps = waterOps
+        // The pilot's own turn-back number. Out of band → nil (= "land ahead"), never a guess: below
+        // 300 ft no light aeroplane turns back; above 3,000 ft it is no longer a takeoff decision.
+        updated.turnbackMinimumFtAGL = isRotorcraft ? nil
+            : Int(turnbackText.filter(\.isNumber)).flatMap { $0 >= 300 && $0 <= 3_000 ? $0 : nil }
+        let da = Int(turnbackDAText.filter { $0.isNumber || $0 == "-" })
+        updated.turnbackSetAtDensityAltitudeFt = updated.turnbackMinimumFtAGL == nil ? nil
+            : da.flatMap { $0 >= -2_000 && $0 <= 15_000 ? $0 : nil }
+        updated.turnbackSetOn = (updated.turnbackMinimumFtAGL != nil && turnbackPractised) ? turnbackDate : nil
         // ⚠️ A ROTORCRAFT CARRIES NO FIXED-WING LANDING DISTANCE. Autorotation touches down in a
         // fraction of the ground an aeroplane needs, so keeping a book over-50-ft figure here would
         // make the landability layer demand a runway's worth of open ground from a helicopter.
         if isRotorcraft { updated.landingOver50Ft = nil }
         model.saveAircraft(updated)
         dismiss()
+    }
+
+    /// "Engine failure after takeoff": the pilot's own turn-back number, never one of ours.
+    @ViewBuilder private func turnbackCard(_ p: Palette) -> some View {
+        if isRotorcraft {
+            Card(title: "Engine failure after takeoff") {
+                Text("Autorotation, not a turn-back: there is no impossible turn to brief. The flight "
+                     + "briefing shows the departure field and its density altitude instead.")
+                    .font(.dsLabelS).foregroundStyle(p.textDim)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        } else {
+            Card(title: "Engine failure after takeoff") {
+                VStack(alignment: .leading, spacing: 10) {
+                    labeled("Turn back above", "ft above the runway — yours", $turnbackText, keyboard: .numberPad)
+                        .accessibilityIdentifier("aircraft-turnback")
+                    labeled("Set at DA", "density altitude, ft — e.g. 3000", $turnbackDAText,
+                            keyboard: .numbersAndPunctuation)
+                        .accessibilityIdentifier("aircraft-turnback-da")
+                    Toggle(isOn: $turnbackPractised) {
+                        Text("Practised with an instructor").font(.dsLabel).foregroundStyle(p.textDim)
+                    }
+                    .tint(p.accent)
+                    .accessibilityIdentifier("aircraft-turnback-practised")
+                    if turnbackPractised {
+                        DatePicker("Last practised", selection: $turnbackDate, in: ...Date(), displayedComponents: .date)
+                            .font(.dsLabel).foregroundStyle(p.textDim)
+                    }
+                    Text("The lowest height at which YOU will turn back to the runway, found by practising "
+                         + "it at a safe altitude with an instructor in this aircraft. CommSight never "
+                         + "calculates or suggests it. Below it — and whenever it is blank — the briefing "
+                         + "says land ahead. A number set at one density altitude is not valid at a higher one.")
+                        .font(.dsLabelS).foregroundStyle(p.textDim)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
     }
 
     /// What changes when the pilot picks a water configuration. Says what the app will DO, not

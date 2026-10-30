@@ -71,6 +71,21 @@ struct AircraftProfile: Codable, Equatable, Identifiable {
         var title: String { self == .amphibian ? "Amphibian" : "Floats (water only)" }
     }
 
+    /// THE TURN-BACK: the lowest height above the runway at which THIS pilot will consider turning back
+    /// after an engine failure on takeoff, found by practising it at a safe height with an instructor
+    /// (AC 61-83J, A.11.4). The app never computes, suggests or defaults it — a number derived from a
+    /// glide model is too low exactly when the turn starts nose-high in a climb, and that is the
+    /// accident the evidence ranks first. nil = not set, and the briefing says "land ahead".
+    /// Optional with no default, like every field added after the first: a non-optional field would
+    /// fail to decode older saved profiles, and `AircraftStore.load()` would return none at all.
+    var turnbackMinimumFtAGL: Int?
+    /// The density altitude the pilot established that number in. The altitude a turn loses scales
+    /// with weight over air density, so a number found at one density altitude is not valid at a
+    /// higher one; the briefing puts today's beside it and never adjusts the number itself.
+    var turnbackSetAtDensityAltitudeFt: Int?
+    /// When they last practised it.
+    var turnbackSetOn: Date?
+
     /// Can this aircraft alight on water at all?
     var canLandOnWater: Bool { waterOps != nil }
     /// Can it use a conventional runway? Everything except a straight floatplane.

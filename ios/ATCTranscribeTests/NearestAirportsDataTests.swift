@@ -174,6 +174,10 @@ final class NearestAirportsDataTests: XCTestCase {
         XCTAssertNil(profiles.first?.spanFt)
         XCTAssertNil(profiles.first?.isRotorcraft,
                      "a legacy profile must not decode as an aeroplane OR a helicopter — unknown")
+        // The turn-back number is the pilot's own: an old profile has none, and must not acquire one.
+        XCTAssertNil(profiles.first?.turnbackMinimumFtAGL)
+        XCTAssertNil(profiles.first?.turnbackSetAtDensityAltitudeFt)
+        XCTAssertNil(profiles.first?.turnbackSetOn)
     }
 
     /// The catalogue must not contain a value that would poison the layers it feeds.
