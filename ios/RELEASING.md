@@ -89,6 +89,11 @@ UI-suite skips are expected and should be *read*, not counted: transcription tes
 EFB-only build (correct), landability tests skip without an `.lzpack` in the simulator, and the
 screenshot job is opt-in. A skip proves nothing — if a skip count changes, find out why.
 
+Build the simulator gate **signed**, as above, with no `CODE_SIGNING_ALLOWED=NO`. An unsigned
+simulator build has no keychain access group, so the install id cannot be stored: the two Keychain
+tests in `InstallIdentityTests` skip, saying so, and the unit skip count goes up by two. Only the
+Release build above is unsigned.
+
 ## 4. Build number
 
 `BUILD_NUMBER` must be the next unused integer; App Store Connect rejects one it has seen before.

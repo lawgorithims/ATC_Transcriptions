@@ -45,20 +45,70 @@ enum InstallIdentity {
     /// NOT `identifierForVendor`: that resets once all of a vendor's apps are removed, which would
     /// orphan the purchases bound to it. NOT the IDFA, which is a tracking identifier this app has
     /// never used and should not start using.
-    static var installID: UUID {
-        if let existing = box.string(installIDKey), let uuid = UUID(uuidString: existing) {
-            return uuid
+    ///
+    /// Never traps. When the Keychain will not keep the id, this is the launch's stand-in: the same
+    /// on every read until the app quits, and the log says so. A caller that must not mistake one
+    /// for the other (anything that binds a purchase) reads `resolveInstallID()` instead.
+    static var installID: UUID { resolveInstallID().id }
+
+    /// An install id, and whether the Keychain is keeping it.
+    struct Resolution: Equatable {
+        let id: UUID
+        /// `true`: read back from the Keychain, so the same id on every launch of this install.
+        /// `false`: this launch's stand-in. The next launch offers another, so nothing that outlives
+        /// the app (an `appAccountToken`, a server binding) may be tied to it as the install's id.
+        let persisted: Bool
+    }
+
+    /// This launch's one candidate id. A `static let` initialiser runs exactly once, thread-safely,
+    /// so every read in a launch agrees: it is the id a fresh install stores and the stand-in when
+    /// the Keychain will not keep one. A stand-in handed out before the Keychain recovered is
+    /// therefore the id it then stores, and one launch never hands out two.
+    private static let launchCandidate = UUID()
+
+    static func resolveInstallID() -> Resolution {
+        resolveInstallID(in: box, candidate: launchCandidate)
+    }
+
+    /// The resolution itself, over any Keychain, so the tests can hand it one that refuses.
+    ///
+    /// ⚠️ MINT ONLY ON A POSITIVE ANSWER: nothing is stored, or what is stored is not a UUID and so
+    /// was never issued (this type only writes `uuidString`). A Keychain that did not answer, such as
+    /// a device not unlocked since boot, may be holding an id a purchase is already bound to, and
+    /// writing over it would orphan that purchase for good. The code before this minted on any
+    /// failed read.
+    static func resolveInstallID(in keychain: some KeychainStoring, candidate: UUID) -> Resolution {
+        assert(candidate.uuidString != "00000000-0000-0000-0000-000000000000",
+               "InstallIdentity: the all-zero UUID would be every install's id")
+        switch keychain.lookup(installIDKey) {
+        case .found(let data):
+            if let stored = uuid(data) { return Resolution(id: stored, persisted: true) }
+            // Not a UUID, so never issued: replaced below.
+        case .absent:
+            break
+        case .unavailable(let status):
+            return standIn(candidate, "the Keychain could not be read: \(KeychainBox.describe(status))")
         }
-        let minted = UUID()
-        box.set(installIDKey, string: minted.uuidString)
-        // A Keychain write can fail (locked device during a background launch). Re-read rather than
-        // trusting the write, so a failure yields a fresh UUID next time instead of silently
-        // returning one that was never stored and can never be matched again.
-        guard let stored = box.string(installIDKey), let uuid = UUID(uuidString: stored) else {
-            assertionFailure("InstallIdentity: could not persist the install id")
-            return minted
+        let wrote = keychain.set(installIDKey, string: candidate.uuidString)
+        // Re-read rather than trust the write: the id to hand out is the one the Keychain now holds,
+        // which is another writer's if that one got there first.
+        guard case .found(let data) = keychain.lookup(installIDKey), let stored = uuid(data) else {
+            return standIn(candidate, wrote ? "the Keychain took it but did not read it back"
+                                            : "the Keychain refused it")
         }
-        return uuid
+        return Resolution(id: stored, persisted: true)
+    }
+
+    private static func uuid(_ data: Data) -> UUID? {
+        UUID(uuidString: String(decoding: data, as: UTF8.self))
+    }
+
+    /// The candidate, for this launch only, and the log says so because nothing else will.
+    private static func standIn(_ candidate: UUID, _ reason: String) -> Resolution {
+        assert(!reason.isEmpty, "InstallIdentity.standIn: a stand-in must say why")
+        NSLog("CommSight: install id NOT persisted — %@. Using a stand-in for this launch only: a "
+              + "purchase bound to it could not be matched to this install after a relaunch.", reason)
+        return Resolution(id: candidate, persisted: false)
     }
 
     // MARK: First-seen build
