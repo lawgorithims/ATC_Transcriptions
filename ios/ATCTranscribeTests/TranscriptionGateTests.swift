@@ -87,4 +87,92 @@ final class TranscriptionGateTests: XCTestCase {
         XCTAssertEqual(Features.transcriptionOnlyInfoPlistKeys, ["NSMicrophoneUsageDescription"],
                        "If a transcription-only plist key is added, assert it against the gate above too.")
     }
+
+    // MARK: - Composition with the runtime entitlement
+    //
+    // Monetization adds a SECOND gate in front of transcription: a paid tier. The two must compose
+    // by AND, with the compile-time gate dominant — a purchase cannot conjure an Info.plist key, and
+    // `AVAudioApplication.requestRecordPermission` terminates an app that asks for a permission it
+    // never declared. These tests are what makes that AND load-bearing rather than conventional.
+
+    /// No tier, no currency, and no combination of the two can unlock transcription in a build
+    /// without the compilation condition.
+    ///
+    /// This is the test that stops a plausible-looking "unlock transcription for Pro + Performance"
+    /// change from shipping a crash. If someone later gives `Capability.transcription` a
+    /// `minimumTier` without also restoring the plist keys, this fails — which is the whole point.
+    func testEntitlementCannotEnableTranscriptionWithoutTheCompileFlag() throws {
+        try XCTSkipIf(Features.transcription,
+                      "only meaningful for a build with the symbol absent — the AND is trivially "
+                      + "satisfied when the compile gate is already true")
+
+        let currencies: [EntitlementCurrency] = [
+            .verified(asOf: Date()), .unverified(lastVerified: Date()),
+            .lapsed(since: Date()), .revoked(at: Date()), .none,
+        ]
+        for tier in Tier.allCases {
+            for currency in currencies {
+                XCTAssertFalse(
+                    Entitlements.allows(.transcription, tier: tier, currency: currency),
+                    "transcription was granted at tier \(tier) / currency \(currency) in a build "
+                    + "where COMMSIGHT_TRANSCRIPTION is ABSENT. The Info.plist has no microphone "
+                    + "string in this build, so anything that then starts a session terminates the "
+                    + "app. The entitlement must AND with Features.transcription, never override it.")
+                XCTAssertFalse(
+                    EntitlementGate(tier: tier, currency: currency).transcription,
+                    "the flattened gate disagrees with the policy for transcription at "
+                    + "\(tier)/\(currency) — view code reads the gate, so this is the value that matters.")
+            }
+        }
+    }
+
+    /// The flip is a THREE-part atomic unit, and this names the third part.
+    ///
+    /// `project.yml`'s compilation condition and its two plist blocks are asserted by the tests
+    /// above. The third is `Capability.transcription.minimumTier`, which is `nil` (not sold) while
+    /// the model licence and the cockpit audio path are unresolved. Flipping only the first two
+    /// yields a transcription UI whose model download refuses — a policy decision that looks like a
+    /// bug. Asserting the two together means neither half can be forgotten.
+    func testTranscriptionIsNotSellableWhileItIsCompiledOut() throws {
+        try XCTSkipIf(Features.transcription, "only meaningful for the EFB-only build")
+        XCTAssertNil(
+            Capability.transcription.minimumTier,
+            "transcription has a minimumTier (it is for sale) but COMMSIGHT_TRANSCRIPTION is absent, "
+            + "so this build cannot deliver it. Selling a tier the binary cannot honour is a refund "
+            + "queue and a 2.3.1 problem. Set minimumTier in the SAME change that flips the symbol "
+            + "and restores the plist blocks.")
+    }
+
+    /// Guards the list the composition test iterates, mirroring
+    /// `testTranscriptionOnlyKeyListIsWhatWeThinkItIs`.
+    ///
+    /// A new transcription-dependent capability must be added to
+    /// `Features.transcriptionGatedCapabilities`, not just to the `Capability` enum — otherwise a
+    /// tier could switch it on in a build that cannot deliver it. Pinning the list by value is what
+    /// forces that second edit to be a conscious one.
+    func testTranscriptionGatedCapabilityListIsWhatWeThinkItIs() {
+        XCTAssertEqual(Features.transcriptionGatedCapabilities, [.transcription],
+                       "If a transcription-dependent capability is added, add it to this list so the "
+                       + "compile gate covers it, and assert it in the composition test above.")
+    }
+
+    /// Every member of the gated list is refused when the symbol is absent — asserted over the
+    /// list itself, so the guarantee extends automatically to anything added to it.
+    func testEveryGatedCapabilityIsRefusedWithoutTheCompileFlag() throws {
+        try XCTSkipIf(Features.transcription, "only meaningful for the EFB-only build")
+        let currencies: [EntitlementCurrency] = [
+            .verified(asOf: Date()), .unverified(lastVerified: Date()),
+            .lapsed(since: Date()), .revoked(at: Date()), .none,
+        ]
+        for capability in Features.transcriptionGatedCapabilities {
+            for tier in Tier.allCases {
+                for currency in currencies {
+                    XCTAssertFalse(
+                        Entitlements.allows(capability, tier: tier, currency: currency),
+                        "\(capability.rawValue) is compile-gated but was granted at \(tier)/\(currency) "
+                        + "in a build where COMMSIGHT_TRANSCRIPTION is absent.")
+                }
+            }
+        }
+    }
 }

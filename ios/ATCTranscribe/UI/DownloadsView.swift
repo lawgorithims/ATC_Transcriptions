@@ -35,6 +35,10 @@ struct DownloadsView: View {
     @State private var confirmDropStaged = false
     @State private var meteredLZCell: LZPackCatalog.Cell?
     @State private var meteredLZReason: String = ""
+    /// A download refused because the pilot's tier does not include it — NOT a metered refusal.
+    /// Kept separate on purpose: the metered dialogs above all offer an override, and offering one
+    /// here would promise content no override can unlock.
+    @State private var upgradeNeeded: Capability?
 
     /// Downloaded-vs-total plate count for a region (computed off-main — a region is hundreds of airports).
     struct PlateRegionStatus: Equatable { var total: Int; var downloaded: Int }
@@ -89,6 +93,7 @@ struct DownloadsView: View {
                                    meteredLZReason: meteredLZReason,
                                    confirmDropStaged: $confirmDropStaged,
                                    size: size))
+        .modifier(EntitlementDialog(capability: $upgradeNeeded))
         .onChange(of: bag.isRunning) { _, running in
             if !running { Task { await refreshPlateStatus() } }   // a plate job finished → refresh region counts
         }
@@ -351,9 +356,19 @@ struct DownloadsView: View {
             Task {
                 // The policy, not a bare cellular test: with Wi-Fi-only on, a metered path is a
                 // refusal the pilot has already asked for, and the dialog is how they release it.
-                if (await DownloadPolicy.shared.verdict(.userInitiated)).isAllowed {
+                //
+                // `requires:` matters here. Without it this asked only the network question, so a
+                // Flight Bag subscriber tapping "download all IFR-low" was offered a MOBILE-DATA
+                // OVERRIDE for content no amount of data will fetch — worse than a dead button,
+                // because it is a promise. The two refusals are now told apart below.
+                let verdict = await DownloadPolicy.shared.verdict(.userInitiated,
+                                                                  requires: layer.capability)
+                switch verdict {
+                case .allowed:
                     library.startBulkDownload(layers: [layer])
-                } else {
+                case .notEntitled(let capability):
+                    upgradeNeeded = capability
+                default:
                     confirmBulkLayer = layer
                 }
             }
@@ -395,9 +410,17 @@ struct DownloadsView: View {
                         // Ask the policy BEFORE starting, so a refusal becomes an explained dialog with
                         // an override instead of a button that does nothing. `download` enforces it
                         // again as a backstop.
-                        let verdict = await DownloadPolicy.shared.verdict(.userInitiated)
+                        //
+                        // `requires:` is what keeps that promise. Without it the pre-check answered
+                        // only the network question and reported `.allowed`, then `download` refused
+                        // on entitlement and returned false — the exact button-that-does-nothing this
+                        // comment exists to prevent.
+                        let verdict = await DownloadPolicy.shared.verdict(.userInitiated,
+                                                                          requires: e.capability)
                         if verdict.isAllowed {
                             await library.download(e)
+                        } else if case .notEntitled(let capability) = verdict {
+                            upgradeNeeded = capability
                         } else {
                             meteredReason = verdict.explanation ?? ""
                             meteredPack = e
@@ -1005,6 +1028,55 @@ struct DownloadsView: View {
 
     private func size(_ bytes: Int) -> String { ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file) }
     private func byteStr(_ b: Int64) -> String { ByteCountFormatter.string(fromByteCount: b, countStyle: .file) }
+}
+
+/// The "your plan does not include this" notice.
+///
+/// ITS OWN MODIFIER, for the reason documented on `NextCycleDialogs` below: each dialog modifier
+/// wraps the whole accumulated generic type, so the cost is super-linear in chain length and adding
+/// one more inline tips `DownloadsView.body` past what the type checker will solve — failing, as
+/// that note records, on an unrelated `Binding` twelve modifiers earlier.
+///
+/// DELIBERATELY NOT A CONFIRMATION DIALOG. Every other refusal on this screen offers an override,
+/// because every other refusal is about the network and the pilot is allowed to overrule it. This
+/// one cannot be overridden by anything the pilot does here, so it is a plain acknowledgement with
+/// no action button. When the paywall lands this becomes its entry point; until then it must not
+/// imply a way through that does not exist.
+private struct EntitlementDialog: ViewModifier {
+    @Binding var capability: Capability?
+
+    func body(content: Content) -> some View {
+        content
+            .alert("Not included in your plan",
+                   isPresented: Binding(get: { capability != nil },
+                                        set: { if !$0 { capability = nil } }),
+                   presenting: capability) { _ in
+                Button("OK", role: .cancel) {}
+            } message: { needed in
+                Text(Self.message(for: needed))
+            }
+    }
+
+    /// Names the tier rather than just refusing, so the pilot knows what would change it. Reads the
+    /// same `minimumTier` table the gate itself uses, so the copy cannot drift from the policy.
+    static func message(for capability: Capability) -> String {
+        guard let tier = capability.minimumTier, tier > .none else {
+            return "This isn't available in this build."
+        }
+        // Phrased tier-first so the sentence agrees with a plural label: "Pro includes IFR low
+        // enroute charts", not "IFR low enroute charts is included in Pro".
+        return "\(tier.label) includes \(Self.label(for: capability)). "
+             + "Charts you've already downloaded stay on your iPad."
+    }
+
+    private static func label(for capability: Capability) -> String {
+        switch capability {
+        case .vfrCharts:     return "VFR sectional charts"
+        case .ifrLowCharts:  return "IFR low enroute charts"
+        case .ifrHighCharts: return "IFR high enroute charts"
+        default:             return "this feature"
+        }
+    }
 }
 
 /// The two next-cycle dialogs, as a `ViewModifier` rather than two more links in `DownloadsView`'s
