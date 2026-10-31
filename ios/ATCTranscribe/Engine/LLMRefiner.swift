@@ -5,7 +5,7 @@ import Foundation
 /// without ever slowing Whisper.
 ///
 /// Three properties enforce that:
-///   * **Off-actor & low priority.** The worker runs in `Task(priority: .background)`, and the
+///   * **Off-actor & low priority.** The worker runs at `.background` priority, and the
 ///     llama.cpp engine itself decodes on a utility-QoS queue (CPU only). The OS schedules it on
 ///     spare cores and yields to the higher-priority transcription task.
 ///   * **Bounded.** The queue is capped; under load (Whisper saturating the CPU) refinement
@@ -33,11 +33,18 @@ actor LLMRefiner {
     /// is impossible.
     private var inflight: UUID?
     private var watchdog: Task<Void, Never>?
+    /// The worker's priority. `.background` in the app, on purpose (see the type comment). Injectable
+    /// because the OS can starve background work for TENS OF SECONDS while the CPU is saturated —
+    /// measured 2026-10-24: with every core busy, 3 of 5 150 ms generations finished in 30 s — and
+    /// tests of the queue's logic must not depend on how busy the machine running them is.
+    private let priority: TaskPriority
 
-    init(corrector: LLMCorrector, maxQueue: Int = 8, timeout: TimeInterval = 20) {
+    init(corrector: LLMCorrector, maxQueue: Int = 8, timeout: TimeInterval = 20,
+         priority: TaskPriority = .background) {
         self.corrector = corrector
         self.maxQueue = max(1, maxQueue)
         self.timeout = timeout
+        self.priority = priority
     }
 
     /// Set where completed (and skipped) outcomes are delivered. The handler hops to the
@@ -68,7 +75,7 @@ actor LLMRefiner {
         }
         if !working {
             working = true
-            Task(priority: .background) { await self.drain() }
+            Task(priority: priority) { await self.drain() }
         }
     }
 

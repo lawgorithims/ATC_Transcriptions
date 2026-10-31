@@ -10,7 +10,7 @@ final class WidgetMultiTouchUITests: XCTestCase {
 
     override func setUp() { continueAfterFailure = false }
 
-    private func isRegularWidth(_ app: XCUIApplication) -> Bool { app.windows.firstMatch.frame.width >= 700 }
+    private func isRegularWidth(_ app: XCUIApplication) -> Bool { UITestLayout.isRegularWidth(app) }
 
     /// The GPS widget's header title carries the `widget-header-gps` id (SwiftUI
     /// propagates the container id to its label); it's the drag handle for the whole card.
@@ -26,7 +26,11 @@ final class WidgetMultiTouchUITests: XCTestCase {
 
     func testSingleFingerDragStillMovesWidget() throws {
         let app = XCUIApplication()
-        app.launchArguments += ["-atc.onboardingDismissed", "YES", "--reset-widgets"]
+        // State every overlay that can sit over the GPS widget's header, rather than inherit it: these
+        // flags PERSIST, and a winds-aloft toggle left on by WindOverlayUITests put the altitude slider
+        // and legend exactly where this drag starts — a "regression" that was only leftover state.
+        app.launchArguments += ["-atc.onboardingDismissed", "YES", "--reset-widgets",
+                                "-atc.map.wind", "NO", "-atc.bar.plan", "NO"]
         app.launch()
 
         let h = header(app)

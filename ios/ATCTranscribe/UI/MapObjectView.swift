@@ -1057,9 +1057,11 @@ struct MapObjectView: View {
             else { KV("Slope", "no elevation data") }
             if let r = lz.roughM { KV("Roughness", String(format: "%.2f m", r)) }
             KV("Hazard field", String(format: "%.0f%%", lz.hazard * 100))
-            if let c = lz.confidence { KV("Land-cover confidence", "\(c)%") }
+            // NOT a percentage: `conf` is one fixed value per source rule (NLCD, NWI, canopy),
+            // never a per-pixel measurement, and printing it as "62%" read as one.
+            KV("Land cover", "30 m satellite classification, not field-verified")
             if lz.coarseTerrain {
-                KV("Elevation source", "10 m — ditch checks cannot run")
+                KV("Elevation source", "10 m (no lidar) — roughness unknown")
             }
         }
 

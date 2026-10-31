@@ -41,12 +41,12 @@ quarantined** — see below.
 | T1 | USGS 3DEP DEM (1 m where flown, else 1/3″) | Bare-earth elevation | Public domain | Rolling |
 | T3 | Annual NLCD + Land Cover Confidence | 16-class land cover | Public domain | Annual |
 | T5 | Meta/WRI Global Canopy Height **v2** | Canopy height, 1 m | **CC-BY-4.0** | Static |
-| T6 | USDA CDL | Crop type | Public domain | Annual (Feb) |
-| T8 | USFWS NWI | Wetland polygons | Public domain | Slow |
-| T9 | USGS NHDPlus HR | Rivers, waterbodies | Public domain | Slow |
+| T6 | USDA CDL | Crop type | Public domain | Annual (Feb) — ⚠️ **not yet used** |
+| T8 | USFWS NWI | Wetland polygons | Public domain | Slow — ⚠️ **New Mexico only** |
+| T9 | USGS NHDPlus HR | Rivers, waterbodies | Public domain | Slow — ⚠️ **not yet used** |
 | O1 | FAA DOF | Charted obstacles > ~200 ft | Public domain | 56-day |
-| O2 | HIFLD transmission — **frozen snapshot** | High-voltage lines | Public domain | ⚠️ **dead upstream** |
-| O8 | Census TIGER/Line roads | Road centrelines | Public domain | Annual |
+| O2 | HIFLD transmission — **frozen snapshot** | High-voltage lines | Public domain | ⚠️ **dead upstream; absent from all 91 packs** |
+| O8 | Census TIGER/Line roads | Road centrelines | Public domain | Annual — ⚠️ **New Mexico counties only** |
 | O3 | OpenStreetMap `power=*` | Distribution lines | **ODbL** | ⚠️ **quarantined** |
 
 ### ⚠️ HIFLD Open no longer exists
@@ -116,8 +116,10 @@ good classes on purpose — "we do not know" must not be diluted by three confid
 
 ### `terrain_source` and the coarse-DEM cap
 
-Roughly 20 % of CONUS has no 1 m 3DEP. Where the DEM is 1/3″, the micro-relief ("hidden ditch")
-veto **physically cannot fire** — a 10 m posting cannot resolve a 1.5 m ditch. That ground would
+Roughly 20 % of CONUS has no 1 m 3DEP. ⚠️ **No ditch veto ships anywhere yet**: micro-relief is
+computed in `terrain.py` but never packed, so even on lidar ground a 2 m-deep ditch only costs
+roughness points. Where the DEM is 1/3″, roughness itself is unknown — a 10 m posting cannot
+resolve a 1.5 m ditch. That ground would
 otherwise score *better* than lidar-covered ground purely because its vetoes went quiet. Each tile
 therefore carries its DEM provenance and the device caps any tile that is not `fine_1m`.
 

@@ -185,8 +185,11 @@ final class LZGlideFieldTests: XCTestCase {
     // MARK: - the excess-energy case (the reason this engine exists)
 
     func testArrivalClassificationBoundaries() {
+        // ONE STANDARD with the airport list: comfortable needs the 1,000 ft reserve PLUS the 500 ft
+        // an airport needs before it reads CLEAR rather than TIGHT.
         XCTAssertEqual(LZGlideField.arrivalClass(arrivalFt: 999), .marginal)
-        XCTAssertEqual(LZGlideField.arrivalClass(arrivalFt: 1001), .comfortable)
+        XCTAssertEqual(LZGlideField.arrivalClass(arrivalFt: 1499), .marginal)
+        XCTAssertEqual(LZGlideField.arrivalClass(arrivalFt: 1501), .comfortable)
         XCTAssertEqual(LZGlideField.arrivalClass(arrivalFt: 2999), .comfortable)
         XCTAssertEqual(LZGlideField.arrivalClass(arrivalFt: 3001), .excess)
         // Negative arrival height is still "marginal" by class — the BLOCKED test happens first,
@@ -216,15 +219,17 @@ final class LZGlideFieldTests: XCTestCase {
         XCTAssertFalse(meanLons.isEmpty)
     }
 
-    /// Over FLAT ground the footprint is excess near the aircraft and comfortable at the rim — and
-    /// never marginal, because the reserve and the marginal threshold are the same 1,000 ft: the
-    /// edge of the glide is BY DEFINITION where arrival height falls to the reserve. Marginal only
-    /// appears where terrain rises to meet the profile early, which is exactly what it should mean.
-    func testFlatGroundIsExcessNearTheAircraftAndComfortableAtTheRim() throws {
+    /// Over FLAT ground the footprint is excess near the aircraft, comfortable through the middle, and
+    /// MARGINAL in the last 500 ft of the glide — the band where an airport would read TIGHT. It used
+    /// to be comfortable right to the rim, because the marginal threshold and the reserve were the
+    /// same 1,000 ft: one standard for airports and fields puts a marginal rim on every footprint.
+    func testFlatGroundIsExcessNearTheAircraftComfortableBetweenAndMarginalAtTheRim() throws {
         let f = try field(input(altFt: 10000, ratio: 10), Flat(ft: 0))
         XCTAssertTrue(f.bands.contains { $0.classification == .excess },
                       "high above flat ground must produce an excess band")
         XCTAssertTrue(f.bands.contains { $0.classification == .comfortable })
+        XCTAssertTrue(f.bands.contains { $0.classification == .marginal },
+                      "the last 500 ft of a glide must read marginal, as a TIGHT airport would")
         XCTAssertFalse(f.bands.contains { $0.classification == .blocked },
                        "flat ground must not produce a ring of 'blocked' at the footprint edge")
     }
@@ -247,14 +252,17 @@ final class LZGlideFieldTests: XCTestCase {
 
     // MARK: - wind
 
-    func testTailwindExtendsAndHeadwindShortensTheSameRay() {
+    /// ⚠️ INVERTED IN BUILD 110. This used to assert that a tailwind EXTENDS the glide — up to 1.8×,
+    /// from a forecast of unchecked age. That credit is the one error that tempts a stretched glide, so
+    /// it is gone: a headwind is charged in full and a tailwind buys nothing (`GlideAllowance`).
+    func testAHeadwindShortensTheRayButATailwindNeverExtendsIt() {
         let calm = LZGlideField.effectiveGlideRatio(input(), azimuthDeg: 90)
         // Wind FROM 270 blows TOWARDS 090 — a tailwind for an eastbound glide.
         let tail = LZGlideField.effectiveGlideRatio(input(windFrom: 270, windKts: 25),
                                                     azimuthDeg: 90)
         let head = LZGlideField.effectiveGlideRatio(input(windFrom: 90, windKts: 25),
                                                     azimuthDeg: 90)
-        XCTAssertGreaterThan(tail, calm, "a tailwind must extend the glide")
+        XCTAssertEqual(tail, calm, accuracy: 1e-9, "a forecast tailwind was credited to reach")
         XCTAssertLessThan(head, calm, "a headwind must shorten it")
         // Crosswind is very nearly neutral.
         let cross = LZGlideField.effectiveGlideRatio(input(windFrom: 0, windKts: 25),
@@ -266,10 +274,10 @@ final class LZGlideFieldTests: XCTestCase {
         // An absurd wind must not invent an implausible footprint.
         let huge = LZGlideField.effectiveGlideRatio(input(windFrom: 270, windKts: 400),
                                                     azimuthDeg: 90)
-        XCTAssertLessThanOrEqual(huge, input().glideRatio * LZGlideField.windRatioMax + 1e-9)
+        XCTAssertLessThanOrEqual(huge, input().glideRatio + 1e-9, "a tailwind extended reach")
         let against = LZGlideField.effectiveGlideRatio(input(windFrom: 90, windKts: 400),
                                                        azimuthDeg: 90)
-        XCTAssertGreaterThanOrEqual(against, input().glideRatio * LZGlideField.windRatioMin - 1e-9)
+        XCTAssertGreaterThanOrEqual(against, input().glideRatio * GlideAllowance.minWindScale - 1e-9)
     }
 
     func testFieldReportsWhetherWindWasActuallyUsed() throws {

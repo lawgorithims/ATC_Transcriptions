@@ -77,19 +77,17 @@ enum LZGlideField {
     static let maxStations = 256                  // hard cap; 128 NM at the spacing above
     static let minRangeNm = 0.5
 
-    /// Arrival height below this is "marginal" — pattern height, with nothing to spare.
-    static let marginalArrivalFt = 1000.0
+    /// Arrival height below this is "marginal". ONE STANDARD with the airport list: the 1,000 ft
+    /// pattern reserve plus the 500 ft an airport needs before it reads CLEAR rather than TIGHT. This
+    /// was 1,000 alone, so a field was painted comfortable exactly where an airport at the same spot
+    /// would have been called tight.
+    static let marginalArrivalFt = NearestAirports.arrivalReserveFt + NearestAirports.thinArrivalMarginFt
     /// Arrival height above this is "excess". Anchored to what a light single can actually shed:
     /// a full slip or a spiral loses roughly 1500-2000 ft per circuit over the same ground, so
     /// arriving 3000 ft high means committing to at least two turns over terrain chosen from the
     /// air. Ruleset-tunable later; deliberately conservative now.
     static let excessArrivalFt = 3000.0
 
-    /// Wind scaling bounds on the effective glide ratio. A tailwind genuinely extends range and a
-    /// headwind genuinely shortens it, but the model is first-order and must not be allowed to
-    /// invent an implausible footprint from one bad wind sample.
-    static let windRatioMin = 0.55
-    static let windRatioMax = 1.80
     static let defaultBestGlideKts = 65.0
 
     // MARK: - Input
@@ -104,6 +102,9 @@ enum LZGlideField {
         let windFromDeg: Double?
         let windKts: Double?
         let verticalAccuracyM: Double?
+        /// GPS track worth charging turns against (`GlideAllowance.usableTrack`); nil = no turn charge,
+        /// which makes the footprint the old omnidirectional one.
+        var trackDeg: Double? = nil
     }
 
     // MARK: - Compute
@@ -125,13 +126,19 @@ enum LZGlideField {
         for a in 0..<azimuthCount {                                   // bounded (rule 2)
             let az = 360.0 * Double(a) / Double(azimuthCount)
             let azNext = 360.0 * Double(a + 1) / Double(azimuthCount)
-            let ratio = effectiveGlideRatio(input, azimuthDeg: az)
-            let range = stillAirRangeNm(altitudeFtMSL: input.altitudeFtMSL,
-                                        groundFt: ownFloor, glideRatio: ratio)
+            // ⚠️ THE RAY RUNS DOWN THE SECTOR'S CENTRE. It ran down its lower EDGE, so the far edge of
+            // every 5.625° sector — about 1 NM at 10 NM out — was painted from terrain never sampled.
+            let azMid = (az + azNext) / 2
+            let ratio = effectiveGlideRatio(input, azimuthDeg: azMid)
+            // The turn onto this bearing is spent before the glide along it starts (GlideAllowance).
+            let startFt = input.altitudeFtMSL
+                - GlideAllowance.turnLossFt(fromTrackDeg: input.trackDeg, toBearingDeg: azMid)
+            let range = stillAirRangeNm(altitudeFtMSL: startFt, groundFt: ownFloor, glideRatio: ratio)
             guard range >= minRangeNm else { continue }
             maxRange = max(maxRange, range)
 
-            let (runs, hole) = classifyRay(input, azimuthDeg: az, rangeNm: range, ratio: ratio,
+            let (runs, hole) = classifyRay(input, startFtMSL: startFt, azimuthDeg: azMid,
+                                           rangeNm: range, ratio: ratio,
                                            buffer: buffer, ownFloorFt: ownFloor, terrain: terrain)
             if hole { sawHole = true }
             for run in runs {
@@ -186,17 +193,17 @@ enum LZGlideField {
         return usable * glideRatio / NearestAirports.ftPerNm
     }
 
-    /// First-order wind distortion of the footprint: a tailwind buys ground distance per foot lost.
-    /// Bounded so one bad sample cannot invent an implausible reach.
+    /// The glide ratio along one azimuth, shaped by wind the way the airport list shapes it.
+    ///
+    /// ⚠️ A HEADWIND IS CHARGED, A TAILWIND IS NOT CREDITED. This used to credit a tailwind with up to
+    /// 1.8× the reach, from a wind of unchecked age taken at the map slider's level — the one error that
+    /// tempts a stretched glide. See `GlideAllowance.windScale`.
     static func effectiveGlideRatio(_ input: Input, azimuthDeg: Double) -> Double {
-        guard let from = input.windFromDeg, let kts = input.windKts, kts > 0 else {
-            return input.glideRatio
-        }
-        let vbg = max(20.0, input.bestGlideKts > 0 ? input.bestGlideKts : defaultBestGlideKts)
-        // Wind FROM `from` blows TOWARDS from+180. A track along that heading is a tailwind.
-        let tail = kts * cos((azimuthDeg - (from + 180.0)) * .pi / 180.0)
-        let scale = min(windRatioMax, max(windRatioMin, (vbg + tail) / vbg))
-        return input.glideRatio * scale
+        let vbg = input.bestGlideKts > 0 ? input.bestGlideKts : defaultBestGlideKts
+        return input.glideRatio * GlideAllowance.windScale(bearingDeg: azimuthDeg,
+                                                           windFromDeg: input.windFromDeg,
+                                                           windKts: input.windKts,
+                                                           bestGlideKts: vbg)
     }
 
     // MARK: - One ray
@@ -206,9 +213,9 @@ enum LZGlideField {
     /// March one azimuth outward, classifying each station and coalescing equal neighbours.
     /// Stops permanently at the first terrain interception — you cannot glide through a ridge, so
     /// everything beyond it is blocked regardless of what the terrain does out there.
-    private static func classifyRay(_ input: Input, azimuthDeg: Double, rangeNm: Double,
-                                    ratio: Double, buffer: Double, ownFloorFt: Double?,
-                                    terrain: TerrainSampling) -> ([Run], Bool) {
+    private static func classifyRay(_ input: Input, startFtMSL: Double, azimuthDeg: Double,
+                                    rangeNm: Double, ratio: Double, buffer: Double,
+                                    ownFloorFt: Double?, terrain: TerrainSampling) -> ([Run], Bool) {
         let stations = min(maxStations, max(2, Int(rangeNm / stationSpacingNm) + 1))
         let ftPerNmDown = NearestAirports.ftPerNm / ratio
         var runs = [Run]()
@@ -219,7 +226,7 @@ enum LZGlideField {
         for i in 0...stations {                                        // bounded (rule 2)
             let f = Double(i) / Double(stations)
             let d = f * rangeNm
-            let profileFt = input.altitudeFtMSL - d * ftPerNmDown
+            let profileFt = startFtMSL - d * ftPerNmDown
             let cls: LZEnergyClass
             if let groundFt = terrain.sampleElevationFt(
                 at: Geo.destination(from: input.coord, bearingDeg: azimuthDeg, distanceNm: d)) {

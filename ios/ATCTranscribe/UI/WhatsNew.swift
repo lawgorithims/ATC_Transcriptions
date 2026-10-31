@@ -36,16 +36,40 @@ enum WhatsNew {
     /// need not be contiguous" is for.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 111, version: "1.0", headline: "Where not to go, and the turn you brief on the ground",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "nosign",
+                    title: "Where not to go — the whole contiguous US",
+                    detail: "A new map layer marks the ground you should NOT put an aeroplane down on: power lines, towers and other charted obstacles, wind turbines, solar farms, orchards, vineyards and hop yards, and steep ground. Trees, water and built-up areas can be added with a second switch. It covers the lower 48 (Settings › Downloads › Where not to go — about 1.5 GB, fetched in parts so a dropped connection costs only one) and works offline. It never shows where to land: distribution and farm wires, fences, ditches and crops are not mapped anywhere public, so unshaded ground is not safe ground. Power lines come from the national HIFLD layer, which stopped updating in September 2024 and, tested against independently mapped lines, lacks about one in eight; small solar plants are missing too. Runways the FAA lists are left clear. Draws on the new GPU map."),
+                WhatsNewHighlight(
+                    icon: "arrow.uturn.backward.circle",
+                    title: "Your turn-back altitude, in a takeoff briefing",
+                    detail: "Each aircraft now has an \u{201c}Engine failure after takeoff\u{201d} card for the lowest height at which YOU will turn back to the runway — the number you found practising at a safe altitude with an instructor — plus the density altitude it was set in and when you last practised it. CommSight never calculates or suggests it. The flight-plan strip's new BRIEF cell opens a briefing for the departure: field elevation, wind and the headwind and crosswind on each runway, today's density altitude from the latest METAR, and your number converted to what the altimeter will read. With no number set, or when today's density altitude is higher than when it was set, the briefing says land ahead. A banner asks for the number once a flight is planned."),
+            ]),
+        ReleaseNote(
             build: 110, version: "1.0", headline: "The flight bag, on its own",
             highlights: [
                 WhatsNewHighlight(
                     icon: "map.fill",
                     title: "An electronic flight bag you can hand to anyone",
-                    detail: "This build is the flight bag by itself: the moving map with offline VFR sectional, IFR low and IFR high charts, approach and departure plates, coded FAA procedures, the flight plan with ForeFlight hand-off, off-field landability, hazards and airport climate. Charts are current to the 03 September 2026 cycle."),
+                    detail: "This build is the flight bag by itself: the moving map with offline VFR sectional, IFR low and IFR high charts, approach and departure plates, coded FAA procedures, the flight plan with ForeFlight hand-off, your glide range over terrain, hazards and airport climate. Charts are current to the 03 September 2026 cycle."),
                 WhatsNewHighlight(
                     icon: "waveform.slash",
                     title: "Live ATC transcription is put away for now",
                     detail: "The radio side needs a piece of cockpit hardware that is not finished, so rather than ship a feature you cannot use, it is hidden — along with the speech-model download it used to ask for on first launch, which is why this build starts straight on the chart. Nothing was deleted; it comes back when the hardware does."),
+                WhatsNewHighlight(
+                    icon: "point.topleft.down.to.point.bottomright.curvepath",
+                    title: "How much of your route has no runway in glide",
+                    detail: "File a route with a cruise altitude and the flight-plan strip's new OUT OF GLIDE cell says how much of it is beyond gliding distance of every runway, and how long the worst stretch lasts. Tap it for the list of gaps and the altitude that would shorten the worst one; on the map the gaps are striped under the route line. Direct Las Cruces to Tucson at 8,500 ft is out of glide for about three quarters of the way, and 2,000 ft higher for about 60%. Runways only — off-field ground is not counted — with forecast headwinds charged and tailwinds never credited."),
+                WhatsNewHighlight(
+                    icon: "arrow.uturn.left.circle",
+                    title: "Glide range that never flatters",
+                    detail: "The nearest-airport list and the glide bands now spend the turn onto each airport (300 ft per 180°) before the glide starts, and take the wind as the average over the whole descent rather than at one level. A headwind shortens reach in full; a tailwind is never credited, because stretching a glide is the classic fatal mistake. Winds more than six hours old are ignored, and the list says when it is working in still air. Airports and terrain use one standard: 1,000 ft above the field on arrival, and 500 ft more before anything is called comfortable."),
+                WhatsNewHighlight(
+                    icon: "exclamationmark.triangle",
+                    title: "Off-field landability is paused",
+                    detail: "The landability shading was tested against real ground for the first time — orchards, solar farms, power lines, fences, runways and dry lakebeds, mapped independently — and it was not good enough to put in front of a pilot. It offered most of the solar farms and over half of the orchards and vineyards tested as landing candidates, and ground directly under power lines a quarter of the time. The shading and the ranked field list are now a developer preview while they are reworked. The emergency button still brings up the nearest airports first and still draws how far you can glide over terrain. If you downloaded landability packs, Downloads can remove them."),
             ]),
         ReleaseNote(
             build: 109, version: "1.0", headline: "The landability layer now covers the Southwest",
@@ -161,7 +185,7 @@ enum WhatsNew {
                 WhatsNewHighlight(
                     icon: "square.grid.3x3.square",
                     title: "Off-field landability, scored for your aeroplane (preview)",
-                    detail: "Groundwork for a terrain layer that scores open ground the way a forced landing would care about: surface, slope, roughness, and a hazard field built from towers, roads and transmission corridors. The data is aircraft-agnostic and the scoring is not — your glide ratio and best-glide speed re-tint the same ground, so switching aircraft visibly changes the map. Tapping a cell lists the rules behind its score by name. NOT YET USABLE IN THIS BUILD: it needs a regional data pack, and there is no way to download one yet — the switch is present and will stay dark. Turning it on tells you that, rather than showing you an unchanged map. The glide energy bands above need no pack and work now. ADVISORY ONLY when it does arrive: it scores candidate ground, never a landing recommendation, and surface condition, fences, livestock and current obstructions are not modelled."),
+                    detail: "Groundwork for a terrain layer that scores open ground the way a forced landing would care about: surface, slope, roughness, and a hazard field built from charted obstacles (roads only in New Mexico cells; transmission lines were never included — corrected in build 110). The data is aircraft-agnostic and the scoring is not — your glide ratio and best-glide speed re-tint the same ground, so switching aircraft visibly changes the map. Tapping a cell lists the rules behind its score by name. NOT YET USABLE IN THIS BUILD: it needs a regional data pack, and there is no way to download one yet — the switch is present and will stay dark. Turning it on tells you that, rather than showing you an unchanged map. The glide energy bands above need no pack and work now. ADVISORY ONLY when it does arrive: it scores candidate ground, never a landing recommendation, and surface condition, fences, livestock and current obstructions are not modelled."),
             ]),
         ReleaseNote(
             build: 103, version: "1.0", headline: "Data the app had all along, finally reaching the chart",

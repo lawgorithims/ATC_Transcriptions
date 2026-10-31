@@ -121,6 +121,15 @@ struct NRSTPanelView: View {
 
     // MARK: header
 
+    /// What the ranges below have been charged for, in the words a pilot needs: whether a headwind
+    /// was applied (and that a tailwind never is), and whether the turn onto each airport was.
+    /// "still air" is said plainly when there are no fresh winds aloft, so it never reads as a measurement.
+    static func allowanceNote(_ s: GlideSituation) -> String {
+        let wind = s.windApplied ? "headwind applied" : "still air (no current winds)"
+        let turns = s.trackDeg != nil ? "turns included" : "no turn allowance"
+        return "\(wind) · \(turns)"
+    }
+
     private func header(_ p: Palette) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             if let a = model.nrstAssessment {
@@ -131,7 +140,7 @@ struct NRSTPanelView: View {
                 // they have. A glide can be thousands of feet above a valley floor and still be below
                 // the ridge in the way — which is what the per-row terrain verdict is for.
                 let agl = a.ownshipAglFt.map { " · \(Int(max(0, $0)).formatted()) ft AGL" } ?? ""
-                Text("From \(Int(s.altitudeFtMSL).formatted()) ft MSL\(agl) · glide \(ratio)\(s.isDefaultGlideRatio ? " (default)" : "") · still air")
+                Text("From \(Int(s.altitudeFtMSL).formatted()) ft MSL\(agl) · glide \(ratio)\(s.isDefaultGlideRatio ? " (default)" : "") · \(Self.allowanceNote(s))")
                     .font(.dsLabelBold).foregroundStyle(p.text)
                 Text(caption(a))
                     .font(.dsLabelS).foregroundStyle(p.textDim)

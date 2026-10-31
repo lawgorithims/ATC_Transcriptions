@@ -222,7 +222,7 @@ struct GlideBenchView: View {
 
     private var caveat: some View {
         Text("The position is fabricated and the app says so on every screen while this is armed. "
-             + "Everything the layer shows remains advisory and inferred from 10 m land cover.")
+             + "Everything the layer shows remains advisory and inferred from 30 m land cover.")
             .font(.dsLabelS).foregroundStyle(p.textDim)
             .fixedSize(horizontal: false, vertical: true)
     }

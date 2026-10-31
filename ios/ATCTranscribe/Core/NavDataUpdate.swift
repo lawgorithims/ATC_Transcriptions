@@ -16,8 +16,9 @@ import SQLite3
 ///   * A download is verified BEFORE it is installed — it must open, carry a meta table with a readable
 ///     cycle, and satisfy the same corpus invariants the builder enforces. A truncated or corrupt file
 ///     never becomes the active database.
-///   * Installation is atomic (write to a temporary name, then replace), so a crash mid-write cannot
-///     leave a half-written database in the active slot.
+///   * Installation is atomic: the verified file is written under a new name and only then does the
+///     slot's pointer move to it, so a crash mid-write cannot leave a half-written database in the
+///     active slot — and the file being served is never replaced under a reader (see `installedURL`).
 ///   * An installed database that is OLDER than the bundled one is rejected. Shipping a newer bundle in
 ///     a later app release must not be silently undone by a stale download sitting in Application
 ///     Support.
@@ -55,8 +56,103 @@ enum NavDataUpdate {
         return base.appendingPathComponent("NavData", isDirectory: true)
     }
 
-    static func installedURL(_ d: Dataset) -> URL {
+    // MARK: The installed slot — one file per install, named by a pointer
+
+    // ⚠️ NEVER REPLACE OR DELETE A DATABASE A READER MAY HAVE OPEN. Apple's libsqlite3 does not keep
+    // reading a file that changed under an open connection, the way POSIX would. On that connection's
+    // next lock it notices that its path now names a different file, or that its own file is gone —
+    // "vnode renamed / unlinked while in use" — and INVALIDATES the descriptor, so every later query
+    // fails. `CIFP`, `Airways` and `AirportData` read a failed query as no rows. This file used to
+    // install over one fixed `cifp.sqlite`, so taking an update, or reverting, while a downloaded cycle
+    // was being served emptied every approach, SID, STAR and airway (and, for `apt`, every airport)
+    // until the next launch — measured 2026-10-24, see
+    // `NavDataUpdateTests.testAnUpdateTakenMidSessionLeavesTheOpenCycleReadable`. Renaming the old file
+    // aside first does not help: the NEW file then sits at the path the connection holds.
+    //
+    // So every install gets a file of its own (`cifp-2611-1A2B3C4D.sqlite`), and `<dataset>.active` — a
+    // one-line pointer, replaced atomically — names the one to serve. A superseded file stays on disk,
+    // still readable by whoever has it open, until `pruneSuperseded` removes it at the next launch,
+    // before any reader opens.
+
+    /// The pointer naming the installed file to serve, or `bundled` after a revert.
+    static func pointerURL(_ d: Dataset) -> URL { directory.appendingPathComponent("\(d.rawValue).active") }
+
+    /// The fixed name every build before the pointer installed to. Still served when no pointer exists,
+    /// so a cycle downloaded on an older build keeps working; pruned once a pointer supersedes it.
+    static func legacyInstalledURL(_ d: Dataset) -> URL {
         directory.appendingPathComponent("\(d.rawValue).\(d.fileExtension)")
+    }
+
+    private static let bundledPointer = "bundled"
+
+    private enum Pointer: Equatable { case unset, bundled, file(String) }
+
+    private static func readPointer(_ d: Dataset) -> Pointer {
+        guard let raw = try? String(contentsOf: pointerURL(d), encoding: .utf8) else { return .unset }
+        let name = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if name == bundledPointer { return .bundled }
+        // A bare name of this dataset's own shape, inside this directory: a pointer must never be able
+        // to aim a reader anywhere else.
+        guard isVersionedName(name, of: d) else { return .unset }
+        return .file(name)
+    }
+
+    /// Aim the pointer. `Data.write(.atomic)` writes beside it and renames over it, and the pointer is
+    /// read at resolve time, never held open — replacing it cannot disturb a connection.
+    private static func writePointer(_ d: Dataset, _ value: String) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data((value + "\n").utf8).write(to: pointerURL(d), options: .atomic)
+    }
+
+    /// `<dataset>-<cycle>-<tag>.<ext>` — the shape `install` writes.
+    private static func isVersionedName(_ name: String, of d: Dataset) -> Bool {
+        !name.contains("/") && name.hasPrefix("\(d.rawValue)-") && name.hasSuffix(".\(d.fileExtension)")
+    }
+
+    /// The installed file for `d`: the one the pointer names, else a legacy install; nil when there is
+    /// none (or after a revert).
+    static func installedURL(_ d: Dataset) -> URL? {
+        let fm = FileManager.default
+        switch readPointer(d) {
+        case .bundled:
+            return nil
+        case .file(let name):
+            let url = directory.appendingPathComponent(name)
+            return fm.fileExists(atPath: url.path) ? url : nil
+        case .unset:
+            let legacy = legacyInstalledURL(d)
+            return fm.fileExists(atPath: legacy.path) ? legacy : nil
+        }
+    }
+
+    /// Delete every installed copy the pointer no longer names — the files an install or a revert
+    /// superseded during an earlier session. Runs from `activationOnce`, before any reader resolves,
+    /// which is the one moment nothing can have one of them open.
+    static func pruneSuperseded() {
+        let fm = FileManager.default
+        guard let files = try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil) else { return }
+        for d in Dataset.allCases {
+            let pointer = readPointer(d)
+            let keep: String?
+            switch pointer {
+            case .unset: keep = legacyInstalledURL(d).lastPathComponent   // a legacy install is still served
+            case .bundled: keep = nil
+            case .file(let name): keep = name
+            }
+            for f in files where f.lastPathComponent != keep && isInstalledCopy(f, of: d) {   // bounded by the listing
+                try? fm.removeItem(at: f)
+            }
+            if pointer == .bundled { try? fm.removeItem(at: pointerURL(d)) }  // nothing left to override
+        }
+    }
+
+    /// A copy of `d` that `install` (or an older build's install) wrote, including an interrupted one.
+    private static func isInstalledCopy(_ f: URL, of d: Dataset) -> Bool {
+        let name = f.lastPathComponent
+        let partial = ".\(d.fileExtension).incoming"
+        if name == legacyInstalledURL(d).lastPathComponent { return true }
+        if name.hasSuffix(partial) { return name.hasPrefix("\(d.rawValue)") }
+        return isVersionedName(name, of: d)
     }
 
     /// Where a cycle downloaded AHEAD of its effective date waits.
@@ -64,7 +160,7 @@ enum NavDataUpdate {
     /// WHY IT NEEDS ITS OWN SLOT, UNLIKE CHART PACKS. A staged chart pack can live in the ordinary
     /// chart directory under the next cycle's filename, because `localURL` keys off the catalog's
     /// cycle and simply will not look at it until the manifest rolls. Nav data has no such name: there
-    /// is ONE `cifp.sqlite`, and `activeURL` reads whatever is at that path. So an early download
+    /// is ONE installed slot per dataset, and `activeURL` serves whatever it names. So an early download
     /// cannot be installed — `verify` refuses `.notYetEffective`, correctly, because a file sitting at
     /// the live path is a file that will be served. It waits here instead, and `activateStagedIfDue`
     /// installs it through the ordinary verified path on the morning it becomes legal.
@@ -131,8 +227,7 @@ enum NavDataUpdate {
     /// launch rather than under a query already in flight.
     static func activeURL(_ d: Dataset) -> URL? {
         _ = activationOnce
-        let installed = installedURL(d)
-        if FileManager.default.fileExists(atPath: installed.path),
+        if let installed = installedURL(d),
            !readCycle(installed).isEmpty,
            !isOlderThanBundle(installed, d),
            // Re-checked at READ time, not just at install: a cycle staged ahead of its effective date
@@ -159,6 +254,7 @@ enum NavDataUpdate {
     /// or four a year. Nothing here calls back into `activeURL`, so there is no initialisation cycle.
     private static let activationOnce: Void = {
         _ = activateStagedIfDue()
+        pruneSuperseded()                   // after promoting, so a superseded copy goes this launch
         return ()
     }()
 
@@ -336,14 +432,19 @@ enum NavDataUpdate {
         let fm = FileManager.default
         do {
             try fm.createDirectory(at: directory, withIntermediateDirectories: true)
-            let dest = installedURL(d)
+            // A name no reader can be holding: unique per install, even reinstalling the same cycle.
+            let cycle = readCycle(staged).filter { $0.isLetter || $0.isNumber }
+            let name = "\(d.rawValue)-\(cycle)-\(UUID().uuidString.prefix(8)).\(d.fileExtension)"
+            assert(isVersionedName(name, of: d), "install: wrote a name the pointer would refuse")
+            let dest = directory.appendingPathComponent(name)
             let tmp = dest.appendingPathExtension("incoming")
-            if fm.fileExists(atPath: tmp.path) { try fm.removeItem(at: tmp) }
             try fm.copyItem(at: staged, to: tmp)
-            // Replace, never remove-then-copy: a crash between the two would leave no database at all.
-            _ = try fm.replaceItemAt(dest, withItemAt: tmp)
+            try fm.moveItem(at: tmp, to: dest)
             var values = URLResourceValues(); values.isExcludedFromBackup = true
             var d2 = dest; try? d2.setResourceValues(values)
+            // The switch is the pointer alone. A crash before it lands leaves the previous cycle served
+            // and an orphan for `pruneSuperseded`; the file it supersedes is not touched at all.
+            try writePointer(d, name)
             NSLog("CommSight: nav update INSTALLED %@ cycle %@", d.rawValue, readCycle(dest))
             return nil
         } catch {
@@ -354,13 +455,21 @@ enum NavDataUpdate {
 
     /// Drop a downloaded override and go back to the bundled data.
     static func revertToBundled(_ d: Dataset) {
-        try? FileManager.default.removeItem(at: installedURL(d))
+        // Deleting the file here would invalidate a connection still reading it (see `installedURL`);
+        // `pruneSuperseded` removes it at the next launch.
+        do {
+            try writePointer(d, bundledPointer)
+        } catch {
+            NSLog("CommSight: nav update could not revert %@ — %@", d.rawValue, "\(error)")
+            return
+        }
         NSLog("CommSight: nav update reverted %@ to the bundled copy", d.rawValue)
     }
 
     /// Is this dataset currently being served from a download rather than the bundle?
     static func isOverridden(_ d: Dataset) -> Bool {
-        activeURL(d)?.path == installedURL(d).path
+        guard let installed = installedURL(d) else { return false }
+        return activeURL(d)?.path == installed.path
     }
 
     private static func count(_ db: OpaquePointer?, _ sql: String) -> Int {

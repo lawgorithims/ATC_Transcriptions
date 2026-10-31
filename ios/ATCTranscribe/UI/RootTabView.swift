@@ -63,6 +63,9 @@ struct RootTabView: View {
                 // rather than waiting to be found in Settings. It renders nothing when all is current.
                 DataCurrencyBanner { model.showSettings = true }
                     .transition(.move(edge: .bottom).combined(with: .opacity))
+                // A planned flight in a fixed-wing aircraft with no turn-back number of the pilot's own.
+                TurnbackPromptBanner()
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
                 if model.showGPSBar {
                     GPSBottomBar().transition(.move(edge: .bottom).combined(with: .opacity))
                 }

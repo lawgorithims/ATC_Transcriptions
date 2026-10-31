@@ -139,8 +139,13 @@ final class LZLayerUITests: XCTestCase {
 
     /// The whole point of the control: one press turns on both off-field layers AND brings up the
     /// nearest-airport panel.
-    func testArmingTurnsOnBothLayersAndOpensNearest() {
+    func testArmingTurnsOnBothLayersAndOpensNearest() throws {
         let app = launch(["-atc.diagnosticsEnabled", "YES"])
+        // The NRST panel is a FLOATING WIDGET, and `ConsoleView.homeArea` only builds the floating
+        // canvas at regular width — so on a phone there is no panel chrome to close, nothing to
+        // un-arm from, and the panel that does come up sits over the layers popover this test
+        // then tries to open. See UITestLayout.
+        try UITestLayout.requireRegularWidth(app, "The NRST (nearest-airport) floating panel")
         let emergency = app.buttons["emergency-button"]
         XCTAssertTrue(emergency.waitForExistence(timeout: 30))
         emergency.tap()
@@ -155,8 +160,13 @@ final class LZLayerUITests: XCTestCase {
 
     /// ARM-ONLY. Pressing it a second time must not undo the first — the rule the map's NRST button
     /// documents, and the one that matters most for a control pressed by a startled hand.
-    func testASecondPressNeverUndoesTheFirst() {
+    func testASecondPressNeverUndoesTheFirst() throws {
         let app = launch(["-atc.diagnosticsEnabled", "YES"])
+        // The NRST panel is a FLOATING WIDGET, and `ConsoleView.homeArea` only builds the floating
+        // canvas at regular width — so on a phone there is no panel chrome to close, nothing to
+        // un-arm from, and the panel that does come up sits over the layers popover this test
+        // then tries to open. See UITestLayout.
+        try UITestLayout.requireRegularWidth(app, "The NRST (nearest-airport) floating panel")
         let emergency = app.buttons["emergency-button"]
         XCTAssertTrue(emergency.waitForExistence(timeout: 30))
         emergency.tap()
@@ -171,8 +181,13 @@ final class LZLayerUITests: XCTestCase {
 
     /// Stand-down is a LONG press, and it does take everything back down. The gesture is deliberate
     /// specifically so the tap that must never disarm cannot.
-    func testLongPressStandsDown() {
+    func testLongPressStandsDown() throws {
         let app = launch(["-atc.diagnosticsEnabled", "YES"])
+        // The NRST panel is a FLOATING WIDGET, and `ConsoleView.homeArea` only builds the floating
+        // canvas at regular width — so on a phone there is no panel chrome to close, nothing to
+        // un-arm from, and the panel that does come up sits over the layers popover this test
+        // then tries to open. See UITestLayout.
+        try UITestLayout.requireRegularWidth(app, "The NRST (nearest-airport) floating panel")
         let emergency = app.buttons["emergency-button"]
         XCTAssertTrue(emergency.waitForExistence(timeout: 30))
         emergency.tap()
@@ -189,8 +204,13 @@ final class LZLayerUITests: XCTestCase {
     /// The lit state must report the WORLD, not what the button remembers doing. Closing the panel by
     /// its own ✕ publishes nothing on AppModel — the widget store is a nested observable — so a button
     /// that read it through `model` would stay lit over a panel that is gone. This is that case.
-    func testClosingTheNearestPanelUnArmsTheButton() {
+    func testClosingTheNearestPanelUnArmsTheButton() throws {
         let app = launch(["-atc.diagnosticsEnabled", "YES"])
+        // The NRST panel is a FLOATING WIDGET, and `ConsoleView.homeArea` only builds the floating
+        // canvas at regular width — so on a phone there is no panel chrome to close, nothing to
+        // un-arm from, and the panel that does come up sits over the layers popover this test
+        // then tries to open. See UITestLayout.
+        try UITestLayout.requireRegularWidth(app, "The NRST (nearest-airport) floating panel")
         let emergency = app.buttons["emergency-button"]
         XCTAssertTrue(emergency.waitForExistence(timeout: 30))
         emergency.tap()
@@ -209,48 +229,81 @@ final class LZLayerUITests: XCTestCase {
         waitForExpectations(timeout: 10)
     }
 
-    /// The trap-door guard. The layer rows are dev-gated for DISCOVERY, but the emergency button arms
-    /// the layers for any pilot — so whenever a layer is on, its row must be there to turn it off,
-    /// diagnostics or not. A layer a pilot can switch on but cannot find to switch off is a trap.
-    func testALayerThatIsOnCanAlwaysBeSwitchedOff() {
-        let app = launch(["-atc.map.lz", "YES"])          // note: diagnostics NOT unlocked
+    /// The trap-door guard, inverted in build 110. The shading used to draw for any pilot, so a row
+    /// had to exist to switch it off. Now a persisted flag — a tester who had it on in 109 — must draw
+    /// NOTHING without diagnostics: no row, no ranked-list control, no data line. A layer that cannot
+    /// draw needs no off switch, and a layer that draws with no way to find its switch is the trap.
+    func testAPersistedLandabilityFlagDrawsNothingWithoutDiagnostics() {
+        // Diagnostics stated OFF, never inherited: the flag persists, and a unit test once left it on.
+        let app = launch(["-atc.map.lz", "YES", "-atc.diagnosticsEnabled", "NO"])
         openLayersPanel(app)
-        let risk = app.switches["layer-lz"]
-        XCTAssertTrue(risk.waitForExistence(timeout: 8),
-                      "the landability row is hidden while its layer is ON — no way to turn it off")
-        XCTAssertTrue(isOn(risk))
-        risk.tap()
-        XCTAssertFalse(isOn(risk), "the row would not switch the layer off")
+        XCTAssertTrue(app.switches["layer-lz-energy"].waitForExistence(timeout: 8),
+                      "the layers panel did not open")
+        XCTAssertFalse(app.switches["layer-lz"].exists,
+                       "the landability shading is offered to a pilot without developer diagnostics")
+        XCTAssertFalse(app.buttons["layer-lz-list"].exists,
+                       "the ranked off-field list is reachable without developer diagnostics")
+        XCTAssertFalse(app.staticTexts["layers-lz-status"].exists,
+                       "the heatmap reports data as if it were drawing")
     }
 
-    /// Both layers are ORDINARY now — no developer flag anywhere in this launch. They were gated
-    /// while there was no way to obtain a pack, which was honest then: a switch that cannot work is
-    /// worse than an absent one. The Downloads screen made packs obtainable, so the gate went with
-    /// its reason. A pilot who downloads 89 MB must be able to find the layer it feeds.
-    func testTheLayersAreOfferedWithoutDeveloperDiagnostics() {
-        let app = launch()                                 // no -atc.diagnosticsEnabled at all
+    /// The glide-energy bands are the half the evidence supports, and stay ordinary — no developer
+    /// flag anywhere in this launch. The landability shading is the half that is not.
+    func testOnlyTheGlideBandsAreOfferedWithoutDeveloperDiagnostics() {
+        let app = launch(["-atc.diagnosticsEnabled", "NO"])    // stated, not inherited (it persists)
         openLayersPanel(app)
-        XCTAssertTrue(app.switches["layer-lz"].waitForExistence(timeout: 8),
-                      "off-field landability is still hidden behind developer diagnostics")
-        XCTAssertTrue(app.switches["layer-lz-energy"].exists,
-                      "the glide energy layer is still hidden behind developer diagnostics")
+        XCTAssertTrue(app.switches["layer-lz-energy"].waitForExistence(timeout: 8),
+                      "the glide energy layer is hidden from ordinary pilots")
+        XCTAssertFalse(app.switches["layer-lz"].exists,
+                       "the landability shading is offered without developer diagnostics")
     }
 
-    /// The advisory framing is what a NON-developer now meets, so it must carry the limits, not just
-    /// the label. Each clause here is a specific thing the data does not know.
-    func testTheAdvisoryNoteNamesWhatIsNotModelled() {
-        let app = launch()
+    /// Arming without diagnostics: NRST up, the glide bands on, and the button reads ARMED — it must
+    /// not wait forever for a landability layer this pilot cannot have.
+    func testArmingWithoutDiagnosticsLightsTheGlideBandsAndNearest() throws {
+        let app = launch(["-atc.diagnosticsEnabled", "NO"])
+        // The NRST panel is a FLOATING WIDGET, and `ConsoleView.homeArea` only builds the floating
+        // canvas at regular width — so on a phone there is no panel chrome to close, nothing to
+        // un-arm from, and the panel that does come up sits over the layers popover this test
+        // then tries to open. See UITestLayout.
+        try UITestLayout.requireRegularWidth(app, "The NRST (nearest-airport) floating panel")
+        let emergency = app.buttons["emergency-button"]
+        XCTAssertTrue(emergency.waitForExistence(timeout: 30))
+        emergency.tap()
+        XCTAssertTrue(waitForNRST(app), "arming did not bring up the nearest airports")
+        expectation(for: NSPredicate(format: "value == %@", "Armed"), evaluatedWith: emergency)
+        waitForExpectations(timeout: 10)
         openLayersPanel(app)
-        let note = app.staticTexts["layers-lz-note"].label
-        XCTAssertTrue(note.contains("ADVISORY ONLY"), note)
-        XCTAssertTrue(note.lowercased().contains("candidate ground"), note)
-        XCTAssertTrue(note.lowercased().contains("never a landing recommendation"), note)
-        for missing in ["fences", "livestock", "surface condition", "obstructions"] {
-            XCTAssertTrue(note.lowercased().contains(missing),
-                          "the note no longer says \(missing) is unmodelled: \(note)")
+        XCTAssertTrue(isOn(app.switches["layer-lz-energy"]), "arming left the glide bands off")
+        XCTAssertFalse(app.switches["layer-lz"].exists, "arming surfaced the landability shading")
+    }
+
+    /// What an ordinary pilot now meets is the glide note, and it must say what shortens a real glide
+    /// rather than promise ground.
+    func testTheAdvisoryNoteNamesWhatShortensAGlide() {
+        let app = launch(["-atc.diagnosticsEnabled", "NO"])
+        openLayersPanel(app)
+        let note = app.staticTexts["layers-lz-note"].label.lowercased()
+        XCTAssertTrue(note.contains("advisory only"), note)
+        XCTAssertTrue(note.contains("not a landing recommendation"), note)
+        for factor in ["wind", "turns", "windmilling"] {
+            XCTAssertTrue(note.contains(factor), "the glide note no longer names \(factor): \(note)")
         }
-        XCTAssertTrue(note.lowercased().contains("absence of a depicted hazard"),
-                      "the note dropped the strongest clause it has: \(note)")
+        XCTAssertFalse(note.contains("safe"), "the glide note calls something 'safe': \(note)")
+        XCTAssertFalse(app.staticTexts["layers-lz-dev-note"].exists,
+                       "the developer landability caveat is showing without diagnostics")
+    }
+
+    /// The developer preview carries the limits the ground-truth test found, by name.
+    func testTheDeveloperPreviewNamesWhatTheDataCannotSee() {
+        let app = launch(["-atc.diagnosticsEnabled", "YES"])
+        openLayersPanel(app)
+        let dev = app.staticTexts["layers-lz-dev-note"]
+        XCTAssertTrue(dev.waitForExistence(timeout: 8), "the developer preview has no caveat")
+        let text = dev.label.lowercased()
+        for blind in ["wires", "fences", "ditches", "orchards", "solar farms", "absence of a depicted hazard"] {
+            XCTAssertTrue(text.contains(blind), "the preview caveat no longer names \(blind): \(text)")
+        }
     }
 
     // MARK: - the energy layer, actually drawing
@@ -347,8 +400,6 @@ final class LZLayerUITests: XCTestCase {
         // pins the casing fails on an edit that strengthened the very thing it guards.
         XCTAssertTrue(text.lowercased().contains("advisory only"),
                       "the advisory caption is missing: \(text)")
-        XCTAssertTrue(text.lowercased().contains("candidate ground"),
-                      "the caption no longer says 'candidate ground': \(text)")
         // The word "safe" must never appear about this ground. Kept here because the sibling test
         // checks what the note DOES say; this checks the one thing it must never say.
         XCTAssertFalse(text.lowercased().contains("safe"),
@@ -458,6 +509,22 @@ final class LZLayerUITests: XCTestCase {
                       "the panel neither listed ground nor said why not: " + Self.visibleLabels(app))
         try XCTSkipIf(app.staticTexts["landable-notice"].exists,
                       "the search could not run: \(app.staticTexts["landable-notice"].label)")
+
+        // AN EMPTY LIST HERE IS MISSING DATA, NOT A SHORT SEARCH — and the guard above does not
+        // catch it. That one fires on "no .lzpack", i.e. NOTHING installed. A Simulator holding
+        // some OTHER cell sails past it: the search runs, covers nowhere near the aeroplane, and
+        // returns nothing. That is what was happening here — the only pack installed was n32w112
+        // (Arizona) while this test holds over KLRU (32.2894/-106.9219), which needs n33w107. The
+        // name marks a cell's NORTH-WEST corner and it runs one degree SOUTH, so n33w107 reaches
+        // down to 32°N and covers Las Cruces (lz/lzcommon.py:89).
+        //
+        // THE TEETH STAY. The bug this test exists to catch is a SHORT list — two candidates
+        // inside one field because the selection loop stopped looking — and one or two rows still
+        // fails below. Only the empty case skips, and it names the pack to install.
+        try XCTSkipIf(app.staticTexts["landable-empty"].exists,
+                      "Nothing scored over KLRU: the n33w107 pack is not installed in this "
+                      + "Simulator (the panel reports: \(app.staticTexts["layers-lz-status"].label)). "
+                      + "Run `bash Tools/fetch_lz_pack.sh n33w107` to give this test its teeth back.")
 
         var rows = 0
         for i in 1...5 where el(app, "landable-row-\(i)").exists { rows = i }        // bounded

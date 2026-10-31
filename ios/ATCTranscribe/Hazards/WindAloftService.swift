@@ -260,6 +260,32 @@ enum WindFetchPlan {
         return (kt, dir)
     }
 
+    /// The mean wind through the column a glide from `fromFtMSL` down to `groundFt` passes through, or
+    /// nil when there is no wind, or the held run is too far from now to describe this flight.
+    ///
+    /// ⚠️ STALE WIND IS REFUSED, NOT USED. The field bands used to read whatever the map's slider level
+    /// held, of any age, including a disk snapshot from days before. A refused wind means still air,
+    /// and the caller says so. Levels whose standard height is below the ground are skipped: GFS
+    /// extrapolates them underground, which is a number about nothing.
+    func descentMeanWind(at lat: Double, lon: Double, fromFtMSL: Double, groundFt: Double)
+        -> (fromDeg: Double, kts: Double)? {
+        freshFieldSet?.descentMeanWind(at: lat, lon: lon, fromFtMSL: fromFtMSL, groundFt: groundFt)
+    }
+
+    /// The held run, but only while it is close enough to now to describe this flight — a Sendable
+    /// snapshot that background work (the route glide-gap planner) can carry off the main actor.
+    var freshFieldSet: WindFieldSet? {
+        guard let set = fieldSet, glideWindAgeS(set) <= GlideAllowance.maxWindAgeS else { return nil }
+        return set
+    }
+
+    /// How far the held run's valid time is from now, in seconds (either side). Infinity with no run.
+    var glideWindAgeS: TimeInterval { fieldSet.map(glideWindAgeS) ?? .infinity }
+
+    private func glideWindAgeS(_ set: WindFieldSet) -> TimeInterval {
+        abs(now().timeIntervalSince(set.validTime))
+    }
+
     // MARK: - fetch decision
 
     /// Whether the held data no longer answers the question on screen. Pure apart from the clock.

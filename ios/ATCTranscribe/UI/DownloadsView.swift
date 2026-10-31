@@ -18,6 +18,7 @@ struct DownloadsView: View {
     @ObservedObject var library = ChartLibrary.shared
     @ObservedObject var lzLibrary = LZPackLibrary.shared
     @ObservedObject var navLibrary = NavDataLibrary.shared
+    @ObservedObject var avoidLibrary = AvoidMapLibrary.shared
     @ObservedObject var policy = DownloadPolicy.shared
     @ObservedObject var bag: PlateBag
 
@@ -35,6 +36,10 @@ struct DownloadsView: View {
     @State private var confirmDropStaged = false
     @State private var meteredLZCell: LZPackCatalog.Cell?
     @State private var meteredLZReason: String = ""
+    /// A download refused because the pilot's tier does not include it — NOT a metered refusal.
+    /// Kept separate on purpose: the metered dialogs above all offer an override, and offering one
+    /// here would promise content no override can unlock.
+    @State private var upgradeNeeded: Capability?
 
     /// Downloaded-vs-total plate count for a region (computed off-main — a region is hundreds of airports).
     struct PlateRegionStatus: Equatable { var total: Int; var downloaded: Int }
@@ -48,6 +53,7 @@ struct DownloadsView: View {
             chartsSection
             downloadSettingsSection
             ForEach(Self.rasterLayers, id: \.self) { chartLayerSection($0) }
+            avoidSection
             landabilitySection
             platesSection
             navDataSection
@@ -89,6 +95,7 @@ struct DownloadsView: View {
                                    meteredLZReason: meteredLZReason,
                                    confirmDropStaged: $confirmDropStaged,
                                    size: size))
+        .modifier(EntitlementDialog(capability: $upgradeNeeded))
         .onChange(of: bag.isRunning) { _, running in
             if !running { Task { await refreshPlateStatus() } }   // a plate job finished → refresh region counts
         }
@@ -351,9 +358,19 @@ struct DownloadsView: View {
             Task {
                 // The policy, not a bare cellular test: with Wi-Fi-only on, a metered path is a
                 // refusal the pilot has already asked for, and the dialog is how they release it.
-                if (await DownloadPolicy.shared.verdict(.userInitiated)).isAllowed {
+                //
+                // `requires:` matters here. Without it this asked only the network question, so a
+                // Flight Bag subscriber tapping "download all IFR-low" was offered a MOBILE-DATA
+                // OVERRIDE for content no amount of data will fetch — worse than a dead button,
+                // because it is a promise. The two refusals are now told apart below.
+                let verdict = await DownloadPolicy.shared.verdict(.userInitiated,
+                                                                  requires: layer.capability)
+                switch verdict {
+                case .allowed:
                     library.startBulkDownload(layers: [layer])
-                } else {
+                case .notEntitled(let capability):
+                    upgradeNeeded = capability
+                default:
                     confirmBulkLayer = layer
                 }
             }
@@ -395,9 +412,17 @@ struct DownloadsView: View {
                         // Ask the policy BEFORE starting, so a refusal becomes an explained dialog with
                         // an override instead of a button that does nothing. `download` enforces it
                         // again as a backstop.
-                        let verdict = await DownloadPolicy.shared.verdict(.userInitiated)
+                        //
+                        // `requires:` is what keeps that promise. Without it the pre-check answered
+                        // only the network question and reported `.allowed`, then `download` refused
+                        // on entitlement and returned false — the exact button-that-does-nothing this
+                        // comment exists to prevent.
+                        let verdict = await DownloadPolicy.shared.verdict(.userInitiated,
+                                                                          requires: e.capability)
                         if verdict.isAllowed {
                             await library.download(e)
+                        } else if case .notEntitled(let capability) = verdict {
+                            upgradeNeeded = capability
                         } else {
                             meteredReason = verdict.explanation ?? ""
                             meteredPack = e
@@ -616,7 +641,119 @@ struct DownloadsView: View {
         return line + " · " + source
     }
 
+    /// Developer-only since build 110 (see `AppModel.showLZRisk`). A pilot who downloaded packs while
+    /// the layer was public gets a way to take the storage back instead of a section that vanished
+    /// with hundreds of MB still on the device.
+    /// The national "where not to go" map: longitude bands, offered, never fetched on its own. A
+    /// download that stops part-way keeps what it got, and the button then fetches only the rest.
+    private var avoidSection: some View {
+        let p = model.palette
+        return Section("Where not to go — contiguous US") {
+            Text("Power lines, towers, wind turbines, solar farms, orchards and steep ground, with trees, "
+                 + "water and built-up areas optional. It only ever shows where NOT to put the aeroplane "
+                 + "down. Distribution wires, fences, ditches and crops are not mapped anywhere public, so "
+                 + "unshaded ground is not safe ground.")
+                .font(.dsLabelS).foregroundStyle(p.textDim)
+                .fixedSize(horizontal: false, vertical: true)
+            if let built = avoidLibrary.store.builtAt {
+                Text(avoidInstalledLine(built))
+                    .font(.dsLabelS).foregroundStyle(p.text)
+                    .accessibilityIdentifier("downloads-avoid-installed")
+            }
+            switch avoidLibrary.state {
+            case .downloading(let f):
+                HStack {
+                    ProgressView(value: f).tint(p.accent)
+                    Button("Cancel") { avoidLibrary.cancel() }.accessibilityIdentifier("downloads-avoid-cancel")
+                }
+            case .verifying:
+                Label("Checking the download…", systemImage: "checkmark.shield").font(.dsLabelS)
+            case .installed:
+                if avoidLibrary.updateAvailable {
+                    Button { avoidLibrary.download() } label: {
+                        Label("Update · \(byteStr(Int64(avoidLibrary.bytesToDownload)))", systemImage: "arrow.down.circle")
+                    }
+                    .accessibilityIdentifier("downloads-avoid-update")
+                }
+                Button(role: .destructive) { avoidLibrary.remove() } label: {
+                    Label("Remove", systemImage: "trash")
+                }
+                .accessibilityIdentifier("downloads-avoid-remove")
+            case .failed(let why):
+                Text(why).font(.dsLabelS).foregroundStyle(p.warn).fixedSize(horizontal: false, vertical: true)
+                avoidDownloadButtons(p, offerMetered: true)
+                if avoidLibrary.store.isInstalled {
+                    Button(role: .destructive) { avoidLibrary.remove() } label: { Label("Remove", systemImage: "trash") }
+                        .accessibilityIdentifier("downloads-avoid-remove")
+                }
+            case .idle:
+                avoidDownloadButtons(p, offerMetered: false)
+            }
+        }
+        .task { await avoidLibrary.refresh() }
+    }
+
+    private func avoidInstalledLine(_ built: String) -> String {
+        let date = String(built.prefix(10))
+        if let (have, total) = avoidLibrary.installedOfTotal, have < total {
+            return "Installed: \(have) of \(total) areas · built \(date)"
+        }
+        return "Installed · built \(date)"
+    }
+
+    /// The cellular override is offered only after the download policy has held one back: on Wi-Fi it
+    /// would be a second button that does the same thing.
+    @ViewBuilder private func avoidDownloadButtons(_ p: Palette, offerMetered: Bool) -> some View {
+        if avoidLibrary.catalog != nil {
+            let what = avoidLibrary.store.isInstalled ? "Download the rest" : "Download"
+            Button { avoidLibrary.download() } label: {
+                Label("\(what) · \(byteStr(Int64(avoidLibrary.bytesToDownload)))", systemImage: "arrow.down.circle")
+            }
+            .disabled(avoidLibrary.missing.isEmpty)
+            .accessibilityIdentifier("downloads-avoid-download")
+            if offerMetered {
+                Button { avoidLibrary.download(allowMetered: true) } label: {
+                    Label("Download on cellular anyway", systemImage: "antenna.radiowaves.left.and.right")
+                }
+                .font(.dsLabelS)
+                .accessibilityIdentifier("downloads-avoid-download-metered")
+            }
+        } else {
+            Text("The map list could not be reached. Connect to the internet to download it.")
+                .font(.dsLabelS).foregroundStyle(p.textDim)
+        }
+    }
+
     @ViewBuilder private var landabilitySection: some View {
+        if model.offFieldLayerAvailable {
+            landabilityCatalogSection
+        } else if lzLibrary.installedBytes > 0 {
+            landabilityPausedSection
+        }
+    }
+
+    private var landabilityPausedSection: some View {
+        let p = model.palette
+        return Section("Off-field landability") {
+            Text("Paused while it is reworked. A ground-truth test found the shading offering solar "
+                 + "farms, orchards and ground under power lines as landing candidates, so it is now a "
+                 + "developer preview. The packs on this device feed nothing you can see. The glide "
+                 + "range bands do not need them.")
+                .font(.dsLabelS).foregroundStyle(p.textDim)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("downloads-lz-paused")
+            Button(role: .destructive) {
+                Haptics.impact(.medium)
+                lzLibrary.removeAllInstalled()
+            } label: {
+                Label("Remove \(lzLibrary.installedIDs.count) pack(s) · \(byteStr(lzLibrary.installedBytes))",
+                      systemImage: "trash")
+            }
+            .accessibilityIdentifier("downloads-lz-remove-all")
+        }
+    }
+
+    @ViewBuilder private var landabilityCatalogSection: some View {
         let p = model.palette
         if let catalog = lzLibrary.catalog, !catalog.regions.isEmpty {
             ForEach(catalog.regions) { region in
@@ -973,6 +1110,55 @@ struct DownloadsView: View {
 
     private func size(_ bytes: Int) -> String { ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file) }
     private func byteStr(_ b: Int64) -> String { ByteCountFormatter.string(fromByteCount: b, countStyle: .file) }
+}
+
+/// The "your plan does not include this" notice.
+///
+/// ITS OWN MODIFIER, for the reason documented on `NextCycleDialogs` below: each dialog modifier
+/// wraps the whole accumulated generic type, so the cost is super-linear in chain length and adding
+/// one more inline tips `DownloadsView.body` past what the type checker will solve — failing, as
+/// that note records, on an unrelated `Binding` twelve modifiers earlier.
+///
+/// DELIBERATELY NOT A CONFIRMATION DIALOG. Every other refusal on this screen offers an override,
+/// because every other refusal is about the network and the pilot is allowed to overrule it. This
+/// one cannot be overridden by anything the pilot does here, so it is a plain acknowledgement with
+/// no action button. When the paywall lands this becomes its entry point; until then it must not
+/// imply a way through that does not exist.
+private struct EntitlementDialog: ViewModifier {
+    @Binding var capability: Capability?
+
+    func body(content: Content) -> some View {
+        content
+            .alert("Not included in your plan",
+                   isPresented: Binding(get: { capability != nil },
+                                        set: { if !$0 { capability = nil } }),
+                   presenting: capability) { _ in
+                Button("OK", role: .cancel) {}
+            } message: { needed in
+                Text(Self.message(for: needed))
+            }
+    }
+
+    /// Names the tier rather than just refusing, so the pilot knows what would change it. Reads the
+    /// same `minimumTier` table the gate itself uses, so the copy cannot drift from the policy.
+    static func message(for capability: Capability) -> String {
+        guard let tier = capability.minimumTier, tier > .none else {
+            return "This isn't available in this build."
+        }
+        // Phrased tier-first so the sentence agrees with a plural label: "Pro includes IFR low
+        // enroute charts", not "IFR low enroute charts is included in Pro".
+        return "\(tier.label) includes \(Self.label(for: capability)). "
+             + "Charts you've already downloaded stay on your iPad."
+    }
+
+    private static func label(for capability: Capability) -> String {
+        switch capability {
+        case .vfrCharts:     return "VFR sectional charts"
+        case .ifrLowCharts:  return "IFR low enroute charts"
+        case .ifrHighCharts: return "IFR high enroute charts"
+        default:             return "this feature"
+        }
+    }
 }
 
 /// The two next-cycle dialogs, as a `ViewModifier` rather than two more links in `DownloadsView`'s

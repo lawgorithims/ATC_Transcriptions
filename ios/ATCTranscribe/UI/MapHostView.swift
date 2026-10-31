@@ -73,6 +73,9 @@ struct MapHostView: View {
     /// `deviceLocation` and `windAloft`, so recompiling does not republish AppModel to every view.
     /// The SHARED controller — the landable-ground panel reads the same sweep this drives.
     @ObservedObject private var lzController = LZRiskController.shared
+    /// Observed so a finished download (or a removal) redraws the map: the avoid signature reads the
+    /// store, which SwiftUI cannot see change on its own.
+    @ObservedObject private var avoidLibrary = AvoidMapLibrary.shared
     /// Screen-point of the search-result highlight (streamed from the active engine, like the plate anchors),
     /// so the SwiftUI pulsing marker rides the map. nil when there's no highlight or it's off-screen-computed.
     @State private var searchPoint: CGPoint?
@@ -239,11 +242,11 @@ struct MapHostView: View {
         // the map rather than leaving stale scores on screen. Cheap when nothing changed (the controller
         // gates on a key of aircraft + theme + pack count), and re-mounted when the layer is switched on
         // so a pack copied in while the app was running is picked up without a relaunch.
-        .task(id: LZRefreshKey(on: model.showLZRisk,
+        .task(id: LZRefreshKey(on: model.lzRiskVisible,
                                theme: model.theme,
                                glide: model.selectedAircraft?.glideRatio,
                                vbg: model.selectedAircraft?.bestGlideKts)) {
-            guard model.showLZRisk else { return }
+            guard model.lzRiskVisible else { return }
             lzController.mount()
             lzController.refresh(aircraft: model.selectedAircraft, theme: model.theme)
         }
@@ -262,15 +265,26 @@ struct MapHostView: View {
                 // to AppModel for good reasons, and an ambient layer should hide rather than guess.
                 let readout = GPSReadout.merge(stratux: model.freshStratuxGPS,
                                                device: model.deviceLocation.fix)
-                let wind = model.windAloft.wind(at: model.presentPosition?.lat ?? 0,
-                                                lon: model.presentPosition?.lon ?? 0,
-                                                level: WindLevel.at(index: model.windLevelIndex))
+                // ⚠️ THE DESCENT-MEAN WIND, NOT THE SLIDER'S LEVEL. This read the wind at whatever level
+                // the map's wind slider sat on — the surface, by default — of any age. A glide meets
+                // every level between here and the ground; stale runs are refused (still air).
+                let pos = model.presentPosition
+                let groundFt = pos.flatMap { TerrainElevation.shared.sampleElevationFt(at: $0) } ?? 0
+                let wind = pos.flatMap { p in readout.altitudeFtMSL.flatMap { alt in
+                    model.windAloft.descentMeanWind(at: p.lat, lon: p.lon, fromFtMSL: alt,
+                                                    groundFt: groundFt) } }
                 await lzController.refreshEnergy(
-                    coord: model.presentPosition,
+                    coord: pos,
                     altitudeFtMSL: readout.altitudeFtMSL,
                     aircraft: model.selectedAircraft,
-                    wind: wind.map { (fromDeg: Double($0.fromDeg), kts: Double($0.kt)) },
-                    verticalAccuracyM: model.deviceLocation.fix?.verticalAccuracyM)
+                    wind: wind,
+                    // The sigma that describes THIS altitude: a Stratux altitude carries none, and
+                    // pairing it with the iPad's (often WAAS-tight) sigma shrank the clearance buffer
+                    // using an error bar for a different instrument. NRST already refuses that pairing.
+                    verticalAccuracyM: readout.source == .device
+                        ? model.deviceLocation.fix?.verticalAccuracyM : nil,
+                    trackDeg: GlideAllowance.usableTrack(trackDeg: readout.trackDeg,
+                                                         groundSpeedKt: readout.groundSpeedKt))
                 try? await Task.sleep(nanoseconds: Self.lzEnergyPeriodNs)
             }
         }
@@ -284,7 +298,7 @@ struct MapHostView: View {
         // changes when a transfer completes — so without this the pilot watches an 88 MB download
         // finish and the map not change, which is indistinguishable from a broken layer.
         .onReceive(LZPackLibrary.shared.packsChanged) { _ in
-            guard model.showLZRisk else { return }
+            guard model.lzRiskVisible else { return }
             lzController.packsChangedOnDisk(aircraft: model.selectedAircraft, theme: model.theme)
         }
         // Publish reported flight categories to the symbol builder, so an airport's glyph carries the
@@ -437,6 +451,9 @@ struct MapHostView: View {
             layer: model.chartLayer,
             routeCoords: route.map { CLLocationCoordinate2D(latitude: $0.coord.lat, longitude: $0.coord.lon) },
             breadcrumbCoords: breadcrumb.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) },
+            glideGapLines: model.showRouteGlideGaps
+                ? model.routeGlideGapLines.map { $0.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) } }
+                : [],
             radarTemplate: radarTemplate,
             // Only the holds actually being FLOWN reach the map — a skipped course reversal is not
             // drawn, so the chart shows what the pilot is doing rather than everything published.
@@ -513,15 +530,17 @@ struct MapHostView: View {
             // Off-field landability. A nil signature removes the layer, which is also what happens
             // when no pack is installed or the ruleset fails to compile — a heatmap that cannot
             // explain itself must not draw.
-            lzSignature: model.showLZRisk ? lzController.signature : nil,
+            lzSignature: model.lzRiskVisible ? lzController.signature : nil,
             lzMinZoom: lzController.minZoom,
             lzMaxZoom: lzController.maxZoom,
             lzProvider: lzController.provider,
+            avoidSignature: model.avoidSignature,
+            avoidProvider: model.avoidProvider,
             // GATED ON THE LAYER, exactly like `lzSignature` above. Without this the tap card
             // offered "Off-field landability" for ground the pilot had switched the shading OFF
             // for — an answer about a layer that is not on screen, arriving in the disambiguation
             // list beside things that are. Turning a layer off should mean it stops speaking.
-            lzProbe: model.showLZRisk
+            lzProbe: model.lzRiskVisible
                 ? { [lzController] c in lzController.sample(lon: c.lon, lat: c.lat) }
                 : nil,
             lzEnergyBands: model.showLZEnergy ? lzController.energyBands : [],
@@ -568,7 +587,7 @@ struct MapHostView: View {
     /// Distinguishes "no coverage published here" from "published, just not downloaded". They look
     /// identical on the map (nothing drawn) and are completely different problems.
     @ViewBuilder private var lzCoveragePill: some View {
-        if model.showLZRisk, !lzController.packAvailable || lzMissingHere > 0 {
+        if model.lzRiskVisible, !lzController.packAvailable || lzMissingHere > 0 {
             if lzMissingHere > 0 {
                 Button {
                     Haptics.impact(.light)

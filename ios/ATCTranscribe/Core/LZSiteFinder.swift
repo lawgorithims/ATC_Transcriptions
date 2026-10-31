@@ -94,8 +94,9 @@ enum LZSiteFinder {
         /// Never optional, never abbreviated, never assembled by the caller. A candidate that is
         /// displayed without this is a candidate presented as a survey.
         var unknowns: String {
-            "Inferred from 10 m land cover and terrain — not surveyed. Surface condition, fences, "
-            + "ditches, standing crop, wires and livestock are not modelled."
+            "Inferred from 30 m land cover and 10 m terrain — not surveyed. Surface condition, "
+            + "wires, fences, ditches, orchards, solar farms, standing crop and livestock are not "
+            + "modelled."
         }
     }
 

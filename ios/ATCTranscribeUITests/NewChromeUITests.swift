@@ -68,6 +68,10 @@ final class NewChromeUITests: XCTestCase {
     /// Zulu and a pilot reading local off it would be an hour or seven out.
     func testTheBarClockShowsZuluTime() throws {
         let app = launch()
+        // TopBar builds the clock only `if hSize == .regular`. The note there records the
+        // measurement: at 375pt both Texts truncated away to 2.00pt, so compact spends the space
+        // on controls instead. There is no clock on a phone to assert, by design.
+        try UITestLayout.requireRegularWidth(app, "The top-bar Zulu clock")
         let clock = el(app, "bar-clock")
         XCTAssertTrue(clock.waitForExistence(timeout: 30), "no clock in the top bar")
         // The accessibility label is "HHMM Zulu, HH:MM local" — assert on the Zulu half.

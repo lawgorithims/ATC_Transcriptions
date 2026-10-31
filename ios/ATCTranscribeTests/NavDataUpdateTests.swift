@@ -122,8 +122,9 @@ final class NavDataUpdateTests: XCTestCase {
         let url = try makeCIFP(cycle: "2699", effective: Self.iso(daysFromNow: -1))
         XCTAssertNil(NavDataUpdate.install(from: url, as: .cifp))
         XCTAssertTrue(NavDataUpdate.isOverridden(.cifp))
-        XCTAssertEqual(NavDataUpdate.activeURL(.cifp)?.path, NavDataUpdate.installedURL(.cifp).path)
-        XCTAssertEqual(NavDataUpdate.readCycle(NavDataUpdate.installedURL(.cifp)), "2699")
+        let installed = try XCTUnwrap(NavDataUpdate.installedURL(.cifp))
+        XCTAssertEqual(NavDataUpdate.activeURL(.cifp)?.path, installed.path)
+        XCTAssertEqual(NavDataUpdate.readCycle(installed), "2699")
     }
 
     func testRevertingGoesBackToTheBundledCopyRatherThanNothing() throws {
@@ -140,8 +141,91 @@ final class NavDataUpdateTests: XCTestCase {
         XCTAssertNil(NavDataUpdate.install(from: good, as: .cifp))
         let bad = try makeCIFP(cycle: "2700", effective: Self.iso(daysFromNow: -1), marks: false)
         XCTAssertEqual(NavDataUpdate.install(from: bad, as: .cifp), .failsInvariants)
-        XCTAssertEqual(NavDataUpdate.readCycle(NavDataUpdate.installedURL(.cifp)), "2699",
+        XCTAssertEqual(NavDataUpdate.readCycle(try XCTUnwrap(NavDataUpdate.installedURL(.cifp))), "2699",
                        "the good cycle must still be the one installed")
+    }
+
+    // MARK: Never under a reader
+
+    /// Taking an update, or reverting, while a downloaded cycle is being served must not take the
+    /// procedures away for the rest of the session.
+    ///
+    /// Apple's libsqlite3 INVALIDATES an open connection whose file was replaced or deleted ("vnode
+    /// renamed / unlinked while in use"), and `CIFP` reads every failed query as no rows. Installing
+    /// over one fixed `cifp.sqlite` therefore emptied every approach the moment the pilot tapped
+    /// Update — measured here before the fix: the procedure count fell from 1 to 0 on the install, and
+    /// again on the revert. The open cycle must stay readable; the new one is served from next launch.
+    func testAnUpdateTakenMidSessionLeavesTheOpenCycleReadable() throws {
+        let first = try makeCIFP(cycle: "2698", effective: Self.iso(daysFromNow: -2))
+        XCTAssertNil(NavDataUpdate.install(from: first, as: .cifp))
+        CIFP.reopenForTests()                                   // this "launch" reads the download
+        XCTAssertEqual(CIFP.procedureCount, 1, "precondition: serving the installed fixture")
+
+        let second = try makeCIFP(cycle: "2699", effective: Self.iso(daysFromNow: -1))
+        XCTAssertNil(NavDataUpdate.install(from: second, as: .cifp))
+        XCTAssertEqual(CIFP.procedureCount, 1, "installing a newer cycle took the open one away")
+        XCTAssertEqual(NavDataUpdate.readCycle(try XCTUnwrap(NavDataUpdate.activeURL(.cifp))), "2699",
+                       "the next launch serves the new cycle")
+
+        NavDataUpdate.revertToBundled(.cifp)
+        XCTAssertEqual(CIFP.procedureCount, 1, "reverting took the open cycle away")
+        XCTAssertEqual(NavDataUpdate.activeURL(.cifp)?.path, NavDataUpdate.Dataset.cifp.bundledURL?.path)
+    }
+
+    /// The files an install supersedes are removed only at the next launch, before any reader opens —
+    /// never by the install itself.
+    func testASupersededCopyIsPrunedAtTheNextLaunchNotByTheInstall() throws {
+        XCTAssertNil(NavDataUpdate.install(from: try makeCIFP(cycle: "2698", effective: Self.iso(daysFromNow: -2)),
+                                           as: .cifp))
+        let old = try XCTUnwrap(NavDataUpdate.installedURL(.cifp))
+        XCTAssertNil(NavDataUpdate.install(from: try makeCIFP(cycle: "2699", effective: Self.iso(daysFromNow: -1)),
+                                           as: .cifp))
+        let new = try XCTUnwrap(NavDataUpdate.installedURL(.cifp))
+        XCTAssertNotEqual(old, new, "each install gets a file of its own")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: old.path), "the install deleted the copy in use")
+
+        NavDataUpdate.pruneSuperseded()                         // what the next launch does first
+        XCTAssertFalse(FileManager.default.fileExists(atPath: old.path), "a superseded copy outlived its launch")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: new.path), "pruning removed the cycle being served")
+        XCTAssertEqual(NavDataUpdate.installedURL(.cifp), new)
+
+        NavDataUpdate.revertToBundled(.cifp)
+        NavDataUpdate.pruneSuperseded()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: new.path), "a reverted copy outlived its launch")
+        XCTAssertNil(NavDataUpdate.installedURL(.cifp))
+    }
+
+    /// A cycle downloaded by a build that installed to the fixed `cifp.sqlite` keeps being served, and
+    /// goes away only once an install has superseded it — at the following launch.
+    func testALegacyInstallIsStillServedUntilSuperseded() throws {
+        let legacy = NavDataUpdate.legacyInstalledURL(.cifp)
+        try FileManager.default.createDirectory(at: NavDataUpdate.directory, withIntermediateDirectories: true)
+        try? FileManager.default.removeItem(at: NavDataUpdate.pointerURL(.cifp))
+        try? FileManager.default.removeItem(at: legacy)
+        try FileManager.default.copyItem(at: try makeCIFP(cycle: "2698", effective: Self.iso(daysFromNow: -2)),
+                                         to: legacy)
+        defer { try? FileManager.default.removeItem(at: legacy) }
+        XCTAssertEqual(NavDataUpdate.activeURL(.cifp)?.path, legacy.path, "an older build's download is served")
+        NavDataUpdate.pruneSuperseded()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: legacy.path), "pruning removed a served legacy copy")
+
+        XCTAssertNil(NavDataUpdate.install(from: try makeCIFP(cycle: "2699", effective: Self.iso(daysFromNow: -1)),
+                                           as: .cifp))
+        XCTAssertEqual(NavDataUpdate.readCycle(try XCTUnwrap(NavDataUpdate.activeURL(.cifp))), "2699")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: legacy.path), "the install deleted the legacy copy")
+        NavDataUpdate.pruneSuperseded()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: legacy.path), "the superseded legacy copy stayed")
+    }
+
+    /// The pointer can only ever name a file of its own dataset inside NavData.
+    func testAPointerCannotAimOutsideItsDataset() throws {
+        try FileManager.default.createDirectory(at: NavDataUpdate.directory, withIntermediateDirectories: true)
+        for bad in ["../../cifp.sqlite", "/etc/hosts", "apt-2699-ABCD.sqlite", "cifp-2699-ABCD.json", ""] {
+            try Data((bad + "\n").utf8).write(to: NavDataUpdate.pointerURL(.cifp), options: .atomic)
+            XCTAssertNotEqual(NavDataUpdate.activeURL(.cifp)?.lastPathComponent, bad, "served a pointer to \(bad)")
+            XCTAssertEqual(NavDataUpdate.activeURL(.cifp)?.path, NavDataUpdate.Dataset.cifp.bundledURL?.path,
+                           "a malformed pointer must fall back to the bundle, not to nothing: \(bad)")
+        }
     }
 
     /// With nothing installed the app reads the bundle — the state every install starts from.
@@ -245,7 +329,7 @@ final class NavDataUpdateTests: XCTestCase {
 
         XCTAssertEqual(NavDataUpdate.activateStagedIfDue(), [.cifp])
         XCTAssertTrue(NavDataUpdate.isOverridden(.cifp), "it is now the database being served")
-        XCTAssertEqual(NavDataUpdate.readCycle(NavDataUpdate.installedURL(.cifp)), "2699")
+        XCTAssertEqual(NavDataUpdate.readCycle(try XCTUnwrap(NavDataUpdate.installedURL(.cifp))), "2699")
         XCTAssertNil(NavDataUpdate.stagedCycle(.cifp),
                      "and the staging slot is cleared, so it cannot be installed twice")
     }

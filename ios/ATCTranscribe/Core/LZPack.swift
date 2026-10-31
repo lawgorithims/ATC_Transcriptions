@@ -279,6 +279,10 @@ final class LZPackStore {
     struct Mounted {
         let reader: MBTilesReader
         let rect: MKMapRect
+        /// The pack's own 1-degree cell, parsed from its id, or nil for a pack whose name is not a
+        /// cell (the test fixture). See `planes(z:x:y:)` for why this decides who supplies a pixel.
+        /// Defaulted so fixture-built values keep the cell-less behaviour without naming it.
+        var cell: MKMapRect? = nil
     }
 
     private(set) var mounted: [Mounted] = []
@@ -338,7 +342,8 @@ final class LZPackStore {
                 rejected.append("\(url.lastPathComponent): plane order mismatch for schema \(declared)")
                 continue
             }
-            mounted.append(Mounted(reader: r, rect: Self.coveredRect(r)))
+            mounted.append(Mounted(reader: r, rect: Self.coveredRect(r),
+                                   cell: Self.cellRect(forPackID: r.packID)))
         }
         assert(mounted.count <= Self.maxPacks, "LZPackStore: pack cap exceeded")
         assert(rejected.count <= packs.count, "LZPackStore: more rejections than files")
@@ -350,6 +355,45 @@ final class LZPackStore {
     static func tileRect(z: Int, x: Int, y: Int) -> MKMapRect {
         let side = MKMapSize.world.width / Double(1 << z)
         return MKMapRect(x: Double(x) * side, y: Double(y) * side, width: side, height: side)
+    }
+
+    /// The 1-degree cell a pack id names, in map points: `n33w107` is the USGS NW-corner convention,
+    /// lat 32…33, lon −107…−106. Nil for anything that is not a CONUS cell id.
+    static func cellRect(forPackID id: String) -> MKMapRect? {
+        var s = id.lowercased()
+        if s.hasSuffix(".lzpack") { s = String(s.dropLast(".lzpack".count)) }
+        guard s.first == "n", let w = s.firstIndex(of: "w") else { return nil }
+        guard let north = Int(s[s.index(after: s.startIndex)..<w]),
+              let west = Int(s[s.index(after: w)...]),
+              (1...90).contains(north), (1...180).contains(west) else { return nil }
+        let nw = MKMapPoint(CLLocationCoordinate2D(latitude: Double(north), longitude: -Double(west)))
+        let se = MKMapPoint(CLLocationCoordinate2D(latitude: Double(north - 1),
+                                                   longitude: -Double(west) + 1))
+        assert(se.x > nw.x && se.y > nw.y, "cellRect: inverted cell")
+        return MKMapRect(x: nw.x, y: nw.y, width: se.x - nw.x, height: se.y - nw.y)
+    }
+
+    /// A half-open block of pixels inside one tile.
+    struct PixelRect: Equatable {
+        let x0: Int, x1: Int, y0: Int, y1: Int
+        var isEmpty: Bool { x1 <= x0 || y1 <= y0 }
+        var isFull: Bool { x0 == 0 && y0 == 0 && x1 == LZPack.side && y1 == LZPack.side }
+    }
+
+    /// The pixels of a tile whose CENTRES fall inside a cell.
+    ///
+    /// Half-open on both axes in map-point space, so two neighbouring cells partition every pixel
+    /// exactly once — no pixel is owned twice and none falls between them. Exact without any
+    /// trigonometry, because a tile and a cell are both axis-aligned rectangles in Web Mercator.
+    static func ownedPixels(of cell: MKMapRect, in tile: MKMapRect) -> PixelRect {
+        let side = Double(LZPack.side)
+        let pw = tile.width / side, ph = tile.height / side
+        assert(pw > 0 && ph > 0, "ownedPixels: degenerate tile")
+        func edge(_ v: Double, _ origin: Double, _ step: Double) -> Int {
+            Int(max(0, min(side, ((v - origin) / step - 0.5).rounded(.up))))
+        }
+        return PixelRect(x0: edge(cell.minX, tile.minX, pw), x1: edge(cell.maxX, tile.minX, pw),
+                         y0: edge(cell.minY, tile.minY, ph), y1: edge(cell.maxY, tile.minY, ph))
     }
 
     /// What a pack ACTUALLY covers, derived from the tile addresses it stores — not from the
@@ -426,16 +470,37 @@ final class LZPackStore {
         // pin the early-out, the sticky-coarse rule and the plane-count rule all exercised the copy
         // the map does NOT serve. Two implementations, one of them tested. Everything below the
         // decode now runs in `Accumulator`, which both call.
+        //
+        // ⚠️ AND EVERY PIXEL COMES FROM THE PACK THAT OWNS IT — NEVER FROM A NEIGHBOUR'S MARGIN.
+        // The merge above used to take the first pack that knew a pixel, on the assumption that
+        // overlapping packs agree because they read the same federal sources. They do not. Each
+        // pack carries a ~2 km margin past its own cell, but obstacles are read only INSIDE the
+        // cell, so a margin knows the ground and none of the neighbour's towers. First-by-filename
+        // then let n33w107's margin overwrite n33w108's own ground: measured across 3,757 shared
+        // tiles, 62% of charted-obstacle pixels lost their flag at the seams — a tower at hazard
+        // 255 served as hazard 28. A pixel is now taken only from the pack whose 1-degree cell
+        // contains it, which makes the answer independent of mount order and drops margins
+        // entirely. Packs whose id is not a cell (the test fixture) keep the old fill.
         var acc = Accumulator()
         for m in mounted {                                   // bounded by maxPacks (rule 2)
+            guard let cell = m.cell else { continue }
+            guard z >= m.reader.minZoom, z <= m.reader.maxZoom else { continue }
+            guard cell.intersects(want) else { continue }
+            let owned = Self.ownedPixels(of: cell, in: want)
+            guard !owned.isEmpty else { continue }
+            guard let data = m.reader.tileData(z: z, x: x, y: y),
+                  let p = LZPackBlob.decode(data) else { continue }
+            acc.add(p, owned: owned)
+        }
+        for m in mounted where m.cell == nil {               // bounded by maxPacks (rule 2)
+            // Stopping here keeps the decode off packs with nothing left to give. O(1) — see
+            // `Accumulator.isComplete`.
+            if acc.isComplete { break }
             guard z >= m.reader.minZoom, z <= m.reader.maxZoom else { continue }
             guard m.rect.intersects(want) else { continue }
             guard let data = m.reader.tileData(z: z, x: x, y: y),
                   let p = LZPackBlob.decode(data) else { continue }
             acc.add(p)
-            // Stopping here is what keeps the decode off the other 33 packs. It must stay O(1) —
-            // see `Accumulator.isComplete`.
-            if acc.isComplete { break }
         }
         return acc.finish()
     }
@@ -457,6 +522,30 @@ final class LZPackStore {
         /// every pack), so it paid that in full every time and still decoded everything. Counting
         /// unknowns as they are filled makes the same decision for free.
         var isComplete: Bool { planes != nil && unknowns == 0 }
+
+        /// Copy the block of pixels `p`'s pack OWNS, wholesale. Ownership is exclusive — cells
+        /// partition the tile — so nothing already in `planes` can live inside `owned`.
+        mutating func add(_ p: LZTilePlanes, owned: PixelRect) {
+            assert(!owned.isEmpty, "Accumulator: empty ownership")
+            if planes == nil && owned.isFull {
+                // The overwhelmingly common case at z13: the tile sits inside one cell.
+                planes = p.planes
+                terrain = p.terrainSource
+                unknowns = LZPackStore.unknownCount(p.planes)
+                contributed = p.planes.count
+                return
+            }
+            if planes == nil {
+                planes = [[UInt8]](repeating: [UInt8](repeating: 0, count: LZPack.side * LZPack.side),
+                                   count: LZPack.planeCount)
+                unknowns = LZPack.side * LZPack.side
+            }
+            let known = LZPackStore.copy(owned, from: p, into: &planes!)
+            guard known > 0 else { return }
+            if p.terrainSource != LZPack.terrainFine { terrain = p.terrainSource }   // sticky
+            contributed = min(contributed, p.planes.count)
+            unknowns -= known
+        }
 
         mutating func add(_ p: LZTilePlanes) {
             guard planes != nil else {
@@ -525,6 +614,50 @@ final class LZPackStore {
             }
         }
         return (true, left, p.planes.count)
+    }
+
+    /// Copy one owned block of every plane `p` carries into `acc`; returns how many of the copied
+    /// pixels carry a known surface class. Row slices, so the cost is a memcpy per row per plane.
+    static func copy(_ r: PixelRect, from p: LZTilePlanes, into acc: inout [[UInt8]]) -> Int {
+        let side = LZPack.side
+        var known = 0
+        p.planes[LZPack.planeClass].withUnsafeBufferPointer { cls in
+            for row in r.y0..<r.y1 {                         // bounded: side
+                for i in (row * side + r.x0)..<(row * side + r.x1) where cls[i] != LZPack.classUnknown {
+                    known += 1
+                }
+            }
+        }
+        for plane in 0..<min(acc.count, p.planes.count) {   // bounded: planeCount
+            p.planes[plane].withUnsafeBufferPointer { src in
+                acc[plane].withUnsafeMutableBufferPointer { dst in
+                    for row in r.y0..<r.y1 {                 // bounded: side
+                        let a = row * side + r.x0, n = r.x1 - r.x0
+                        dst.baseAddress!.advanced(by: a)
+                            .update(from: src.baseAddress!.advanced(by: a), count: n)
+                    }
+                }
+            }
+        }
+        assert(known <= (r.x1 - r.x0) * (r.y1 - r.y0), "copy: counted more pixels than the block")
+        return known
+    }
+
+    /// The live path's merge, exposed pure for tests: each part is copied over only the pixels its
+    /// cell owns, then cell-less parts fill what remains. Same `Accumulator` the map serves from.
+    static func mergeOwned(_ parts: [(planes: LZTilePlanes, cell: MKMapRect?)],
+                           tile: MKMapRect) -> LZTilePlanes? {
+        var acc = Accumulator()
+        for part in parts {                                  // bounded by maxPacks (rule 2)
+            guard let cell = part.cell, cell.intersects(tile) else { continue }
+            let owned = ownedPixels(of: cell, in: tile)
+            if !owned.isEmpty { acc.add(part.planes, owned: owned) }
+        }
+        for part in parts where part.cell == nil {          // bounded by maxPacks (rule 2)
+            if acc.isComplete { break }
+            acc.add(part.planes)
+        }
+        return acc.finish()
     }
 
     /// ⚠️ A PLANE A CONTRIBUTOR NEVER CARRIED MUST NOT BE READ AS A MEASUREMENT OF ZERO.

@@ -26,17 +26,6 @@ final class DownloadSettingsUITests: XCTestCase {
         app.descendants(matching: .any).matching(identifier: id).firstMatch
     }
 
-    /// Flip a Form toggle by tapping THE SWITCH, not the middle of the row.
-    ///
-    /// `.accessibilityIdentifier` on a SwiftUI `Toggle` lands on the row-level element — 540 pt wide
-    /// here — whose centre is the label text, while the control itself sits at the right edge. A
-    /// plain `.tap()` therefore reports `isHittable == true`, hits the label, and changes nothing:
-    /// the first version of these tests read "the switch did not take the tap" and looked exactly
-    /// like a broken binding. Tapping at 0.9 of the width hits the control.
-    private func flip(_ app: XCUIApplication, _ id: String) {
-        el(app, id).coordinate(withNormalizedOffset: CGVector(dx: 0.9, dy: 0.5)).tap()
-    }
-
     /// Settings → Charts & downloads, the real path.
     ///
     /// ASSERTS rather than skips when the screen cannot be reached. The first cut of this file
@@ -79,7 +68,8 @@ final class DownloadSettingsUITests: XCTestCase {
         let wifi = el(app, "downloads-wifi-only-toggle")
         XCTAssertTrue(wifi.waitForExistence(timeout: 20))
 
-        flip(app, "downloads-wifi-only-toggle")
+        // Taps the SWITCH, not the row's label, and retries a dropped tap — see `UITestToggle`.
+        UITestToggle.flip(wifi)
         // Re-read through a fresh query: tapping a SwiftUI Toggle that is not actually bound leaves
         // the rendered value unchanged, and reusing the stale element can hide that.
         let after = el(app, "downloads-wifi-only-toggle")
@@ -92,7 +82,9 @@ final class DownloadSettingsUITests: XCTestCase {
         let app = openDownloads(["--reset-download-settings"])
         let precache = el(app, "downloads-precache-toggle")
         XCTAssertTrue(precache.waitForExistence(timeout: 20))
-        flip(app, "downloads-precache-toggle")
+        // The Wi-Fi-only row sits directly above: the check below is also what catches a retried
+        // tap that slipped onto it.
+        UITestToggle.flip(precache)
 
         XCTAssertEqual(el(app, "downloads-precache-toggle").value as? String, "0")
         XCTAssertEqual(el(app, "downloads-wifi-only-toggle").value as? String, "1",

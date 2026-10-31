@@ -162,3 +162,22 @@ struct WindFieldSet: Sendable {
                             validTime: valid, fetchedAt: fetchedAt)
     }
 }
+
+extension WindFieldSet {
+    /// The mean wind through the column a glide from `fromFtMSL` down to `groundFt` descends through
+    /// (`WindProfile.layerMean`). Pure — no age check; `WindAloftService.freshFieldSet` decides
+    /// whether a run is fresh enough to be asked at all. Levels whose standard height is below the
+    /// ground are skipped: GFS extrapolates them underground, which is a number about nothing.
+    func descentMeanWind(at lat: Double, lon: Double, fromFtMSL: Double, groundFt: Double)
+        -> (fromDeg: Double, kts: Double)? {
+        var levels = [WindProfile.Level]()
+        for level in WindLevel.allCases {                              // bounded: 10 levels
+            guard let f = field(level), let kt = f.speedKt(lat: lat, lon: lon),
+                  let dir = f.directionFromDeg(lat: lat, lon: lon) else { continue }
+            let h = level.standardAltitudeFt ?? (groundFt + 33)       // the surface level is 10 m AGL
+            guard h >= groundFt else { continue }
+            levels.append(.init(altitudeFtMSL: h, fromDeg: Double(dir), kts: Double(kt)))
+        }
+        return WindProfile.layerMean(levels, topFtMSL: fromFtMSL, bottomFtMSL: groundFt)
+    }
+}

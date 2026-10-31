@@ -55,7 +55,9 @@ enum LZDemoFlight {
         guard !mounted.isEmpty else { return nil }
         for _ in 0..<maxAttempts {                                   // bounded (rule 2)
             guard let m = mounted.randomElement(using: &rng) else { return nil }
-            guard let c = randomPoint(in: m.rect, using: &rng) else { continue }
+            // The CELL, not the stored extent: margins are no longer served (see
+            // `LZPackStore.planes`), so a drop in the margin would land on blank ground.
+            guard let c = randomPoint(in: m.cell ?? m.rect, using: &rng) else { continue }
             // THE CHECK THAT MATTERS: does the layer have an answer here?
             guard let info = sample(c), !info.vetoed || info.score > 0 else { continue }
             _ = info

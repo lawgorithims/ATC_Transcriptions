@@ -36,7 +36,7 @@
       "id": "coarse_terrain",
       "when": "terrain_source != fine",
       "cap": 55,
-      "card_text": "10 m elevation source \u2014 the ditch and berm checks cannot run here"
+      "card_text": "10 m elevation source (no lidar) \u2014 roughness here is unknown"
     },
     {
       "id": "wire_corridor",

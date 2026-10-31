@@ -6,7 +6,21 @@
 #     brew install xcodegen          # one-time
 #     cd ios && xcodegen generate    # writes ATCTranscribe.xcodeproj (git-ignored)
 #     xcodebuild -project ATCTranscribe.xcodeproj -scheme ATCTranscribe \
-#                -destination 'platform=iOS Simulator,name=iPhone 15' test
+#                -destination 'platform=iOS Simulator,name=iPhone 16' -only-testing:ATCTranscribeTests test
+#
+# ⚠️ THE TWO SUITES DO NOT SHARE A DESTINATION. The unit suite runs anywhere. The UI suite needs
+# an iPad: the app is universal but not identical at both widths (ConsoleView.homeArea builds the
+# floating canvas, side panes and NRST panel only `if hSize == .regular`, and TopBar drops the bar
+# clock at compact width), and nine UI tests assert that chrome. A plain `test` action on an iPhone
+# therefore reports nine failures that are not regressions. Run the UI suite through the script
+# that pins the destination:
+#
+#     bash Tools/uitests.sh          # iPad Pro 13-inch (M5); see ios/README.md
+#
+# An .xctestplan cannot carry a destination (test plans hold environment, arguments and skipped
+# tests; the destination comes from -destination or Xcode's own run-destination picker, which is
+# per-user in xcuserdata and not shared), so the script plus the tests' own
+# UITestLayout.requireRegularWidth guards are what make a future run land in the right place.
 #
 # WhisperKit is intentionally NOT wired yet — the deterministic core (models,
 # context, corrector) is pure Foundation and builds with no dependencies, so the
@@ -41,6 +55,27 @@ settings:
     #
     # SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) COMMSIGHT_TRANSCRIPTION
     # ===============================================================================
+    # ==================== CLOUD SYNC BLOCK -- see Core/Features.swift ====================
+    # Syncs the logbook and the note library across the pilot's own devices through THEIR private
+    # CloudKit database. Off by default, for a different reason than transcription: CloudKit needs an
+    # ENTITLEMENT naming a container that actually exists in the team's account, and a build carrying
+    # that entitlement against a container nobody created fails to launch. So the entitlement cannot
+    # ship speculatively.
+    #
+    # The merge, the ledger, the coordinator and CloudKitTransport are compiled in EVERY build and
+    # tested in every run (SyncMergeTests / SyncLedgerTests / SyncCoordinatorTests / StoreSyncTests /
+    # SyncCodingTests). This gate only decides whether a CKContainer is ever instantiated.
+    #
+    # TO ENABLE, all four of these together:
+    #   1. Create the container `iCloud.com.flycommsight.atctranscribe` in the Apple Developer account
+    #      (it must match Features.cloudSyncContainerID exactly -- a mismatch is a runtime failure on
+    #      the first sync, not a build error).
+    #   2. Set DEVELOPMENT_TEAM above, so automatic signing can fetch a profile with iCloud enabled.
+    #   3. Uncomment the compilation condition and the `entitlements` block in the app target below.
+    #   4. `xcodegen generate`.
+    #
+    # SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) COMMSIGHT_CLOUDSYNC
+    # =====================================================================================
     MARKETING_VERSION: "1.0"   # build 1 shipped as 1.0; keep the same train so build N is 1.0 (N)
     CURRENT_PROJECT_VERSION: "1"
     SWIFT_VERSION: "5.9"
@@ -123,6 +158,20 @@ targets:
       # renders coastlines/land-vs-water with NO network — replaces the old online OSM backdrop.
       - path: ATCTranscribe/Resources/basemap
         type: folder
+    # ==================== CLOUD SYNC ENTITLEMENT -- see the block at the top ====================
+    # Uncomment WITH the COMMSIGHT_CLOUDSYNC compilation condition, never on its own: an entitlement
+    # without the flag means a signed-for-iCloud build that never syncs, and the flag without the
+    # entitlement means the first sync fails at runtime on a container the binary may not reach.
+    #
+    # entitlements:
+    #   path: ATCTranscribe/ATCTranscribe.entitlements
+    #   properties:
+    #     com.apple.developer.icloud-container-identifiers:
+    #       - iCloud.com.flycommsight.atctranscribe
+    #     com.apple.developer.icloud-services:
+    #       - CloudKit
+    #     com.apple.developer.ubiquity-kvstore-identifier: $(TeamIdentifierPrefix)$(CFBundleIdentifier)
+    # ===========================================================================================
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.flycommsight.atctranscribe

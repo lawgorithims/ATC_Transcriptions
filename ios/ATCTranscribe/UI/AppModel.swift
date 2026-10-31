@@ -58,7 +58,12 @@ final class AppModel: ObservableObject {
     /// The buried Clearance Test Bench is unlocked (Settings → tap the version 7×). Persisted so it
     /// stays available once found, but it never surfaces to a user who hasn't deliberately unlocked it.
     @Published var diagnosticsEnabled = UserDefaults.standard.bool(forKey: "atc.diagnosticsEnabled") {
-        didSet { UserDefaults.standard.set(diagnosticsEnabled, forKey: "atc.diagnosticsEnabled") }
+        didSet {
+            UserDefaults.standard.set(diagnosticsEnabled, forKey: "atc.diagnosticsEnabled")
+            // The ranked off-field list is developer-only (see `showLZRisk`); its floating panel's
+            // visibility persists, so locking diagnostics must take it down with the shading.
+            if !diagnosticsEnabled { widgetStore.dismiss(.landable) }
+        }
     }
     /// A test-bench session is live — drives the TEST MODE banner and gates the sandbox behavior.
     @Published var diagnosticActive = false
@@ -860,11 +865,14 @@ final class AppModel: ObservableObject {
     /// aircraft). ADVISORY ONLY — not a navigation or landing-guidance product. Default off, and it
     /// renders only on the MapLibre engine.
     ///
-    /// GATING: `diagnosticsEnabled` gates DISCOVERY (whether the layers panel offers the row), not
-    /// rendering. These two flags alone decide whether the layer draws, because the emergency button
-    /// arms them for any pilot and a flag that were also gated on a dev switch would arm silently and
-    /// draw nothing. The panel row is shown whenever the flag is on, however it got there, so a layer
-    /// that is up can always be taken back down (see `MapLayersPanel`).
+    /// GATING — REVERSED IN BUILD 110. This used to gate only DISCOVERY and draw for any pilot, and
+    /// the emergency button armed it for everyone. A ground-truth test (the first the packs ever had)
+    /// then sampled the device's own verdict at independently mapped ground: it offered 79% of solar
+    /// farms and 53% of Fresno's orchards and vineyards as landing candidates, served ground directly
+    /// under transmission lines 27% of the time, and ranked town edges above farmland. The
+    /// shading and its ranked list are therefore DEVELOPER-ONLY until they are reworked: whether the
+    /// heatmap draws is `lzRiskVisible`, never this flag alone, so a tester who had it on in 109 does
+    /// not keep seeing it. The glide-energy bands below are unaffected and stay on for every pilot.
     @Published var showLZRisk = UserDefaults.standard.bool(forKey: "atc.map.lz") {
         didSet {
             UserDefaults.standard.set(showLZRisk, forKey: "atc.map.lz")
@@ -880,9 +888,39 @@ final class AppModel: ObservableObject {
             if !showLZRisk && oldValue { widgetStore.dismiss(.landable) }
         }
     }
-    /// Live glide/arrival-energy bands from ownship state. Same gating as above.
+    /// Whether the off-field landability SHADING and its ranked list may appear at all. One place,
+    /// so the map, the layers panel, the list, Downloads and the emergency button cannot disagree.
+    var offFieldLayerAvailable: Bool { diagnosticsEnabled }
+
+    /// Whether the heatmap actually draws: switched on AND available. Read this, never `showLZRisk`.
+    var lzRiskVisible: Bool { showLZRisk && offFieldLayerAvailable }
+
+    /// Live glide/arrival-energy bands from ownship state. NOT developer-gated — reach is the half of
+    /// this layer the evidence supports, and the emergency button arms it for every pilot.
     @Published var showLZEnergy = UserDefaults.standard.bool(forKey: "atc.map.lzEnergy") {
         didSet { UserDefaults.standard.set(showLZEnergy, forKey: "atc.map.lzEnergy") }
+    }
+
+    /// The national "where not to go" map (`AvoidMap`). On by default: it draws only once the pilot has
+    /// downloaded it, and it only ever says where NOT to put an aeroplane down.
+    @Published var showAvoidMap = (UserDefaults.standard.object(forKey: "atc.map.avoid") as? Bool) ?? true {
+        didSet { UserDefaults.standard.set(showAvoidMap, forKey: "atc.map.avoid") }
+    }
+    /// Include the broad ground cover (trees, water, built-up, steep) or only the hidden hazards (wires,
+    /// obstacles, solar farms, orchards). In wooded country the cover paints most of the map, and a pilot
+    /// may want the hazards alone.
+    @Published var showAvoidCover = (UserDefaults.standard.object(forKey: "atc.map.avoidCover") as? Bool) ?? false {
+        didSet { UserDefaults.standard.set(showAvoidCover, forKey: "atc.map.avoidCover") }
+    }
+    /// nil = off or not installed; otherwise changes with the file, the theme and the cover switch.
+    var avoidSignature: String? {
+        showAvoidMap ? AvoidTileRenderer.shared.signature(theme: theme, showCover: showAvoidCover) : nil
+    }
+    /// Captures the theme and cover switch the current signature was computed from; the map installs a
+    /// new provider only when the signature changes, so the two always agree.
+    var avoidProvider: ((String, Int, Int, Int) -> Data?)? {
+        let theme = self.theme, cover = showAvoidCover, renderer = AvoidTileRenderer.shared
+        return { sig, z, x, y in renderer.tilePNG(signature: sig, theme: theme, showCover: cover, z: z, x: x, y: y) }
     }
     /// Mirror of the energy layer's status line, published here so the layers panel can show it
     /// without observing the map's controller. A live layer that silently draws nothing is
@@ -910,7 +948,7 @@ final class AppModel: ObservableObject {
     func emergencyArmed(compact: Bool, widgets: WidgetStore) -> Bool {
         let nrstUp = compact ? showNRSTSheet
             : (widgets.isVisible(.nrst) || widgets.leftPane == .nrst || widgets.rightPane == .nrst)
-        return nrstUp && showLZRisk && showLZEnergy
+        return nrstUp && showLZEnergy && (!offFieldLayerAvailable || showLZRisk)
     }
 
     /// The engine-out arm: put the map up, light the off-field layers, and bring the nearest-airport
@@ -922,10 +960,12 @@ final class AppModel: ObservableObject {
     /// down is a deliberate long press (`standDownEmergency`), or the layers panel.
     func armEmergency(compact: Bool) {
         selectedTab = .map
-        showLZRisk = true
+        // The shading only where it is available at all (developer builds) — see `showLZRisk`.
+        if offFieldLayerAvailable { showLZRisk = true }
         showLZEnergy = true
         if compact { showNRSTSheet = true } else { widgetStore.reveal(.nrst) }
-        assert(showLZRisk && showLZEnergy, "arming must leave both LZ layers on")
+        assert(showLZEnergy && (!offFieldLayerAvailable || showLZRisk),
+               "arming must leave the glide bands on, and the shading wherever it is available")
         assert(selectedTab == .map, "arming must leave the map in front")
         assert(!compact || showNRSTSheet, "compact arming must raise the NRST sheet")
     }
@@ -1749,6 +1789,10 @@ final class AppModel: ObservableObject {
             Task { @MainActor in self?.applyThermal(serious: hot) }
         }
         if args.contains("--thermal") { thermalSerious = true }
+        // The ranked off-field list is developer-only from build 110, and a floating panel's
+        // visibility PERSISTS — a list left open in 109 would reappear on the first launch of 110,
+        // naming ground the map no longer draws. `didSet` does not run at launch, so do it here.
+        if !offFieldLayerAvailable { widgetStore.dismiss(.landable) }
         evaluateWhatsNew()     // decide whether to greet this launch with the "What's new" popup
     }
 
@@ -3533,7 +3577,7 @@ final class AppModel: ObservableObject {
             nrstAssessment = nil; nrstBlocked = .noAltitude; return
         }
         nrstBlocked = nil
-        let situation = GlideSituation(coord: coord, altitudeFtMSL: altitude.ftMSL,
+        var situation = GlideSituation(coord: coord, altitudeFtMSL: altitude.ftMSL,
                                        glideRatio: glideRatio,
                                        isDefaultGlideRatio: ratio == nil,
                                        verticalAccuracyM: altitude.sigmaM,
@@ -3543,6 +3587,18 @@ final class AppModel: ObservableObject {
                                        // in an aircraft.
                                        acceptsWater: selectedAircraft?.canLandOnWater ?? false,
                                        acceptsLand: selectedAircraft?.canLandOnLand ?? true)
+        // The turn onto each airport and the headwind toward it — the same allowances the glide bands
+        // apply (see `GlideAllowance`). Both drop out cleanly: no usable track, no turn charge; no
+        // fresh winds aloft, still air — and the panel header says which.
+        situation.trackDeg = GlideAllowance.usableTrack(trackDeg: readout.trackDeg,
+                                                        groundSpeedKt: readout.groundSpeedKt)
+        situation.bestGlideKts = Double(selectedAircraft?.bestGlideKts ?? 65)
+        let groundFt = TerrainElevation.shared.sampleElevationFt(at: coord) ?? 0
+        if let w = windAloft.descentMeanWind(at: coord.lat, lon: coord.lon,
+                                             fromFtMSL: altitude.ftMSL, groundFt: groundFt) {
+            situation.windFromDeg = w.fromDeg
+            situation.windKts = w.kts
+        }
         nrstRefreshInFlight = true
         let result = await Task.detached(priority: .userInitiated) { () -> (NRSTAssessment, Bool) in
             let radius = NearestAirports.searchRadiusNm(for: situation)
@@ -3810,6 +3866,18 @@ final class AppModel: ObservableObject {
         return aircraftProfiles.first { $0.callsign.caseInsensitiveCompare(callsign) == .orderedSame }
     }
 
+    /// The aircraft the turn-back prompt asks about: a filed departure, a selected fixed-wing aircraft,
+    /// and no turn-back number of the pilot's own. nil otherwise, which keeps the banner silent.
+    var turnbackPromptAircraft: AircraftProfile? {
+        guard let plan = flightPlan, !plan.departure.trimmingCharacters(in: .whitespaces).isEmpty,
+              let a = selectedAircraft, a.isRotorcraft != true, a.turnbackMinimumFtAGL == nil else { return nil }
+        return a
+    }
+    /// Dismissed for the session, like the data-currency banner: a new launch asks again.
+    @Published var turnbackPromptDismissed = false
+    /// Set by the prompt banner; the flight-plan strip, which owns the aircraft editor, answers it.
+    @Published var requestTurnbackEdit = false
+
     /// Fly `profile`: copy its callsign/type into the filed plan (the single source the EFB
     /// ownship gate + corrector grounding read) and refresh the stats its performance drives.
     func selectAircraft(_ profile: AircraftProfile) {
@@ -3855,6 +3923,7 @@ final class AppModel: ObservableObject {
         guard let plan = flightPlan, !plan.isEmpty else {
             tripStats = nil; resolvedRoute = []
             constraintRoute = []; dismissedConstraintFix = nil    // else the ALT advisory judges a route that is gone
+            refreshRouteGlideExposure(route: [])
             return
         }
         let epoch = tripStatsEpoch
@@ -3873,6 +3942,74 @@ final class AppModel: ObservableObject {
             tripStats = out.0
             resolvedRoute = out.1                                         // cached for the live GPS-bar ETAs
             constraintRoute = out.2
+            refreshRouteGlideExposure(route: out.1.map(\.coord))
+        }
+    }
+
+    // MARK: Route glide exposure (preflight)
+
+    /// How much of the filed route is out of glide of every runway at the planned altitude, and the
+    /// lowest altitude that brings the longest gap under `glideGapTargetMinutes`. Nil with no plan, no
+    /// cruise altitude, or before the first computation lands. See `RouteGlideExposure`.
+    @Published private(set) var routeGlideExposure: RouteGlideExposure.Result?
+    @Published private(set) var routeGlideSuggestion: RouteGlideExposure.Result?
+    /// The exposed stretches as polylines along the route they were measured on — what both map engines
+    /// draw (see `RouteGlideExposure.gapLines`). Empty with no exposure.
+    @Published private(set) var routeGlideGapLines: [[Coord]] = []
+    /// Map-layers switch for those stretches. On by default: they only exist once a pilot files a route
+    /// with a cruise altitude, and then they are the point.
+    @Published var showRouteGlideGaps = (UserDefaults.standard.object(forKey: "atc.map.glideGaps") as? Bool) ?? true {
+        didSet { UserDefaults.standard.set(showRouteGlideGaps, forKey: "atc.map.glideGaps") }
+    }
+    private var routeGlideEpoch = 0
+    /// A gap shorter than this at cruise is not worth climbing for — the suggestion's target.
+    nonisolated static let glideGapTargetMinutes = 10.0     // read inside the detached assessment
+
+    /// Recompute the exposure OFF-MAIN — one airport-list assessment per route mile, plus a climb search.
+    /// Epoch-guarded like `refreshTripStats`, so an edit mid-computation discards the stale answer.
+    func refreshRouteGlideExposure(route: [Coord]) {
+        routeGlideEpoch += 1
+        let epoch = routeGlideEpoch
+        guard route.count >= 2, let alt = flightPlan?.cruiseAltitudeFt.map(Double.init), alt > 0 else {
+            routeGlideExposure = nil
+            routeGlideSuggestion = nil
+            routeGlideGapLines = []
+            return
+        }
+        let ratio = selectedAircraft?.glideRatio ?? NearestAirports.defaultGlideRatio
+        let vbg = Double(selectedAircraft?.bestGlideKts ?? 65)
+        let tas = selectedAircraft?.cruiseKts.map(Double.init)
+        let water = selectedAircraft?.canLandOnWater ?? false            // as NRST judges it
+        let land = selectedAircraft?.canLandOnLand ?? true
+        let winds = windAloft.freshFieldSet                              // Sendable snapshot, or nil
+        Task {
+            let out = await Task.detached(priority: .utility) { () -> (RouteGlideExposure.Result?,
+                                                                       RouteGlideExposure.Result?,
+                                                                       [[Coord]]) in
+                let world = RouteGlideExposure.World(
+                    airportsNear: { AirportData.airportsNear($0, radiusNm: $1, limit: 256) },
+                    runwaysFor: { AirportData.runways(airport: $0) },
+                    terrain: Self.nrstTerrain,
+                    windAt: { c, from, ground in
+                        winds?.descentMeanWind(at: c.lat, lon: c.lon, fromFtMSL: from, groundFt: ground)
+                    })
+                let now = RouteGlideExposure.evaluate(route: route, altitudeFtMSL: alt, glideRatio: ratio,
+                                                      bestGlideKts: vbg, acceptsWater: water,
+                                                      acceptsLand: land, world: world)
+                let target = (tas ?? 90) * Self.glideGapTargetMinutes / 60
+                let better = (now?.longestGapNm ?? 0) > target
+                    ? RouteGlideExposure.lowestAltitude(
+                        closingGapsTo: target, route: route,
+                        startFtMSL: alt + RouteGlideExposure.altitudeStepFt,
+                        glideRatio: ratio, bestGlideKts: vbg, acceptsWater: water,
+                        acceptsLand: land, world: world)
+                    : nil
+                return (now, better, RouteGlideExposure.gapLines(now, along: route))
+            }.value
+            guard epoch == routeGlideEpoch else { return }               // superseded → discard
+            routeGlideExposure = out.0
+            routeGlideSuggestion = out.1
+            routeGlideGapLines = out.2
         }
     }
 

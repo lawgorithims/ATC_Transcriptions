@@ -384,17 +384,40 @@ xcodebuild -project ATCTranscribe.xcodeproj -scheme ATCTranscribe \
 xcodebuild test-without-building -project ATCTranscribe.xcodeproj -scheme ATCTranscribe \
   -destination 'platform=iOS Simulator,name=iPhone 16' -only-testing:ATCTranscribeTests
 
-# UI tests — an iPad simulator, NOT an iPhone one
-xcodebuild test-without-building -project ATCTranscribe.xcodeproj -scheme ATCTranscribe \
-  -destination 'platform=iOS Simulator,name=iPad Pro 13-inch (M5)' -only-testing:ATCTranscribeUITests
+# UI tests — an iPad simulator, NOT an iPhone one. Use the script; it pins the destination.
+bash Tools/uitests.sh
+bash Tools/uitests.sh ATCTranscribeUITests/MapControlsUITests   # one class, or one test
 ```
 
-> **The UI suite needs an iPad.** It is not a preference: several tests drive chrome that only exists
-> at regular width — the docked side panes (`PaneAndNotesUITests`) and the two-column layers panel
-> (`MapControlsUITests.testLayersMenuTwoColumnPanel`) — and others depend on the room an iPad gives
-> the console strip. Measured on 2026-09-13: the same suite is **51 passed / 0 failed** on iPad Pro 13
-> and **14 failed** on iPhone 17 Pro, with every one of those 14 passing again on the iPad. Running it
-> on an iPhone produces a page of failures that look like regressions and are not.
+> **The UI suite needs an iPad.** It is not a preference: several tests drive chrome the app does not
+> build at compact width at all — `ConsoleView.homeArea` is `if hSize == .regular { FloatingCanvas }`,
+> so the floating widgets, the docked side panes (`PaneAndNotesUITests`) and the NRST panel
+> (`LZLayerUITests`) do not exist on an iPhone, and `TopBar` drops the bar clock there after
+> measurement showed it squeezed to 2.00pt at 375pt. The two-column layers panel
+> (`MapControlsUITests.testLayersMenuTwoColumnPanel`) is a fixed-width `HStack` in a `.popover`, and a
+> popover becomes a sheet at compact width.
+>
+> Measured on 2026-10-29, same build and commit: **53 passed / 0 failed** on iPad Pro 13-inch (M5)
+> against **43 passed / 9 failed** on iPhone 17 Pro, with all nine passing on the iPad. The failures
+> read like product bugs — "no clock in the top bar", "left side pane did not render", "the NRST panel
+> has no close control" — and none of them is one.
+>
+> Two things now keep a run from landing in the wrong place, because either alone is a thing you have
+> to know: **`Tools/uitests.sh`** pins the destination, and the tests guard themselves with
+> `UITestLayout.requireRegularWidth`, so a phone run **XCTSkips with the reason and the remedy**
+> instead of printing a page of red. Note that an `.xctestplan` cannot carry a destination — test
+> plans hold environment, arguments and skipped tests, while the destination comes from `-destination`
+> or Xcode's per-user run-destination picker — which is why this is a script and a guard.
+
+> **The LZ ranked-list test needs its pack.** `LZLayerUITests.testTheRankedListNamesSeveralDistinctPlaces`
+> holds the aeroplane over KLRU and needs the `n33w107` cell installed in that Simulator; without it
+> the search honestly finds nothing and the test skips, naming the fix. Cell names mark a cell's
+> **north-west** corner and run one degree south, so KLRU at 32.29°N is in `n33w107`, not in any
+> `n32w107` (which does not exist). Install it with:
+>
+> ```bash
+> bash Tools/fetch_lz_pack.sh n33w107     # ~92 MB, into the booted Simulator
+> ```
 
 For a real device, set `DEVELOPMENT_TEAM` (and a provisioning profile) in `project.yml` and use a
 `platform=iOS,id=<udid>` destination.

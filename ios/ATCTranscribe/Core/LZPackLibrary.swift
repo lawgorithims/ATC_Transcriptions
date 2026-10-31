@@ -270,6 +270,22 @@ final class LZPackLibrary: ObservableObject {
         packsChanged.send()
     }
 
+    /// Remove every installed pack. For the paused state (build 110): packs downloaded while the
+    /// layer was public now feed nothing a non-developer can see, and hundreds of MB the pilot can no
+    /// longer reach in the UI would be storage held hostage.
+    func removeAllInstalled() {
+        for id in Array(tasks.keys) { cancel(id) }          // bounded by the in-flight set
+        let fm = FileManager.default
+        let urls = (try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
+        for url in urls where url.pathExtension.lowercased() == "lzpack" {   // bounded (rule 2)
+            try? fm.removeItem(at: url)
+        }
+        states.removeAll()
+        refreshInstalled()
+        assert(tasks.isEmpty, "removeAllInstalled: a transfer survived the cancel")
+        packsChanged.send()
+    }
+
     /// Fires whenever the installed set changes, so the map can re-mount without a relaunch. A pack
     /// finishing while the map is open and NOT appearing is indistinguishable from a broken layer.
     let packsChanged = PassthroughSubject<Void, Never>()
