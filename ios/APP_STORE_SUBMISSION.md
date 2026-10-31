@@ -6,7 +6,8 @@ bare machine). This file is about what Apple needs, and what is still missing.
 
 All of it sits on **`main`**, rebased onto `origin/main` at `16ad620` — which brought the Avoid
 layer, the turnback briefing, and the Keychain/install-id fix (PR #16) that `AccountStore` now
-builds on. The rename sweep was re-run over that new code.
+builds on. The rename sweep was re-run over that new code. Pushed to `origin/main` on 2026-10-31
+as `313317e`, so build 112's source is on GitHub.
 
 ---
 
@@ -22,12 +23,17 @@ is already done:
 | Enable Sign In with Apple on the App ID | ✅ already on — `APPLE_ID_AUTH` is in the App ID's capabilities |
 | The agreement 403 | ✅ cleared — the API returns 200 |
 | Build number | ⚠️ **112**, not 111 — see §2.3 |
-
 | The website | ✅ live, **including the new native auth routes** — see §2.4 |
 
-**Nothing on this list is blocking any more.** The build can go to TestFlight and the listing can
-be filled in. What is left is the ordinary submission work in §3–§7 of `APP_STORE_LISTING.md`:
-screenshots, the App Review demo account, and the App Privacy answers.
+**Nothing on this list is blocking any more.** The build is on TestFlight and the listing can be
+filled in. Screenshots are generated too, at exact device sizes, five each for both required
+classes — `docs/appstore/iPhone-17-Pro-Max/` (1320×2868) and `docs/appstore/iPad-Pro-13-inch-M5/`
+(2064×2752), reproducible with `Tools/appstore_screenshots.sh`.
+
+What is left is the ordinary submission work in §3–§7 of `APP_STORE_LISTING.md`: the **App Review
+demo account**, and the **App Privacy** answers. The demo account is yours to create on the live
+site — a reviewer needs working credentials for the account screen, and this repo is public, so
+the password goes in App Store Connect's App Review Information field and nowhere in here.
 
 ---
 
@@ -247,7 +253,8 @@ at runtime with error 1000, which reads like a network fault and is not one.
 
 ### 2.3 App Store Connect listing changes ⛔
 
-- Rename the app record **CommSight → Obelisk** (free-text field; the bundle id does not change).
+- The record is **already named `Obelisk EFB`** — nothing to rename. The bare `Obelisk` was
+  evidently taken, and the name is a free-text field in any case; the bundle id never changes.
 - **Privacy Policy URL:** `https://obeliskaerospace.com/legal/privacy`
 - Fill in **App Privacy** to match `PrivacyInfo.xcprivacy` (§1).
 - **Build number: 112.** Not 111 — and this is exactly the trap `RELEASING.md` §4 warns about.
