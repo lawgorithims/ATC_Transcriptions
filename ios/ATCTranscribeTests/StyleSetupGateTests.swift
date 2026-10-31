@@ -4,7 +4,7 @@ import XCTest
 /// The map builds its overlay layers into a MapLibre style, and runtime layers do NOT survive a style
 /// swap. This gate decides when to (re)build them.
 ///
-/// The bug it exists to prevent: the map comes up on MapLibre's own default style and only switches to
+/// The bug it exists to prevent: the map comes up on a throwaway bootstrap style and only switches to
 /// the app's once the loopback tile server binds a port. Configuring "once per coordinator" meant every
 /// overlay — ownship, route, traffic, airspace, airways, and the airport symbology — was built into the
 /// throwaway style, and the real style came up carrying the chart raster and nothing else.

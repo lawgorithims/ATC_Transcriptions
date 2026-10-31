@@ -533,7 +533,27 @@ struct MapLibreChartView: UIViewRepresentable {
         @objc private func createMap() {
             guard map == nil, let container else { return }
             NotificationCenter.default.removeObserver(self, name: UIApplication.didBecomeActiveNotification, object: nil)
-            let m = MLNMapView(frame: container.bounds)
+            // NEVER construct this with `MLNMapView(frame:)`. That initializer installs
+            // `MLNStyle.defaultStyleURL` — MapLibre's DEMO style at demotiles.maplibre.org — which is wrong
+            // here twice over:
+            //
+            //  1. NETWORK. An offline-first EFB silently fetched a third-party basemap (style.json +
+            //     tiles.json + vector tiles) on every single launch, before the pilot did anything.
+            //  2. CRASHES. Those demo tiles are VECTOR tiles, so they are parsed on MapLibre's tile-worker
+            //     threads. The real style is installed asynchronously, once the loopback MBTiles server binds
+            //     a port (below), so the swap tore the demo style down WHILE its parses were in flight. A
+            //     worker then looked up a layer factory for a layer that no longer existed, got nullptr, and
+            //     `mbgl::LayerManager::createLayout` dereferenced it — the release framework only guards that
+            //     with a debug `assert(factory)`, so it is a straight SIGSEGV at 0x0 on a background thread
+            //     (KERN_INVALID_ADDRESS; see the fragile-regions table in ios/PIPELINES.md). Nothing in the
+            //     app could catch it.
+            //
+            // A LOCAL, SOURCE-LESS bootstrap style fixes both: no fetch, and — because it owns no sources and
+            // `didFinishLoading` builds none into it — there is never a geometry-tile parse in flight for the
+            // swap to invalidate. The map still loads two styles in its life (see `didFinishLoading`).
+            let m = MLNMapView(frame: container.bounds,
+                               styleURL: Self.writeBootstrapStyle(globe: globeProjection,
+                                                                  theme: currentMapTheme))
             m.delegate = self
             m.autoresizingMask = [.flexibleWidth, .flexibleHeight]
             m.preferredFramesPerSecond = .lowPower  // BATTERY: cap ~30fps (EFB
@@ -622,6 +642,49 @@ struct MapLibreChartView: UIViewRepresentable {
 
         // MARK: style + layers
 
+        /// The style the map is BORN with: one background colour, no sources, no glyphs, no network.
+        ///
+        /// Its whole job is to keep `MLNStyle.defaultStyleURL` (the demotiles demo basemap) out of this app —
+        /// see the note in `createMap`. Because it declares no sources (and `didFinishLoading` adds none while
+        /// it is up), the map cannot have a tile parse in flight when the real style replaces it, which is
+        /// what closes the tile-worker crash window.
+        ///
+        /// Returns a non-optional URL: unlike `writeStyle` there is nothing to fail on but the write itself,
+        /// and a nil here would put us straight back on the demo style. If the write fails we hand back a
+        /// `data:` URL carrying the same JSON, so the guarantee ("never the default style") holds even then.
+        ///
+        /// ⚠️ FLAT, EVEN UNDER THE GLOBE — no `projection` key. The globe fork builds its sphere (the "bg"
+        /// ocean and the Blue Marble backstop under every chart) when a style install CHANGES the projection
+        /// to globe. A globe-projected bootstrap spent that change on itself, so the real style arrived
+        /// with nothing to change and the sphere was never drawn: charts floating on black space, the sea
+        /// measured RGB(2,4,7) where it should be the ocean (2026-10-30). The real style was always
+        /// installed over a flat one before this — MapLibre's flat demo style — which is why nobody had
+        /// seen it. On the globe the background is the VOID colour instead of the sea, so the ~0.2 s the
+        /// bootstrap is up reads as the space the sphere then appears in, not a full-screen flat ocean.
+        private static func writeBootstrapStyle(globe: Bool, theme: MapTheme) -> URL {
+            let fill = MapTheme.hexString(globe ? theme.space : theme.sea)
+            let style = """
+            { "version": 8, "sources": {}, \
+            "layers": [ { "id": "bg", "type": "background", "paint": { "background-color": "\(fill)" } } ] }
+            """
+            assert(style.contains("\"sources\": {}"), "the bootstrap style must own no sources")
+            assert(!style.contains("demotiles"), "the bootstrap style must never reach the network")
+            assert(!style.contains("projection"), "the bootstrap must be flat or the globe never draws its sphere")
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("maplibre-bootstrap.json")
+            if (try? style.write(to: url, atomically: true, encoding: .utf8)) != nil { return url }
+            let encoded = style.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
+            return URL(string: "data:application/json;charset=utf-8,\(encoded)") ?? url
+        }
+
+        /// Test seams for the two style writers (both are `private static`; the styles themselves are the
+        /// contract — "the bootstrap style owns no sources" and "the real style is loopback-only").
+        static func bootstrapStyleURLForTests(globe: Bool, theme: MapTheme) -> URL {
+            writeBootstrapStyle(globe: globe, theme: theme)
+        }
+        static func styleURLForTests(port: UInt16, globe: Bool, theme: MapTheme) -> URL? {
+            writeStyle(port: port, globe: globe, theme: theme)
+        }
+
         private static func writeStyle(port: UInt16, globe: Bool, theme: MapTheme) -> URL? {
             // FULLY OFFLINE style: FAA sectional raster from the loopback server over a #0b1a2b sea, with a
             // bundled vector land base (setupLandBase, added at didFinishLoading) drawn between. NO network
@@ -663,14 +726,20 @@ struct MapLibreChartView: UIViewRepresentable {
         }
 
         func mapView(_ mapView: MLNMapView, didFinishLoading style: MLNStyle) {
+            // Build NOTHING into the bootstrap style. It always finishes loading before the loopback server
+            // binds (cold launch, measured: ~140 ms, swap ~80 ms later), and everything below — the land
+            // GeoJSON first — would still be parsing on the tile workers when that swap tore the style down:
+            // the race the bootstrap exists to remove. The bind callback sets `serverPort` and the real
+            // styleURL in one main-thread block, so `serverPort == 0` here means exactly "the bootstrap".
+            guard serverPort > 0 else { return }
             servedReadersSig = nil               // the faa source is freshly (re)created empty here → force a remount
             appliedTrackCount = -1               // the "track" source is recreated empty → force a re-apply below
             appliedRadarTemplate = nil           // wxradar source gone after reload → force updateRadar to re-add
             appliedLZSignature = nil             // ditto for the LZ raster — see updateLZ
             appliedAvoidSignature = nil          // and the avoid raster, for the same reason
             appliedLZEnergySig = nil             // and the energy bands' shape source
-            // Same reason, and easy to miss: the map loads TWO styles in its life (MapLibre's default,
-            // then the loopback style), so anything applied to the first must be re-applied to the
+            // Same reason, and easy to miss: the map loads TWO styles in its life (the local bootstrap
+            // style, then the loopback style), so anything applied to the first must be re-applied to the
             // second. Without these the re-apply below hits its own "unchanged → skip" guard against a
             // freshly-created EMPTY source, and the polygons are never uploaded to the style the pilot
             // is actually looking at. Traffic self-heals because it changes every second; a TFR set can
@@ -746,7 +815,7 @@ struct MapLibreChartView: UIViewRepresentable {
         /// Tracks WHICH style object the overlay layers were built into.
         ///
         /// MapLibre calls `didFinishLoading` once per style load, and a single map loads more than one style
-        /// in its life (its default, then ours; then again on any style swap). Runtime-added layers belong to
+        /// in its life (the bootstrap, then ours; then again on any style swap). Runtime-added layers belong to
         /// the style they were added to and do NOT survive the swap, so "configure once" has to mean once per
         /// style, not once ever.
         struct StyleSetupGate {
@@ -759,7 +828,7 @@ struct MapLibreChartView: UIViewRepresentable {
                 return true
             }
             /// Read-only: has THIS style object been configured? (The theme re-apply pass must not
-            /// latch "applied" against the throwaway default style's empty layer set.)
+            /// latch "applied" against the throwaway bootstrap style's empty layer set.)
             func isConfigured(_ style: AnyObject) -> Bool { configured == ObjectIdentifier(style) }
         }
 
@@ -769,13 +838,14 @@ struct MapLibreChartView: UIViewRepresentable {
         /// `source.shape` — so we never remove a source a layer still uses (MapLibre would throw). Stacking:
         /// land base below the FAA raster below airways below airspace below route.
         private func setupOverlayLayers(_ style: MLNStyle) {
-            // ONCE PER STYLE — emphatically NOT once per coordinator. The map comes up on MapLibre's own
-            // default style and only switches to ours once the loopback tile server binds a port (that bind
+            assert(serverPort > 0, "overlays must never be built into the bootstrap style (see didFinishLoading)")
+            // ONCE PER STYLE — emphatically NOT once per coordinator. The map comes up on a throwaway
+            // bootstrap style and only switches to ours once the loopback tile server binds a port (that bind
             // is async, see createMap). Latching on the first didFinishLoading therefore built every overlay
             // into a style that was about to be thrown away: when the real style loaded, the guard skipped
             // setup and the pilot got the chart raster and NOTHING else — no ownship, route, traffic,
             // airspace, airways or airport symbology — for the rest of the session. Whether it happened at
-            // all came down to whether the bind beat the default style's load, which is why it looked
+            // all came down to whether the bind beat the first style's load, which is why it looked
             // intermittent. Keyed on the style OBJECT: a re-fire for the same style still no-ops.
             guard styleGate.shouldConfigure(style) else { return }
             // CLEAN SLATE: MapLibre restores runtime-added layers from its ambient cache across launches, so
