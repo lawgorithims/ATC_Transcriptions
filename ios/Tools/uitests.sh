@@ -13,6 +13,10 @@
 #     iPad Pro 13-inch (M5)   53 passed   0 failed   (before this script existed: 2 flaky/data)
 #     iPhone 17 Pro           43 passed   9 failed
 #
+# That iPad row was taken on a box under heavy load and the runner kept dying, so it went in as the
+# best available guess. Re-measured on main (`fa9f7b1`) on 2026-10-30 with the shutdown step below
+# in place, it is 64 executed / 10 skipped / 0 failed — i.e. 54 passed, and the suite is green.
+#
 # This script exists so a future run picks the destination up instead of having to know it. The
 # tests also guard themselves now (UITestLayout.requireRegularWidth) and XCTSkip with a reason on a
 # phone, so running it the wrong way is slow and honest rather than a page of red.
@@ -56,6 +60,26 @@ echo "== build-for-testing =="
 xcodebuild build-for-testing -project ATCTranscribe.xcodeproj -scheme ATCTranscribe \
   -destination "$DEST" -derivedDataPath "$DD" -clonedSourcePackagesDirPath "${SPM:-$HOME/atc-spm}" \
   -skipMacroValidation -skipPackagePluginValidation CODE_SIGNING_ALLOWED=NO -quiet
+
+# Start the device from Shutdown, every time.
+#
+# A simulator left booted by an earlier run keeps its own background work going — on the iPad Pro
+# that is News and Screen Time widget extensions, plus a `diagnosticd` that had been accumulating for
+# an hour. Reusing it is what a UI run looks like when it goes wrong: XCTest's waits time out, and a
+# timed-out wait is reported as "Restarting after unexpected exit, crash, or test timeout", which
+# lands in the summary as a failing test with partial totals rather than as anything resembling a
+# timeout.
+#
+# Measured on 2026-10-30, same commit (`fa9f7b1`), same destination, back to back:
+#     leftover booted device    10 restarts, 10 "failures", 46 of 64 tests executed
+#     shut down first            0 restarts,  0 failures,   64 of 64 — and that run ENDED at load
+#                                98, higher than the one that fell apart
+#
+# So this is not about a quiet machine, which is something you have to wait for. It is about a clean
+# device, which a script can guarantee. Only "$SIM" is touched, so another simulator you are using
+# elsewhere is left alone; `xcrun simctl shutdown all` is the bigger hammer if you want it.
+echo "== shutting down $SIM so it boots clean =="
+xcrun simctl shutdown "$SIM" 2>/dev/null || true   # already-shutdown is an error; it is not one here
 
 echo "== UI tests — $SIM =="
 xcodebuild test-without-building -project ATCTranscribe.xcodeproj -scheme ATCTranscribe \
