@@ -9,6 +9,7 @@ struct SettingsSheet: View {
     @State private var probingCockpit = false
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var downloads: ModelDownloadManager
+    @EnvironmentObject var account: AccountStore
     @Environment(\.dismiss) private var dismiss
 
     /// Taps on the version row — 7 unlocks the buried test bench. Transient (not persisted); the
@@ -33,6 +34,10 @@ struct SettingsSheet: View {
                                      id: "settings-cat-audio") {
                             categoryPage("Audio & speakers") { audioCategory }
                         }
+                    }
+                    categoryLink("Account", account.isSignedIn ? "person.crop.circle.fill" : "person.crop.circle",
+                                 accountSubtitle, id: "settings-cat-account") {
+                        AccountScreen()
                     }
                     categoryLink("Traffic & connections", "dot.radiowaves.up.forward", "ADS-B · Stratux · ForeFlight",
                                  id: "settings-cat-connections") {
@@ -73,6 +78,13 @@ struct SettingsSheet: View {
         }
         .tint(p.accent)
         .preferredColorScheme(model.theme.colorScheme)
+    }
+
+    /// Signed out, say what an account is *for* rather than just "Sign in" — the honest answer is
+    /// that it carries a subscription between devices, and nothing else.
+    private var accountSubtitle: String {
+        if let email = account.user?.email { return email }
+        return "Sign in or create an account · optional"
     }
 
     // MARK: Category navigation
@@ -281,7 +293,7 @@ struct SettingsSheet: View {
                 }
                 .disabled(!model.diarizationEnabled)
                 .accessibilityIdentifier("acoustic-fill-toggle")
-                Text("When the words alone don't reveal who's talking, CommSight can guess from the sound of the voice. On a single radio frequency every voice shares the same channel, so this is unreliable and may mislabel lines — it's off by default. Needs \"Separate speakers\" on. Lines it guesses are shown dimmed as voice-inferred.")
+                Text("When the words alone don't reveal who's talking, Obelisk can guess from the sound of the voice. On a single radio frequency every voice shares the same channel, so this is unreliable and may mislabel lines — it's off by default. Needs \"Separate speakers\" on. Lines it guesses are shown dimmed as voice-inferred.")
                     .font(.dsLabelS).foregroundStyle(p.textDim)
             }
         }
@@ -291,7 +303,7 @@ struct SettingsSheet: View {
                     Text("Ignore radio noise").font(.dsLabel).foregroundStyle(p.text)
                 }
                 .accessibilityIdentifier("dead-air-toggle")
-                Text("Between transmissions the frequency is just static, and a speech model handed static will sometimes write a transmission that was never said — occasionally a complete-sounding clearance. CommSight checks whether a burst actually has the rise and fall of speech before transcribing it, so noise is skipped instead of invented. It errs toward transcribing: on our test recordings it skipped no real transmission. Turn it off if you suspect a quiet call was missed.")
+                Text("Between transmissions the frequency is just static, and a speech model handed static will sometimes write a transmission that was never said — occasionally a complete-sounding clearance. Obelisk checks whether a burst actually has the rise and fall of speech before transcribing it, so noise is skipped instead of invented. It errs toward transcribing: on our test recordings it skipped no real transmission. Turn it off if you suspect a quiet call was missed.")
                     .font(.dsLabelS).foregroundStyle(p.textDim)
             }
         }
@@ -512,6 +524,19 @@ struct SettingsSheet: View {
                     .contentShape(Rectangle())
                     .onTapGesture { revealTestBenchAfterSevenTaps() }
                     .accessibilityIdentifier("settings-version")
+                // Data sources, open-source notices and the NASA non-endorsement statement.
+                // Visible to everyone — unlike everything below it, this is not behind the unlock.
+                NavigationLink {
+                    AcknowledgementsView().environmentObject(model)
+                } label: {
+                    HStack {
+                        Label("Acknowledgements", systemImage: "doc.text")
+                            .font(.dsLabel).foregroundStyle(p.text)
+                        Spacer()
+                        Image(systemName: "chevron.right").font(.dsLabelS).foregroundStyle(p.textDim)
+                    }
+                }
+                .accessibilityIdentifier("settings-acknowledgements")
                 // Buried developer test bench — revealed only after 7 deliberate taps on the
                 // version, because it edits flight data. Hidden again is impossible by design
                 // (persisted), but it never surfaces to a user who hasn't gone looking.
@@ -597,7 +622,7 @@ struct SettingsSheet: View {
                     .navigationBarTitleDisplayMode(.inline)
                 } label: {
                     HStack {
-                        Label("What’s new in CommSight", systemImage: "sparkles")
+                        Label("What’s new in Obelisk", systemImage: "sparkles")
                             .font(.dsLabel).foregroundStyle(p.text)
                         Spacer()
                         Image(systemName: "chevron.right").font(.dsLabelS).foregroundStyle(p.textDim)

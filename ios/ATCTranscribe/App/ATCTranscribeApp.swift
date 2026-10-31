@@ -15,6 +15,11 @@ struct ATCTranscribeApp: App {
     // observed here so the view tree re-renders on a change — see EntitlementStore for why it is
     // deliberately NOT hung off AppModel.
     @StateObject private var entitlements = EntitlementStore.shared
+    // The pilot's (optional) account on obeliskaerospace.com. Not a singleton, unlike
+    // EntitlementStore: nothing outside the view tree reads it, and it deliberately does NOT feed
+    // the entitlement gate yet — see the note in AccountStore for why joining them now would be
+    // premature.
+    @StateObject private var account = AccountStore()
     @StateObject private var cloudSync = CloudSyncHost()      // logbook + notes across the pilot's devices
     @Environment(\.scenePhase) private var scenePhase
 
@@ -66,6 +71,7 @@ struct ATCTranscribeApp: App {
                 .environmentObject(tafs)                // TAF (Terminal Aerodrome Forecast) sub-tab
                 .environmentObject(battery)             // battery/energy diagnostics
                 .environmentObject(entitlements)        // tier/capability gate (see EntitlementStore)
+                .environmentObject(account)             // optional sign-in (Settings -> Account)
                 .onAppear {
                     // Tag each battery sample with what the app is doing (transcription/map/GPS/Stratux).
                     battery.snapshotProvider = { [weak model] in model?.batterySnapshot ?? .placeholder }
@@ -76,6 +82,10 @@ struct ATCTranscribeApp: App {
                         // Re-resolve on foreground: a subscription can lapse, renew or be refunded
                         // while the app is backgrounded, and from M3 StoreKit reports that here.
                         entitlements.refresh()
+                        // Re-read the account too: a subscription can start, lapse or be cancelled
+                        // on the website while the app sits in a flight bag. Silent and fail-open —
+                        // only a definite 401 signs anyone out.
+                        Task { await account.refresh() }
                         // And a sync pass, because the other device's edits land while this one was
                         // in the bag. A no-op unless Features.cloudSync is on.
                         Task { await cloudSync.syncNow() }
@@ -86,7 +96,12 @@ struct ATCTranscribeApp: App {
                     // CloudSyncHost. Does nothing at all in a build without the cloud-sync gate.
                     await cloudSync.start(logbook: model.logbook, notes: notes)
                 }
-                // "Open in CommSight" from ForeFlight's share sheet (a Garmin .fpl) imports the route.
+                .task {
+                    // One refresh at launch for a pilot who is already signed in. No-ops with no
+                    // credential, so a pilot who never signed in makes no network call at all.
+                    await account.refresh()
+                }
+                // "Open in Obelisk" from ForeFlight's share sheet (a Garmin .fpl) imports the route.
                 .onOpenURL { url in
                     guard url.isFileURL else { return }
                     _ = model.importFPL(url)

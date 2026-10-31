@@ -158,14 +158,34 @@ targets:
       # renders coastlines/land-vs-water with NO network — replaces the old online OSM backdrop.
       - path: ATCTranscribe/Resources/basemap
         type: folder
+    # ================================ ENTITLEMENTS ================================
+    # There is exactly ONE entitlements block per target, and xcodegen WRITES the file at `path`
+    # from `properties` — so anything added later goes in the dict below, never in a second block.
+    entitlements:
+      path: ATCTranscribe/ATCTranscribe.entitlements
+      properties:
+        # SIGN IN WITH APPLE. Required by the Apple sign-in button in UI/Account/SignInView.swift:
+        # without this entitlement `ASAuthorizationController` fails at runtime with error 1000
+        # ("The operation couldn't be completed"), which looks like a network fault and is not one.
+        #
+        # ⚠️ Apple-side prerequisite: the App ID com.flycommsight.atctranscribe must have the
+        # "Sign In with Apple" capability enabled in the Developer portal. Automatic signing with
+        # -allowProvisioningUpdates (what Tools/ship_testflight.sh uses) will usually add it, but
+        # if an archive fails to mint a profile, that capability is the first thing to check.
+        #
+        # Why the app needs it at all: App Store guideline 4.8 requires an equivalent
+        # privacy-preserving option wherever third-party sign-in is offered, and the app offers
+        # Google. Sign in with Apple is also the fastest path for most pilots.
+        com.apple.developer.applesignin:
+          - Default
+
     # ==================== CLOUD SYNC ENTITLEMENT -- see the block at the top ====================
-    # Uncomment WITH the COMMSIGHT_CLOUDSYNC compilation condition, never on its own: an entitlement
+    # Add these THREE properties to the `entitlements.properties` dict ABOVE (do not add a second
+    # `entitlements:` key -- the later one silently wins and Sign in with Apple would stop working),
+    # and do it WITH the COMMSIGHT_CLOUDSYNC compilation condition, never on its own: an entitlement
     # without the flag means a signed-for-iCloud build that never syncs, and the flag without the
     # entitlement means the first sync fails at runtime on a container the binary may not reach.
     #
-    # entitlements:
-    #   path: ATCTranscribe/ATCTranscribe.entitlements
-    #   properties:
     #     com.apple.developer.icloud-container-identifiers:
     #       - iCloud.com.flycommsight.atctranscribe
     #     com.apple.developer.icloud-services:
@@ -182,7 +202,7 @@ targets:
     info:
       path: ATCTranscribe/Info.plist
       properties:
-        CFBundleDisplayName: CommSight
+        CFBundleDisplayName: Obelisk
         # Bind the bundle version to the build settings so `CURRENT_PROJECT_VERSION=<n>` at archive
         # time (ship_testflight.sh's BUILD_NUMBER) actually bumps CFBundleVersion. Without this,
         # xcodegen writes a literal "1" and every upload collides with build 1.
@@ -215,7 +235,7 @@ targets:
         # To re-enable transcription, uncomment BOTH this key and UIBackgroundModes further down, add
         # COMMSIGHT_TRANSCRIPTION to SWIFT_ACTIVE_COMPILATION_CONDITIONS, then `xcodegen generate`.
         #
-        # NSMicrophoneUsageDescription: "CommSight uses the microphone to capture and transcribe live ATC audio."
+        # NSMicrophoneUsageDescription: "Obelisk uses the microphone to capture and transcribe live ATC audio."
         # =======================================================================================
         # Connecting to a Stratux receiver on the local Wi-Fi (audio sidecar + traffic/GPS web API) needs
         # the local-network permission (iOS 14+) and a cleartext-local ATS exception (the link is http/ws
@@ -225,17 +245,17 @@ targets:
         # and needs this key in EVERY build: without it iOS refuses local-network access with no prompt
         # and no catchable error, so the receiver just never connects. Reworded rather than removed so
         # the beta's permission dialog does not advertise cockpit audio.
-        NSLocalNetworkUsageDescription: "CommSight connects to a Stratux receiver on your local Wi-Fi to show aircraft traffic and GPS position."
+        NSLocalNetworkUsageDescription: "Obelisk connects to a Stratux receiver on your local Wi-Fi to show aircraft traffic and GPS position."
         # Shows your aircraft's position on the chart map from the device GPS (in addition to a Stratux
         # fix when connected). Optional — the chart works without it.
-        NSLocationWhenInUseUsageDescription: "CommSight shows your aircraft's position on the chart map using your device's GPS."
+        NSLocationWhenInUseUsageDescription: "Obelisk shows your aircraft's position on the chart map using your device's GPS."
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
         # ForeFlight hand-off: canOpenURL("foreflightmobile://…") only answers for schemes declared
         # here (outbound app-to-app).
         LSApplicationQueriesSchemes:
           - foreflightmobile
-        # INBOUND flight-plan import: registering the Garmin .fpl document type puts "Open in CommSight"
+        # INBOUND flight-plan import: registering the Garmin .fpl document type puts "Open in Obelisk"
         # in ForeFlight's (and Files') share sheet; ATCTranscribeApp.onOpenURL imports the route.
         CFBundleDocumentTypes:
           - CFBundleTypeName: Garmin Flight Plan
@@ -371,6 +391,10 @@ schemes:
         # "1" only when regenerating README screenshots (Tools/screenshots.sh); empty otherwise, so
         # ScreenshotTests XCTSkips in the normal suite and never flakes a ship.
         SCREENSHOTS: ${SCREENSHOTS}
+        # "1" only when regenerating the App Store screenshot set (Tools/appstore_screenshots.sh).
+        # Separate from SCREENSHOTS because the two sets have different jobs: those are README shots
+        # of the transcription console, these are store shots of the EFB surfaces.
+        APPSTORE_SHOTS: ${APPSTORE_SHOTS}
         # "1" only when running the Stratux sustained-stream validation (Tools/stratux_validate.sh)
         # against the fake server; empty otherwise so StratuxLiveStreamTests XCTSkips in the normal suite.
         STRATUX_VALIDATE: ${STRATUX_VALIDATE}

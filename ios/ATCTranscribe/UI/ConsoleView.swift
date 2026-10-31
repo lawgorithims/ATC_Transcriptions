@@ -19,6 +19,7 @@ struct ConsoleView: View {
     @EnvironmentObject var downloads: ModelDownloadManager
     @EnvironmentObject var widgets: WidgetStore
     @EnvironmentObject var metars: MetarStore     // re-passed into sheets (they don't inherit reliably)
+    @EnvironmentObject var account: AccountStore   // ditto — SettingsSheet's Account page needs it
     @Environment(\.horizontalSizeClass) private var hSize
     @Environment(\.scenePhase) private var scenePhase
 
@@ -71,6 +72,7 @@ struct ConsoleView: View {
         .preferredColorScheme(model.theme.colorScheme)
         .sheet(isPresented: $model.showSettings) {
             SettingsSheet().environmentObject(model).environmentObject(downloads)
+                .environmentObject(account)
         }
         .sheet(isPresented: $model.showWhatsNew) {
             WhatsNewSheet().environmentObject(model)
@@ -238,7 +240,7 @@ struct ConsoleView: View {
                 // ⚠️ It also holds the ONLY render site of `model.detail` in the app (see :1872 region).
                 // Flight-plan import — an EFB feature that must keep working — writes all three of its
                 // outcomes there (AppModel importFPL: too large / unreadable / imported), reached from
-                // the "Open in CommSight" .fpl share-sheet hand-off. Gating InputBar without replacing
+                // the "Open in Obelisk" .fpl share-sheet hand-off. Gating InputBar without replacing
                 // that surface makes FPL import succeed or fail in total silence. So the gated build
                 // renders `detail` on its own thin strip in the same slot.
                 if Features.transcription {
@@ -966,7 +968,7 @@ struct TopBar: View {
             // stands alone so the larger control icons fit one row.
             if hSize == .regular {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("CommSight").font(.dsHeadline).foregroundStyle(p.text)
+                    Text("Obelisk").font(.dsHeadline).foregroundStyle(p.text)
                     // The masthead states the product's purpose on every iPad launch, so in the EFB-only
                     // build it would be the most prominent piece of hidden-feature copy in the app.
                     Text(Features.transcription ? "On-device ATC transcription" : "Electronic flight bag")
