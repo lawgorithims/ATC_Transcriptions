@@ -460,7 +460,7 @@ struct ModelLoadingView: View {
                 Text(elapsed >= 60 ? String(format: "%d:%02d elapsed", elapsed / 60, elapsed % 60) : "\(elapsed)s elapsed")
                     .font(.caption.monospaced()).foregroundStyle(p.textDim)
             }
-            Text("Large models can take a few minutes to load the first time as your device compiles them. Keep CommSight open — it speeds up after the first load.")
+            Text("Large models can take a few minutes to load the first time as your device compiles them. Keep Obelisk open — it speeds up after the first load.")
                 .font(.dsLabel).foregroundStyle(p.textDim)
                 .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
                 .padding(.horizontal, 12)

@@ -322,7 +322,7 @@ def _rect_feature(lyr, la1, lo1, la2, lo2, width_ft):
 
 def prep_dem_vrt():
     path = os.path.join(C.SHARED, "dem_1as.vrt")
-    req = urllib.request.Request(DEM_VRT_URL, headers={"User-Agent": "CommSight-avoid-build/1.0"})
+    req = urllib.request.Request(DEM_VRT_URL, headers={"User-Agent": "Obelisk-avoid-build/1.0"})
     data = urllib.request.urlopen(req, timeout=120).read()
     assert data.lstrip().startswith(b"<VRTDataset") and len(data) > 100000, "dem VRT is not a VRT"
     with open(path, "wb") as f:

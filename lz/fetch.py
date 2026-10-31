@@ -70,7 +70,7 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lzcommon as C  # noqa: E402
 
-UA = "CommSight-LZ/1.0 (+https://flycommsight.com) python-urllib"
+UA = "Obelisk-LZ/1.0 (+https://obeliskaerospace.com) python-urllib"
 HTTP_TIMEOUT = 120
 MAX_RETRIES = 3
 # The National Map answers 200-with-an-error-body when it is unwell, which no HTTP-level retry can

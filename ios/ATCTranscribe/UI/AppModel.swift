@@ -801,12 +801,12 @@ final class AppModel: ObservableObject {
         guard useMapLibreMap, !mapLibreRenderFailed else { return }
         guard mapLibreRetriesLeft > 0 else {
             mapLibreRenderFailed = true
-            NSLog("CommSight: MapLibre render stalled with no retries left — falling back to the classic map")
+            NSLog("Obelisk: MapLibre render stalled with no retries left — falling back to the classic map")
             return
         }
         mapLibreRetriesLeft -= 1
         mapLibreRemountToken &+= 1
-        NSLog("CommSight: MapLibre render stalled — remounting (%d retries left)", mapLibreRetriesLeft)
+        NSLog("Obelisk: MapLibre render stalled — remounting (%d retries left)", mapLibreRetriesLeft)
     }
 
     /// Returning to the Map tab rebuilds a fresh MapLibre coordinator, so a cold-launch stall that stranded us
@@ -1462,7 +1462,7 @@ final class AppModel: ObservableObject {
            !aircraftProfiles.contains(where: { $0.callsign.caseInsensitiveCompare(fp.callsign) == .orderedSame }) {
             fp.callsign = ""; fp.aircraftType = ""
             flightPlan = fp.isEmpty ? nil : fp
-            NSLog("CommSight: stripped test-bench sandbox aircraft from the persisted flight plan.")
+            NSLog("Obelisk: stripped test-bench sandbox aircraft from the persisted flight plan.")
         }
         // Build the ADS-B service first. Its callbacks hop to the main actor: `onUpdate` applies the
         // pruned contacts + re-injects the corrector block with a fresh expiry; `onStatus` surfaces
@@ -1514,7 +1514,7 @@ final class AppModel: ObservableObject {
             })
 
         if diagnosticRecovered {
-            NSLog("CommSight: restored the real flight plan after an interrupted test bench.")
+            NSLog("Obelisk: restored the real flight plan after an interrupted test bench.")
         }
 
         let args = CommandLine.arguments
@@ -1624,7 +1624,7 @@ final class AppModel: ObservableObject {
         if args.contains("--demo-efb") {
             efbSuggestion = EFBSuggestion.make(id: "demo",
                                                command: ATCCommand(kind: .directTo, target: "BOSOX", qualifier: ""),
-                                               source: "commsight 3 4 5 cleared direct bosox")
+                                               source: "obelisk 3 4 5 cleared direct bosox")
         }
         // screenshot/demo: seed synthetic EONET hazards near the demo route and turn the layer on.
         // `demoHazardsMode` suppresses the live poller (see `syncEONET`) so these seeded events are
@@ -2082,7 +2082,7 @@ final class AppModel: ObservableObject {
         requestMicPermission { [weak self] granted in
             guard let self, self.calibrationStage == .measuringAmbient else { return }
             guard granted else {
-                self.calibrationStage = .failed("Microphone access is off. Enable it in Settings › CommSight › Microphone.")
+                self.calibrationStage = .failed("Microphone access is off. Enable it in Settings › Obelisk › Microphone.")
                 return
             }
             AudioSessionManager.activate(recording: true)
@@ -2330,7 +2330,7 @@ final class AppModel: ObservableObject {
         // drops the abandoned approach. Matched on the suggestion's own id so nothing else can trip it.
         if let m = pendingMissed, suggestion.id == "missed-\(m.airport)-\(m.ident)" {
             applyMissedApproach(m)
-            NSLog("CommSight: EFB accept kind=missedApproach before=[%@] after=[%@]",
+            NSLog("Obelisk: EFB accept kind=missedApproach before=[%@] after=[%@]",
                   Self.assignmentDigest(before), Self.assignmentDigest(flightPlan))
             Haptics.impact(.medium)
             efbSuggestion = nil
@@ -2354,7 +2354,7 @@ final class AppModel: ObservableObject {
         case .frequencyChange: setActiveFrequency(ins.target, facility: ins.modifier)
         }
         // Reversible audit trail: log kind/value/confidence/callsign and the before→after assigned block.
-        NSLog("CommSight: EFB accept kind=%@ target=%@ conf=%@ callsign=%@ before=[%@] after=[%@]",
+        NSLog("Obelisk: EFB accept kind=%@ target=%@ conf=%@ callsign=%@ before=[%@] after=[%@]",
               ins.kind.rawValue, ins.target, ins.confidence.rawValue, ins.callsign,
               Self.assignmentDigest(before), Self.assignmentDigest(flightPlan))
         // A SID/STAR/approach accept silently NO-OPS when the named procedure/runway is not published at
@@ -2388,7 +2388,7 @@ final class AppModel: ObservableObject {
     /// Discard the pending suggestion without acting (logged so rejected mis-parses are analyzable).
     func dismissEFBSuggestion() {
         if let ins = efbSuggestion?.instruction {
-            NSLog("CommSight: EFB dismiss kind=%@ target=%@ conf=%@", ins.kind.rawValue, ins.target, ins.confidence.rawValue)
+            NSLog("Obelisk: EFB dismiss kind=%@ target=%@ conf=%@", ins.kind.rawValue, ins.target, ins.confidence.rawValue)
         }
         efbSuggestion = nil
         pendingMissed = nil     // a declined go-around must not stay armed for the NEXT accept
@@ -2419,7 +2419,7 @@ final class AppModel: ObservableObject {
     func openInForeFlight() {
         guard let plan = flightPlan, !plan.isEmpty else { return }        // state check (rule 7)
         guard let url = ForeFlightExport.url(for: plan) else { return }
-        UIApplication.shared.open(url)                                    // backgrounds CommSight; capture
+        UIApplication.shared.open(url)                                    // backgrounds Obelisk; capture
     }                                                                     // pauses/resumes via handleScenePhase
 
     // MARK: - Clearance Test Bench (buried diagnostic)
@@ -2608,9 +2608,9 @@ final class AppModel: ObservableObject {
         let url: URL? = await Task.detached(priority: .utility) {
             _ = NavDatabase.count                                         // warm the nav DB off-main
             let legs = ProcedureRoute.resolve(sendable)
-            let xml = ForeFlightExport.fplXML(for: legs, routeName: name.isEmpty ? "CommSight Route" : name)
+            let xml = ForeFlightExport.fplXML(for: legs, routeName: name.isEmpty ? "Obelisk Route" : name)
             guard !xml.isEmpty else { return nil }                        // unresolvable plan → no file
-            let dest = FileManager.default.temporaryDirectory.appendingPathComponent("CommSight Route.fpl")
+            let dest = FileManager.default.temporaryDirectory.appendingPathComponent("Obelisk Route.fpl")
             do { try xml.write(to: dest, atomically: true, encoding: .utf8) } catch { return nil }
             return dest
         }.value
@@ -2663,7 +2663,7 @@ final class AppModel: ObservableObject {
                                         runway: pick.runway, entry: .vectors,
                                         missedFixes: proper.missedFixes,
                                         holds: ApproachHolds.applicable(proper.holds, joinIsVectors: true))
-        NSLog("CommSight: approach CLEARED-loaded %@ %@ missed=%d holds=%d", pick.airport, pick.ident,
+        NSLog("Obelisk: approach CLEARED-loaded %@ %@ missed=%d holds=%d", pick.airport, pick.ident,
               activeApproach?.missedFixes.count ?? 0, activeApproach?.holds.count ?? 0)
     }
 
@@ -2836,7 +2836,7 @@ final class AppModel: ObservableObject {
         ensureMinimaForActiveApproach()
         previewedProcedure = nil
         Haptics.impact(.medium)
-        NSLog("CommSight: approach ACTIVATED %@ %@ entry=%@ legs=%d missed=%d",
+        NSLog("Obelisk: approach ACTIVATED %@ %@ entry=%@ legs=%d missed=%d",
               proc.airport, proc.ident, entry.label, fixes.count, missedFixes.count)
     }
 
@@ -2892,7 +2892,7 @@ final class AppModel: ObservableObject {
             pendingMissed = rejoined            // same missed sequence, now carrying the new entry
             if let s = stagedSuggestion { efbSuggestion = s }
         }
-        NSLog("CommSight: approach ENTRY CHANGED %@ %@ %@ -> %@ (holds kept skipped=%d)",
+        NSLog("Obelisk: approach ENTRY CHANGED %@ %@ %@ -> %@ (holds kept skipped=%d)",
               current.airport, current.ident, current.entry.label, entry.label,
               rejoined.skippedHoldIDs.count)
     }
@@ -3265,7 +3265,7 @@ final class AppModel: ObservableObject {
         guard var appr = activeApproach else { return }
         appr.setHold(id, skipped: skipped)
         activeApproach = appr
-        NSLog("CommSight: hold %@ %@", id, skipped ? "SKIPPED" : "restored")
+        NSLog("Obelisk: hold %@ %@", id, skipped ? "SKIPPED" : "restored")
     }
 
     /// Cancel the active approach (does not unwind the route — the pilot may still be flying it).
@@ -3304,7 +3304,7 @@ final class AppModel: ObservableObject {
         editPlan { $0.flyMissedApproach(fixes: a.missedFixes, from: presentPosition) }
         activeApproach = nil
         pendingMissed = nil
-        NSLog("CommSight: missed approach APPLIED %@ %@ -> %@", a.airport, a.ident,
+        NSLog("Obelisk: missed approach APPLIED %@ %@ -> %@", a.airport, a.ident,
               a.missedFixes.joined(separator: " "))
     }
 
@@ -3329,7 +3329,7 @@ final class AppModel: ObservableObject {
                                       title: "Fly the missed approach — direct \(first)", source: raw)
         pendingMissed = a          // consumed by acceptEFBSuggestion (see applyMissedApproach)
         Haptics.impact(.medium)
-        NSLog("CommSight: missed approach ARMED %@ %@ direct=%@", a.airport, a.ident, first)
+        NSLog("Obelisk: missed approach ARMED %@ %@ direct=%@", a.airport, a.ident, first)
     }
 
     /// Remove a loaded procedure by kind ("SID"/"STAR"/"IAP", or "" for all).
@@ -3786,7 +3786,7 @@ final class AppModel: ObservableObject {
         if airport.isEmpty, let dep = parsed.departure, !dep.isEmpty { airport = dep }
     }
 
-    /// Import a Garmin/ForeFlight `.fpl` file (share-sheet "Open in CommSight" or the strip's Import
+    /// Import a Garmin/ForeFlight `.fpl` file (share-sheet "Open in Obelisk" or the strip's Import
     /// button) — the route replaces the filed departure/enroute/destination; callsign/altitude/aircraft
     /// are untouched (an FPL carries no aircraft). Returns false when the file isn't a parseable plan.
     @discardableResult
@@ -4730,7 +4730,7 @@ final class AppModel: ObservableObject {
                     guard let self else { return }
                     guard granted else {
                         self.status = .error
-                        self.detail = "Microphone access denied. Enable it in Settings › CommSight › Microphone."
+                        self.detail = "Microphone access denied. Enable it in Settings › Obelisk › Microphone."
                         return
                     }
                     // Abort SILENTLY if anything moved under the dialog — the user's later action

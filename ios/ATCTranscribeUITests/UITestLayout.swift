@@ -2,7 +2,7 @@ import XCTest
 
 /// WHERE THIS SUITE RUNS IS PART OF WHAT IT ASSERTS.
 ///
-/// CommSight is universal, but it is not the same app at both widths — and that is deliberate, not a
+/// Obelisk is universal, but it is not the same app at both widths — and that is deliberate, not a
 /// gap. `ConsoleView.homeArea` is `if hSize == .regular { FloatingCanvas } else { … }`, so floating
 /// widgets, the docked side panes and the NRST panel DO NOT EXIST on an iPhone; `TopBar` drops the
 /// bar clock at compact width after measurement showed it squeezed to 2.00pt at 375pt. A test that

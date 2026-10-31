@@ -122,7 +122,7 @@ def verify_anonymous(remote_path):
 
 def hosted_manifest():
     """The live index.json as devices see it — what staging must add to and promotion reads from."""
-    req = urllib.request.Request(f"{BASE}/index.json", headers={"User-Agent": "commsight-publisher"})
+    req = urllib.request.Request(f"{BASE}/index.json", headers={"User-Agent": "obelisk-publisher"})
     with urllib.request.urlopen(req, timeout=60) as r:
         return json.loads(r.read().decode("utf-8"))
 

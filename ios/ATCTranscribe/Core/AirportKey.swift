@@ -1,6 +1,6 @@
 import Foundation
 
-/// The two forms an American airport's identifier takes across CommSight's bundled data, and the rule
+/// The two forms an American airport's identifier takes across Obelisk's bundled data, and the rule
 /// for trying both.
 ///
 /// ⚠️ THE APP'S OWN DATA IS NOT IN ONE NAMESPACE. `nav_coords.json` and the UI layer key an airport by

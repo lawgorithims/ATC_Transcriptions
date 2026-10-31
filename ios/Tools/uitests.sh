@@ -2,7 +2,7 @@
 #
 # Run the UI suite on an iPad — WHICH IS NOT A PREFERENCE.
 #
-# CommSight is universal, but it is not the same app at both widths. ConsoleView.homeArea is
+# Obelisk is universal, but it is not the same app at both widths. ConsoleView.homeArea is
 # `if hSize == .regular { FloatingCanvas } else { … }`, so floating widgets, the docked side panes
 # and the NRST panel DO NOT EXIST on an iPhone, and TopBar drops the bar clock at compact width.
 # Nine tests assert that chrome. Run on an iPhone 17 Pro they fail with messages that each read like

@@ -56,7 +56,7 @@ APT_DB = os.path.join(ROOT, "ios", "ATCTranscribe", "Resources", "nav", "apt.sql
 OUT_DIR = os.path.join(HERE, "out")
 CACHE_DIR = os.path.join(HERE, "data", "eval")                          # gitignored (lz/data/)
 GOLDEN = os.path.join(HERE, "eval", "golden_scores.json")
-UA = "CommSight-LZ-groundtruth-eval/1.0 (research; read-only)"
+UA = "Obelisk-LZ-groundtruth-eval/1.0 (research; read-only)"
 OVERPASS = "https://overpass-api.de/api/interpreter"
 
 GREEN_FROM = 62          # LZTileCompositor: the green band starts at 0.62

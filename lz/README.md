@@ -1,6 +1,6 @@
-# `lz/` — the CommSight LZ (off-field landing zone) fact-tile pipeline
+# `lz/` — the Obelisk LZ (off-field landing zone) fact-tile pipeline
 
-Builds the **aircraft-agnostic, position-agnostic** world data that the CommSight app turns into an
+Builds the **aircraft-agnostic, position-agnostic** world data that the Obelisk app turns into an
 advisory off-field landability heatmap. All heavy computation happens here, offline, on a desktop.
 The iPad only applies aircraft-specific weighting and live ownship state.
 
@@ -166,7 +166,7 @@ onto `main` under `ios/An error was encountered processing the command (…)/`, 
 they were found while chasing a GitHub storage warning.
 
 ```bash
-CONTAINER=$(xcrun simctl get_app_container booted com.commsight.atc data) || exit 1
+CONTAINER=$(xcrun simctl get_app_container booted com.flycommsight.atctranscribe data) || exit 1
 [ -d "$CONTAINER" ] || { echo "no booted simulator with the app installed"; exit 1; }
 DEST="$CONTAINER/Library/Application Support/lz"
 mkdir -p "$DEST"

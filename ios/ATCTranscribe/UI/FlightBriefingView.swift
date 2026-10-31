@@ -81,7 +81,7 @@ struct FlightBriefingView: View {
             case .set(let plan):
                 turnbackPlan(plan)
             }
-            Text("Your number, from practice at a safe height with an instructor. CommSight never calculates it.")
+            Text("Your number, from practice at a safe height with an instructor. Obelisk never calculates it.")
                 .font(.dsLabelS).foregroundStyle(p.textDim)
                 .fixedSize(horizontal: false, vertical: true)
         }

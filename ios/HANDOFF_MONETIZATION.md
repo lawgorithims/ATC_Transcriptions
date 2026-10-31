@@ -1,4 +1,4 @@
-# CommSight — Monetization Handoff (M1: the entitlement layer)
+# Obelisk — Monetization Handoff (M1: the entitlement layer)
 
 > For the next session, running **locally on the Mac**. The cloud session that wrote this code had
 > no Swift toolchain and no route to a Mac, so **none of it has ever been compiled.** Getting it to

@@ -11,5 +11,5 @@ git clone https://github.com/lawgorithims/ATC_Transcriptions.git
 cd ATC_Transcriptions/stratux-pi && sudo ./install.sh
 ```
 
-Then in CommSight: **Settings → Stratux receiver** (host `192.168.10.1`, audio port `8090`), pick
+Then in Obelisk: **Settings → Stratux receiver** (host `192.168.10.1`, audio port `8090`), pick
 **“Stratux receiver”** as the input source, and press **Start**.

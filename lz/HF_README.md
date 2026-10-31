@@ -4,13 +4,13 @@ tags:
   - aviation
   - geospatial
   - terrain
-pretty_name: CommSight LZ — off-field landability fact tiles
+pretty_name: Obelisk LZ — off-field landability fact tiles
 ---
 
-# CommSight LZ — off-field landability fact tiles
+# Obelisk LZ — off-field landability fact tiles
 
 Compressed raster **facts about ground**, built for the off-field landability layer in
-[CommSight](https://flycommsight.com). One file per 1°×1° cell, named by the USGS 3DEP convention
+[Obelisk](https://obeliskaerospace.com). One file per 1°×1° cell, named by the USGS 3DEP convention
 (`n33w107` = the cell whose north-west corner is 33°N 107°W, so it spans lat 32–33, lon −107…−106).
 
 > ### ⚠️ Advisory only — not for navigation

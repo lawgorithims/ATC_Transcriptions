@@ -1,7 +1,7 @@
-# CommSight Pi <-> iPad Audio Handshake Tests
+# Obelisk Pi <-> iPad Audio Handshake Tests
 
 Quick link-health checks for the cockpit-audio sidecar on the Stratux Pi and
-the path to the CommSight iPad app. These verify the *handshake* -- the
+the path to the Obelisk iPad app. These verify the *handshake* -- the
 protocol contract between the Pi's port-8090 audio server and the app -- in
 under a minute. They do NOT replace the sustained-load soak test
 (`ios/Tools/stratux_validate.sh`), which exercises long-running streams.
@@ -38,7 +38,7 @@ bash pi_selftest.sh
 Good output looks like:
 
 ```
-== CommSight cockpit-audio Pi self-test ==
+== Obelisk cockpit-audio Pi self-test ==
 
 NOTE  using audio port 8090 (env AUDIO_PORT / /etc/default/cockpit-audio / default)
 NOTE  root filesystem is an overlay (RAM upper layer): ...
@@ -68,7 +68,7 @@ read them anyway; in particular:
 
 ## 2. On the laptop: `handshake_test.py`
 
-Join the `stratux` WiFi network, quit CommSight on the iPad (the sidecar
+Join the `stratux` WiFi network, quit Obelisk on the iPad (the sidecar
 allows exactly ONE stream client, and an attached iPad would make the stream
 tests fail with 409), then:
 
@@ -132,7 +132,7 @@ Exit code 0 only if every non-skipped test passed. What the tests mean:
   test only covers the clean-close path.
 
 If T3/T4/T6 fail with `409 audio_stream_already_in_use` at the start, some
-other client (usually the iPad) is holding the stream: quit CommSight and
+other client (usually the iPad) is holding the stream: quit Obelisk and
 rerun.
 
 ## 3. Tone-loopback: true end-to-end wire check
@@ -170,13 +170,13 @@ and the capture gain (alsamixer). Any tone frequency up to ~7 kHz works;
 `stratux-pi/test/fake_stratux.py`, which emits its own 600 Hz tone (actually,
 that makes `--expect-tone 600` a neat self-test of the detector).
 
-## 4. On the iPad: confirm CommSight sees the link
+## 4. On the iPad: confirm Obelisk sees the link
 
 1. Join the iPad to the `stratux` WiFi network (Settings -> Wi-Fi).
-2. Open CommSight. On first use iOS asks for **Local Network** permission --
+2. Open Obelisk. On first use iOS asks for **Local Network** permission --
    Allow it (without it the app cannot reach 192.168.10.1 at all; recheck
-   under Settings -> Privacy & Security -> Local Network -> CommSight).
-3. In CommSight: **Settings -> Stratux receiver** -> host `192.168.10.1`,
+   under Settings -> Privacy & Security -> Local Network -> Obelisk).
+3. In Obelisk: **Settings -> Stratux receiver** -> host `192.168.10.1`,
    audio port `8090` (both are the defaults and match the Settings
    placeholders).
 4. Select the Stratux/cockpit-audio source and watch the status chip: it
@@ -187,7 +187,7 @@ that makes `--expect-tone 600` a neat self-test of the detector).
    if it passes, the problem is on the iPad side (wrong WiFi, Local Network
    permission denied, or a typo in host/port); if it fails, follow the FAIL
    hints.
-6. Note the app is the *single* allowed stream client: while CommSight is
+6. Note the app is the *single* allowed stream client: while Obelisk is
    connected, `handshake_test.py` stream tests and `/audio.wav` in a browser
    will get 409. That is by design.
 
@@ -200,5 +200,5 @@ that makes `--expect-tone 600` a neat self-test of the detector).
 | T3 rate far below 32000 B/s | Pi overloaded or WiFi marginal -- move closer, check for interference |
 | T3 dead input (constant PCM) | nothing wired into the adapter input, or capture channel muted in alsamixer |
 | T3 heavy clipping | capture gain too hot -- alsamixer, then `sudo alsactl store` (overlay disabled, or it reverts on reboot) |
-| 409 on everything | another client (the iPad) holds the stream -- quit CommSight and rerun |
+| 409 on everything | another client (the iPad) holds the stream -- quit Obelisk and rerun |
 | everything passes on the bench, dead after a power cycle | the install/gain lived in the RAM overlay -- redo it with `sudo overlayctl disable && sudo reboot` first, then re-enable |

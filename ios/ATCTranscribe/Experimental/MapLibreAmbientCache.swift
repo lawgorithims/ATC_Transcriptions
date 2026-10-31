@@ -47,11 +47,11 @@ enum MapLibreAmbientCache {
         didDisable = true
         storage.clearAmbientCache { error in
             guard let error else { return }
-            NSLog("CommSight ambient cache: clearing failed: %@", error.localizedDescription)
+            NSLog("Obelisk ambient cache: clearing failed: %@", error.localizedDescription)
         }
         storage.setMaximumAmbientCacheSize(disabledSize) { error in
             guard let error else { return }
-            NSLog("CommSight ambient cache: disabling failed, MapLibre will keep caching: %@",
+            NSLog("Obelisk ambient cache: disabling failed, MapLibre will keep caching: %@",
                   error.localizedDescription)
         }
     }

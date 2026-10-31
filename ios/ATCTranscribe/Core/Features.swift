@@ -4,7 +4,7 @@ import Foundation
 ///
 /// # Why `transcription` is COMPILE-time and not a UserDefaults flag
 ///
-/// The live-ATC transcription half of CommSight needs `NSMicrophoneUsageDescription` and the
+/// The live-ATC transcription half of Obelisk needs `NSMicrophoneUsageDescription` and the
 /// `audio` background mode. Both are **Info.plist** entries, which are fixed when the app is
 /// built — there is no way to add them at runtime. A *runtime* gate would therefore be able to
 /// disagree with the plist:

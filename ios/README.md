@@ -1,11 +1,11 @@
-# CommSight — on-device ATC transcription for iPhone & iPad
+# Obelisk — on-device ATC transcription for iPhone & iPad
 
 A native Swift/SwiftUI port of the [ATC_Transcribe](../python-legacy/README.md) browser console.
-Where the web console is a thin client talking to a Python host that runs the model, **CommSight
+Where the web console is a thin client talking to a Python host that runs the model, **Obelisk
 runs the entire pipeline on the device** — capture → squelch/VAD → preprocessing → airport &
 context prompt → fine-tuned Whisper (CoreML / WhisperKit) → speaker diarization → two-tier
 correction — with no server. Universal: one binary for iPhone and iPad (iPad-first cockpit/EFB
-layout). Ships through TestFlight as **CommSight** (bundle `com.flycommsight.atctranscribe`).
+layout). Ships through TestFlight as **Obelisk** (bundle `com.flycommsight.atctranscribe`).
 
 > **Status: shipping on TestFlight (build 40 in prep; 39 live).** The whole pipeline runs on-device:
 > the converted Whisper models transcribe on the Apple Neural Engine (~12.5× real-time on an M-class
@@ -34,7 +34,7 @@ This folder is self-contained and intended to split out into its own repository.
 | **Electronic Flight Bag** | File a ForeFlight-style flight plan (paste a route and it parses), shown as a colour-coded route; it's packed into the AI fixer's context so your own callsign/airports/waypoints are recognised. A plan over a week old is flagged stale. |
 | **Moving-map home screen** | The app opens straight to an MKMapView chart with the live transcript, flight plan, and status as **draggable/resizable/pinnable floating cards** over it. Base layers switch between VFR sectional, IFR-low, standard, and satellite (offline-cached FAA charts — download by route or the whole lower-48), with Class B/C/D airspace, nearby navaids, and live traffic overlaid. **Tap any object** (airport/VOR/fix/airspace) to identify it; **search** by id or name; **long-press** to drop a waypoint; edit the route on the map. |
 | **Coded procedures (CIFP)** | FAA coded **approaches, SIDs, and STARs** (from the bundled `cifp.sqlite`) draw as georeferenced overlays and load into the flight plan. They also **ground the corrector** — a heard procedure/fix is verified against what the airport actually publishes. |
-| **Voice-driven clearance loader (EFB command interpreter)** | CommSight interprets a controller clearance addressed to **your own aircraft** — "N8925T, cleared direct BOSOX", "…cleared ILS runway 4 right", "…cleared via the SID/STAR" — and offers a **one-tap chip** to load it (direct-to a fix/airport, an approach for a runway, or a SID/STAR). Ownship-aware: it recognises your tail's ATC shorthands (`N8925T` / `8925T` / "Seneca 25T") but **never fires on another aircraft** mentioned on frequency, and never on a retracted/cancelled clearance. |
+| **Voice-driven clearance loader (EFB command interpreter)** | Obelisk interprets a controller clearance addressed to **your own aircraft** — "N8925T, cleared direct BOSOX", "…cleared ILS runway 4 right", "…cleared via the SID/STAR" — and offers a **one-tap chip** to load it (direct-to a fix/airport, an approach for a runway, or a SID/STAR). Ownship-aware: it recognises your tail's ATC shorthands (`N8925T` / `8925T` / "Seneca 25T") but **never fires on another aircraft** mentioned on frequency, and never on a retracted/cancelled clearance. |
 | **Speaker labelling** | Each line carries one fused **speaker label** — "ATC" (→ the addressed aircraft) for a controller transmission, the callsign for a pilot — from a content-role + acoustic-cluster fusion. |
 | **Console UX** | Cockpit / Day / Night themes, a swipeable status·flight-plan·traffic notification carousel, a customizable sidebar (add/remove/reorder widgets), a one-tap low-power **standby**, **squelch** (auto noise-floor or manual), transcript sort + jump-to-newest, and a "performance check" self-test. All settings persist across launches. |
 | **Model management** | Lean build downloads models on first launch with a progress gate; Settings → Models re-downloads on demand. The AI fixer installs automatically alongside the speech model. |

@@ -1,11 +1,11 @@
 import Foundation
 
-/// Decoders for the Stratux web API (github.com/stratux/stratux). Two shapes CommSight consumes:
+/// Decoders for the Stratux web API (github.com/stratux/stratux). Two shapes Obelisk consumes:
 ///  - one ADS-B target pushed over the `/traffic` WebSocket (the Go `TrafficInfo` struct), and
 ///  - the ownship GPS/AHRS situation from the `/getSituation` HTTP endpoint (Go `SituationData`).
 ///
 /// Stratux marshals these with Go's default JSON encoder, so the JSON keys are the exact Go field
-/// names (e.g. `Icao_addr`, `Position_valid`, `GPSLatitude`). Only the fields CommSight needs are
+/// names (e.g. `Icao_addr`, `Position_valid`, `GPSLatitude`). Only the fields Obelisk needs are
 /// decoded; everything else in the (large) structs is ignored.
 
 /// One target from the Stratux `/traffic` WebSocket — a subset of `TrafficInfo`.
@@ -40,7 +40,7 @@ struct StratuxTraffic: Decodable {
         case ageSec = "Age"
     }
 
-    /// Map to CommSight's `Aircraft`, or nil for a target with no usable identity. `receivedAt` is the
+    /// Map to Obelisk's `Aircraft`, or nil for a target with no usable identity. `receivedAt` is the
     /// device instant this message arrived — the freshness anchor (Stratux `Age` is the offset back to
     /// the last fix), mirroring the airplanes.live `fetchedAt − seen` model so the same prune works.
     func aircraft(receivedAt: Date) -> Aircraft? {

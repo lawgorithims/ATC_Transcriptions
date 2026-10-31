@@ -200,7 +200,7 @@ struct LiveAircraftFetcher: AircraftFetching {
             throw ADSBFeedError.badURL
         }
         var req = URLRequest(url: url)
-        req.setValue("CommSight/1.0 (on-device ATC transcription)", forHTTPHeaderField: "User-Agent")
+        req.setValue("Obelisk/1.0 (on-device ATC transcription)", forHTTPHeaderField: "User-Agent")
         let (data, response) = try await session.data(for: req)
         let fetchedAt = Date()   // bytes have arrived — anchor freshness here
         if let http = response as? HTTPURLResponse {

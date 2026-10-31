@@ -1,4 +1,4 @@
-# CommSight iOS — Remediation Specification
+# Obelisk iOS — Remediation Specification
 
 **Scope:** the 23 verified findings from the 2026-07 whole-app audit (3 high / 7 medium / 13 low).
 **Audience:** the developer executing a fix. Each entry states the symptom, the root cause, the

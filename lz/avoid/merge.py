@@ -236,7 +236,7 @@ def main():
 
 def build_meta(cells, slope_deg, inputs):
     return {
-        "name": "CommSight where-not-to-go map (CONUS)",
+        "name": "Obelisk where-not-to-go map (CONUS)",
         "format": "avoid1",
         "avoid_schema": "1",
         "minzoom": str(C.MIN_ZOOM), "maxzoom": str(C.ZOOM),

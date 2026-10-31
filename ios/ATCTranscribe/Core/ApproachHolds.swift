@@ -69,7 +69,7 @@ enum ApproachHolds {
             // wrong navaid are holds; activating KRUQ's ILS RWY 20 drew its missed-approach hold, the
             // termination of the go-around, 942 NM away in Texas.
             guard ProcedureRoute.isPlausibleApproachLeg(pattern.coord, field: field) else {
-                NSLog("CommSight: REFUSED implausible hold at %@ (%.4f, %.4f)",
+                NSLog("Obelisk: REFUSED implausible hold at %@ (%.4f, %.4f)",
                       pattern.fix, pattern.coord.lat, pattern.coord.lon)
                 continue
             }

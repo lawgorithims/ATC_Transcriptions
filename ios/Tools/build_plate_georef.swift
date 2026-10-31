@@ -126,7 +126,7 @@ func plateImage(pdf: String) -> (cg: CGImage, w: Int, h: Int)? {
     if !FileManager.default.fileExists(atPath: local) {
         guard !offline else { return nil }
         guard let url = URL(string: "https://aeronav.faa.gov/d-tpp/\(cycle)/\(pdf)") else { return nil }
-        var req = URLRequest(url: url, timeoutInterval: 40); req.setValue("CommSight/1.0", forHTTPHeaderField: "User-Agent")
+        var req = URLRequest(url: url, timeoutInterval: 40); req.setValue("Obelisk/1.0", forHTTPHeaderField: "User-Agent")
         let sem = DispatchSemaphore(value: 0); var data: Data?
         URLSession.shared.dataTask(with: req) { d, r, _ in
             if (r as? HTTPURLResponse)?.statusCode == 200, let d, d.starts(with: [0x25,0x50,0x44,0x46]) { data = d }

@@ -21,7 +21,7 @@ struct LiveTFRFetcher: TFRFetching {
 
     func fetchActive() async throws -> [TFR] {
         var req = URLRequest(url: Self.listURL, timeoutInterval: 30)
-        req.setValue("CommSight/1.0", forHTTPHeaderField: "User-Agent")
+        req.setValue("Obelisk/1.0", forHTTPHeaderField: "User-Agent")
         let (data, resp) = try await NetworkActivity.data(for: req, "TFRs", .hazards)
         guard (resp as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
         let stubs = TFRParser.list(data)
@@ -54,7 +54,7 @@ struct LiveTFRFetcher: TFRFetching {
         guard let u = URL(string: "https://tfr.faa.gov/download/detail_\(TFRParser.detailFile(s.id)).xml")
         else { return .success(nil) }
         var req = URLRequest(url: u, timeoutInterval: 25)
-        req.setValue("CommSight/1.0", forHTTPHeaderField: "User-Agent")
+        req.setValue("Obelisk/1.0", forHTTPHeaderField: "User-Agent")
         do {
             let (d, resp) = try await NetworkActivity.data(for: req, "TFRs", .hazards)
             guard (resp as? HTTPURLResponse)?.statusCode == 200, let xml = String(data: d, encoding: .utf8)

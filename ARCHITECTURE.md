@@ -1,6 +1,6 @@
-# CommSight — Architecture
+# Obelisk — Architecture
 
-> **What this document is.** A complete, human-readable map of how the CommSight
+> **What this document is.** A complete, human-readable map of how the Obelisk
 > codebase works, from the moment a radio transmission hits the microphone to the
 > corrected, speaker-labelled line on screen and the one-tap flight-plan amendment it
 > can trigger. It covers every subsystem, the offline data that powers them, the build
@@ -19,7 +19,7 @@
 
 ## Table of contents
 
-1. [What CommSight is](#1-what-commsight-is)
+1. [What Obelisk is](#1-what-obelisk-is)
 2. [Repository layout](#2-repository-layout)
 3. [The big picture](#3-the-big-picture)
 4. [End-to-end runtime data flow](#4-end-to-end-runtime-data-flow)
@@ -47,13 +47,13 @@
 
 ---
 
-## 1. What CommSight is
+## 1. What Obelisk is
 
-CommSight is a **native iOS/iPadOS Electronic Flight Bag (EFB) that transcribes live
+Obelisk is a **native iOS/iPadOS Electronic Flight Bag (EFB) that transcribes live
 air-traffic-control radio entirely on the device.** There is no server. From audio
 capture through speech recognition, correction, speaker labelling, and the moving-map
 cockpit display, every stage runs on the iPhone/iPad. It ships through TestFlight as
-**CommSight** (bundle id `com.flycommsight.atctranscribe`), universal binary, iPad-first
+**Obelisk** (bundle id `com.flycommsight.atctranscribe`), universal binary, iPad-first
 cockpit layout, deployment target **iOS 17**.
 
 It does two big things, tightly integrated:
@@ -380,7 +380,7 @@ flowchart TB
 
 ## 5. Concurrency & application-state model
 
-CommSight has one big view-model and a handful of actors. Understanding this topology is
+Obelisk has one big view-model and a handful of actors. Understanding this topology is
 the key to understanding why the app never tears down its feed.
 
 ### `AppModel` — the hub (and the god-object)
@@ -499,7 +499,7 @@ flowchart LR
 root `@StateObject`s — `AppModel`, `ModelDownloadManager`, `NotesStore`, `MetarStore`,
 `ForecastStore`, `TafStore`, `BatteryDiagnostics` — and injects them into the environment.
 There is no `AppDelegate`. `.onOpenURL` imports a Garmin `.fpl` (ForeFlight's "Open in
-CommSight"). A `--maplibre` launch arg swaps in the standalone MapLibre debug harness.
+Obelisk"). A `--maplibre` launch arg swaps in the standalone MapLibre debug harness.
 
 **The 5-tab shell.** `enum RootTab { transcript, map, plates, airports, notes }`.
 `RootTabView` stacks all five tab views in one `ZStack` and switches between them purely
@@ -1286,7 +1286,7 @@ macOS CLI that cherry-picks the Foundation-only sources and runs the engine on t
 **real Neural Engine** over SSH (a plain executable, because macOS XCTest needs a GUI
 test-runner daemon that isn't available headless).
 
-**Info.plist highlights:** display name `CommSight`; usage strings for mic, local network
+**Info.plist highlights:** display name `Obelisk`; usage strings for mic, local network
 (Stratux) and location; `NSAllowsLocalNetworking` (cleartext to the Stratux AP);
 `LSApplicationQueriesSchemes: [foreflightmobile]` (outbound handoff); inbound Garmin `.fpl`
 document type; `UIBackgroundModes: [audio]`.
@@ -1469,7 +1469,7 @@ transmissions (canonWER + callsign-safety metrics); the standing numbers live in
 - **CIFP** — Coded Instrument Flight Procedures; the FAA's ARINC-424 dataset of approaches,
   SIDs, STARs, runways, and airways. Bundled as `cifp.sqlite`.
 - **d-TPP** — digital Terminal Procedures Publication; the FAA's approach-plate PDFs + index.
-- **EFB** — Electronic Flight Bag; the cockpit-app category CommSight belongs to.
+- **EFB** — Electronic Flight Bag; the cockpit-app category Obelisk belongs to.
 - **IAP / SID / STAR** — Instrument Approach Procedure / Standard Instrument Departure /
   Standard Terminal Arrival Route. The three coded procedure kinds.
 - **LiveATC** — a public network of internet ATC audio streams; one of the app's input sources.

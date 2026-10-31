@@ -45,7 +45,7 @@ enum WhatsNew {
                 WhatsNewHighlight(
                     icon: "arrow.uturn.backward.circle",
                     title: "Your turn-back altitude, in a takeoff briefing",
-                    detail: "Each aircraft now has an \u{201c}Engine failure after takeoff\u{201d} card for the lowest height at which YOU will turn back to the runway — the number you found practising at a safe altitude with an instructor — plus the density altitude it was set in and when you last practised it. CommSight never calculates or suggests it. The flight-plan strip's new BRIEF cell opens a briefing for the departure: field elevation, wind and the headwind and crosswind on each runway, today's density altitude from the latest METAR, and your number converted to what the altimeter will read. With no number set, or when today's density altitude is higher than when it was set, the briefing says land ahead. A banner asks for the number once a flight is planned."),
+                    detail: "Each aircraft now has an \u{201c}Engine failure after takeoff\u{201d} card for the lowest height at which YOU will turn back to the runway — the number you found practising at a safe altitude with an instructor — plus the density altitude it was set in and when you last practised it. Obelisk never calculates or suggests it. The flight-plan strip's new BRIEF cell opens a briefing for the departure: field elevation, wind and the headwind and crosswind on each runway, today's density altitude from the latest METAR, and your number converted to what the altimeter will read. With no number set, or when today's density altitude is higher than when it was set, the briefing says land ahead. A banner asks for the number once a flight is planned."),
             ]),
         ReleaseNote(
             build: 110, version: "1.0", headline: "The flight bag, on its own",
@@ -105,7 +105,7 @@ enum WhatsNew {
                 WhatsNewHighlight(
                     icon: "waveform.slash",
                     title: "Radio noise is skipped, not invented",
-                    detail: "Between transmissions a frequency is just static, and a speech model handed static does not stay quiet — it writes something plausible, now and then a complete-sounding clearance that nobody said. On 500 recordings of pure noise the old behaviour produced words on two thirds of them. CommSight now checks whether a burst actually has the rise and fall of speech before it transcribes anything, and skips it if not. On our test recordings that removed 93% of the invented lines while skipping no real transmission. It also means noise no longer costs a transcription, so the battery lasts a little longer on a quiet frequency."),
+                    detail: "Between transmissions a frequency is just static, and a speech model handed static does not stay quiet — it writes something plausible, now and then a complete-sounding clearance that nobody said. On 500 recordings of pure noise the old behaviour produced words on two thirds of them. Obelisk now checks whether a burst actually has the rise and fall of speech before it transcribes anything, and skips it if not. On our test recordings that removed 93% of the invented lines while skipping no real transmission. It also means noise no longer costs a transcription, so the battery lasts a little longer on a quiet frequency."),
                 WhatsNewHighlight(
                     icon: "switch.2",
                     title: "And you can turn it off",
@@ -521,7 +521,7 @@ enum WhatsNew {
                 WhatsNewHighlight(
                     icon: "location.slash",
                     title: "GPS accuracy & interference warnings",
-                    detail: "CommSight now watches your GPS for trouble: it warns when accuracy degrades below what an approach needs, hides your aircraft rather than showing a position it doesn\u{2019}t trust, and \u{2014} using where the satellites actually are right now \u{2014} tells the difference between signal jamming and possible spoofing. Your position on the map is ringed by its accuracy and colored by how trustworthy it is. Awareness only; always cross-check your navaids."),
+                    detail: "Obelisk now watches your GPS for trouble: it warns when accuracy degrades below what an approach needs, hides your aircraft rather than showing a position it doesn\u{2019}t trust, and \u{2014} using where the satellites actually are right now \u{2014} tells the difference between signal jamming and possible spoofing. Your position on the map is ringed by its accuracy and colored by how trustworthy it is. Awareness only; always cross-check your navaids."),
                 WhatsNewHighlight(
                     icon: "mountain.2",
                     title: "Height above ground (AGL)",
@@ -845,7 +845,7 @@ enum WhatsNew {
                 WhatsNewHighlight(
                     icon: "square.and.arrow.down",
                     title: "Import a ForeFlight plan · notes on black",
-                    detail: "Share a plan from ForeFlight (“Open in CommSight”) or use the Import button in the flight-plan strip to load a .fpl route. Notes now write on a black page with a white pen — strokes were invisible on the old light page in the dark cockpit UI. Also fixed: widgets docking to the screen edge now trigger when the card reaches the edge, and a leftover test aircraft (N8925T) is cleared from the plan."),
+                    detail: "Share a plan from ForeFlight (“Open in Obelisk”) or use the Import button in the flight-plan strip to load a .fpl route. Notes now write on a black page with a white pen — strokes were invisible on the old light page in the dark cockpit UI. Also fixed: widgets docking to the screen edge now trigger when the card reaches the edge, and a leftover test aircraft (N8925T) is cleared from the plan."),
             ]),
         ReleaseNote(
             build: 55, version: "1.0", headline: "An Airports directory with live weather, and Plates binders",
@@ -957,7 +957,7 @@ enum WhatsNew {
                 WhatsNewHighlight(
                     icon: "exclamationmark.octagon.fill",
                     title: "Live TFRs, refreshed daily",
-                    detail: "Turn on “TFRs (FAA, live)” in the layers menu and CommSight pulls the current Temporary Flight Restrictions from the FAA and draws them in red, with their altitudes on the edge. Tap one to see its type (security, hazard, VIP movement, airshow, space ops…), altitudes, NOTAM number, and description. It caches the last set for offline and shows how fresh it is. Awareness only — always confirm against an official briefing before you fly."),
+                    detail: "Turn on “TFRs (FAA, live)” in the layers menu and Obelisk pulls the current Temporary Flight Restrictions from the FAA and draws them in red, with their altitudes on the edge. Tap one to see its type (security, hazard, VIP movement, airshow, space ops…), altitudes, NOTAM number, and description. It caches the last set for offline and shows how fresh it is. Awareness only — always confirm against an official briefing before you fly."),
             ]),
         ReleaseNote(
             build: 45, version: "1.0", headline: "Approach plates that align themselves — precisely",
@@ -965,7 +965,7 @@ enum WhatsNew {
                 WhatsNewHighlight(
                     icon: "scope",
                     title: "Every approach snaps onto the map exactly",
-                    detail: "CommSight now reads the georeferencing the FAA embeds inside each approach chart, so plates drop onto the moving map at exactly the right place, scale and orientation — no dragging to line them up. This jumps from about 1,100 approaches to roughly 9,000 (nearly every US instrument approach), and it's precise, not approximate. Look for the ✛ marker on a plate. Still a visual aid — always fly the official published chart."),
+                    detail: "Obelisk now reads the georeferencing the FAA embeds inside each approach chart, so plates drop onto the moving map at exactly the right place, scale and orientation — no dragging to line them up. This jumps from about 1,100 approaches to roughly 9,000 (nearly every US instrument approach), and it's precise, not approximate. Look for the ✛ marker on a plate. Still a visual aid — always fly the official published chart."),
             ]),
         ReleaseNote(
             build: 44, version: "1.0", headline: "Plate fixes: send-to-map for every airport + your position on the chart",
@@ -985,7 +985,7 @@ enum WhatsNew {
                 WhatsNewHighlight(
                     icon: "scope",
                     title: "Approach plates that snap onto the map",
-                    detail: "CommSight now reads an approach plate's fixes and georeferences it, so plates drop onto the moving map at the right place, scale, and heading on their own — no dragging to line them up. It's precomputed for 1,097 approaches across 567 US airports (look for the ✛ marker); where it can't align one confidently, you still place it by hand. A visual aid — always fly from the official published chart."),
+                    detail: "Obelisk now reads an approach plate's fixes and georeferences it, so plates drop onto the moving map at the right place, scale, and heading on their own — no dragging to line them up. It's precomputed for 1,097 approaches across 567 US airports (look for the ✛ marker); where it can't align one confidently, you still place it by hand. A visual aid — always fly from the official published chart."),
                 WhatsNewHighlight(
                     icon: "airplane.circle.fill",
                     title: "Tap an airport for a full ForeFlight-style card",
@@ -1001,7 +1001,7 @@ enum WhatsNew {
                 WhatsNewHighlight(
                     icon: "waveform.badge.magnifyingglass",
                     title: "Sharper transcription on your route",
-                    detail: "When you file a flight plan, CommSight primes its ear to the frequencies and fixes printed on that route's charts, so it recognises them more reliably on frequency."),
+                    detail: "When you file a flight plan, Obelisk primes its ear to the frequencies and fixes printed on that route's charts, so it recognises them more reliably on frequency."),
             ]),
         ReleaseNote(
             build: 42, version: "1.0", headline: "A new flight plan up top — plus plates and weather",
@@ -1009,11 +1009,11 @@ enum WhatsNew {
                 WhatsNewHighlight(
                     icon: "airplane",
                     title: "Your flight plan, right at the top",
-                    detail: "The flight plan moves out of the pop-up and into a strip you open from the top bar, like the feed picker. Type the route in plain text — “KMSP GEP KAMMA KORD” — and CommSight recognises each entry as you go, colour-coding airports, VORs, fixes, and airways. Boxes for your aircraft, cruise altitude, and alternate sit alongside a live trip readout: distance, time enroute, ETA, and fuel. Save the aircraft you fly (tail, type, cruise speed, and burn) and pick one with a tap."),
+                    detail: "The flight plan moves out of the pop-up and into a strip you open from the top bar, like the feed picker. Type the route in plain text — “KMSP GEP KAMMA KORD” — and Obelisk recognises each entry as you go, colour-coding airports, VORs, fixes, and airways. Boxes for your aircraft, cruise altitude, and alternate sit alongside a live trip readout: distance, time enroute, ETA, and fuel. Save the aircraft you fly (tail, type, cruise speed, and burn) and pick one with a tap."),
                 WhatsNewHighlight(
                     icon: "paperplane.fill",
                     title: "Send to ForeFlight always matches what you see",
-                    detail: "Edits now apply live as you type, so the “Send to ForeFlight” button hands over exactly the route on screen — no more saving, closing, and reopening first. And if CommSight loads a clearance while you're editing, the clearance wins rather than being quietly overwritten. Still app-to-app on your iPad, so it works with no cell signal and no internet. Always review the route in ForeFlight before using it."),
+                    detail: "Edits now apply live as you type, so the “Send to ForeFlight” button hands over exactly the route on screen — no more saving, closing, and reopening first. And if Obelisk loads a clearance while you're editing, the clearance wins rather than being quietly overwritten. Still app-to-app on your iPad, so it works with no cell signal and no internet. Always review the route in ForeFlight before using it."),
                 WhatsNewHighlight(
                     icon: "doc.text.image",
                     title: "Approach & departure plates, offline",
@@ -1029,19 +1029,19 @@ enum WhatsNew {
                 WhatsNewHighlight(
                     icon: "paperplane.fill",
                     title: "Accept ➔ ForeFlight, one tap",
-                    detail: "When CommSight hears your clearance and you accept it, a new “Accept ➔ ForeFlight” button applies the amendment AND opens ForeFlight with the amended route on its map. It's app-to-app on your iPad, so it works with no cell signal and no internet — Stratux-only cockpits included. Loaded departures and arrivals are sent as their individual fixes; approaches aren't sent (load those in ForeFlight's procedure advisor). Always review the route in ForeFlight before using it."),
+                    detail: "When Obelisk hears your clearance and you accept it, a new “Accept ➔ ForeFlight” button applies the amendment AND opens ForeFlight with the amended route on its map. It's app-to-app on your iPad, so it works with no cell signal and no internet — Stratux-only cockpits included. Loaded departures and arrivals are sent as their individual fixes; approaches aren't sent (load those in ForeFlight's procedure advisor). Always review the route in ForeFlight before using it."),
                 WhatsNewHighlight(
                     icon: "briefcase.fill",
                     title: "Send or share from the flight bag",
                     detail: "The flight bag gets a ForeFlight card: send the saved route to ForeFlight any time, or share it as a Garmin .fpl file — “Copy to ForeFlight” imports it as a route, and the same file works with other EFBs that read Garmin flight plans. Turn the whole hand-off on or off in Settings → ForeFlight."),
             ]),
         ReleaseNote(
-            build: 40, version: "1.0", headline: "Approaches & SIDs on the map — and CommSight loads your clearance",
+            build: 40, version: "1.0", headline: "Approaches & SIDs on the map — and Obelisk loads your clearance",
             highlights: [
                 WhatsNewHighlight(
                     icon: "point.topleft.down.to.point.bottomright.curvepath",
                     title: "Coded approaches, SIDs & STARs on the chart",
-                    detail: "CommSight now draws real coded procedures — instrument approaches, departures (SIDs), and arrivals (STARs) — right on the map, and can load one into your flight plan. Tap a procedure on an airport to preview it, then load it so its fixes join your route. The same coded data also helps the transcript get procedure and fix names right."),
+                    detail: "Obelisk now draws real coded procedures — instrument approaches, departures (SIDs), and arrivals (STARs) — right on the map, and can load one into your flight plan. Tap a procedure on an airport to preview it, then load it so its fixes join your route. The same coded data also helps the transcript get procedure and fix names right."),
                 WhatsNewHighlight(
                     icon: "text.bubble.fill",
                     title: "It hears your clearance and offers to load it",
@@ -1049,7 +1049,7 @@ enum WhatsNew {
                 WhatsNewHighlight(
                     icon: "checkmark.shield.fill",
                     title: "More dependable in the cockpit",
-                    detail: "A large reliability pass: CommSight now recovers on its own after Siri, a phone call, or unplugging a USB adapter interrupts the audio — instead of quietly going silent while still looking live. A garbled transmission is flagged rather than dropped without a trace, a constantly-noisy channel tells you to calibrate the squelch, and a correctly-heard handoff frequency is never “corrected” to a different one. Plus smoother map traffic and lower battery/heat."),
+                    detail: "A large reliability pass: Obelisk now recovers on its own after Siri, a phone call, or unplugging a USB adapter interrupts the audio — instead of quietly going silent while still looking live. A garbled transmission is flagged rather than dropped without a trace, a constantly-noisy channel tells you to calibrate the squelch, and a correctly-heard handoff frequency is never “corrected” to a different one. Plus smoother map traffic and lower battery/heat."),
             ]),
         ReleaseNote(
             build: 39, version: "1.0", headline: "Your charts are the home screen",
@@ -1057,7 +1057,7 @@ enum WhatsNew {
                 WhatsNewHighlight(
                     icon: "map.fill",
                     title: "The moving map is now your home screen",
-                    detail: "CommSight opens straight to the chart. Your live transcript, flight plan, and status panels float on top as cards you can drag anywhere, resize, and pin in place — set up your cockpit the way you like it and CommSight remembers it."),
+                    detail: "Obelisk opens straight to the chart. Your live transcript, flight plan, and status panels float on top as cards you can drag anywhere, resize, and pin in place — set up your cockpit the way you like it and Obelisk remembers it."),
                 WhatsNewHighlight(
                     icon: "circle.lefthalf.filled",
                     title: "See-through panels, laid out your way",
@@ -1073,7 +1073,7 @@ enum WhatsNew {
                 WhatsNewHighlight(
                     icon: "hand.tap",
                     title: "Tap anything to identify it",
-                    detail: "Tap an airport, VOR, fix, or airspace on the map and CommSight shows what it is — an airport's runways and tower/ground/approach/ATIS frequencies and elevation, a navaid's type and frequency, an airspace's class and floor/ceiling — plus its bearing and distance from you. Tap where a few things overlap and it asks which one you meant."),
+                    detail: "Tap an airport, VOR, fix, or airspace on the map and Obelisk shows what it is — an airport's runways and tower/ground/approach/ATIS frequencies and elevation, a navaid's type and frequency, an airspace's class and floor/ceiling — plus its bearing and distance from you. Tap where a few things overlap and it asks which one you meant."),
                 WhatsNewHighlight(
                     icon: "point.topleft.down.to.point.bottomright.curvepath",
                     title: "Build your route right on the map",
@@ -1093,7 +1093,7 @@ enum WhatsNew {
                 WhatsNewHighlight(
                     icon: "bolt.fill",
                     title: "The chart opens instantly",
-                    detail: "CommSight now fetches charts quietly in the background — for the area around you when you open the app, and for your route the moment you file a plan — so the map is ready the instant you open it instead of pausing to download. Once a chart's on the device it loads straight from storage."),
+                    detail: "Obelisk now fetches charts quietly in the background — for the area around you when you open the app, and for your route the moment you file a plan — so the map is ready the instant you open it instead of pausing to download. Once a chart's on the device it loads straight from storage."),
                 WhatsNewHighlight(
                     icon: "square.2.layers.3d.fill",
                     title: "One map that remembers your layer",
@@ -1105,7 +1105,7 @@ enum WhatsNew {
                 WhatsNewHighlight(
                     icon: "hand.draw",
                     title: "Free-pan chart loading",
-                    detail: "You're no longer limited to your filed route — pan and zoom the chart map anywhere in the country and CommSight loads that area's sectional or IFR chart automatically, then keeps it for offline. It only fetches charts where you actually look, so it stays light on data."),
+                    detail: "You're no longer limited to your filed route — pan and zoom the chart map anywhere in the country and Obelisk loads that area's sectional or IFR chart automatically, then keeps it for offline. It only fetches charts where you actually look, so it stays light on data."),
                 WhatsNewHighlight(
                     icon: "checkmark.seal",
                     title: "Complete nationwide coverage",
@@ -1121,7 +1121,7 @@ enum WhatsNew {
                 WhatsNewHighlight(
                     icon: "arrow.down.circle",
                     title: "Only downloads the charts your route crosses — then works offline",
-                    detail: "CommSight fetches just the sectionals and IFR charts your filed route passes through, caches them, and renders them with no signal — so the chart is there in the cockpit. File a plan, open the chart, and the right charts load automatically. It's all self-hosted from FAA public-domain data."),
+                    detail: "Obelisk fetches just the sectionals and IFR charts your filed route passes through, caches them, and renders them with no signal — so the chart is there in the cockpit. File a plan, open the chart, and the right charts load automatically. It's all self-hosted from FAA public-domain data."),
                 WhatsNewHighlight(
                     icon: "location.north.circle.fill",
                     title: "Your aircraft and waypoints on the chart",
@@ -1253,7 +1253,7 @@ enum WhatsNew {
                 WhatsNewHighlight(
                     icon: "arrow.uturn.backward",
                     title: "Better recovery when a model won’t load",
-                    detail: "If a model’s files are corrupt, CommSight now re-offers the download instead of dead-ending, and it no longer claims you’re “still using” a model when there’s nothing loaded."),
+                    detail: "If a model’s files are corrupt, Obelisk now re-offers the download instead of dead-ending, and it no longer claims you’re “still using” a model when there’s nothing loaded."),
                 WhatsNewHighlight(
                     icon: "memorychip",
                     title: "Lighter, cleaner Settings",
@@ -1273,7 +1273,7 @@ enum WhatsNew {
                 WhatsNewHighlight(
                     icon: "battery.100.bolt",
                     title: "No background AI after a model switch",
-                    detail: "If a model finishes loading while CommSight is in the background, it no longer quietly starts transcribing (and draining the battery) off-screen — it waits until you bring the app back."),
+                    detail: "If a model finishes loading while Obelisk is in the background, it no longer quietly starts transcribing (and draining the battery) off-screen — it waits until you bring the app back."),
             ]),
         ReleaseNote(
             build: 18, version: "1.0", headline: "Connect a Stratux receiver",
@@ -1293,7 +1293,7 @@ enum WhatsNew {
                 WhatsNewHighlight(
                     icon: "play.slash",
                     title: "No more stuck Start button",
-                    detail: "If a model (e.g. Large V2) won’t load on your device, CommSight now automatically falls back to the Small model so you can actually Start a feed — instead of looking like it loaded Small while leaving Start dead. It also remembers Small for next time so it won’t keep retrying the model that won’t load."),
+                    detail: "If a model (e.g. Large V2) won’t load on your device, Obelisk now automatically falls back to the Small model so you can actually Start a feed — instead of looking like it loaded Small while leaving Start dead. It also remembers Small for next time so it won’t keep retrying the model that won’t load."),
             ]),
         ReleaseNote(
             build: 16, version: "1.0", headline: "Large V2 is actually fast now",
@@ -1321,7 +1321,7 @@ enum WhatsNew {
                 WhatsNewHighlight(
                     icon: "iphone.slash",
                     title: "Pauses when you leave the app",
-                    detail: "CommSight now stops capturing and releases audio when you go to the home screen or switch apps — so it no longer keeps playing the live feed or draining the battery in the background. It resumes when you come back."),
+                    detail: "Obelisk now stops capturing and releases audio when you go to the home screen or switch apps — so it no longer keeps playing the live feed or draining the battery in the background. It resumes when you come back."),
                 WhatsNewHighlight(
                     icon: "bolt.fill",
                     title: "Large V2 loads fast now",
@@ -1365,7 +1365,7 @@ enum WhatsNew {
                 WhatsNewHighlight(
                     icon: "antenna.radiowaves.left.and.right",
                     title: "Live ADS-B traffic",
-                    detail: "Turn on Settings → Live traffic and CommSight pulls aircraft within 30 NM of your airport, so the corrector can match a misheard callsign to a plane actually on frequency. Only fresh data is ever used. Needs a network connection and an airport, and runs only while transcribing."),
+                    detail: "Turn on Settings → Live traffic and Obelisk pulls aircraft within 30 NM of your airport, so the corrector can match a misheard callsign to a plane actually on frequency. Only fresh data is ever used. Needs a network connection and an airport, and runs only while transcribing."),
                 WhatsNewHighlight(
                     icon: "airplane",
                     title: "Tap a callsign to follow one aircraft",
@@ -1405,7 +1405,7 @@ enum WhatsNew {
                 WhatsNewHighlight(
                     icon: "app.badge.checkmark",
                     title: "New app icon",
-                    detail: "A fresh CommSight icon on your home screen."),
+                    detail: "A fresh Obelisk icon on your home screen."),
             ]),
     ]
 

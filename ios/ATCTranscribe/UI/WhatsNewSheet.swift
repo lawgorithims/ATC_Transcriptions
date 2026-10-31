@@ -49,7 +49,7 @@ struct WhatsNewSheet: View {
                 .resizable().scaledToFit()
                 .frame(width: 52, height: 52)
                 .clipShape(RoundedRectangle(cornerRadius: DS.Radius.r4))
-            Text("What’s new in CommSight").font(.title3.weight(.bold)).foregroundStyle(p.text)
+            Text("What’s new in Obelisk").font(.title3.weight(.bold)).foregroundStyle(p.text)
                 .multilineTextAlignment(.center)
             Text("Version \(WhatsNew.currentVersion()) · build \(WhatsNew.currentBuild())")
                 .font(.caption.monospaced()).foregroundStyle(p.textDim)

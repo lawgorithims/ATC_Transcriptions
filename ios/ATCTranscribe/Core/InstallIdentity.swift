@@ -106,7 +106,7 @@ enum InstallIdentity {
     /// The candidate, for this launch only, and the log says so because nothing else will.
     private static func standIn(_ candidate: UUID, _ reason: String) -> Resolution {
         assert(!reason.isEmpty, "InstallIdentity.standIn: a stand-in must say why")
-        NSLog("CommSight: install id NOT persisted — %@. Using a stand-in for this launch only: a "
+        NSLog("Obelisk: install id NOT persisted — %@. Using a stand-in for this launch only: a "
               + "purchase bound to it could not be matched to this install after a relaunch.", reason)
         return Resolution(id: candidate, persisted: false)
     }

@@ -1,6 +1,6 @@
 # TestFlight Disaster-Recovery Runbook
 
-How to rebuild the ability to ship **CommSight** to TestFlight from scratch on a **fresh,
+How to rebuild the ability to ship **Obelisk** to TestFlight from scratch on a **fresh,
 ephemeral Scaleway Apple-Silicon Mac**, in case the current build box (`macmini-m4`) is
 deleted. This is the exact path that shipped **build 1 (2026-06-27)**.
 
@@ -163,13 +163,13 @@ d=json.load(urllib.request.urlopen(req,timeout=30))
 print('OK', [(a['attributes']['name'],a['attributes']['bundleId']) for a in d.get('data',[])])
 PY
 ```
-Expect: `OK [('CommSight', 'com.flycommsight.atctranscribe')]`.
+Expect: `OK [('Obelisk', 'com.flycommsight.atctranscribe')]`.
 
 ---
 
 ## Post-upload: install on a device
 
-App Store Connect → **CommSight** → **TestFlight** → wait for "Processing" to finish (~10–30
+App Store Connect → **Obelisk** → **TestFlight** → wait for "Processing" to finish (~10–30
 min) → **Internal Testing** → add yourself as a tester → install the **TestFlight** app on the
 iPhone/iPad and accept the invite.
 
@@ -183,4 +183,5 @@ iPhone/iPad and accept the invite.
 | `ASC_ISSUER_ID` | *(memory note)* |
 | `ASC_KEY_PATH` | `/Users/m1/AuthKey_CDZ8T6TG53.p8` |
 | `TEAM_ID` | *(memory note)* |
-| App | **CommSight**, bundle `com.flycommsight.atctranscribe`, SKU `commsight-ios` |
+| App | **Obelisk**, bundle `com.flycommsight.atctranscribe`, SKU `commsight-ios` |
+|  |  ↑ the SKU is fixed at creation and cannot be changed; it keeps the old name forever. |

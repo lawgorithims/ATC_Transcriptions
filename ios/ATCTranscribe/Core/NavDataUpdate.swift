@@ -212,7 +212,7 @@ enum NavDataUpdate {
             guard let staged = stagedFile(d) else { continue }
             guard !isNotYetEffective(staged, asOf: now) else { continue }      // still waiting
             if let bad = install(from: staged, as: d, asOf: now) {
-                NSLog("CommSight: staged %@ could not be activated — %@", d.rawValue, bad.reason)
+                NSLog("Obelisk: staged %@ could not be activated — %@", d.rawValue, bad.reason)
             } else {
                 activated.append(d)
             }
@@ -426,7 +426,7 @@ enum NavDataUpdate {
     @discardableResult
     static func install(from staged: URL, as d: Dataset, asOf now: Date = Date()) -> Rejection? {
         if let bad = verify(staged, as: d, asOf: now) {
-            NSLog("CommSight: nav update REFUSED for %@ — %@", d.rawValue, bad.reason)
+            NSLog("Obelisk: nav update REFUSED for %@ — %@", d.rawValue, bad.reason)
             return bad
         }
         let fm = FileManager.default
@@ -445,10 +445,10 @@ enum NavDataUpdate {
             // The switch is the pointer alone. A crash before it lands leaves the previous cycle served
             // and an orphan for `pruneSuperseded`; the file it supersedes is not touched at all.
             try writePointer(d, name)
-            NSLog("CommSight: nav update INSTALLED %@ cycle %@", d.rawValue, readCycle(dest))
+            NSLog("Obelisk: nav update INSTALLED %@ cycle %@", d.rawValue, readCycle(dest))
             return nil
         } catch {
-            NSLog("CommSight: nav update FAILED to install %@ — %@", d.rawValue, "\(error)")
+            NSLog("Obelisk: nav update FAILED to install %@ — %@", d.rawValue, "\(error)")
             return .unopenable
         }
     }
@@ -460,10 +460,10 @@ enum NavDataUpdate {
         do {
             try writePointer(d, bundledPointer)
         } catch {
-            NSLog("CommSight: nav update could not revert %@ — %@", d.rawValue, "\(error)")
+            NSLog("Obelisk: nav update could not revert %@ — %@", d.rawValue, "\(error)")
             return
         }
-        NSLog("CommSight: nav update reverted %@ to the bundled copy", d.rawValue)
+        NSLog("Obelisk: nav update reverted %@ to the bundled copy", d.rawValue)
     }
 
     /// Is this dataset currently being served from a download rather than the bundle?

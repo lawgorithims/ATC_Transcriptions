@@ -21,7 +21,7 @@ enum WindFetchError: Error, Equatable {
 struct LiveWindGribFetcher: WindGribFetching {
     func fetch(_ url: URL) async throws -> Data {
         var req = URLRequest(url: url, timeoutInterval: 60)
-        req.setValue("CommSight/1.0", forHTTPHeaderField: "User-Agent")
+        req.setValue("Obelisk/1.0", forHTTPHeaderField: "User-Agent")
         let (data, resp) = try await NetworkActivity.data(for: req, "Winds aloft", .weather)
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
         if code == 404 { throw WindFetchError.notFound }

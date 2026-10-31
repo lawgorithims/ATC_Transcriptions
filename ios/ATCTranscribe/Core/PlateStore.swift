@@ -46,7 +46,7 @@ enum PlateStore {
         guard let remote = proc.plateURL else { return nil }
         do {
             var req = URLRequest(url: remote, timeoutInterval: 30)
-            req.setValue("CommSight/1.0", forHTTPHeaderField: "User-Agent")
+            req.setValue("Obelisk/1.0", forHTTPHeaderField: "User-Agent")
             let (tmp, resp) = try await NetworkActivity.download(for: req, "Approach plate", .plates, .urgent)
             guard (resp as? HTTPURLResponse)?.statusCode == 200, isPDF(tmp) else { return nil }
             try? FileManager.default.removeItem(at: dst)

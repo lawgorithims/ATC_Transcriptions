@@ -100,7 +100,7 @@ struct KeychainBox {
         add[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         let status = SecItemAdd(add as CFDictionary, nil)
         guard status == errSecSuccess || status == errSecDuplicateItem else {
-            NSLog("CommSight: the Keychain refused %@/%@ — %@. Nothing was stored.",
+            NSLog("Obelisk: the Keychain refused %@/%@ — %@. Nothing was stored.",
                   service, account, Self.describe(status))
             return false
         }

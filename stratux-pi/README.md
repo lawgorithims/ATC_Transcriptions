@@ -1,13 +1,13 @@
-# stratux-pi — CommSight cockpit-audio gateway
+# stratux-pi — Obelisk cockpit-audio gateway
 
 The Raspberry Pi code that turns a [Stratux](https://github.com/stratux/stratux) receiver into a
-single cockpit device for **CommSight**: it captures **cockpit audio** from a USB audio adapter and
-streams it over the Stratux Wi-Fi to the iPad, where CommSight transcribes it. Aircraft **traffic**
+single cockpit device for **Obelisk**: it captures **cockpit audio** from a USB audio adapter and
+streams it over the Stratux Wi-Fi to the iPad, where Obelisk transcribes it. Aircraft **traffic**
 and **GPS** come straight from Stratux's own web API. The result works **in flight with no internet**.
 
 ```
 headset / intercom audio ─► USB audio adapter ─► [ Raspberry Pi ] ─► this gateway ─► /audio.raw ─┐
-                                                       │                                          ├─► iPad: CommSight
+                                                       │                                          ├─► iPad: Obelisk
 Stratux ADS-B + WAAS GPS  ─────────────────────────────┴─► Stratux web API: /traffic, /getSituation┘
 ```
 
@@ -104,11 +104,11 @@ needed. Play audio into the USB adapter's mic-in and watch the board:
 | **Red (PWR) blinking** | the signal is clipping — turn the inline volume / capture gain down |
 
 It works with or without the iPad connected (the meter borrows the mic between client streams
-and hands it over the instant CommSight connects). `/health` reports the same numbers as
+and hands it over the instant Obelisk connects). `/health` reports the same numbers as
 `led_meter.rms_dbfs` / `peak_dbfs` if you want values instead of blinkenlights. Set
 `LED_METER=off` to return the LEDs to their normal duties (SD activity / power).
 
-## 5. Use in CommSight
+## 5. Use in Obelisk
 
 In the app: **Settings → Stratux receiver** → set the address (`192.168.10.1`) and audio port
 (`8090`), then pick **"Stratux receiver"** as the input source and press **Start**. iOS asks once
@@ -122,8 +122,8 @@ GPS fix, and traffic count; transcripts start as audio arrives.
 | Variable | Default | Notes |
 | --- | --- | --- |
 | `AUDIO_DEVICE` | `auto` | `auto` finds a USB capture device; or set e.g. `plughw:1,0` |
-| `AUDIO_PORT` | `8090` | must match CommSight's Settings → Stratux receiver → Audio port |
-| `AUDIO_RATE` | `16000` | CommSight's native rate — leave it |
+| `AUDIO_PORT` | `8090` | must match Obelisk's Settings → Stratux receiver → Audio port |
+| `AUDIO_RATE` | `16000` | Obelisk's native rate — leave it |
 | `AUDIO_CHANNELS` | `1` | mono — leave it |
 | `AUDIO_FORMAT` | `S16_LE` | signed 16-bit LE — leave it |
 | `LED_METER` | `on` | drive the Pi's ACT/PWR LEDs as an input level meter; `off` restores normal LED duty |
@@ -137,7 +137,7 @@ Served on `0.0.0.0:<AUDIO_PORT>`:
 | Endpoint | Returns |
 | --- | --- |
 | `GET /health` | JSON status: resolved device, capture device list, whether a stream is active |
-| `GET /audio.raw` | raw 16 kHz mono S16LE PCM (what CommSight reads) — **one client at a time** |
+| `GET /audio.raw` | raw 16 kHz mono S16LE PCM (what Obelisk reads) — **one client at a time** |
 | `GET /audio.wav` | the same audio with a streaming WAV header (for `ffplay` / a browser) |
 
 A second simultaneous audio client gets HTTP `409` (the USB input is single-capture). A missing /
@@ -161,7 +161,7 @@ make syntax                                            # byte-compile sanity che
 | Distorted / clipped | lower the inline volume + `alsamixer` capture gain; add an attenuator |
 | Buzz / whine | add a 3.5 mm ground-loop isolator on the audio branch |
 | `409` on `/audio.raw` | another client is already streaming (only one at a time) |
-| CommSight can't connect | allow the local-network prompt; confirm `/health` from a laptop; check the port in Settings |
+| Obelisk can't connect | allow the local-network prompt; confirm `/health` from a laptop; check the port in Settings |
 | Doesn't survive reboot | the Stratux image may mount root read-only (overlayfs); disable the overlay, or start manually for the demo |
 | ForeFlight stopped | reboot — this gateway is separate from Stratux; if it persists, re-flash the Stratux SD card |
 
@@ -176,8 +176,8 @@ sudo ./uninstall.sh     # removes the service + /opt/commsight; does not touch S
 ## Notes
 
 - **Relationship to Stratux.** This does not include or modify the Stratux software — flash that
-  separately. CommSight reads traffic from `ws://<pi>/traffic` and GPS from `http://<pi>/getSituation`
+  separately. Obelisk reads traffic from `ws://<pi>/traffic` and GPS from `http://<pi>/getSituation`
   (Stratux's own web API on port 80), and cockpit audio from this gateway on port 8090. Same host,
   different services.
-- **License.** Part of the CommSight / ATC_Transcribe repository; see the repository's license.
+- **License.** Part of the Obelisk / ATC_Transcribe repository; see the repository's license.
   Stratux is a separate project under its own license.

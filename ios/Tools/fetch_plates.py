@@ -26,7 +26,7 @@ import urllib.error
 import urllib.request
 
 BASE = "https://aeronav.faa.gov/d-tpp"
-UA = "CommSight-plate-georef-build/1.0"
+UA = "Obelisk-plate-georef-build/1.0"
 NAV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../ATCTranscribe/Resources/nav")
 
 

@@ -1,7 +1,7 @@
 import Foundation
 
 /// Parses a Garmin FPL v1 XML document (`.fpl` — what ForeFlight shares/exports) back into an ordered
-/// route string, so a plan built in ForeFlight can be imported with one tap ("Open in CommSight" from
+/// route string, so a plan built in ForeFlight can be imported with one tap ("Open in Obelisk" from
 /// ForeFlight's share sheet, or the flight-plan strip's Import button). The inverse of
 /// `ForeFlightExport.fplXML`. Pure Foundation (XMLParser) — fully unit-testable. NASA Power-of-10:
 /// bounded collections, validated inputs, no recursion.

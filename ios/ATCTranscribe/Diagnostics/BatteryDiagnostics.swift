@@ -94,7 +94,7 @@ struct BatteryActivitySnapshot {
 
     /// A shareable plain-text dump of everything collected (for AirDrop/Messages to a dev machine).
     func exportText() -> String {
-        var lines = ["CommSight battery diagnostics", "Samples: \(samples.count)"]
+        var lines = ["Obelisk battery diagnostics", "Samples: \(samples.count)"]
         if let r = dischargeRate { lines.append(String(format: "Recent discharge: %.1f %%/hr", r)) }
         lines.append("")
         if let m = metricSummary { lines.append("MetricKit (latest daily payload):"); lines.append(m); lines.append("") }
@@ -126,7 +126,7 @@ struct BatteryActivitySnapshot {
     /// Write the report to a temp .csv file for the Share sheet (AirDrop / Mail / Save to Files) — far easier
     /// than pasting 100+ clipboard lines onto a computer. Returns nil if the write fails.
     func exportFileURL() -> URL? {
-        let name = "commsight-battery-\(Int(Date().timeIntervalSince1970)).csv"
+        let name = "obelisk-battery-\(Int(Date().timeIntervalSince1970)).csv"
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
         guard (try? exportText().write(to: url, atomically: true, encoding: .utf8)) != nil else { return nil }
         return url

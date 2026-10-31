@@ -361,7 +361,7 @@ def cmd_build():
 
     coarse = sum(1 for v in tiles.values() if v[1] != C.TERRAIN_SRC_FINE)
     meta = {
-        "name": f"CommSight LZ {C.CELL_ID}", "format": "bin", "type": "overlay", "version": "1",
+        "name": f"Obelisk LZ {C.CELL_ID}", "format": "bin", "type": "overlay", "version": "1",
         "minzoom": C.MIN_ZOOM, "maxzoom": C.NATIVE_ZOOM,
         "bounds": f"{C.CELL_LON_MIN},{C.CELL_LAT_MIN},{C.CELL_LON_MAX},{C.CELL_LAT_MAX}",
         "lz_schema": C.LZ_SCHEMA, "lz_planes": ",".join(C.PLANE_NAMES),
@@ -430,7 +430,7 @@ def cmd_fixture():
     tiles[(base_z, base_x, base_y)][0][C.PLANE_CLASS][0, 0] = C.CLASS_DEVELOPED_OPEN
     tiles[(base_z, base_x, base_y)][0][C.PLANE_CLASS][side - 1, side - 1] = C.CLASS_BRUSH
 
-    meta = {"name": "CommSight LZ fixture", "format": "bin", "type": "overlay", "version": "1",
+    meta = {"name": "Obelisk LZ fixture", "format": "bin", "type": "overlay", "version": "1",
             "minzoom": base_z, "maxzoom": base_z, "bounds": "-107,32,-106,33",
             "lz_schema": C.LZ_SCHEMA, "lz_planes": ",".join(C.PLANE_NAMES),
             "lz_cell": "fixture", "built_at": "2026-01-01T00:00:00Z",

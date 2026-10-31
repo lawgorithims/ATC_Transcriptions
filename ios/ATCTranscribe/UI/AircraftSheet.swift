@@ -282,7 +282,7 @@ struct AircraftSheet: View {
                             .font(.dsLabel).foregroundStyle(p.textDim)
                     }
                     Text("The lowest height at which YOU will turn back to the runway, found by practising "
-                         + "it at a safe altitude with an instructor in this aircraft. CommSight never "
+                         + "it at a safe altitude with an instructor in this aircraft. Obelisk never "
                          + "calculates or suggests it. Below it — and whenever it is blank — the briefing "
                          + "says land ahead. A number set at one density altitude is not valid at a higher one.")
                         .font(.dsLabelS).foregroundStyle(p.textDim)

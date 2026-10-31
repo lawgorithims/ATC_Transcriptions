@@ -2499,7 +2499,7 @@ struct MapLibreChartView: UIViewRepresentable {
                 let q = Coordinator.plateQuad(s)
                 // `displayImage` is non-optional, so the old "nil or ok" told us nothing; its SIZE is
                 // the thing worth logging — a zero-sized plate is the failure this line looks for.
-                NSLog("CommSight PLATE dbg: layer=%@ img=%.0fx%.0f quadTL=%.4f,%.4f quadBR=%.4f,%.4f center=%.4f,%.4f zoom=%.2f layers=[%@]",
+                NSLog("Obelisk PLATE dbg: layer=%@ img=%.0fx%.0f quadTL=%.4f,%.4f quadBR=%.4f,%.4f center=%.4f,%.4f zoom=%.2f layers=[%@]",
                       inLayer.rawValue, s.displayImage.size.width, s.displayImage.size.height,
                       q.topLeft.latitude, q.topLeft.longitude, q.bottomRight.latitude, q.bottomRight.longitude,
                       map.centerCoordinate.latitude, map.centerCoordinate.longitude, map.zoomLevel, ids)

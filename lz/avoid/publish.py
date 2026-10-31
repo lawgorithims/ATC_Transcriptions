@@ -59,7 +59,7 @@ def readme(plan, meta):
     total = sum(s["bytes"] for s in plan["shards"])
     return f"""---
 license: odbl
-pretty_name: CommSight where-not-to-go map (contiguous US)
+pretty_name: Obelisk where-not-to-go map (contiguous US)
 ---
 # Where not to go — contiguous US
 

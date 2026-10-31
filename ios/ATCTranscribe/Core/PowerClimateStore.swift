@@ -157,7 +157,7 @@ actor PowerClimateStore {
 
     private static func fetch(_ url: URL) async -> Data? {
         var req = URLRequest(url: url)
-        req.setValue("CommSight/1.0 (on-device ATC transcription)", forHTTPHeaderField: "User-Agent")
+        req.setValue("Obelisk/1.0 (on-device ATC transcription)", forHTTPHeaderField: "User-Agent")
         guard let (data, response) = try? await URLSession.powerClimate.data(for: req),
               (response as? HTTPURLResponse)?.statusCode == 200,
               data.count <= maxResponseBytes else { return nil }

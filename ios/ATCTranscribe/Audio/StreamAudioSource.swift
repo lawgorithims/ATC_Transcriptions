@@ -90,7 +90,7 @@ final class StreamAudioSource: NSObject, AudioSource, URLSessionDataDelegate {
             return
         }
         var req = URLRequest(url: target)
-        req.setValue("Mozilla/5.0 CommSight/1.0", forHTTPHeaderField: "User-Agent")
+        req.setValue("Mozilla/5.0 Obelisk/1.0", forHTTPHeaderField: "User-Agent")
         let session = urlSession ?? URLSession(configuration: .default, delegate: self, delegateQueue: callbackQueue)
         urlSession = session
         let t = session.dataTask(with: req)
