@@ -36,19 +36,24 @@ answers, the subtitle, and the review notes. Every asset that work needs is now 
 `docs/appstore/promo/` (five promotional images at the sizes App Store Connect offers), and the
 two screenshot sets.
 
-### Submit build 113
+### ⚠️ Build 113 is no longer the one to submit
 
-**Build 113 is the one to submit.** Uploaded 2026-11-01 from `2609596` on a clean tree, and Apple
-reports `VALID` — read back from `GET /v1/builds`, six minutes after upload, not inferred from the
-uploader saying "Upload succeeded".
+**113 predates three fixes from testing on 2026-11-02 and a new build has NOT been uploaded yet.**
+113 is still on TestFlight and still `VALID`; it is simply older than the code. What it is missing:
 
-It exists because 112 predates the sign-out hardening in `df478e6`. Submitting 112 would have
-shipped 1.0 without it, which costs nothing today — entitlements never consult the account, so a
-mid-flight sign-out is a startling screen rather than a lost chart — but it becomes load-bearing
-at M3, and there was no reason to carry the gap into the first release.
+| | |
+|---|---|
+| Data activity | A paused category kept producing chart-download rows, because the map's chart loader and both prefetchers re-ask on every pan and a paused request was PARKED rather than refused — the row vanished with the next pan and an identical one took its place. There was also no way to stop one row: `cancel` refused running work and nothing in the UI called it at all. |
+| Airport diagrams | Every airport diagram was a georeference miss, which hid ownship, ADS-B traffic and "Overlay on map" on the one chart a pilot reads while the aircraft is moving on the ground. The table now carries 890 of 925 diagrams. |
+| Plate rotation | `build_plate_georef_embedded.py` had the clockwise/counter-clockwise rotation convention backwards from its first commit. Small on approach plates (the largest rotation in the table is 1.41°) and catastrophic on a diagram, which is routinely turned a quarter turn to fit a runway on a portrait page. All 9,898 approach rows are corrected. |
+| Map ruler | New: two-finger tap to measure distance, time and bearing. |
 
-The build number came from App Store Connect (`GET /v1/builds?filter[app]={id}&sort=-version`
-reported 112 as the highest), never from the local `build/` directory. §2.3 has the trap.
+So **archive and upload a new build before submitting**, with the build number read from App Store
+Connect rather than from the local `build/` directory (§2.3 has the trap — `GET
+/v1/builds?filter[app]={id}&sort=-version` is the only source that knows what Apple has seen).
+
+`nav/plate_georef.json` changed, so this is a build whose BUNDLED DATA moved, not only its code:
+re-check `RELEASING.md` §1 before shipping it.
 
 **No App Review demo account is needed** — this file previously said one was the last prerequisite,
 and that was wrong. Apple wants demo credentials when a reviewer cannot reach features without
@@ -95,7 +100,7 @@ So: run the UI suite on a quiet machine, or do not believe it. `Tools/uitests.sh
 thing in its own header about the day it was written.
 | Invariant suites | ✅ `TranscriptionGateTests`, `EntitlementsPolicyTests`, `InstallIdentityTests`, `DownloadPolicyTests`, `BundledNavDataTests`, `PlateGeorefTests` all pass |
 | Bundled nav data | ✅ refreshed to **cycle 2611** (effective 2026-10-29) — see §2.1 |
-| **Build 113 on TestFlight** | ✅ uploaded 2026-11-01 from `2609596`, Apple reports `VALID` — this is the build to submit. 112 is still there and still valid, but predates the sign-out hardening |
+| **Build 113 on TestFlight** | ⚠️ uploaded 2026-11-01 from `2609596`, Apple reports `VALID` — but it PREDATES the 2026-11-02 fixes (data-activity pause, airport-diagram georeference, plate rotation sign, map ruler). A new build is needed before submitting; see the warning above |
 | `CFBundleDisplayName` in the built `.app` | ✅ `Obelisk` |
 | `PrivacyInfo.xcprivacy` in the built `.app` | ✅ present |
 | Website `npm run build` | ✅ compiles, all 7 native auth routes registered |
@@ -300,7 +305,8 @@ at runtime with error 1000, which reads like a network fault and is not one.
   evidently taken, and the name is a free-text field in any case; the bundle id never changes.
 - **Privacy Policy URL:** `https://obeliskaerospace.com/legal/privacy`
 - Fill in **App Privacy** to match `PrivacyInfo.xcprivacy` (§1).
-- **Select build 113** — uploaded 2026-11-01, `VALID`.
+- **Select the new build** — NOT 113. 113 is `VALID` on TestFlight but predates the 2026-11-02
+  fixes; nothing carrying them has been uploaded yet.
 
   The trap `RELEASING.md` §4 warns about has now caught this project twice, so it is worth the
   space. Local archives stopped at `ATCTranscribe_109.xcarchive`, which suggests 110 — but App
