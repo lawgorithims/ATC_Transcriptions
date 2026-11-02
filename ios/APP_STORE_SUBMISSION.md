@@ -36,10 +36,14 @@ answers, the subtitle, and the review notes. Every asset that work needs is now 
 `docs/appstore/promo/` (five promotional images at the sizes App Store Connect offers), and the
 two screenshot sets.
 
-### ⚠️ Build 113 is no longer the one to submit
+### Submit build 114
 
-**113 predates three fixes from testing on 2026-11-02 and a new build has NOT been uploaded yet.**
-113 is still on TestFlight and still `VALID`; it is simply older than the code. What it is missing:
+**Build 114 is the one to submit.** Uploaded 2026-11-02 from `3bbbe44` on a clean tree, and Apple
+reports `VALID` — read back from `GET /v1/builds`, three minutes after upload, not inferred from
+the uploader saying "Upload succeeded".
+
+It exists because 113 predates three fixes found in testing on 2026-11-02. 113 is still on
+TestFlight and still `VALID`; it is simply older than the code. What it is missing:
 
 | | |
 |---|---|
@@ -48,12 +52,13 @@ two screenshot sets.
 | Plate rotation | `build_plate_georef_embedded.py` had the clockwise/counter-clockwise rotation convention backwards from its first commit. Small on approach plates (the largest rotation in the table is 1.41°) and catastrophic on a diagram, which is routinely turned a quarter turn to fit a runway on a portrait page. All 9,898 approach rows are corrected. |
 | Map ruler | New: two-finger tap to measure distance, time and bearing. |
 
-So **archive and upload a new build before submitting**, with the build number read from App Store
-Connect rather than from the local `build/` directory (§2.3 has the trap — `GET
-/v1/builds?filter[app]={id}&sort=-version` is the only source that knows what Apple has seen).
+The build number came from App Store Connect (`GET /v1/builds?filter[app]={id}&sort=-version`
+reported 113 as the highest), never from the local `build/` directory. §2.3 has the trap.
 
-`nav/plate_georef.json` changed, so this is a build whose BUNDLED DATA moved, not only its code:
-re-check `RELEASING.md` §1 before shipping it.
+⚠️ **114 is a build whose BUNDLED DATA moved, not only its code.** `nav/plate_georef.json` gained
+890 airport diagrams and had 9,898 approach rotations corrected, so it is `RELEASING.md` §1 that
+governs it and not just the code review — the cycle still has to match `procedures.json` (both are
+2611) and the coverage floors in `PlateGeorefTests` are what hold that.
 
 **No App Review demo account is needed** — this file previously said one was the last prerequisite,
 and that was wrong. Apple wants demo credentials when a reviewer cannot reach features without
@@ -100,7 +105,7 @@ So: run the UI suite on a quiet machine, or do not believe it. `Tools/uitests.sh
 thing in its own header about the day it was written.
 | Invariant suites | ✅ `TranscriptionGateTests`, `EntitlementsPolicyTests`, `InstallIdentityTests`, `DownloadPolicyTests`, `BundledNavDataTests`, `PlateGeorefTests` all pass |
 | Bundled nav data | ✅ refreshed to **cycle 2611** (effective 2026-10-29) — see §2.1 |
-| **Build 113 on TestFlight** | ⚠️ uploaded 2026-11-01 from `2609596`, Apple reports `VALID` — but it PREDATES the 2026-11-02 fixes (data-activity pause, airport-diagram georeference, plate rotation sign, map ruler). A new build is needed before submitting; see the warning above |
+| **Build 114 on TestFlight** | ✅ uploaded 2026-11-02 from `3bbbe44`, Apple reports `VALID` — this is the build to submit. It carries the data-activity pause fix, the airport-diagram georeference, the plate rotation-sign correction and the map ruler. 113 and earlier predate all four |
 | `CFBundleDisplayName` in the built `.app` | ✅ `Obelisk` |
 | `PrivacyInfo.xcprivacy` in the built `.app` | ✅ present |
 | Website `npm run build` | ✅ compiles, all 7 native auth routes registered |
@@ -305,13 +310,14 @@ at runtime with error 1000, which reads like a network fault and is not one.
   evidently taken, and the name is a free-text field in any case; the bundle id never changes.
 - **Privacy Policy URL:** `https://obeliskaerospace.com/legal/privacy`
 - Fill in **App Privacy** to match `PrivacyInfo.xcprivacy` (§1).
-- **Select the new build** — NOT 113. 113 is `VALID` on TestFlight but predates the 2026-11-02
-  fixes; nothing carrying them has been uploaded yet.
+- **Select build 114** — uploaded 2026-11-02, `VALID`.
 
   The trap `RELEASING.md` §4 warns about has now caught this project twice, so it is worth the
   space. Local archives stopped at `ATCTranscribe_109.xcarchive`, which suggests 110 — but App
   Store Connect already held **111**, uploaded 2026-10-29 from somewhere other than this box, so
-  the right answer was 112. Asking ASC again before shipping 113 confirmed 112 was the highest.
+  the right answer was 112. Asking ASC again before shipping 113 confirmed 112 was the highest,
+  and again before shipping 114 confirmed 113 was. Ask every time; the local directory has never
+  once been the authority on what Apple has already seen.
   ASC is the authority and rejects a number it has seen. Always ask it, never the local `build/`
   directory: `GET /v1/builds?filter[app]={id}&sort=-version`.
 
