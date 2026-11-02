@@ -30,10 +30,15 @@ filled in. Screenshots are generated too, at exact device sizes, five each for b
 classes — `docs/appstore/iPhone-17-Pro-Max/` (1320×2868) and `docs/appstore/iPad-Pro-13-inch-M5/`
 (2064×2752), reproducible with `Tools/appstore_screenshots.sh`.
 
-What is left is the ordinary submission work in §3–§7 of `APP_STORE_LISTING.md`: the **App Review
-demo account**, and the **App Privacy** answers. The demo account is yours to create on the live
-site — a reviewer needs working credentials for the account screen, and this repo is public, so
-the password goes in App Store Connect's App Review Information field and nowhere in here.
+What is left is the ordinary submission work in §3–§7 of `APP_STORE_LISTING.md`: the **App Privacy**
+answers, the subtitle, and the review notes.
+
+**No App Review demo account is needed** — this file previously said one was the last prerequisite,
+and that was wrong. Apple wants demo credentials when a reviewer cannot reach features without
+them, and nothing here is behind a login: `EntitlementStore.resolve()` grants everything
+unconditionally and never consults the account, and the one reference to `isSignedIn` outside the
+account screens picks an icon. Sign-In Information stays unchecked. `APP_STORE_LISTING.md` §5 has
+the reasoning and the grep that settles it.
 
 ---
 

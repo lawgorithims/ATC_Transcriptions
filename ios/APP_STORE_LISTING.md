@@ -209,9 +209,10 @@ No account is needed to use any feature. Launch the app and everything is availa
 An account exists only so a subscription can follow a pilot to another device; it unlocks nothing
 in this build.
 
-A demo account is provided below if you would like to exercise the account screens
-(Settings -> Account). It supports Sign in with Apple, Google, and email + password, and account
-deletion is available in-app at Settings -> Account -> Delete account.
+If you would like to exercise the account screens, they are at Settings -> Account. Sign-up is
+open: Sign in with Apple, or email + password, creates an account immediately with no invite code
+and no email verification step. Account deletion is in-app at
+Settings -> Account -> Delete account, and it cancels any billing before it removes the record.
 
 NO PURCHASES IN THIS BUILD
 There is no in-app purchase, no paywall, no price shown anywhere, and no link to any external
@@ -233,14 +234,36 @@ on-device. It is sent off the device only when the optional online traffic layer
 request traffic near that point, with no identifier attached.
 ```
 
-**Demo account** — create one on the live site and put it in the Review Information fields:
+### Sign-In Information: leave it unchecked, and provide no demo account
 
-| Field | Value |
-|---|---|
-| Username | `appreview@obeliskaerospace.com` *(create this)* |
-| Password | *(set one; it goes in the ASC field, not in this repo)* |
+App Store Connect's **App Review Information → Sign-In Information** has a *"Sign-in required"*
+checkbox. **Leave it off.** Apple asks for demo credentials when a reviewer cannot reach features
+without them, and nothing here is behind a login:
 
-⚠️ **Do not commit the password.** This repo is public.
+- `EntitlementStore.resolve()` returns `.proPerformance` unconditionally in this build — the
+  account does not feed it at all, by the decision recorded in §3 of `APP_STORE_SUBMISSION.md`.
+- The only use of `isSignedIn` outside the account screens themselves is `SettingsSheet.swift:38`,
+  choosing which SF Symbol to draw on the row. Verified by grep over `ATCTranscribe/`.
+- Sign-up is open and instant (`app/api/auth/native/signup/route.ts` — validate, insert, return a
+  session; no invite code, no verification mail), so a reviewer who wants to see the signed-in
+  screens or test the deletion path can make an account faster than they could type given ones.
+
+Checking the box would also be the wrong signal: it tells review this app needs a login, which is
+an invitation to examine it against 5.1.1(i) — the guideline the optional account was designed
+around in the first place.
+
+What actually prevents trouble here is the notes above, which say the account is optional and
+name the exact path to in-app deletion. Apple has rejected apps under 5.1.1(v) because a reviewer
+could not *find* account deletion; a demo account does not fix that and a sentence does.
+
+If you decide to provide one anyway, create it on the live site and put it in the ASC fields —
+never in this repo, which is public.
+
+**Why the notes name Apple and email but not Google.** Google sign-in needs `GOOGLE_CLIENT_ID` and
+`GOOGLE_CLIENT_SECRET` on the server; without them the app degrades politely to "that sign-in
+option isn't available right now". Promising a reviewer a button that answers that way is a worse
+outcome than not mentioning it. Confirm those two are set in production and you can add Google
+back to the paragraph.
 
 ---
 
@@ -298,8 +321,9 @@ has its own release-notes history in `UI/WhatsNew.swift` if you want to draw on 
 2. ~~Enable Sign In with Apple on the App ID~~ — done, `APPLE_ID_AUTH` present.
 3. ~~Confirm the ASC agreements~~ — done, the API returns 200.
 4. ~~Deploy the website~~ — done; the site and all seven native auth routes are live.
-5. Create the App Review demo account on the live site. **This is now the only prerequisite left
-   before the listing can be completed.**
+5. ~~Create the App Review demo account~~ — **not needed.** No feature requires a login, so
+   Sign-In Information stays unchecked; see §5. An earlier revision of this file called it the
+   last prerequisite, which was wrong.
 6. Set the **Subtitle** in App Information if it is not set yet (§1).
 7. Archive and upload the next build via `Tools/ship_testflight.sh` — **ask ASC for the build
    number first**; it already holds 111.
