@@ -1,0 +1,164 @@
+OBELISK — APP STORE CONNECT PRODUCT PAGE
+
+Every field below is paste-ready: the text is already unwrapped, so what you paste is
+what the product page shows. Counts are measured, not estimated.
+
+Generated from APP_STORE_LISTING.md by Tools/build_product_page.py — edit the markdown
+and regenerate rather than editing this file, or the two will drift.
+
+======================================================================================
+
+App Name  [11 / 30]
+-------------------
+Obelisk EFB
+
+
+Subtitle  [29 / 30]
+-------------------
+Offline electronic flight bag
+
+
+Promotional Text  [142 / 170]
+-----------------------------
+Cycle 2611 is aboard. Offline FAA charts, coded approaches, georeferenced plates and engine-out glide planning — built to work with no signal.
+
+
+Keywords  [94 / 100]
+--------------------
+aviation,sectional,VFR,IFR,approach,plate,METAR,TAF,ADS-B,pilot,chart,airport,glide,TFR,navlog
+
+
+Description  [2421 / 4000]
+--------------------------
+Obelisk is an electronic flight bag that works with no signal.
+
+Charts, procedures, plates and planning all run on your device. There is no account to create before you can fly, nothing about your flying leaves the iPad, and the moving map keeps working when the cell service does not.
+
+OFFLINE CHARTS
+• FAA VFR sectionals and IFR low and high enroute charts, full CONUS
+• Download by route or by area, then fly them with no connection
+• Cockpit, Day and Night themes — Night emits red only, to protect dark adaptation
+
+PROCEDURES AND PLATES
+• Coded approaches, SIDs and STARs drawn on the map, with holds and a vertical profile
+• Around 9,900 georeferenced approach plates: your aircraft on the plate, and the plate as a map layer
+• Terminal procedure charts for more than 3,100 airports
+
+AIRPORTS
+• A nationwide directory — over 19,000 airports, runway geometry and 40,000+ frequencies
+• Field elevation, runway dimensions, and the frequencies you actually need on the ramp
+
+WEATHER AND HAZARDS
+• METAR, TAF and a 7-day outlook, with flight category at a glance
+• Radar, animated winds aloft, and density altitude
+• Temporary Flight Restrictions and natural-hazard events on the map
+
+WHEN THE ENGINE QUITS
+• Nearest-airport ranking by what you can actually glide to, not just what is closest
+• Glide footprint on the map, height above ground, and a departure turnback briefing built around a number you set yourself from practice — Obelisk never invents one for you
+
+FLIGHT PLANNING
+• Type a route in plain language and see it on the chart
+• Import and export Garmin .fpl, including straight from ForeFlight's share sheet
+• A logbook and a hand-written note library that travel with you
+
+TRAFFIC
+• Live ADS-B traffic over the internet, or from a Stratux receiver on the aircraft's own Wi-Fi
+
+NAVIGATION DATA THAT TELLS YOU THE TRUTH
+Obelisk ships with a current FAA cycle and updates procedures, airports and the plate index over the air. When a dataset goes out of cycle it says so, in a banner you cannot miss. Expired data that looks authoritative is the failure this app is built to avoid, so currency is never behind a paywall.
+
+IMPORTANT
+Obelisk is an aid to situational awareness. It is not certified for navigation and does not replace official charts, an official weather briefing, or the pilot in command's judgement. Always verify against current official sources.
+
+Requires iOS 17 or later. iPhone and iPad.
+
+
+Support URL
+-----------
+https://obeliskaerospace.com
+
+
+Marketing URL
+-------------
+https://obeliskaerospace.com
+
+
+Privacy Policy URL
+------------------
+https://obeliskaerospace.com/legal/privacy
+
+
+Copyright
+---------
+2026 Obelisk Aerospace LLC
+
+
+======================================================================================
+
+APP REVIEW INFORMATION -> NOTES
+-------------------------------
+WHAT THIS APP IS
+Obelisk is an electronic flight bag for general-aviation pilots. Charts, instrument procedures, approach plates, airport data and flight planning run on the device and work with no network connection.
+
+SIGNING IN IS OPTIONAL — PLEASE TRY IT BOTH WAYS
+No account is needed to use any feature. Launch the app and everything is available immediately. An account exists only so a subscription can follow a pilot to another device; it unlocks nothing in this build.
+
+If you would like to exercise the account screens, they are at Settings -> Account. Sign-up is open: Sign in with Apple, or email + password, creates an account immediately with no invite code and no email verification step. Account deletion is in-app at Settings -> Account -> Delete account, and it cancels any billing before it removes the record.
+
+NO PURCHASES IN THIS BUILD
+There is no in-app purchase, no paywall, no price shown anywhere, and no link to any external purchase mechanism. Every feature is available to every user.
+
+DATA SOURCES AND ATTRIBUTION
+Aeronautical data is United States FAA public-domain data (CIFP, NASR, d-TPP, TFRs). Weather is NOAA/NWS. Hazard and climate layers use NASA EONET and NASA POWER; NASA does not endorse Obelisk. Live traffic is from airplanes.live. Each source is attributed in the app where it is displayed.
+
+SAFETY POSITIONING
+Obelisk is an aid to situational awareness and is not certified for navigation. The app states this, and it warns the pilot with an unmissable banner whenever any bundled dataset falls out of its FAA cycle rather than presenting stale data as current.
+
+LOCATION
+Location is used to show the aircraft's position on the chart and to compute glide range, all on-device. It is sent off the device only when the optional online traffic layer is enabled, to request traffic near that point, with no identifier attached.
+
+
+======================================================================================
+
+SIGN-IN INFORMATION
+-------------------
+Leave 'Sign-in required' UNCHECKED, and provide no demo account.
+No feature in the app is behind a login: EntitlementStore.resolve() grants every
+capability unconditionally and never reads the account. See APP_STORE_LISTING.md §5.
+
+======================================================================================
+
+CATEGORY, RATING, PRICE
+-----------------------
+Primary category    Navigation
+Secondary category  Weather
+Age rating          4+  (answer 'None' to every questionnaire item)
+Price               Free, no in-app purchases in this build
+
+======================================================================================
+
+APP PRIVACY  (must match ATCTranscribe/PrivacyInfo.xcprivacy — Apple compares them)
+----------------------------------------------------------------------------------
+Collect data from this app?  YES
+
+  Contact Info -> Email Address    linked: YES   tracking: no   App Functionality
+  Contact Info -> Name             linked: YES   tracking: no   App Functionality
+  Identifiers  -> User ID          linked: YES   tracking: no   App Functionality
+  Location     -> Precise Location linked: NO    tracking: no   App Functionality
+
+Tracking across apps and websites:  NO.  Tracking domains list:  empty.
+Nothing else is collected — no usage data, diagnostics, contacts, photos, purchase
+or search history, and no identifier beyond the account's own user id.
+
+======================================================================================
+
+SCREENSHOTS
+-----------
+iPhone 6.9"  ->  screenshots/iphone-6.9/   five, 1320 x 2868
+iPad 13"     ->  screenshots/ipad-13/      five, 2064 x 2752
+Upload in filename order; 01 leads the page.
+
+App icon: app-icon-1024.png (1024x1024, RGB, no alpha). App Store Connect normally
+takes the icon from the build itself — this copy is here in case it asks.
+
