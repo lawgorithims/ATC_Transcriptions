@@ -36,21 +36,19 @@ answers, the subtitle, and the review notes. Every asset that work needs is now 
 `docs/appstore/promo/` (five promotional images at the sizes App Store Connect offers), and the
 two screenshot sets.
 
-### ⚠️ Build 112 predates the sign-out hardening
+### Submit build 113
 
-Build 112 is `VALID` on TestFlight and is a legitimate 1.0, but it was archived before
-`AccountStore` learned to hold an involuntary sign-out until the aircraft stops. **Submitting 112
-ships 1.0 without that.**
+**Build 113 is the one to submit.** Uploaded 2026-11-01 from `2609596` on a clean tree, and Apple
+reports `VALID` — read back from `GET /v1/builds`, six minutes after upload, not inferred from the
+uploader saying "Upload succeeded".
 
-How much that matters: today, nothing. Entitlements never consult the account
-(`EntitlementStore.resolve()` grants everything), so a mid-flight sign-out costs a pilot no
-capability — it is a startling screen, not a lost chart. It becomes load-bearing at M3, when the
-account feeds the gate.
+It exists because 112 predates the sign-out hardening in `df478e6`. Submitting 112 would have
+shipped 1.0 without it, which costs nothing today — entitlements never consult the account, so a
+mid-flight sign-out is a startling screen rather than a lost chart — but it becomes load-bearing
+at M3, and there was no reason to carry the gap into the first release.
 
-So this is a real choice rather than a blocker. Ship 112 and let the hardening land in the first
-update, or archive **113** from `e2aa926` or later. If 113: ask App Store Connect for the current
-build number first (`GET /v1/builds?filter[app]={id}&sort=-version`), never the local `build/`
-directory — §2.3 has the trap.
+The build number came from App Store Connect (`GET /v1/builds?filter[app]={id}&sort=-version`
+reported 112 as the highest), never from the local `build/` directory. §2.3 has the trap.
 
 **No App Review demo account is needed** — this file previously said one was the last prerequisite,
 and that was wrong. Apple wants demo credentials when a reviewer cannot reach features without
@@ -97,7 +95,7 @@ So: run the UI suite on a quiet machine, or do not believe it. `Tools/uitests.sh
 thing in its own header about the day it was written.
 | Invariant suites | ✅ `TranscriptionGateTests`, `EntitlementsPolicyTests`, `InstallIdentityTests`, `DownloadPolicyTests`, `BundledNavDataTests`, `PlateGeorefTests` all pass |
 | Bundled nav data | ✅ refreshed to **cycle 2611** (effective 2026-10-29) — see §2.1 |
-| **Build 112 on TestFlight** | ✅ uploaded 2026-10-30, Apple reports `VALID` — add testers in App Store Connect → Obelisk EFB → TestFlight |
+| **Build 113 on TestFlight** | ✅ uploaded 2026-11-01 from `2609596`, Apple reports `VALID` — this is the build to submit. 112 is still there and still valid, but predates the sign-out hardening |
 | `CFBundleDisplayName` in the built `.app` | ✅ `Obelisk` |
 | `PrivacyInfo.xcprivacy` in the built `.app` | ✅ present |
 | Website `npm run build` | ✅ compiles, all 7 native auth routes registered |
@@ -302,11 +300,14 @@ at runtime with error 1000, which reads like a network fault and is not one.
   evidently taken, and the name is a free-text field in any case; the bundle id never changes.
 - **Privacy Policy URL:** `https://obeliskaerospace.com/legal/privacy`
 - Fill in **App Privacy** to match `PrivacyInfo.xcprivacy` (§1).
-- **Build number: 112.** Not 111 — and this is exactly the trap `RELEASING.md` §4 warns about.
-  Local archives stop at `ATCTranscribe_109.xcarchive`, which suggests 110 or 111, but App Store
-  Connect already holds **111, uploaded 2026-10-29** from somewhere other than this box. ASC is the
-  authority and rejects a number it has seen. Always ask it, never the local `build/` directory:
-  `GET /v1/builds?filter[app]={id}&sort=-version`.
+- **Select build 113** — uploaded 2026-11-01, `VALID`.
+
+  The trap `RELEASING.md` §4 warns about has now caught this project twice, so it is worth the
+  space. Local archives stopped at `ATCTranscribe_109.xcarchive`, which suggests 110 — but App
+  Store Connect already held **111**, uploaded 2026-10-29 from somewhere other than this box, so
+  the right answer was 112. Asking ASC again before shipping 113 confirmed 112 was the highest.
+  ASC is the authority and rejects a number it has seen. Always ask it, never the local `build/`
+  directory: `GET /v1/builds?filter[app]={id}&sort=-version`.
 
 ### 2.4 The website and the native auth API ✅ (live)
 
