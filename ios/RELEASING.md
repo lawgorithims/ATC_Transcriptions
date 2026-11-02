@@ -33,18 +33,52 @@ the 2607→2610 roll: of 9,007 plates in both, 24 had a transform that moved —
 misplaces silently rather than gapping. Needs PyMuPDF + numpy (no system python here has `fitz` — there is a venv at
 `~/CommSight/plate-georef-venv`), ~2.6 GB of plate PDFs and about 10 minutes at 16 workers:
 
+The table has **two halves and they are built by two different tools**, in this order:
+
 ```bash
 CACHE=<scratch>/plates_cache_<cycle>            # one dir PER CYCLE — contents differ, filenames don't
 python3 ios/Tools/fetch_plates.py --cycle <cycle> --cache "$CACHE"   # re-run until it exits 0
-python3 ios/Tools/build_plate_georef_embedded.py --cache "$CACHE" --iap-only \
+
+# 1. approach charts — the FAA's own embedded transform
+~/CommSight/plate-georef-venv/bin/python3 ios/Tools/build_plate_georef_embedded.py \
+        --cache "$CACHE" --iap-only --out <scratch>/iap_georef.json
+
+# 2. airport diagrams — fitted, then MERGED into the same file
+~/CommSight/plate-georef-venv/bin/python3 ios/Tools/build_apd_georef.py \
+        --cache "$CACHE" --merge-into <scratch>/iap_georef.json \
         --out ios/ATCTranscribe/Resources/nav/plate_georef.json
 ```
 
-The builder counts an uncached plate as a silent skip, so a half-finished download yields a valid,
-correctly-shaped, half-empty table. `PlateGeorefTests` holds the floor (>85% of the index, cycles
-equal, no orphan rows); cycle 2610 covers 9,987 of 11,140 IAPs (89.7%). The missing ~10% carry no
-`/VP` viewport at all — the FAA does not publish them as geospatial PDFs, mostly military and
-high-altitude charts — and those correctly fall back to hand-align.
+Each builder counts an uncached plate as a silent skip, so a half-finished download yields a valid,
+correctly-shaped, half-empty table. `PlateGeorefTests` holds the floors (>85% of each index, cycles
+equal, no orphan rows).
+
+**The approach half** is the FAA's own page→ground transform, read out of the geospatial PDF — exact,
+nothing inferred. Cycle 2611 covers 9,898 of 11,162 IAPs (88.7%). The missing ~11% carry no `/VP`
+viewport at all (the FAA does not publish them as geospatial PDFs — mostly military and high-altitude
+charts) and correctly fall back to hand-align.
+
+**The airport-diagram half is FITTED**, because the FAA publishes no embedded transform for airport
+diagrams whatsoever — probed across 2611, an APD has no `/VP`, `/Measure`, `/GPTS`, `/LPTS` or `/GCS`.
+So every diagram used to be a georeference miss, which is what hid the ownship dot, the ADS-B traffic
+and "Overlay on map" on the one chart a pilot reads while the aircraft is moving on the ground.
+`build_apd_georef.py` instead matches the runway strips the chart DRAWS to the surveyed runway ends in
+`apt.sqlite`: two matched endpoints fix a similarity exactly, and every other runway on the field then
+scores it without having contributed to it. Cycle 2611: **890 of 925 diagrams (96.2%)**, out-of-sample
+residual median 2.9 m / p90 6.7 m / max 17.5 m, and 881 of 891 rotations landing within 1° of a right
+angle — which is what a cartographic product does and a lucky fit does not. A single-runway diagram
+consumes both control points in the fit, so its residual is 0.0 by construction and proves nothing;
+those are gated instead on the drawn runway WIDTH, which the fit never looks at. 227 of the published
+rows rest on that check alone.
+
+⚠️ **`rotationDeg` is CLOCKWISE-from-north** (`PlateSimilarity.Placement`'s convention), so both
+builders negate the counter-clockwise angle they fit. `build_plate_georef_embedded.py` did NOT, from
+its first commit, and nothing noticed for cycles: approach plan views are north-up and the largest
+rotation in the whole table is 1.41°, so the error was twice a number that is nearly zero. Checked
+against the FAA's own embedded control points on `05932IL31.PDF` (KFFC, rotation 1.33°), the old
+entry misplaced them by 14.09 page points and the corrected one by 1.35. It had to be found before
+diagrams could ship at all: a diagram is routinely turned a quarter turn to fit a long runway onto a
+portrait page, and a ±90° page read as ∓90° misplaces ownship by kilometres.
 
 Then confirm the counts did not collapse. A builder that fetches a bad source and writes a valid,
 nearly-empty database is the failure mode that has actually happened here (`build_sua.py`, 2026-10-19,

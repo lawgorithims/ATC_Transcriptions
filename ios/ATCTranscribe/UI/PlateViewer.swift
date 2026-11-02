@@ -322,6 +322,10 @@ struct PlateViewer: View {
                     }
                 }
                 // Ownship + traffic overlay — only possible on a georeferenced plate (needs world→page).
+                // Airport diagrams are georeferenced as of Tools/build_apd_georef.py, so this is where
+                // the surface-awareness picture comes from: own position and ADS-B traffic on the taxi
+                // chart. Before that table existed every diagram was a georef miss and this toggle
+                // simply never appeared.
                 if url != nil, georef != nil {
                     ToolbarItem(placement: .primaryAction) {
                         Button {
@@ -361,8 +365,10 @@ struct PlateViewer: View {
                 if let partner = flipPartner {
                     ToolbarItem(placement: .primaryAction) { flipButton(partner) }
                 }
-                // Overlay-on-map is georef-only (placement is exact + not manually adjustable), so the
+                // Overlay-on-map is georef-only (the placement is not manually adjustable), so the
                 // action is hidden for schematic plates (SIDs/STARs/minimums) with no georeference.
+                // Airport diagrams reach this now that the table carries them — which is the whole
+                // point: the surface chart is the one a pilot reads while the aircraft is moving.
                 if let onSendToMap, let url, georef != nil {
                     ToolbarItem(placement: .primaryAction) {
                         Button { onSendToMap(url) } label: { Label("Overlay on map", systemImage: "map") }

@@ -607,10 +607,15 @@ final class AppModel: ObservableObject {
     func overlayPlate(_ proc: AirportProcedure, airport: String, pdf: URL) {
         guard let img = PlateImageRenderer.firstPageImage(pdfURL: pdf) else { return }
         let aspect = Double(img.size.width / max(img.size.height, 1))
-        // Georef-only by design: placement comes from the FAA's embedded georeference (exact), and the
-        // manual move/scale UI was removed with it. A plate with no georef entry (SIDs/STARs/minimums —
-        // schematic, not to scale) deliberately does NOT overlay; the send-to-map buttons are hidden for
-        // those, so this guard is defense in depth — do not add a hand-placed fallback back.
+        // Georef-only by design: the placement comes from the georeference table and there is no manual
+        // move/scale UI. A plate with no georef entry — a SID, STAR or minimums page, which is
+        // schematic and not to scale — deliberately does NOT overlay; the send-to-map buttons are
+        // hidden for those, so this guard is defence in depth. Do NOT add a hand-placed fallback back.
+        //
+        // Airport diagrams DO overlay, as of the fitted half of the table (Tools/build_apd_georef.py).
+        // Theirs is not the FAA's own embedded transform — the FAA publishes none for diagrams — but a
+        // fit to the runways the chart draws, gated on evidence that did not go into the fit, median
+        // residual 2.9 m. See the header of `PlateGeoref`.
         guard let g = PlateGeoref.lookup(pdf: proc.pdf) else { return }
         showPlateMenu = false
         plateOverlay = PlateOverlayState(name: proc.name, airport: airport, pdf: proc.pdf, image: img,

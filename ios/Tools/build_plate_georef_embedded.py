@@ -58,7 +58,18 @@ def embedded_georef(path):
     ee, en = enu(lat_e, lon_e, clat, clon); we, wn = enu(lat_w, lon_w, clat, clon)
     dx_e, dx_n = ee - we, en - wn                                # ground vector for page +x (west→east across page)
     widthMeters = math.hypot(dx_e, dx_n)
-    rotationDeg = math.degrees(math.atan2(dx_n, dx_e))           # 0 = +x points east = north-up
+    # ⚠️ NEGATED, i.e. CLOCKWISE-from-north. This line read `atan2(dx_n, dx_e)` -- the ordinary
+    # counter-clockwise angle -- while `PlateSimilarity.Placement.rotationDeg`, which consumes it, is
+    # clockwise: `forwardModel` sends page +x to the ground direction (cos r, -sin r), and the Swift
+    # fitter in the same file negates for exactly this reason (`Rcw(p) = Rccw(-p)`).
+    #
+    # It went unnoticed because every rotation this builder produces is tiny: FAA approach plan views
+    # are north-up, and the largest in the whole shipped table is 1.41 degrees, so the error is twice
+    # a rotation that is nearly zero. It is not nothing, though -- checked against the FAA's OWN
+    # embedded control points on 05932IL31.PDF (KFFC, rotation 1.33), the shipped entry misplaces
+    # them by 14.09 page points and the negated one by 1.35. On a 68 km page view that is the
+    # difference between a few hundred metres of ownship error and a few tens.
+    rotationDeg = -math.degrees(math.atan2(dx_n, dx_e))          # 0 = +x points east = north-up
     # normalize
     r = rotationDeg % 360
     if r > 180: r -= 360

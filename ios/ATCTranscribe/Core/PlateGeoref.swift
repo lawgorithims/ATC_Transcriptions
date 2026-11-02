@@ -6,12 +6,28 @@ import CoreGraphics
 /// clockwise-from-north rotation ≈ 0 since FAA plan views are north-up), plus the fit's residual and
 /// control-point count for a confidence read.
 struct PlateGeorefEntry {
+
+    /// Which kind of chart this transform describes.
+    ///
+    /// ⚠️ IT DECIDES THE BOUNDS BELOW, and the two kinds are not remotely the same shape. An approach
+    /// plan view spans tens of kilometres — 68 km is typical — while an airport diagram spans the
+    /// airport: 6.8 km at KDFW and 2.3 km at a single-runway field. A single width range cannot
+    /// describe both, and the one that was here (`> 5_000`) was written for approach plates and would
+    /// have thrown away every small-airport diagram as implausible.
+    enum Kind: String, Equatable {
+        case iap        // approach chart; the FAA's own embedded /GPTS transform
+        case apd        // airport diagram; fitted from drawn runways (Tools/build_apd_georef.py)
+    }
+
     let centerLat: Double
     let centerLon: Double
     let widthMeters: Double
     let rotationDeg: Double
     let rmsMeters: Double
     let inliers: Int
+    /// Defaults to `.iap` so a table built before this field existed still reads correctly — and so
+    /// an unknown future value falls back to the STRICTER of the two bounds rather than the looser.
+    var kind: Kind = .iap
 
     /// Corruption guards on a bundled georeference — promoted into the runtime so a corrupted /
     /// hand-edited / stale table can never place a NaN- or wildly-out-of-range plate in front of a
@@ -24,9 +40,22 @@ struct PlateGeorefEntry {
         guard centerLat.isFinite, centerLon.isFinite, widthMeters.isFinite,
               rotationDeg.isFinite, rmsMeters.isFinite else { return false }
         guard abs(centerLat) <= 90, abs(centerLon) <= 180 else { return false }
-        guard widthMeters > 5_000, widthMeters < 400_000 else { return false }   // an approach plan view
-        guard rmsMeters >= 0 else { return false }                               // control-point residual (px)
-        guard inliers >= 3 else { return false }
+        guard rmsMeters >= 0 else { return false }                               // control-point residual
+        switch kind {
+        case .iap:
+            guard widthMeters > 5_000, widthMeters < 400_000 else { return false }   // an approach plan view
+            guard inliers >= 3 else { return false }
+        case .apd:
+            // An airport diagram spans the airport, not an approach: measured across the 2611 cycle
+            // these run about 1.5 km to 8 km. The range is kept wide of that because its job here is
+            // to catch a corrupted row, not to re-judge a fit the builder already gated.
+            guard widthMeters > 500, widthMeters < 50_000 else { return false }
+            // TWO, not three, and this is the honest number rather than a relaxation. A diagram's
+            // control points are runway ENDS, so one matched runway is two of them; `build_apd_georef.py`
+            // will only publish a single-runway fit that passes an independent drawn-width check,
+            // because such a fit's residual is zero by construction and proves nothing on its own.
+            guard inliers >= 2 else { return false }
+        }
         return true
     }
 
@@ -48,12 +77,22 @@ struct PlateGeorefEntry {
     }
 }
 
-/// Bundled lookup of the offline plate-georeference table (`nav/plate_georef.json`, built by
-/// `Tools/fetch_plates.py` + `Tools/build_plate_georef_embedded.py` — read the FAA's own embedded
-/// page→ground transform out of each geospatial plate PDF). A hit means the plate can be
-/// auto-aligned; a miss means the pilot hand-aligns it, and ~10% of IAPs are a permanent miss
-/// because the FAA does not publish them as geospatial PDFs at all (mostly military and
-/// high-altitude charts). The table MUST be built from the same cycle as `procedures.json` —
+/// Bundled lookup of the offline plate-georeference table (`nav/plate_georef.json`). A hit means the
+/// chart can be auto-aligned — ownship, ADS-B traffic and "Overlay on map" all follow from it; a miss
+/// means none of those are offered at all.
+///
+/// The table has TWO halves, from two different sources, and the difference matters when reading a
+/// row's `rmsMeters`:
+///
+///   * **Approach charts** (`Tools/fetch_plates.py` + `Tools/build_plate_georef_embedded.py`): the
+///     FAA's own embedded page→ground transform, read out of the geospatial PDF. Authoritative and
+///     exact. ~10% of IAPs are a permanent miss because the FAA does not publish them as geospatial
+///     PDFs at all — mostly military and high-altitude charts.
+///   * **Airport diagrams** (`Tools/build_apd_georef.py`): FITTED, because the FAA publishes no
+///     embedded transform for them whatsoever — not a /VP, not a /GPTS, nothing. The fit matches the
+///     runway strips the chart draws to the surveyed runway ends in `apt.sqlite`, and every published
+///     row is gated on evidence that did not go into the fit. Measured over the 2611 cycle: 891 of
+///     925 diagrams, median residual 2.9 m. The table MUST be built from the same cycle as `procedures.json` —
 /// see `PlateGeorefTests.testTableCycleMatchesTheBundledPlateIndex`. Load-once, like
 /// `NavMeta`/`Procedures`.
 enum PlateGeoref {
@@ -64,6 +103,11 @@ enum PlateGeoref {
         struct Entry: Decodable {
             let centerLat: Double; let centerLon: Double; let widthMeters: Double
             let rotationDeg: Double; let rmsMeters: Double; let inliers: Int
+            /// Absent on every approach row (and on any table built before diagrams were added), and
+            /// an unrecognised value reads as `.iap` — the stricter bounds. Failing towards "treat it
+            /// like an approach plate" means an unknown row is held to the tighter test, not waved
+            /// through on the looser one.
+            let kind: String?
         }
 
         /// One malformed/partial row must NOT collapse the whole table (F6): decode each entry
@@ -94,7 +138,8 @@ enum PlateGeoref {
         assert(!pdf.isEmpty, "lookup: empty pdf key")
         guard !pdf.isEmpty, let e = data.plates[pdf] else { return nil }
         let entry = PlateGeorefEntry(centerLat: e.centerLat, centerLon: e.centerLon, widthMeters: e.widthMeters,
-                                     rotationDeg: e.rotationDeg, rmsMeters: e.rmsMeters, inliers: e.inliers)
+                                     rotationDeg: e.rotationDeg, rmsMeters: e.rmsMeters, inliers: e.inliers,
+                                     kind: PlateGeorefEntry.Kind(rawValue: e.kind ?? "") ?? .iap)
         guard entry.isPlausible else { return nil }   // never trust a malformed / out-of-range fit
         return entry
     }

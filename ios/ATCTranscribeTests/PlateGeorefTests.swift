@@ -12,22 +12,35 @@ final class PlateGeorefTests: XCTestCase {
         XCTAssertFalse(PlateGeoref.cycle.isEmpty, "a loaded table has a chart cycle")
     }
 
+    /// Every bundled row must pass the runtime corruption guards — and the bounds differ by KIND,
+    /// because an approach plan view spans ~68 km and an airport diagram spans the airport. Checked
+    /// over a sample of each half rather than the first 80 keys of a dictionary, whose order is
+    /// arbitrary and could land entirely on one kind.
     func testBundledEntriesArePlausible() throws {
         try XCTSkipIf(PlateGeoref.count == 0, "plate_georef.json not bundled")
-        // Every bundled entry comes from the FAA's embedded transform → it must pass the runtime
-        // corruption guards (finite, sane page width, valid rotation, ≥3 control points).
-        var checked = 0
-        for pdf in bundledPDFs().prefix(80) {
+        var iaps = 0, apds = 0
+        for pdf in bundledPDFs() where iaps < 80 || apds < 80 {
             guard let g = PlateGeoref.lookup(pdf: pdf) else { continue }
-            checked += 1
             XCTAssertTrue(g.isPlausible, "\(pdf): a bundled georef must be plausible")
-            XCTAssertGreaterThan(g.widthMeters, 5_000, "\(pdf): implausibly small page")
-            XCTAssertLessThan(g.widthMeters, 400_000, "\(pdf): implausibly large page")
             XCTAssertTrue(g.rotationDeg.isFinite, "\(pdf): finite rotation")
-            XCTAssertGreaterThanOrEqual(g.inliers, 3, "\(pdf): needs ≥3 control points")
+            switch g.kind {
+            case .iap:
+                guard iaps < 80 else { continue }
+                iaps += 1
+                XCTAssertGreaterThan(g.widthMeters, 5_000, "\(pdf): implausibly small approach page")
+                XCTAssertLessThan(g.widthMeters, 400_000, "\(pdf): implausibly large approach page")
+                XCTAssertGreaterThanOrEqual(g.inliers, 3, "\(pdf): needs ≥3 control points")
+            case .apd:
+                guard apds < 80 else { continue }
+                apds += 1
+                XCTAssertGreaterThan(g.widthMeters, 500, "\(pdf): implausibly small diagram page")
+                XCTAssertLessThan(g.widthMeters, 50_000, "\(pdf): implausibly large diagram page")
+                XCTAssertGreaterThanOrEqual(g.inliers, 2, "\(pdf): a diagram needs ≥1 matched runway")
+            }
         }
-        try XCTSkipIf(checked == 0, "no bundled pdfs resolved")
-        XCTAssertGreaterThan(checked, 0)
+        try XCTSkipIf(iaps == 0, "no bundled pdfs resolved")
+        XCTAssertGreaterThan(iaps, 0)
+        XCTAssertGreaterThan(apds, 0, "the table should carry airport diagrams as well as approaches")
     }
 
     func testUnknownPdfReturnsNil() {
@@ -72,6 +85,38 @@ final class PlateGeorefTests: XCTestCase {
         XCTAssertFalse(e(inl: 2).isPlausible, "too few inliers")
     }
 
+    /// The same gate for an airport diagram, where the bounds are different ON PURPOSE. Running a
+    /// diagram through the approach bounds is what would have rejected every small field: a
+    /// single-runway diagram spans about 2 km, which `widthMeters > 5_000` calls implausible.
+    func testPlausibilityGateUsesDiagramBoundsForDiagrams() {
+        func apd(w: Double = 3_000, inl: Int = 4, rot: Double = -90) -> PlateGeorefEntry {
+            PlateGeorefEntry(centerLat: 32.9, centerLon: -97.0, widthMeters: w,
+                             rotationDeg: rot, rmsMeters: 3, inliers: inl, kind: .apd)
+        }
+        XCTAssertTrue(apd().isPlausible, "a nominal diagram fit is plausible")
+        XCTAssertTrue(apd(w: 2_000).isPlausible,
+                      "a single-runway field's diagram spans ~2 km and is perfectly valid — the "
+                      + "approach-plate floor of 5 km would have thrown away every small airport")
+        XCTAssertTrue(apd(inl: 2).isPlausible,
+                      "two control points is ONE matched runway, which is what a single-runway "
+                      + "airport has; the builder gates those on an independent drawn-width check")
+        XCTAssertTrue(apd(rot: 180).isPlausible, "diagrams are routinely turned to fit the page")
+        XCTAssertFalse(apd(w: 300).isPlausible, "smaller than any airport")
+        XCTAssertFalse(apd(w: 80_000).isPlausible, "that is an approach plan view, not a diagram")
+        XCTAssertFalse(apd(inl: 1).isPlausible, "one control point cannot fix a similarity")
+        XCTAssertFalse(apd(w: .nan).isPlausible, "non-finite width")
+    }
+
+    /// An unknown `kind` in the table must read as the STRICTER bounds, not the looser ones. A future
+    /// chart type nobody here has seen gets held to the approach-plate test rather than waved through
+    /// on the diagram one.
+    func testUnknownKindFallsBackToTheStricterBounds() {
+        let e = PlateGeorefEntry(centerLat: 32.9, centerLon: -97.0, widthMeters: 2_000,
+                                 rotationDeg: 0, rmsMeters: 3, inliers: 2)
+        XCTAssertEqual(e.kind, .iap, "the default is the strict kind")
+        XCTAssertFalse(e.isPlausible, "2 km page + 2 control points passes only the diagram bounds")
+    }
+
     // MARK: - Agreement with the bundled plate index
 
     /// ⚠️ THE DIRECTION THAT MISPLACES INSTEAD OF GAPPING.
@@ -95,6 +140,105 @@ final class PlateGeorefTests: XCTestCase {
                        + "the ones the app will download, which MISPLACES the overlay rather than "
                        + "leaving a gap. Rebuild both from the same cycle "
                        + "(Tools/fetch_plates.py then Tools/build_plate_georef_embedded.py).")
+    }
+
+    // MARK: - The airport-diagram half
+
+    /// A coverage floor for the diagrams, on the same reasoning as the approach one above: the
+    /// builder treats an uncached PDF as a silent skip, so a truncated fetch yields a table that is
+    /// valid, consistent and missing half the airports, and the only symptom is a feature quietly
+    /// not appearing. Measured on 2611: 891 of 925 (96.3%). The floor sits well below that so a
+    /// cycle where more diagrams fail the fit's own gates is not a red suite.
+    func testAirportDiagramCoverageMeetsTheFloor() throws {
+        try XCTSkipIf(PlateGeoref.count == 0, "plate_georef.json not bundled")
+        let index = try bundledIndex()
+        try XCTSkipIf(index.apdPDFs.isEmpty, "bundled procedures.json names no airport diagrams")
+
+        let got = index.apdPDFs.filter { PlateGeoref.lookup(pdf: $0) != nil }
+        let fraction = Double(got.count) / Double(index.apdPDFs.count)
+        let floor = 0.85
+        XCTAssertGreaterThan(fraction, floor,
+                             "only \(got.count) of \(index.apdPDFs.count) airport diagrams "
+                             + String(format: "(%.1f%%) are georeferenced, below the %.0f%% floor. ",
+                                      fraction * 100, floor * 100)
+                             + "Re-run Tools/fetch_plates.py, then Tools/build_apd_georef.py.")
+    }
+
+    /// ⚠️ THE ONE THAT WOULD CATCH A SILENT REGRESSION TO THE OLD BEHAVIOUR. Before the diagram
+    /// builder existed, `lookup` returned nil for every APD — and nil is what hides the ownship dot,
+    /// the ADS-B traffic and "Overlay on map" on the one chart a pilot reads while the aircraft is
+    /// moving on the ground. That failure is invisible: the app simply does not offer the feature,
+    /// exactly as it would if the pilot had opened a chart that genuinely has no transform.
+    func testTheKDFWAirportDiagramIsGeoreferenced() throws {
+        try XCTSkipIf(PlateGeoref.count == 0, "plate_georef.json not bundled")
+        let index = try bundledIndex()
+        try XCTSkipIf(index.apdPDFs.isEmpty, "bundled procedures.json names no airport diagrams")
+        // 06039AD.PDF is KDFW's diagram in cycle 2611. If the cycle rolled and the filename moved,
+        // skip rather than fail — the floor test above is what guards coverage.
+        try XCTSkipIf(!index.apdPDFs.contains("06039AD.PDF"), "KDFW's diagram is not in this cycle")
+        let g = try XCTUnwrap(PlateGeoref.lookup(pdf: "06039AD.PDF"),
+                              "KDFW's airport diagram has no georeference, so the app will not plot "
+                              + "ownship or traffic on it and will not offer 'Overlay on map'.")
+        XCTAssertEqual(g.kind, .apd)
+        // The page spans the airport, not an approach: DFW is about 6.8 km across its diagram.
+        XCTAssertGreaterThan(g.widthMeters, 3_000)
+        XCTAssertLessThan(g.widthMeters, 15_000)
+        // The diagram is turned a quarter turn to fit DFW's north-south runways on a portrait page,
+        // and the SIGN of that is the whole correctness question — see the note in
+        // Tools/build_apd_georef.py. A ±90° page read as ∓90° misplaces ownship by kilometres.
+        XCTAssertEqual(abs(g.rotationDeg), 90, accuracy: 1.0)
+
+        // Ownship at the airport reference point must land inside the page, near its middle.
+        let size = CGSize(width: 387.4, height: 594)
+        let pt = try XCTUnwrap(g.pagePoint(lat: g.centerLat, lon: g.centerLon, pageSize: size))
+        XCTAssertEqual(pt.x, size.width / 2, accuracy: 1)
+        XCTAssertEqual(pt.y, size.height / 2, accuracy: 1)
+    }
+
+    /// ⚠️ THE TEST THAT CATCHES A FLIPPED ROTATION SIGN, which is the single most dangerous thing
+    /// that can go wrong in this table and the thing that was in fact wrong in the builder.
+    ///
+    /// Note what does NOT catch it. `abs(rotationDeg) == 90` passes either way. So does the SEPARATION
+    /// between two thresholds: measured on KDFW's 17C/35C, both signs give 232.0 page points, because
+    /// mirroring a transform preserves distance. So does "the point is somewhere on the page". What
+    /// the sign actually changes is WHICH WAY ROUND the airport is drawn — and that is checkable
+    /// against the chart itself, because KDFW's diagram prints "17C" near the left edge of the page
+    /// (x ≈ 36 of 387) and "35C" near the right (x ≈ 338).
+    ///
+    /// So: the north end of the runway must come out on the LEFT. As published, 17C lands at x 71 and
+    /// 35C at x 303. With the rotation negated they swap to 316 and 84 — both still on the page, both
+    /// still 232 points apart, and the pilot's own aircraft on the wrong half of the airport.
+    func testKDFWRunwayIsDrawnTheRightWayRoundOnThePage() throws {
+        try XCTSkipIf(PlateGeoref.count == 0, "plate_georef.json not bundled")
+        guard let g = PlateGeoref.lookup(pdf: "06039AD.PDF") else {
+            throw XCTSkip("KDFW's diagram is not in this cycle")
+        }
+        let size = CGSize(width: 387.4, height: 594)
+        // Both thresholds of RWY 17C/35C, read out of the FAA's APT_RWY_END survey (nav/apt.sqlite).
+        // 17C is the NORTH end (lat 32.9157); 35C is the south end (lat 32.8789).
+        let north = try XCTUnwrap(g.pagePoint(lat: 32.91570669, lon: -97.02597491, pageSize: size),
+                                  "a threshold on the field must fall inside the diagram's page")
+        let south = try XCTUnwrap(g.pagePoint(lat: 32.87887877, lon: -97.02617166, pageSize: size),
+                                  "a threshold on the field must fall inside the diagram's page")
+        for pt in [north, south] {
+            XCTAssertTrue((0...size.width).contains(pt.x), "x on page: \(pt.x)")
+            XCTAssertTrue((0...size.height).contains(pt.y), "y on page: \(pt.y)")
+        }
+
+        XCTAssertLessThan(north.x, south.x,
+                          "KDFW's diagram is turned a quarter turn and prints 17C at the LEFT of the "
+                          + "page and 35C at the right. The north end coming out on the right means "
+                          + "the clockwise/counter-clockwise rotation convention has been flipped "
+                          + "somewhere, which mirrors the whole airport about its centre — see the "
+                          + "rotation note in Tools/build_apd_georef.py.")
+
+        // The page separation has to match the runway: 13,400 ft is 4,084 m, and the diagram's scale
+        // is widthMeters/pageWidth. This is what catches a scale error, which the ordering above
+        // cannot see.
+        let metresPerPoint = g.widthMeters / Double(size.width)
+        let expected = 13_400 * 0.3048 / metresPerPoint
+        XCTAssertEqual(Double(hypot(north.x - south.x, north.y - south.y)), expected, accuracy: 6,
+                       "the two thresholds should be one runway length apart on the page")
     }
 
     /// A coverage FLOOR, so a partial build cannot quietly ship.
@@ -135,7 +279,7 @@ final class PlateGeorefTests: XCTestCase {
         try XCTSkipIf(PlateGeoref.count == 0, "plate_georef.json not bundled")
         let index = try bundledIndex()
         try XCTSkipIf(index.iapPDFs.isEmpty, "bundled procedures.json names no IAP plates")
-        let orphans = Set(bundledPDFs()).subtracting(index.iapPDFs)
+        let orphans = Set(bundledPDFs()).subtracting(index.iapPDFs).subtracting(index.apdPDFs)
         XCTAssertTrue(orphans.isEmpty,
                       "\(orphans.count) rows reference plates the bundled index does not publish, "
                       + "e.g. \(orphans.sorted().prefix(5).joined(separator: ", ")) — rebuild the table "
@@ -145,18 +289,20 @@ final class PlateGeorefTests: XCTestCase {
     /// The cycle and the IAP plate filenames out of the BUNDLED procedures.json. Read straight from the
     /// bundle, not through `Procedures`, which resolves `NavDataUpdate.activeURL` and so could be
     /// answering from a downloaded index — the question here is what the two bundled files say.
-    private func bundledIndex() throws -> (cycle: String, iapPDFs: Set<String>) {
+    private func bundledIndex() throws -> (cycle: String, iapPDFs: Set<String>, apdPDFs: Set<String>) {
         let url = try XCTUnwrap(NavDataUpdate.Dataset.procedures.bundledURL,
                                 "procedures.json is not in the app bundle")
         let o = try XCTUnwrap(try JSONSerialization.jsonObject(with: try Data(contentsOf: url)) as? [String: Any])
         let cycle = o["cycle"] as? String ?? ""
-        var pdfs = Set<String>()
+        var iaps = Set<String>(), apds = Set<String>()
         for recs in (o["airports"] as? [String: [[String: String]]] ?? [:]).values {
-            for r in recs where r["c"] == "IAP" {
-                if let f = r["f"], !f.isEmpty { pdfs.insert(f) }
+            for r in recs {
+                guard let f = r["f"], !f.isEmpty else { continue }
+                if r["c"] == "IAP" { iaps.insert(f) }
+                if r["c"] == "APD" { apds.insert(f) }
             }
         }
-        return (cycle, pdfs)
+        return (cycle, iaps, apds)
     }
 
     /// Read the pdf keys straight out of the bundled JSON (independent of the reader under test).
