@@ -17,8 +17,16 @@ deleted. This is the exact path that shipped **build 1 (2026-06-27)**.
 
 | Thing | Where it lives | Notes |
 |---|---|---|
-| **`.p8` API private key** (`AuthKey_CDZ8T6TG53.p8`) | Your local machine: `C:\Users\bsusl\AuthKey_CDZ8T6TG53.p8` | The ONLY true secret. Apple will **not** re-issue it. If lost: revoke + create a new key in App Store Connect → Users and Access → Integrations (then update the IDs below). |
+| **`.p8` API private key** (`AuthKey_<ASC_KEY_ID>.p8`) | Your local machine: `C:\Users\bsusl\AuthKey_<ASC_KEY_ID>.p8` | The ONLY true secret. Apple will **not** re-issue it. If lost: revoke + create a new key in App Store Connect → Users and Access → Integrations (then update the IDs below). |
 | **The 4 env IDs** (`ASC_KEY_ID`, `ASC_ISSUER_ID`, `ASC_KEY_PATH`, `TEAM_ID`) | Claude memory note `ios-testflight-upload-config` (persists across sessions), and your own records | Not committed because the repo is public. App id, bundle id, SKU are also there. |
+
+> **`<ASC_KEY_ID>` below is a placeholder — substitute it by hand.** The key file is really named
+> `AuthKey_` + that id + `.p8`, so until this file said `<ASC_KEY_ID>` it was publishing the id in
+> every path it mentioned, six times, directly under the row above claiming the ids are not
+> committed. The id alone cannot authenticate — that needs the `.p8` and the issuer id, neither of
+> which is in this repo — but it had no business being here. Note the placeholder does not expand:
+> one of those paths sits inside single quotes in an `ssh` command, where a `$VAR` silently would
+> not have.
 | **SSH key** for the Mac | `~/.ssh/id_ed25519` (Windows: `C:\Users\bsusl\.ssh\id_ed25519`) | Used for every Scaleway Mac (`User m1`). |
 
 If you're doing this in a new Claude session, just ask Claude to read the
@@ -32,7 +40,7 @@ If you're doing this in a new Claude session, just ask Claude to read the
 # from the repo's ios/ dir on the Mac, with the .p8 already copied over:
 ASC_KEY_ID=<from memory note> \
 ASC_ISSUER_ID=<from memory note> \
-ASC_KEY_PATH=/Users/m1/AuthKey_CDZ8T6TG53.p8 \
+ASC_KEY_PATH=/Users/m1/AuthKey_<ASC_KEY_ID>.p8 \
 TEAM_ID=<from memory note> \
 BUILD_NUMBER=<next unused integer> \
 bash Tools/ship_testflight.sh
@@ -112,8 +120,8 @@ Build inputs the archive needs:
 From the Windows machine:
 
 ```bash
-scp "/c/Users/bsusl/AuthKey_CDZ8T6TG53.p8" macmini-m4:/Users/m1/AuthKey_CDZ8T6TG53.p8
-ssh macmini-m4 'chmod 600 /Users/m1/AuthKey_CDZ8T6TG53.p8'
+scp "/c/Users/bsusl/AuthKey_<ASC_KEY_ID>.p8" macmini-m4:/Users/m1/AuthKey_<ASC_KEY_ID>.p8
+ssh macmini-m4 'chmod 600 /Users/m1/AuthKey_<ASC_KEY_ID>.p8'
 ```
 
 ## 5. Ship
@@ -151,7 +159,7 @@ somewhere to land, and restores everything on exit.
 
 ```bash
 python3 -m venv /tmp/ascval && /tmp/ascval/bin/pip -q install pyjwt cryptography
-ASC_KEY_ID=<...> ASC_ISSUER_ID=<...> ASC_KEY_PATH=/Users/m1/AuthKey_CDZ8T6TG53.p8 \
+ASC_KEY_ID=<...> ASC_ISSUER_ID=<...> ASC_KEY_PATH=/Users/m1/AuthKey_<ASC_KEY_ID>.p8 \
 /tmp/ascval/bin/python3 - <<'PY'
 import os,time,json,urllib.request,jwt
 k=open(os.environ['ASC_KEY_PATH']).read(); now=int(time.time())
@@ -181,7 +189,7 @@ iPhone/iPad and accept the invite.
 |---|---|
 | `ASC_KEY_ID` | *(memory note `ios-testflight-upload-config`)* |
 | `ASC_ISSUER_ID` | *(memory note)* |
-| `ASC_KEY_PATH` | `/Users/m1/AuthKey_CDZ8T6TG53.p8` |
+| `ASC_KEY_PATH` | `/Users/m1/AuthKey_<ASC_KEY_ID>.p8` |
 | `TEAM_ID` | *(memory note)* |
 | App | **Obelisk**, bundle `com.flycommsight.atctranscribe`, SKU `commsight-ios` |
 |  |  ↑ the SKU is fixed at creation and cannot be changed; it keeps the old name forever. |
