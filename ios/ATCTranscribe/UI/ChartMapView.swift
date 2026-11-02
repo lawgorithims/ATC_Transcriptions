@@ -757,6 +757,10 @@ struct ChartMapView: UIViewRepresentable {
         let hold = UILongPressGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleLongPress(_:)))
         hold.delegate = context.coordinator
         mv.addGestureRecognizer(hold)
+        // The measuring rulers. Their recognizers go on the MAP VIEW, not on a SwiftUI overlay, because
+        // the whole problem is arbitrating with MapKit's own pinch, rotate and two-finger tap — which
+        // can only be done from inside the same recognizer graph. See `MapRulerController`.
+        context.coordinator.attachRuler(to: mv)
         context.coordinator.requestLocation()
         let realistic = model.terrain3DEnabled && !model.thermalSerious
         Self.configure(mv, for: layer, realistic: realistic)
@@ -833,6 +837,7 @@ struct ChartMapView: UIViewRepresentable {
         c.onSearchPoint = onSearchPoint
         c.searchHighlightCoord = searchHighlight
         c.emitSearchPoint(mv)                             // keep the pulsing search marker glued to its spot
+        c.emitRulerSegments()                             // ... and the measuring rulers
         c.routeLegs = route                               // hit-test source for filed waypoints
         c.routeIdents = Set(route.map { $0.ident })
         let realistic = model.terrain3DEnabled && !model.thermalSerious
@@ -1103,6 +1108,34 @@ struct ChartMapView: UIViewRepresentable {
                             mv.convert(corners.tr, toPointTo: mv)))
         }
 
+        /// The measuring rulers' gestures and projection for THIS map view. Engine-agnostic: the same
+        /// controller is attached by the MapLibre coordinator with its own two conversions.
+        var ruler: MapRulerController?
+
+        func attachRuler(to mv: MKMapView) {
+            let controller = MapRulerController(
+                toCoord: { [weak mv] point in
+                    guard let mv else { return nil }
+                    let ll = mv.convert(point, toCoordinateFrom: mv)
+                    // A projection can hand back a non-finite or out-of-range coordinate for a point
+                    // outside the globe; a ruler end there would poison every number derived from it.
+                    guard ll.latitude.isFinite, ll.longitude.isFinite,
+                          abs(ll.latitude) <= 90, abs(ll.longitude) <= 180 else { return nil }
+                    return Coord(lat: ll.latitude, lon: ll.longitude)
+                },
+                toPoint: { [weak mv] coord in
+                    guard let mv else { return .zero }
+                    return mv.convert(CLLocationCoordinate2D(latitude: coord.lat, longitude: coord.lon),
+                                      toPointTo: mv)
+                })
+            controller.attach(to: mv)
+            ruler = controller
+        }
+
+        /// Re-project the rulers. Called wherever the plate anchors are — i.e. on every camera tick —
+        /// so a frozen ruler stays over the ground it measured.
+        func emitRulerSegments() { ruler?.refreshSegments() }
+
         var searchHighlightCoord: CLLocationCoordinate2D?
         var onSearchPoint: (CGPoint?) -> Void = { _ in }
         var lastMapCommandToken = 0
@@ -1311,12 +1344,14 @@ struct ChartMapView: UIViewRepresentable {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
             emitPlateAnchors(mv)
             emitSearchPoint(mv)
+            emitRulerSegments()
         }
 
         /// Fires continuously DURING a pan/zoom — keeps the plate's corner controls glued to the plate.
         func mapViewDidChangeVisibleRegion(_ mv: MKMapView) {
             emitPlateAnchors(mv)
             emitSearchPoint(mv)
+            emitRulerSegments()
         }
 
         /// Recompute the in-view context layers (airspace outlines [Class B/C/D + special use] + nearby navaids/airports)

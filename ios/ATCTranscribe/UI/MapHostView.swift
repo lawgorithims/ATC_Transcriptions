@@ -81,6 +81,9 @@ struct MapHostView: View {
     @State private var searchPoint: CGPoint?
     /// Show the manual zoom / center-on-aircraft control bar on the map (toggled in the layers menu).
     @AppStorage("atc.map.zoomControls") private var showZoomControls = true
+    /// The measuring rulers. Observed here so laying one down redraws the overlay; the gestures that
+    /// create and move them live on the map view itself (`MapRulerController`).
+    @ObservedObject private var rulerStore = MapRulerStore.shared
 
     struct PlateAnchors: Equatable { var tl: CGPoint; var tr: CGPoint }
 
@@ -341,6 +344,19 @@ struct MapHostView: View {
         .overlay {
             if live, let hl = model.searchHighlight, let pt = searchPoint {
                 SearchHighlightMarker(kind: hl.kind, theme: model.theme).position(x: pt.x, y: pt.y).allowsHitTesting(false)
+            }
+        }
+        // The measuring rulers. Drawn here rather than inside an engine so both engines render the
+        // identical thing; the engines only supply the screen projection (`emitRulerSegments`). NOT
+        // gated on `live`: a frozen ruler is a measurement the pilot took and must still be there
+        // when they come back to the tab, and the layer costs nothing while the store is empty.
+        .overlay {
+            if !rulerStore.isEmpty {
+                MapRulerLayer(store: rulerStore,
+                              palette: model.palette,
+                              groundSpeedKt: GPSReadout.merge(stratux: model.freshStratuxGPS,
+                                                              device: model.deviceLocation.fix).groundSpeedKt,
+                              cruiseKt: model.selectedAircraft?.cruiseKts)
             }
         }
         .overlay(alignment: .top) { statusPills }

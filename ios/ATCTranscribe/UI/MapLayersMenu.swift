@@ -27,6 +27,8 @@ struct MapLayersMenu: View {
 struct MapLayersPanel: View {
     @EnvironmentObject var model: AppModel
     @AppStorage("atc.map.zoomControls") private var showZoomControls = true
+    /// Observed so the "Clear rulers" row appears and counts correctly without reopening the menu.
+    @ObservedObject private var rulerStore = MapRulerStore.shared
 
     var body: some View {
         let p = model.palette
@@ -185,6 +187,28 @@ struct MapLayersPanel: View {
 
                     header("Map controls", p)
                     layerToggle($showZoomControls, "Map buttons (zoom, north, center)", "plus.magnifyingglass", p, id: "layer-zoom-controls")
+
+                    // THE RULER'S ONLY DISCOVERABLE SURFACE. Everything about rulers is a gesture, so
+                    // without this the feature is invisible to anyone not told about it, and a pilot
+                    // who laid one down by accident has no way to find out how to get rid of it. The
+                    // row states the gestures and offers the escape hatch; it is not a mode switch —
+                    // there is no mode, which is the point.
+                    Text("Ruler — tap with two fingers to measure between them: distance, time and "
+                         + "bearing. Two fingers on a ruler move or resize it, and letting go freezes "
+                         + "it. Double-tap the chart to clear them all.")
+                        .font(.dsLabelS).foregroundStyle(p.textDim)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if !rulerStore.isEmpty {
+                        Button {
+                            Haptics.impact(.light)
+                            rulerStore.clear()
+                        } label: {
+                            Label("Clear \(rulerStore.rulers.count) ruler\(rulerStore.rulers.count == 1 ? "" : "s")",
+                                  systemImage: "ruler")
+                                .font(.callout).foregroundStyle(p.accent)
+                        }
+                        .accessibilityIdentifier("layer-clear-rulers")
+                    }
 
                     // Wind sprite appearance — only worth showing while the layer is actually up.
                     if model.showWindAloft {

@@ -324,6 +324,55 @@ struct MapLibreChartView: UIViewRepresentable {
         var inSearchHighlight: CLLocationCoordinate2D?
         var onSearchPoint: (CGPoint?) -> Void = { _ in }
         /// Stream the search highlight's screen point (or nil) so the SwiftUI pulsing marker rides the map.
+        /// The measuring rulers' gestures and projection for THIS map view.
+        ///
+        /// ⚠️ `MainActor.assumeIsolated`, AND DELIBERATELY NOT A `Task` HOP. This coordinator is not
+        /// actor-isolated — it conforms to `MLNMapViewDelegate`, whose methods are nonisolated — while
+        /// the ruler store and controller are `@MainActor`. But every call site below is a UIKit
+        /// gesture callback, a map-delegate callback or `dismantleUIView`, and UIKit makes all three
+        /// on the main thread only. Asserting that is both true and useful: it traps loudly if it ever
+        /// stops being true, where `Task { @MainActor in … }` would instead silently make the rulers'
+        /// projection lag the chart by a frame on every pan — a measuring line that visibly slides
+        /// behind the terrain it is measuring.
+        var ruler: MapRulerController?
+
+        nonisolated func attachRuler(to map: MLNMapView) {
+            MainActor.assumeIsolated { attachRulerOnMain(to: map) }
+        }
+
+        @MainActor
+        private func attachRulerOnMain(to map: MLNMapView) {
+            let controller = MapRulerController(
+                toCoord: { [weak map] point in
+                    guard let map else { return nil }
+                    let ll = map.convert(point, toCoordinateFrom: map)
+                    // On the globe projection a point outside the sphere converts to something
+                    // non-finite or out of range; a ruler end there would poison every number taken
+                    // from it, so the gesture simply declines that touch.
+                    guard ll.latitude.isFinite, ll.longitude.isFinite,
+                          abs(ll.latitude) <= 90, abs(ll.longitude) <= 180 else { return nil }
+                    return Coord(lat: ll.latitude, lon: ll.longitude)
+                },
+                toPoint: { [weak map] coord in
+                    guard let map else { return .zero }
+                    return map.convert(CLLocationCoordinate2D(latitude: coord.lat, longitude: coord.lon),
+                                       toPointTo: map)
+                })
+            controller.attach(to: map)
+            ruler = controller
+        }
+
+        /// Re-project the rulers, beside the plate anchors, on every camera tick.
+        nonisolated func emitRulerSegments() {
+            MainActor.assumeIsolated { ruler?.refreshSegments() }
+        }
+
+        /// Drop this view's recognizers and projection. The rulers themselves live in the shared
+        /// store and survive — see the note in `teardown`.
+        nonisolated func detachRuler() {
+            MainActor.assumeIsolated { ruler?.detach(); ruler = nil }
+        }
+
         func emitSearchPoint(_ map: MLNMapView) {
             guard let cc = inSearchHighlight else { onSearchPoint(nil); return }
             onSearchPoint(map.convert(cc, toPointTo: map))
@@ -364,6 +413,7 @@ struct MapLibreChartView: UIViewRepresentable {
             updateLZEnergy(inLZEnergyBands, on: map)
             updateLZGlidePlan(inLZGlidePlan, on: map)
             emitSearchPoint(map)               // keep the pulsing search marker glued to its spot
+            emitRulerSegments()                // ... and the measuring rulers
             applyNorthLock(map)                // chart north-up lock (rotate gesture + bearing)
             applyMapCommand(map)               // one-shot side-bar zoom / center-on-ownship
             applyOverlayToggles(inShowAirspace, inShowNearby, inShowAirways, declutter: inDeclutter, on: map)
@@ -550,6 +600,9 @@ struct MapLibreChartView: UIViewRepresentable {
             }
             m.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(handleTap(_:))))
             m.addGestureRecognizer(UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:))))
+            // The measuring rulers, on the SAME controller the classic engine uses — the pilot must not
+            // get a different-behaving ruler because the GPU chart is live. See `MapRulerController`.
+            attachRuler(to: m)
             if globeProjection {
                 // Globe: the fork clears "space" (outside the sphere) to transparent, so make the map non-opaque
                 // and float a night-sky starfield BEHIND it — space reads as black with stars while the ocean
@@ -609,6 +662,10 @@ struct MapLibreChartView: UIViewRepresentable {
         /// Cancel the pending region-settle work and stop the loopback server (called from dismantleUIView).
         func teardown() {
             NotificationCenter.default.removeObserver(self, name: UIApplication.didBecomeActiveNotification, object: nil)
+            // The rulers themselves live in the shared store and SURVIVE this — only the recognizers
+            // and this view's projection go. A render-stall fallback to the classic engine rebuilds
+            // the map, and a pilot's measurement must not disappear because of it.
+            detachRuler()
             regionDebounce?.cancel(); regionDebounce = nil
             // Drop the host callback BEFORE stopping the server, so a torn-down coordinator can never
             // drive the host's engine state whichever callback wins the race.
@@ -720,6 +777,7 @@ struct MapLibreChartView: UIViewRepresentable {
         func mapView(_ mapView: MLNMapView, regionDidChangeAnimated animated: Bool) {
             emitPlateAnchors(mapView)              // keep the plate corner gear pinned (NOT debounced — must be live)
             emitSearchPoint(mapView)
+            emitRulerSegments()
             regionDebounce?.cancel()
             let work = DispatchWorkItem { [weak self, weak mapView] in
                 guard let self, let mapView else { return }
@@ -741,7 +799,9 @@ struct MapLibreChartView: UIViewRepresentable {
 
         /// Stream the plate corner gear's screen anchors continuously during an active pan/zoom (cheap:
         /// projects 2 points, guarded to no-op when no plate is loaded), so the gear rides the plate live.
-        func mapViewRegionIsChanging(_ mapView: MLNMapView) { emitPlateAnchors(mapView); emitSearchPoint(mapView) }
+        func mapViewRegionIsChanging(_ mapView: MLNMapView) {
+            emitPlateAnchors(mapView); emitSearchPoint(mapView); emitRulerSegments()
+        }
 
         /// Tracks WHICH style object the overlay layers were built into.
         ///
