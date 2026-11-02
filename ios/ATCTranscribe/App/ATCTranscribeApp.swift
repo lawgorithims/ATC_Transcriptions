@@ -75,6 +75,17 @@ struct ATCTranscribeApp: App {
                 .onAppear {
                     // Tag each battery sample with what the app is doing (transcription/map/GPS/Stratux).
                     battery.snapshotProvider = { [weak model] in model?.batterySnapshot ?? .placeholder }
+                    // So an involuntary sign-out can wait for the wheels to stop — see
+                    // AccountStore.discardCredentialWhenStopped(). Same 5-knot bar and the same two
+                    // signals `AppModel.simulatorRefusal()` uses to refuse a fake position to a
+                    // moving aircraft; a recording flight counts as moving even between fixes.
+                    account.isMovingProvider = { [weak model] in
+                        guard let model else { return false }
+                        if model.flightRecorder.isRecording { return true }
+                        let gps = GPSReadout.merge(stratux: model.freshStratuxGPS,
+                                                   device: model.deviceLocation.fix)
+                        return (gps.groundSpeedKt ?? 0) >= 5
+                    }
                 }
                 .onChange(of: scenePhase) { _, phase in
                     battery.setForegrounded(phase == .active)

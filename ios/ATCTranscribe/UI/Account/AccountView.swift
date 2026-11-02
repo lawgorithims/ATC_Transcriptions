@@ -126,6 +126,17 @@ struct AccountView: View {
 
     private func sessionCard(_ p: Palette) -> some View {
         Card(title: "This device") {
+            // The server has refused this session, and AccountStore is holding the sign-out until
+            // the aircraft stops. Said plainly here rather than left as a surprise at the next
+            // preflight — and it is the only place the pilot can find out.
+            if account.sessionEndedPendingLanding {
+                Text("This session has ended on the server. You'll stay signed in until the "
+                     + "aircraft is stopped, then need to sign in again.")
+                    .font(.dsLabelS).foregroundStyle(p.warn)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("account-session-ended-pending")
+            }
+
             Button {
                 confirmingSignOut = true
             } label: {
