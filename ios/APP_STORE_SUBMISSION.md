@@ -31,7 +31,26 @@ classes — `docs/appstore/iPhone-17-Pro-Max/` (1320×2868) and `docs/appstore/i
 (2064×2752), reproducible with `Tools/appstore_screenshots.sh`.
 
 What is left is the ordinary submission work in §3–§7 of `APP_STORE_LISTING.md`: the **App Privacy**
-answers, the subtitle, and the review notes.
+answers, the subtitle, and the review notes. Every asset that work needs is now generated:
+`docs/appstore/PRODUCT_PAGE.txt` (every field, unwrapped and measured),
+`docs/appstore/promo/` (five promotional images at the sizes App Store Connect offers), and the
+two screenshot sets.
+
+### ⚠️ Build 112 predates the sign-out hardening
+
+Build 112 is `VALID` on TestFlight and is a legitimate 1.0, but it was archived before
+`AccountStore` learned to hold an involuntary sign-out until the aircraft stops. **Submitting 112
+ships 1.0 without that.**
+
+How much that matters: today, nothing. Entitlements never consult the account
+(`EntitlementStore.resolve()` grants everything), so a mid-flight sign-out costs a pilot no
+capability — it is a startling screen, not a lost chart. It becomes load-bearing at M3, when the
+account feeds the gate.
+
+So this is a real choice rather than a blocker. Ship 112 and let the hardening land in the first
+update, or archive **113** from `e2aa926` or later. If 113: ask App Store Connect for the current
+build number first (`GET /v1/builds?filter[app]={id}&sort=-version`), never the local `build/`
+directory — §2.3 has the trap.
 
 **No App Review demo account is needed** — this file previously said one was the last prerequisite,
 and that was wrong. Apple wants demo credentials when a reviewer cannot reach features without
@@ -50,11 +69,32 @@ the reasoning and the grep that settles it.
 |---|---|
 | `xcodegen generate` + Debug build (iPad Pro 13-inch M5) | ✅ succeeds |
 | **Release** build, `generic/platform=iOS` | ✅ succeeds (the config the simulator loop never exercises) |
-| Unit suite `ATCTranscribeTests` | ✅ **2,185 tests, 0 failures**, 9 skipped (re-run after merging `origin/main` and after the nav refresh) |
+| Unit suite `ATCTranscribeTests` | ✅ **2,192 tests, 0 failures**, 9 skipped (`-only-testing:ATCTranscribeTests`, 2026-11-01) |
 | The 9 skips | all environmental — speech models absent in an EFB build, Stratux hardware absent, and `InstallIdentityTests.testCohortSplitOnceThePaywallBuildIsSet` (expected: `paywallFirstBuild` is still 0) |
-| UI suite `ATCTranscribeUITests` | ✅ **67 executed, 11 skipped, 0 failures** (`bash Tools/uitests.sh`, iPad Pro 13-inch M5, ~20 min) |
-| The 11 UI skips | 6 × `ConsoleUITests` (transcription compiled out of an EFB build) · 3 × `LZLayerUITests` (the `n33w107` landability pack is not in the simulator) · `ScreenshotTests` (opt-in) · `AvoidDownloadUITests` (opt-in, downloads ~1.5 GB) |
-| Why the skip count moved 10 → 11 | `RELEASING.md` says a changed skip count must be explained, not counted. The new one is `AvoidDownloadUITests`, which arrived with the Avoid feature in `origin/main`. Nothing in this change caused it. |
+| Why the unit count moved 2,185 → 2,192 | the 7 in `AccountSignOutTests`, the first account tests in the repo. |
+| UI suite `ATCTranscribeUITests` | ✅ **68 executed, 12 skipped, 0 failures** (`bash Tools/uitests.sh`, iPad Pro 13-inch M5, 21 min, 2026-11-01) |
+| The 12 UI skips | 6 × `ConsoleUITests` (transcription compiled out of an EFB build) · 3 × `LZLayerUITests` (the `n33w107` landability pack is not in the simulator) · `ScreenshotTests` and `AppStoreScreenshotTests` (both opt-in) · `AvoidDownloadUITests` (opt-in, downloads ~1.5 GB) |
+| Why the skip count moved 11 → 12 | `RELEASING.md` says a changed skip count must be explained, not counted. The new one is `AppStoreScreenshotTests`, added in this pass and gated on `APPSTORE_SHOTS=1`. |
+
+### Read this before you trust a red UI suite
+
+Two runs of the UI suite on 2026-11-01 reported 2 failures each, **and they were different tests
+both times** — `WindOverlayUITests` on one, `LZLayerUITests` + `MapControlsUITests` on the other.
+All of them were timeouts, not wrong answers, and the machine was carrying a load average of 22–25
+with a leftover Simulator still booted from the screenshot run.
+
+The measurement that settles it: `MapControlsUITests.testLayersMenuTwoColumnPanel` "failed" at
+**905 seconds** and passes in **14.6** on an idle box. That is the same test on the same build.
+
+`LZLayerUITests.testTheRankedListNamesSeveralDistinctPlaces` is worth its own line, because it
+looks alarming and is not. Under load it died at line 506 inside its own *precondition* check —
+"Timed out while evaluating UI query" — before it could reach the `XCTSkip` at line 524. On an idle
+machine it gets there and skips cleanly, saying why: the `n33w107` pack is not in the Simulator.
+`bash Tools/fetch_lz_pack.sh n33w107` gives that test its teeth back; nothing about shipping needs
+it, since the landability layer is a developer preview behind the diagnostics unlock.
+
+So: run the UI suite on a quiet machine, or do not believe it. `Tools/uitests.sh` says the same
+thing in its own header about the day it was written.
 | Invariant suites | ✅ `TranscriptionGateTests`, `EntitlementsPolicyTests`, `InstallIdentityTests`, `DownloadPolicyTests`, `BundledNavDataTests`, `PlateGeorefTests` all pass |
 | Bundled nav data | ✅ refreshed to **cycle 2611** (effective 2026-10-29) — see §2.1 |
 | **Build 112 on TestFlight** | ✅ uploaded 2026-10-30, Apple reports `VALID` — add testers in App Store Connect → Obelisk EFB → TestFlight |
@@ -353,8 +393,8 @@ regenerate the `.p8` in response to a 403: Apple will not re-issue it.
 - **Forgot-password opens the website**, whose navigation includes a pricing page. Routinely
   accepted and standard for any app with web accounts, but it is the one external link in the
   account flow.
-- **UI suite not re-run in this pass.** It needs an iPad destination via `bash Tools/uitests.sh`;
-  the unit suite was the one that covers everything this change touched.
+- **~~UI suite not re-run in this pass.~~** It has been, twice: 68 executed, 12 skipped, 0 failures
+  on an idle machine. See §1 for why a loaded one lies.
 
 ---
 
