@@ -623,6 +623,10 @@ struct MapHostView: View {
         case .failed:
             statusPill("Chart download failed — tap to retry", "wifi.exclamationmark")
                 .onTapGesture { Task { await store.setLayer(model.chartLayer, routeRects: ChartGeo.routeRects(route)) } }
+        case .paused where model.chartLayer.isRaster:
+            // Names the switch that is doing it, so the fix is one tap away in Data activity rather
+            // than a hunt for a signal problem that does not exist.
+            statusPill("Chart packs are switched off in Data activity", "pause.circle")
         default: EmptyView()
         }
     }

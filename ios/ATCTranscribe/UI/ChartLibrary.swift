@@ -67,6 +67,15 @@ final class ChartLibrary: ObservableObject {
     }
 
     private var inFlight: Set<String> = []
+    /// Packs whose download the pilot STOPPED from the Data activity screen, for this launch only.
+    ///
+    /// Without this the stop does not hold: the map's loader and both prefetchers rebuild their work
+    /// list from "is it on disk", so a pack that was stopped is missing, therefore wanted, therefore
+    /// re-queued on the very next pan — the row reappears within a frame and the stop reads as a
+    /// no-op. Not persisted, because the pilot stopped THIS transfer on THIS link, which is a
+    /// statement about right now and not a standing preference; tapping Download on the Downloads
+    /// page clears it, because that is the pilot asking again in so many words.
+    private var stoppedPacks: Set<String> = []
     private var warming: Task<Bool, Never>?
     private var bulkTask: Task<Void, Never>?
     private var precacheTask: Task<Void, Never>?
@@ -476,7 +485,8 @@ final class ChartLibrary: ObservableObject {
     /// publisher to its claim for the cost of one `metadata` read it is already doing.
     @discardableResult
     func ensureOnDisk(_ e: ChartCatalog.Entry, cycle: String, expectStamp: String?,
-                      priority: NetworkActivity.Priority = .normal) async -> URL? {
+                      priority: NetworkActivity.Priority = .normal,
+                      whenPaused: NetworkActivity.PausePolicy = .giveUp) async -> URL? {
         let dst = localURL(e.id, cycle: cycle)
         if FileManager.default.fileExists(atPath: dst.path) { return dst }   // verified at write time
         // ENTITLEMENT BACKSTOP. Enforced here as well as at the callers for the same reason the
@@ -493,7 +503,7 @@ final class ChartLibrary: ObservableObject {
         do {
             let (tmp, resp) = try await NetworkActivity.download(
                 from: remote, "Chart pack: \(e.id.replacingOccurrences(of: "_", with: " "))",
-                .charts, priority)
+                .charts, priority, whenPaused: whenPaused)
             guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
                 // The caller owns the file `download(from:)` wrote even on a non-200. Returning without
                 // removing it leaks a full-size temp per failed attempt, and the retry paths above will
@@ -515,8 +525,24 @@ final class ChartLibrary: ObservableObject {
             }
             _ = r                                                           // reader closes on deinit
             return dst
-        } catch { return nil }
+        } catch is NetworkActivity.Paused {
+            // The pilot has chart packs switched off. Not a failure and not remembered: when they
+            // switch it back on the callers ask again by themselves, which is all they ever do.
+            return nil
+        } catch {
+            // A STOP IS REMEMBERED; a network failure is not. Both land here, and treating them
+            // alike either forgets the pilot's decision (re-queued on the next pan) or gives up on a
+            // pack because a tunnel dropped the link once.
+            if error is CancellationError || (error as? URLError)?.code == .cancelled {
+                stoppedPacks.insert(e.id)
+            }
+            return nil
+        }
     }
+
+    /// Whether the pilot stopped this pack's download during this launch. The map's loader asks
+    /// before queueing, so a stop is not undone by the next pan.
+    func wasStopped(_ id: String) -> Bool { stoppedPacks.contains(id) }
 
     // MARK: Prefetch
 
@@ -538,8 +564,12 @@ final class ChartLibrary: ObservableObject {
         // happened to be up. That is the single most expensive thing this app can do without being
         // asked, and it was the one bulk path with no opinion about the connection at all.
         guard await DownloadPolicy.shared.verdict(.background).isAllowed else { return }
+        // The pilot's own switch, checked before any row is created. `ensureOnDisk` refuses too, but
+        // doing it here as well keeps a paused category from even walking the catalog.
+        guard !NetworkActivity.shared.isPaused(.charts) else { return }
         for layer in layers where layer.isRaster {
-            var todo = packsCovering(rects, layer: layer).filter { !isCached($0) && !inFlight.contains($0.id) }
+            var todo = packsCovering(rects, layer: layer)
+                .filter { !isCached($0) && !inFlight.contains($0.id) && !stoppedPacks.contains($0.id) }
             if todo.count > cap { todo = Array(todo.prefix(cap)) }
             for e in todo {
                 inFlight.insert(e.id)
@@ -698,8 +728,12 @@ final class ChartLibrary: ObservableObject {
            !(await DownloadPolicy.shared.verdict(.userInitiated, requires: e.capability)).isAllowed { return false }
         downloadingIDs.insert(e.id)
         defer { downloadingIDs.remove(e.id) }
+        stoppedPacks.remove(e.id)      // tapping Download IS asking again — forget the earlier stop
         var ok = isCached(e)
-        if !ok { ok = await ensureOnDisk(e) != nil }
+        // `.wait`, not the default `.giveUp`: the pilot tapped Download on this exact pack. If chart
+        // packs happen to be switched off it queues visibly as "paused by you" on the Data activity
+        // screen, where "Get now" will let this one row through without lifting the pause.
+        if !ok { ok = await ensureOnDisk(e, cycle: cycle, expectStamp: nil, whenPaused: .wait) != nil }
         if ok { markDownloaded(e.id); refreshCachedBytes() }
         return ok
     }

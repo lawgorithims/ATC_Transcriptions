@@ -76,6 +76,19 @@ struct NetworkActivityView: View {
                         .buttonStyle(.plainHaptic)
                         .accessibilityIdentifier("netq-prioritise")
                 }
+                // ⚠️ THE CONTROL THIS SCREEN WAS MISSING. `cancel` existed in the queue from the
+                // start and nothing ever called it, so the only thing a pilot could do to a single
+                // row was ask for it SOONER. A category switch was the only brake, it took every
+                // download of that kind with it, and it did not touch what was already running — so
+                // "I cannot stop this one chart pack" was simply true. One row, one stop.
+                Button { Haptics.impact(.medium); activity.cancel(job.id) } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 15))
+                        .foregroundStyle(p.textDim)
+                }
+                .buttonStyle(.plainHaptic)
+                .accessibilityIdentifier("netq-stop")
+                .accessibilityLabel("Stop \(job.label)")
             }
             Text(subtitle(job, now: now))
                 .font(.caption2).foregroundStyle(p.textDim)
@@ -86,7 +99,10 @@ struct NetworkActivityView: View {
     private func subtitle(_ job: NetworkActivity.Job, now: Date) -> String {
         var parts = [job.category.title]
         switch job.state {
-        case .running:  parts.append("downloading")
+        // "stopping loses it" is on the RUNNING row only, and it is the literal truth: there is no
+        // resume data, so a stopped transfer restarts from zero. The pilot is owed that before they
+        // tap the x, not after — it is the whole reason the queue used to refuse running work.
+        case .running:  parts.append(job.bytes > 0 ? "downloading · stopping loses it" : "downloading")
         case .queued:   parts.append("waiting")
         case .paused:   parts.append("paused by you")
         default:        break
@@ -147,8 +163,10 @@ struct NetworkActivityView: View {
             // — a pilot on a metered link over the ocean may genuinely want only the chart pack. It
             // is their aircraft. What the UI owes them is that the consequence is stated plainly and
             // that a paused request waits visibly rather than failing somewhere they cannot see.
-            Text("Switching one off stops new requests of that kind. Anything already downloading "
-                 + "finishes — stopping it halfway would waste what it has already pulled.")
+            Text("Switching one off stops new requests of that kind, and stops anything the app "
+                 + "had started on its own — loading charts ahead of you, checking for new cycles. "
+                 + "A download you asked for keeps going, because stopping it halfway would waste "
+                 + "what it has already pulled; stop it yourself with the \u{00D7} on its row.")
         }
     }
 }

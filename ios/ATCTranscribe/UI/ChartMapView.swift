@@ -549,7 +549,7 @@ private func inflated(_ r: MKMapRect, by f: Double) -> MKMapRect {
 /// cache, and downloading live in the shared `ChartLibrary` (warmed/prefetched before the map opens),
 /// so this store mostly opens already-on-disk packs with no network. All state mutated on the main actor.
 @MainActor final class ChartStore: ObservableObject {
-    enum Phase: Equatable { case idle, loadingCatalog, downloading, ready, empty, zoomOut, failed(String) }
+    enum Phase: Equatable { case idle, loadingCatalog, downloading, ready, empty, zoomOut, failed(String), paused }
     @Published var phase: Phase = .idle
     @Published private(set) var readers: [MBTilesReader] = []
 
@@ -616,7 +616,8 @@ private func inflated(_ r: MKMapRect, by f: Double) -> MKMapRect {
             }
         }
         var todo = layer.entries(catalog).filter { e in
-            loaded[e.id] == nil && !inFlight.contains(e.id) && rects.contains { e.mapRect.intersects($0) }
+            loaded[e.id] == nil && !inFlight.contains(e.id) && !library.wasStopped(e.id)
+                && rects.contains { e.mapRect.intersects($0) }
         }
         // Load in batches of 6 so a single pan never mass-downloads; if truncated we self-drive the rest.
         let truncated = gated && todo.count > 6
@@ -668,7 +669,13 @@ private func inflated(_ r: MKMapRect, by f: Double) -> MKMapRect {
             return
         }
         if inFlight.isEmpty, layer == activeLayer {
-            phase = !loaded.isEmpty ? .ready : (anyFailed ? .failed("Chart download failed") : (gated ? .zoomOut : .empty))
+            // A pack that did not arrive because the pilot switched chart packs OFF is not a failure,
+            // and must not be reported as one: "Chart download failed — tap to retry" over a pause
+            // the pilot set themselves sends them hunting for a network problem that is not there.
+            let paused = NetworkActivity.shared.isPaused(.charts)
+            phase = !loaded.isEmpty ? .ready
+                  : paused ? .paused
+                  : (anyFailed ? .failed("Chart download failed") : (gated ? .zoomOut : .empty))
         }
     }
 
