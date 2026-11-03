@@ -255,6 +255,29 @@ final class AccountStore: ObservableObject {
         state = .signedIn(session.snapshot)
         errorMessage = nil
         sessionEndedPendingLanding = false
+        UserDefaults.standard.set(true, forKey: Self.hasEverSignedInKey)
+    }
+
+    /// Whether an account has EVER been used on this device. Drives which half of the sign-in
+    /// screen opens first, and nothing else.
+    ///
+    /// ⚠️ UserDefaults, NOT the Keychain, and deliberately NEVER cleared by `signOut` or
+    /// `clearLocalCredential`. It is not a credential and it is not a claim about who the pilot
+    /// is — it is one bit saying "this device has seen a sign-in before", which is exactly the
+    /// question `SignInView` needs answered and exactly the question the Keychain cannot answer
+    /// once the credential has been wiped. Keeping it out of the Keychain also keeps it out of the
+    /// one place where a stale entry would matter.
+    private static let hasEverSignedInKey = "atc.account.hasEverSignedIn"
+
+    /// True once any sign-in has succeeded on this device.
+    static var hasEverSignedIn: Bool {
+        UserDefaults.standard.bool(forKey: hasEverSignedInKey)
+    }
+
+    /// Test seam — the flag outlives a store instance, so a test that does not reset it leaks into
+    /// the next one.
+    static func resetHasEverSignedInForTests() {
+        UserDefaults.standard.removeObject(forKey: hasEverSignedInKey)
     }
 
     private func cache(_ snapshot: AccountSnapshot) {

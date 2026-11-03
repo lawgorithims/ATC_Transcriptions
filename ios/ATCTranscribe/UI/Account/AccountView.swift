@@ -87,10 +87,21 @@ struct AccountView: View {
                         .textSelection(.enabled)
                         .accessibilityIdentifier("account-email-shown")
                 }
-                if !user.emailVerified {
-                    Text("Email not yet verified.")
-                        .font(.dsLabelS).foregroundStyle(p.textDim)
-                }
+                // ⚠️ "EMAIL NOT YET VERIFIED." USED TO SHOW HERE, AND IT WAS A DEAD END.
+                //
+                // `emailVerified` defaults to false in the website's schema and is only ever set
+                // true by Google or Apple asserting it. Nothing sends a verification email —
+                // `sendMail` has exactly one caller in that whole codebase and it is the
+                // password-reset route — and there is no verify endpoint and no resend. So every
+                // account created with an email and a password displayed a problem, permanently,
+                // with nothing anywhere in the app or the site that could clear it.
+                //
+                // Telling someone their account is in a bad state and offering no way out is worse
+                // than saying nothing, and nothing is gated on this flag today in any case.
+                //
+                // WHEN VERIFICATION LANDS: put this back WITH a resend button beside it, not
+                // before. The flag is still decoded and still correct — it is only the unactionable
+                // display of it that is gone.
             }
         }
     }

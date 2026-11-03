@@ -17,7 +17,19 @@ struct SignInView: View {
         case create = "Create account"
     }
 
-    @State private var mode: Mode = .signIn
+    /// ⚠️ A DEVICE THAT HAS NEVER SIGNED IN OPENS ON "CREATE ACCOUNT".
+    ///
+    /// This defaulted to `.signIn` for everyone, which put a first-time pilot on the wrong half of
+    /// the screen: they type the email and password they have just invented, and the server quite
+    /// correctly answers "Incorrect email or password." Nothing in that sentence hints that the
+    /// account does not exist yet — it reads as though they have one and have got it wrong, which
+    /// is the most confusing thing the screen can say to someone who has never been here.
+    ///
+    /// The mirror case is much gentler: a returning pilot who lands on Create and enters their real
+    /// address gets "An account with that email already exists.", which names the problem and
+    /// points at the fix. So the default follows `hasEverSignedIn`, and where that bit is wrong the
+    /// error it produces is the harmless one.
+    @State private var mode: Mode = AccountStore.hasEverSignedIn ? .signIn : .create
     @State private var email = ""
     @State private var password = ""
     @State private var name = ""
@@ -30,8 +42,24 @@ struct SignInView: View {
 
     private var canSubmit: Bool {
         !account.isWorking
-            && email.contains("@")
+            && Self.looksLikeEmail(email.trimmingCharacters(in: .whitespaces))
             && password.count >= 8
+    }
+
+    /// Mirrors `isValidEmail` in the website's `lib/validation.ts`, which is what will actually
+    /// judge this.
+    ///
+    /// The check here was `email.contains("@")`, which is laxer than the server's — so `me@gmail`
+    /// enabled the button, cost a network round trip, and came back rejected with "Enter a valid
+    /// email address." Verified against production: `probe@example` is a 400. Matching the rule
+    /// means the button simply stays dim until the address can actually succeed.
+    ///
+    /// Deliberately no stricter than the server either: an address this accepts and the server
+    /// rejects is a confusing round trip, and one the server accepts and THIS rejects is a button
+    /// that never lights up for a perfectly good address, which is worse.
+    static func looksLikeEmail(_ value: String) -> Bool {
+        guard value.count <= 254 else { return false }
+        return value.range(of: #"^[^\s@]+@[^\s@]+\.[^\s@]+$"#, options: .regularExpression) != nil
     }
 
     var body: some View {
@@ -77,6 +105,20 @@ struct SignInView: View {
                     .disabled(!canSubmit)
                     .opacity(canSubmit ? 1 : 0.5)
                     .accessibilityIdentifier("account-submit")
+
+                    // ⚠️ THE CONSENT LINE BELONGS NEXT TO THE BUTTON THAT CONSTITUTES CONSENT.
+                    // There is a legal footnote at the bottom of this page saying the same thing,
+                    // and on the Sign in tab it is visible — but the Create tab is a field taller,
+                    // which pushed the footnote below the fold of the Settings sheet. So on the one
+                    // tab where creating an account IS the act of agreeing, the agreement had
+                    // scrolled out of sight. The links stay in the footnote; the sentence comes here.
+                    if mode == .create {
+                        Text("Creating an account means you agree to the Terms of Service and "
+                             + "acknowledge the Privacy Policy, linked below.")
+                            .font(.dsLabelS).foregroundStyle(p.textDim)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .accessibilityIdentifier("account-consent-inline")
+                    }
 
                     if mode == .signIn {
                         Button("Forgot your password?") {
