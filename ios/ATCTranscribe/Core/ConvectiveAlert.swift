@@ -142,7 +142,7 @@ struct ConvectiveOwnship: Equatable, Sendable {
 /// "underneath" is not a let-off, and an unstated top is not evidence of a low one.
 enum VerticalRelation: Equatable, Sendable {
     case inside(topsFtMSL: Double)          // between base and tops
-    case nearTops(marginFt: Double)         // above the tops, but by less than the clearance rule wants
+    case nearTops(marginFt: Double, requiredFt: Double)   // above the tops, by less than the rule wants
     case clearAbove(marginFt: Double)       // ≥ clearance above the tops — the ONLY non-threatening case
     case belowBase(marginFt: Double)        // under the cell
     case topsUnknown                        // product stated no tops → treated as relevant
@@ -179,6 +179,10 @@ struct ConvectiveThreat: Identifiable, Equatable, Sendable {
     let vertical: VerticalRelation
     /// The bulletin's validity has passed and this is being carried on the grace window.
     let isExpired: Bool
+    /// The wind at the cell's top that the clearance rule was given, kt — nil when there was none to give.
+    /// Carried so the banner can say WHY it wanted more than the usual 5,000 ft; a pilot told "only 7,000
+    /// ft above tops" with nothing else on the line would reasonably read it as a bug.
+    var topWindKt: Double?
 
     /// Penetration whenever the track gets inside at any point in the window, however late — that is the
     /// fact that decides whether this needs a turn.
@@ -204,20 +208,36 @@ struct ConvectiveThreat: Identifiable, Equatable, Sendable {
 /// The 20 NM comes from AIM 7-1-28, which is explicit: avoid by at least 20 miles any thunderstorm
 /// identified as severe or giving an intense radar echo. It is not a round number someone liked.
 ///
-/// The 5,000 ft overflight clearance is the FLOOR of the same guidance, not the whole of it — the full
-/// rule is 1,000 ft of clearance for every 10 kt of wind speed at the cloud top, minimum 5,000 ft, which
-/// at a realistic 50 kt over the top asks for 5,000 ft and at 90 kt asks for 9,000. This alert applies the
-/// floor, because the wind AT THE TOP is not in the product it reads. `WindAloftService` already samples
-/// winds aloft and could supply it; wiring that in is a real improvement and is deliberately not pretended
-/// at here. A pilot skimming 5,000 ft over a tall cell in a strong flow is still being under-warned.
+/// The overflight clearance is the same paragraph's other number, and it is NOT a constant: 1,000 ft of
+/// clearance for every 10 kt of wind speed at the cloud top. At a quiet 40 kt over the top that asks for
+/// 4,000 ft and at 90 kt for 9,000, and the AIM says plainly that its own answer "would exceed the altitude
+/// capability of most aircraft" — which is the point of stating it rather than a reason to round it down.
+/// The wind comes from the GFS field `WindAloftService` already holds, sampled at the CELL'S OWN TOP
+/// (`WindFieldSet.windAt`), and `overflightClearanceFt` is what the rule falls back to when there is no
+/// wind to sample. See `requiredClearanceFt`.
+///
+/// ⚠️ THE WIND CAN ONLY EVER RAISE THE BAR. `requiredClearanceFt` returns the GREATER of the floor and the
+/// wind rule, so no wind field, a stale one, a cell outside its box and a calm top all land on exactly the
+/// behaviour this alert had before the rule existed. The asymmetry is deliberate: a wind that is missing or
+/// light must not be able to talk the alert out of a clearance it was already asking for.
 enum ConvectiveAlert {
 
     // MARK: Tunables (every one of them named, so no loop below has a magic bound — rule 2)
 
     /// AIM 7-1-28's avoidance distance.
     static let avoidNm = 20.0
-    /// AIM 7-1-28's MINIMUM overflight clearance. See the type comment: the full rule needs wind at tops.
+    /// The overflight clearance FLOOR — what the rule asks for when the wind at the cloud top is unknown.
+    /// 5,000 ft is the conventional rule of thumb, and is also what the wind rule itself returns at 50 kt,
+    /// which is an ordinary wind over an ordinary top. It is a floor, not the rule: see
+    /// `requiredClearanceFt`.
     static let overflightClearanceFt = 5_000.0
+    /// AIM 7-1-28's overflight rule: 1,000 ft of clearance for every 10 kt of wind at the cloud top.
+    ///
+    /// ⚠️ APPLIED LINEARLY, NOT AS A STAIRCASE. "For each 10 knots" can be read as steps — 9,000 ft at
+    /// 90 kt, 10,000 at 91 — which would move the clearance a thousand feet on one knot of a FORECAST
+    /// wind, and would read as precision the data does not have. 100 ft/kt is the same rule without the
+    /// cliff, and it never asks for less than the staircase's completed steps.
+    static let clearanceFtPerKt = 100.0
     /// How far ahead to project. Twenty minutes is about as far as a convective extrapolation means
     /// anything — cells grow, decay and split, and a 45 kt vector run out an hour is fiction.
     static let lookAheadMin = 20.0
@@ -268,11 +288,26 @@ enum ConvectiveAlert {
 
     // MARK: Vertical
 
+    /// How much clearance AIM 7-1-28 wants above a cell's top, given the wind AT that top.
+    ///
+    /// 1,000 ft for every 10 kt, floored at `overflightClearanceFt`. `nil`, zero, a negative value and a
+    /// NaN all mean "no usable wind" and all return the floor — this function is the single place the
+    /// asymmetry described on the type lives, and the reason every absent-wind path above it can be a
+    /// plain `nil` rather than a special case.
+    static func requiredClearanceFt(topWindKt: Double?) -> Double {
+        assert(overflightClearanceFt > 0, "the floor is a real clearance")
+        assert(clearanceFtPerKt > 0, "the rule adds clearance as the wind rises")
+        guard let kt = topWindKt, kt.isFinite, kt > 0 else { return overflightClearanceFt }
+        return max(overflightClearanceFt, kt * clearanceFtPerKt)
+    }
+
     /// Where the aircraft sits relative to the cell's vertical extent.
     ///
     /// Fails toward alerting in every uncertain case: no altitude, no stated tops, or anywhere inside the
-    /// column all alert. Only a clean `overflightClearanceFt` above a KNOWN top is let through.
-    static func verticalRelation(cell: ConvectiveCell, altitudeFtMSL: Double?) -> VerticalRelation {
+    /// column all alert. Only a clean `requiredClearanceFt` above a KNOWN top is let through — and with a
+    /// wind at that top, that is more than the floor, so a cell this used to pass can now alert.
+    static func verticalRelation(cell: ConvectiveCell, altitudeFtMSL: Double?,
+                                 topWindKt: Double? = nil) -> VerticalRelation {
         assert(cell.topsFtMSL == nil || cell.topsFtMSL!.isFinite, "tops finite when present")
         assert(altitudeFtMSL == nil || altitudeFtMSL!.isFinite, "altitude finite when present")
         guard let alt = altitudeFtMSL else { return .altitudeUnknown }
@@ -282,14 +317,13 @@ enum ConvectiveAlert {
         }
         let margin = alt - tops
         if margin <= 0 { return .inside(topsFtMSL: tops) }
-        return margin >= overflightClearanceFt ? .clearAbove(marginFt: margin)
-                                               : .nearTops(marginFt: margin)
+        let required = requiredClearanceFt(topWindKt: topWindKt)
+        return margin >= required ? .clearAbove(marginFt: margin)
+                                  : .nearTops(marginFt: margin, requiredFt: required)
     }
 
     // MARK: Geometry
 
-    /// Distance from a point to a polygon in NM, 0 inside it. Reuses `HazardCorridor`'s segment math, so
-    /// the projection and its <1% error characteristic are the ones already tested there.
     /// True when a vertex is a coordinate that can exist on Earth.
     ///
     /// ⚠️ EVERY FEED THAT CARRIES A HAZARD POLYGON IS CHECKED THROUGH HERE, because none of them is
@@ -302,6 +336,8 @@ enum ConvectiveAlert {
             && (-90...90).contains(c.lat) && (-180...180).contains(c.lon)
     }
 
+    /// Distance from a point to a polygon in NM, 0 inside it. Reuses `HazardCorridor`'s segment math, so
+    /// the projection and its <1% error characteristic are the ones already tested there.
     static func distanceNm(from p: Coord, toPolygon ring: [Coord]) -> Double {
         assert(ring.count <= maxVertices, "polygon clamped upstream")
         assert((-90...90).contains(p.lat), "latitude in range")
@@ -361,14 +397,20 @@ enum ConvectiveAlert {
     /// Ordering is penetration before proximity, then soonest, then nearest — a cell the aircraft will
     /// enter in 12 minutes outranks one it will pass 19 NM from in 3, because the first one has to be
     /// turned away from and the second one may not.
+    /// `topWindKt` is asked once per cell for the wind at THAT cell's own top — see
+    /// `requiredClearanceFt`. It is defaulted to nothing so a caller with no wind field, and every test
+    /// that is not about the wind, keeps the floor-only behaviour without saying so.
     static func threats(cells: [ConvectiveCell],
                         ownship: ConvectiveOwnship,
-                        now: Date) -> [ConvectiveThreat] {
+                        now: Date,
+                        topWindKt: (ConvectiveCell) -> Double? = { _ in nil }) -> [ConvectiveThreat] {
         assert(cells.count <= maxCells, "cell snapshot bounded by the service")
         assert((-90...90).contains(ownship.position.lat), "ownship latitude in range")
         var out: [ConvectiveThreat] = []
         for cell in cells.prefix(maxCells) {
-            if let t = threat(cell: cell, ownship: ownship, now: now) { out.append(t) }
+            if let t = threat(cell: cell, ownship: ownship, now: now, topWindKt: topWindKt(cell)) {
+                out.append(t)
+            }
         }
         out.sort { a, b in
             if (a.kind == .penetration) != (b.kind == .penetration) { return a.kind == .penetration }
@@ -389,7 +431,8 @@ enum ConvectiveAlert {
     /// never came within the avoidance radius over the look-ahead.
     static func threat(cell: ConvectiveCell,
                        ownship: ConvectiveOwnship,
-                       now: Date) -> ConvectiveThreat? {
+                       now: Date,
+                       topWindKt: Double? = nil) -> ConvectiveThreat? {
         assert(cell.polygon.count <= maxVertices, "polygon clamped upstream")
         assert(stepSeconds > 0, "a non-positive step would not terminate")
 
@@ -397,7 +440,8 @@ enum ConvectiveAlert {
         let expiredByMin = now.timeIntervalSince(cell.validUntil) / 60
         guard expiredByMin <= expiredGraceMinutes else { return nil }
 
-        let vertical = verticalRelation(cell: cell, altitudeFtMSL: ownship.altitudeFtMSL)
+        let vertical = verticalRelation(cell: cell, altitudeFtMSL: ownship.altitudeFtMSL,
+                                        topWindKt: topWindKt)
         guard vertical.isThreatening else { return nil }
 
         let ageMin = max(0, now.timeIntervalSince(cell.observedAt) / 60)
@@ -415,7 +459,7 @@ enum ConvectiveAlert {
                                     minutesToPenetration: d == 0 ? 0 : nil,
                                     closestApproachNm: d, dataAgeMin: ageMin,
                                     driftUncertaintyNm: slack, vertical: vertical,
-                                    isExpired: expiredByMin > 0)
+                                    isExpired: expiredByMin > 0, topWindKt: topWindKt)
         }
 
         // Both move, so the whole window is walked: the breach and the penetration are recorded
@@ -450,7 +494,8 @@ enum ConvectiveAlert {
                                 minutesToPenetration: penetrationMin,
                                 closestApproachNm: closest == .greatestFiniteMagnitude ? 0 : closest,
                                 dataAgeMin: ageMin, driftUncertaintyNm: slackAtBreach,
-                                vertical: vertical, isExpired: expiredByMin > 0)
+                                vertical: vertical, isExpired: expiredByMin > 0,
+                                topWindKt: topWindKt)
     }
 }
 
@@ -469,6 +514,16 @@ enum ConvectiveAlertText {
         if ftMSL >= 18_000 { return String(format: "FL%03.0f", (ftMSL / 100).rounded()) }
         let thousands = (ftMSL / 100).rounded() * 100
         return "\(Int(thousands).formatted(.number.grouping(.automatic))) ft"
+    }
+
+    /// A height DIFFERENCE, to the nearest hundred feet and grouped: "7,000", "9,300". Not `altitudeText`,
+    /// which turns anything above 18,000 into a flight level — a flight level is a place, and a clearance
+    /// is a distance, so "FL090 above tops" would be wrong in the way that matters.
+    static func feetText(_ ft: Double) -> String {
+        assert(ft.isFinite, "a real height difference")
+        assert(ft > -100_000, "a height difference, not a sentinel")
+        let hundreds = Int((ft / 100).rounded()) * 100
+        return hundreds.formatted(.number.grouping(.automatic))
     }
 
     /// "now", "1 min", "12 min" — never "0 min", which reads as a rounding artefact rather than a warning.
@@ -505,8 +560,18 @@ enum ConvectiveAlertText {
 
         switch t.vertical {
         case .inside(let tops):            parts.append("tops \(altitudeText(tops))")
-        case .nearTops(let margin):        parts.append("only \(Int(margin.rounded())) ft above tops")
-        case .belowBase(let margin):       parts.append("base \(Int(margin.rounded())) ft above you")
+        case .nearTops(let margin, let required):
+            parts.append("only \(feetText(margin)) ft above tops")
+            // ⚠️ THE SECOND CLAUSE IS NOT DECORATION. "Only 7,000 ft above tops" on its own reads as a
+            // typo — 7,000 ft is a lot of air — and the pilot cannot tell that the bar moved or why. So
+            // whenever the wind raised it above the floor, the line states the clearance the rule wants
+            // and the wind that asked for it, which together are the only way to act on the warning:
+            // climb to that, or turn. Omitted at the floor, where the number is the familiar 5,000.
+            if required > ConvectiveAlert.overflightClearanceFt {
+                let wind = t.topWindKt.map { String(format: " (%.0f kt at tops)", $0) } ?? ""
+                parts.append("AIM wants \(feetText(required)) ft\(wind)")
+            }
+        case .belowBase(let margin):       parts.append("base \(feetText(margin)) ft above you")
         case .topsUnknown:                 parts.append("tops not reported")
         case .altitudeUnknown:             parts.append("no GPS altitude")
         case .clearAbove:                  break   // filtered out before a threat is built

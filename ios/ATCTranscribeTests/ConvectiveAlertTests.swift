@@ -121,16 +121,118 @@ final class ConvectiveAlertTests: XCTestCase {
         let c = cell(eastNm: 30, fromDeg: 90, kt: 30, tops: 40_000)
         let threat = try XCTUnwrap(ConvectiveAlert.threat(cell: c, ownship: ownship(altFt: 41_000),
                                                           now: t0))
-        XCTAssertEqual(threat.vertical, .nearTops(marginFt: 1_000),
-                       "1,000 ft of clearance is well inside the 5,000 ft minimum")
+        XCTAssertEqual(threat.vertical, .nearTops(marginFt: 1_000, requiredFt: 5_000),
+                       "1,000 ft of clearance is well inside the 5,000 ft floor")
     }
 
-    func testTheClearanceBoundaryIsFiveThousandFeet() {
+    func testTheClearanceBoundaryIsFiveThousandFeetWithNoWindToGoOn() {
         let c = cell(eastNm: 30, tops: 30_000)
         XCTAssertEqual(ConvectiveAlert.verticalRelation(cell: c, altitudeFtMSL: 34_999),
-                       .nearTops(marginFt: 4_999))
+                       .nearTops(marginFt: 4_999, requiredFt: 5_000))
         XCTAssertEqual(ConvectiveAlert.verticalRelation(cell: c, altitudeFtMSL: 35_000),
                        .clearAbove(marginFt: 5_000), "exactly 5,000 ft satisfies the AIM floor")
+    }
+
+    // MARK: The overflight clearance rule (AIM 7-1-28)
+
+    /// 1,000 ft of clearance for every 10 kt of wind at the cloud top, floored. The AIM's own remark that
+    /// this "would exceed the altitude capability of most aircraft" is why the top of the range is not
+    /// capped: an unreachable answer is a true answer about a storm that must be flown around instead.
+    func testTheClearanceRuleScalesWithTheWindAtTheTop() {
+        XCTAssertEqual(ConvectiveAlert.requiredClearanceFt(topWindKt: nil), 5_000,
+                       "no wind to go on: the floor, which is what this alert always did")
+        XCTAssertEqual(ConvectiveAlert.requiredClearanceFt(topWindKt: 50), 5_000,
+                       "50 kt IS the floor — the two numbers agree at an ordinary wind")
+        XCTAssertEqual(ConvectiveAlert.requiredClearanceFt(topWindKt: 90), 9_000)
+        XCTAssertEqual(ConvectiveAlert.requiredClearanceFt(topWindKt: 135), 13_500,
+                       "a jet-core top asks for more air than most aeroplanes have")
+    }
+
+    /// ⚠️ THE ONE PROPERTY THE WHOLE RULE RESTS ON. A wind that is absent, calm, negative or not a number
+    /// must leave the clearance exactly where it was. The wind may raise the bar; it may never lower it,
+    /// because a bad sample would then be able to talk the alert out of a clearance it already wanted —
+    /// and a GFS box the cell sits outside of returns nil on an ordinary day.
+    func testNoUsableWindCanOnlyLeaveTheFloorUntouched() {
+        let unusable: [Double?] = [nil, 0, -40, 20, 49.9, .nan, .infinity, -.infinity]
+        for kt in unusable {
+            XCTAssertEqual(ConvectiveAlert.requiredClearanceFt(topWindKt: kt),
+                           ConvectiveAlert.overflightClearanceFt,
+                           "a wind of \(String(describing: kt)) must not move the floor")
+        }
+    }
+
+    /// The case the floor-only version of this alert got wrong, and the whole reason for the rule: 7,000 ft
+    /// of clearance above a cell's top is more than the floor asks for and less than the wind up there does.
+    func testACellClearedByTheFloorStillAlertsInAStrongFlowAtItsTop() throws {
+        let c = cell(eastNm: 30, fromDeg: 90, kt: 30, tops: 34_000)
+        let own = ownship(altFt: 41_000)                            // 7,000 ft above the top
+        XCTAssertNil(ConvectiveAlert.threat(cell: c, ownship: own, now: t0),
+                     "7,000 ft satisfies the floor, which is all the rule can know without a wind")
+        let threat = try XCTUnwrap(ConvectiveAlert.threat(cell: c, ownship: own, now: t0, topWindKt: 90),
+                                   "90 kt over the top asks for 9,000 ft and the aircraft has 7,000")
+        XCTAssertEqual(threat.vertical, .nearTops(marginFt: 7_000, requiredFt: 9_000))
+        XCTAssertEqual(threat.topWindKt, 90, "the wind travels with the threat so the banner can cite it")
+    }
+
+    /// And the converse, at the same altitude over the same cell: an ordinary wind over the top leaves the
+    /// overflight clear. The rule has to be able to say yes, or it is a permanent alarm rather than a rule.
+    func testTheSameOverflightIsClearOnceTheWindAtTheTopIsOrdinary() {
+        let c = cell(eastNm: 30, fromDeg: 90, kt: 30, tops: 34_000)
+        XCTAssertNil(ConvectiveAlert.threat(cell: c, ownship: ownship(altFt: 41_000), now: t0,
+                                            topWindKt: 65),
+                     "65 kt asks for 6,500 ft and the aircraft has 7,000")
+    }
+
+    /// The wind is asked for once PER CELL, at that cell's own top — not once for the aircraft. Two cells
+    /// in the same snapshot can have tops 10,000 ft apart in flows that differ by 100 kt, and a single
+    /// sample taken at the aeroplane's level would answer the wrong question for both of them.
+    func testTheWindIsAskedForPerCellAtThatCellsOwnTop() {
+        var askedTops: [String: Double] = [:]
+        let tall = cell(eastNm: 30, tops: 30_000, id: "WST-1C")
+        let low = cell(eastNm: 45, tops: 20_000, id: "WST-2C", label: "Convective SIGMET 2C")
+        let threats = ConvectiveAlert.threats(cells: [tall, low], ownship: ownship(altFt: 37_000),
+                                              now: t0) { c in
+            askedTops[c.id] = c.topsFtMSL ?? -1
+            return c.id == "WST-1C" ? 120 : 10
+        }
+        XCTAssertEqual(askedTops, ["WST-1C": 30_000, "WST-2C": 20_000], "each cell's own top")
+        // 1C: 7,000 ft of clearance against the 12,000 that 120 kt asks for → alerts. 2C: 17,000 ft
+        // against the floor → clear above, and filtered out before a threat is built.
+        XCTAssertEqual(threats.map(\.cell.id), ["WST-1C"])
+    }
+
+    /// A banner reading "only 7,000 ft above tops" and nothing else reads as a bug — 7,000 ft is a lot of
+    /// air. The second clause is the only part a pilot can act on: the altitude that would clear it, and
+    /// the wind that asked for it. The grouped number is composed rather than spelled out because the
+    /// separator is the reader's locale's business, not this test's.
+    func testTheDetailSaysWhatTheRuleWantedAndWhichWindAskedForIt() throws {
+        let c = cell(eastNm: 30, fromDeg: 210, kt: 45, tops: 34_000)
+        let threat = try XCTUnwrap(ConvectiveAlert.threat(cell: c, ownship: ownship(altFt: 41_000),
+                                                          now: t0, topWindKt: 93))
+        let detail = ConvectiveAlertText.detail(threat)
+        XCTAssertTrue(detail.contains("only \(ConvectiveAlertText.feetText(7_000)) ft above tops"), detail)
+        XCTAssertTrue(detail.contains("AIM wants \(ConvectiveAlertText.feetText(9_300)) ft (93 kt at tops)"),
+                      detail)
+    }
+
+    /// At the floor the second clause is left off. 5,000 ft is the number the pilot already carries, and
+    /// quoting the AIM at them for it is noise on the one line that has to be read at a glance.
+    func testTheDetailStaysQuietAboutTheRuleAtTheFloor() throws {
+        let c = cell(eastNm: 30, fromDeg: 210, kt: 45, tops: 38_000)
+        let threat = try XCTUnwrap(ConvectiveAlert.threat(cell: c, ownship: ownship(altFt: 41_000),
+                                                          now: t0))
+        let detail = ConvectiveAlertText.detail(threat)
+        XCTAssertTrue(detail.contains("only \(ConvectiveAlertText.feetText(3_000)) ft above tops"), detail)
+        XCTAssertFalse(detail.contains("AIM wants"), detail)
+    }
+
+    /// A clearance is a DISTANCE, so it is never written as a flight level however large it gets — "FL090
+    /// above tops" names a place, and the reader would have to subtract to get back to the number that
+    /// matters. Rounded to the nearest hundred: a forecast wind does not justify the last two digits.
+    func testAClearanceIsWrittenAsADistanceAndNotAFlightLevel() {
+        XCTAssertFalse(ConvectiveAlertText.feetText(21_430).contains("FL"))
+        XCTAssertEqual(ConvectiveAlertText.feetText(9_349), ConvectiveAlertText.feetText(9_300))
+        XCTAssertEqual(ConvectiveAlertText.feetText(0), "0")
     }
 
     /// Unknowns alert. A product that omits tops is not evidence of a low cell, and a missing GPS

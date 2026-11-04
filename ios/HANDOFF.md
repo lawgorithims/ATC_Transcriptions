@@ -167,10 +167,26 @@ Three things found by measurement that a future session should not have to redis
   maximising overlap anchors on the persistent core while only the flanks translate. Currently paid for
   with a wider drift allowance (`ConvectiveAlert.radarDriftErrorFraction = 0.40`) rather than a fudge
   factor on the speed. A proper fix is per-cell TREC with sub-pixel peak interpolation.
-- **Overflight clearance uses the AIM's 5,000 ft FLOOR**, not the full rule (1,000 ft per 10 kt of wind
-  at the cloud top). `WindAloftService` already samples winds aloft and could supply it. A pilot
-  skimming 5,000 ft over a tall cell in a strong flow is still under-warned. Still the single
-  highest-value improvement to the feature.
+- ~~**Overflight clearance uses the AIM's 5,000 ft FLOOR**~~ — DONE (2026-11-04). The full rule is
+  applied: `ConvectiveAlert.requiredClearanceFt` takes the greater of the 5,000 ft floor and 100 ft per
+  kt of wind at the cell's own top, sampled from the held GFS field by `WindFieldSet.windAt`. Two things
+  to know before changing it. (a) **The wind may only raise the bar** — nil, calm, stale or
+  outside-the-box all return the floor, which is the behaviour the alert had before; every absent-wind
+  path can therefore stay a plain `nil`. (b) **The fetch is no longer tied to the wind overlay**:
+  `AppModel.stormAlertNeedsWind` enables `WindAloftService` whenever a storm alert has a live cell,
+  because `showWindAloft` defaults OFF and the rule would otherwise be dead on a fresh install. Fetching
+  does not draw — the particle layer is gated separately. Measured live on 2026-11-04 12z+7h over
+  22–42N/113–78W: of the six live Convective SIGMETs, every top sat in 28–46 kt, so the rule asked for
+  the floor at all six — but 41% of the box at 31,000 ft and 51% at 39,000 ft were over 50 kt (peaks of
+  114 and 118 kt, which ask for ~11,500 ft), so it binds often, just not wherever storms happen to be.
+  What is still missing: **nothing tells the pilot the rule is running on an OLD wind** — `freshFieldSet`
+  refuses a stale run and the banner then silently reverts to the floor.
+- **The layers panel is ~2,000 pt of prose and has no scroll affordance.** Every live layer carries an
+  explanatory note while it is ON, so on a 13-inch iPad the overlays column is about two and a half
+  screenfuls and the clipped edge looks like the end of the list. The popover cap has been raised twice
+  (460 → 860 → 1,100) chasing it, and each raise was forced by a UI test finding a row that had dropped
+  below the fold — the second time as three silently dropped taps that read like a dead binding. The cap
+  is now "as much as the device will give"; the remaining fix is editorial, not geometric.
 - **No map overlay.** The banner names the cell but nothing draws its polygon, so the pilot cannot see
   WHERE it is without going to the WX tab. `TFRMapLayer` is the pattern, on both map engines. This now
   matters more than it did: a radar-derived cell has no name to look up, so the outline is the only way

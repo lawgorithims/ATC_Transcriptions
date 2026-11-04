@@ -569,6 +569,7 @@ final class AppModel: ObservableObject {
     private var lastEFBRecordID: UUID?
     private var efbCancellable: AnyCancellable?
     private var deviceCoordCancellable: AnyCancellable?   // re-centers online ADS-B as the aircraft moves
+    private var windFieldCancellable: AnyCancellable?     // re-runs the storm alert when a wind field lands
     /// Cached EFB command grounding (fixes/airports/SIDs/STARs), keyed on the (airport ident, plan)
     /// it was built for, so `interpretForEFB` doesn't hit CIFP (SQLite) on the main actor per
     /// transmission (L4). Rebuilt off-main by `refreshEFBGrounding` on the setupLive commit and on
@@ -1872,6 +1873,16 @@ final class AppModel: ObservableObject {
                     self?.maybeRecentreRadarCells()
                 }
             }
+        // ⚠️ THE ALERT THAT ASKED FOR THE WIND HAS ALREADY FINISHED BY THE TIME IT ARRIVES. A GFS fetch
+        // takes seconds at best and minutes on a cockpit hotspot, and `refreshConvectiveAlert` reads
+        // whatever field is in hand at the instant it runs. Without this edge the raised clearance would
+        // wait for the next bulletin (five minutes), radar frame (two) or two miles of travel — which is
+        // exactly the window in which a pilot who has just flown into range of a storm is deciding
+        // whether they are clear of it. Deferred to the next main-actor turn for the same reason the
+        // device-coord edge is: @Published fires in willSet, so a synchronous read here would still see
+        // the old field.
+        windFieldCancellable = windAloft.$fieldSet
+            .sink { [weak self] _ in Task { @MainActor in self?.refreshConvectiveAlert() } }
         observeGPSIntegrity()   // mirror the integrity verdict + stamp it onto the transcript log
         // Bring the traffic providers in line with the restored state: the Stratux link is decoupled
         // from Start (see `stratuxTrafficActive`), so an enabled link must connect at launch — nothing
@@ -4411,7 +4422,28 @@ final class AppModel: ObservableObject {
     func syncRadar() { rainViewer.setEnabled(showWxRadar && scenePhaseActive && !thermalSerious) }
     /// Same three-condition reconcile as the radar. The wind fetch is event-driven rather than polled, but
     /// it still must not run in the background or while the device is hot.
-    func syncWind() { windAloft.setEnabled(showWindAloft && scenePhaseActive && !thermalSerious) }
+    ///
+    /// ⚠️ IT ALSO RUNS WITH THE WIND LAYER SWITCHED OFF, when a storm alert needs it. See
+    /// `stormAlertNeedsWind`: the overflight clearance rule is a wind rule, and `showWindAloft` defaults
+    /// OFF, so gating the fetch on the overlay alone left the rule switched off for every pilot who never
+    /// opened the layers menu. Fetching does NOT draw anything — the particle layer is gated separately on
+    /// `showWindAloft` in the map hosts — so this adds data, not clutter.
+    func syncWind() {
+        let wanted = showWindAloft || stormAlertNeedsWind
+        windAloft.setEnabled(wanted && scenePhaseActive && !thermalSerious)
+    }
+
+    /// Whether the storm alert needs a wind field of its own right now.
+    ///
+    /// Gated on a LIVE CELL as well as a live toggle, so a flight with no convection anywhere near it
+    /// never downloads a GFS field: the wind is fetched when there is a storm whose top the clearance rule
+    /// might have something to say about, and not otherwise. When the last cell leaves, the fetch stops
+    /// but the field is KEPT (`WindAloftService.setEnabled` retains it), so the next cell to appear is
+    /// judged against the wind already in hand rather than against the floor while a download runs.
+    private var stormAlertNeedsWind: Bool {
+        (convectiveAlertsEnabled && !convectiveCells.isEmpty)
+            || (radarStormCellsEnabled && !radarCells.isEmpty)
+    }
 
     /// Reconcile the Stratux link (traffic WebSocket + GPS poll). Streams whenever the link is
     /// enabled and the app is foregrounded (standby off) — no session or source selection required.
@@ -4540,6 +4572,11 @@ final class AppModel: ObservableObject {
         // is "is anything switched on and did it find anything", not "is the bulletin feed populated".
         let bulletins = convectiveAlertsEnabled ? convectiveCells : []
         let radar = radarStormCellsEnabled ? radarCells : []
+        // Reconcile the wind fetch from here rather than from each of the half-dozen callers: every path
+        // that changes the cell list, either toggle, the scene phase or the ownship position already lands
+        // in this function, so the field the clearance rule needs is asked for exactly when there is a
+        // storm to measure. `setEnabled` is a guarded no-op when nothing actually moved.
+        syncWind()
         guard !bulletins.isEmpty || !radar.isEmpty, let here = presentPosition else {
             convectiveThreats = []; return
         }
@@ -4548,6 +4585,10 @@ final class AppModel: ObservableObject {
                                     trackDeg: r.trackDeg, groundSpeedKt: r.groundSpeedKt)
         let dismissed = convectiveDismissedKeys
         let now = Date()
+        // Sendable snapshot, or nil. Read on the main actor BEFORE the hop, like every other input here;
+        // nil (no run, or one too far from now to describe this flight) means the clearance rule falls
+        // back to its floor, which is what this alert did before the rule existed.
+        let winds = windAloft.freshFieldSet
         Task.detached(priority: .utility) { [weak self] in
             // Merge INSIDE the detached task: the pairwise outline comparison is the expensive part of
             // this whole path and has no business on the main actor. Dismissals are applied after the
@@ -4555,7 +4596,15 @@ final class AppModel: ObservableObject {
             // "Convective SIGMET 7C" should not have it reappear because a radar cell joined it.
             let merged = ConvectiveCellMerge.merge(bulletins + radar)
             let live = merged.filter { !dismissed.contains($0.dismissKey) }
-            let threats = ConvectiveAlert.threats(cells: live, ownship: own, now: now)
+            let threats = ConvectiveAlert.threats(cells: live, ownship: own, now: now) { cell in
+                // AIM 7-1-28's overflight rule wants the wind at THIS cell's own top. Sampled at the
+                // centroid of the polygon as OBSERVED rather than as advanced: a wind field varies over
+                // hundreds of miles and twenty minutes of storm drift is tens, so advancing it first
+                // would be arithmetic without a difference. nil only ever means the floor.
+                guard let tops = cell.topsFtMSL, let winds else { return nil }
+                let c = cell.centroid
+                return winds.windAt(lat: c.lat, lon: c.lon, altitudeFtMSL: tops)?.kts
+            }
             Task { @MainActor in self?.applyConvectiveThreats(threats, epoch: epoch) }
         }
     }

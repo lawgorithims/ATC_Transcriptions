@@ -70,9 +70,12 @@ struct MapLayersPanel: View {
                     if model.convectiveAlertsEnabled {
                         Text("Warns when your track will enter a thunderstorm, or pass within "
                              + "\(Int(ConvectiveAlert.avoidNm)) NM of one, allowing for its tops, its "
-                             + "movement and how old the report is. It stays quiet above a cell's tops. "
-                             + "Reads Convective SIGMETs, Center Weather Advisories and NWS severe "
-                             + "thunderstorm warnings.")
+                             + "movement and how old the report is. Overflying one is quiet only once "
+                             + "you clear its top by the AIM margin: 1,000 ft per 10 kt of wind up "
+                             + "there, never under "
+                             + "\(Int(ConvectiveAlert.overflightClearanceFt / 1_000)),000 ft (GFS wind, "
+                             + "fetched only while a storm is in range). Reads Convective SIGMETs, "
+                             + "Center Weather Advisories and NWS severe thunderstorm warnings.")
                             .font(.dsLabelS).foregroundStyle(p.textDim)
                             .padding(.leading, 30)
                             .accessibilityIdentifier("layers-convective-note")
@@ -293,17 +296,25 @@ struct MapLayersPanel: View {
             .frame(width: 258)
         }
         .padding(16)
-        // ⚠️ THIS CAP IS WHAT DECIDES HOW MUCH OF THE OVERLAY LIST A PILOT CAN SEE AT ONCE, and 460
-        // stopped being enough the moment the storm-alert rows landed. Each live layer carries an
-        // explanatory note while it is ON, and the two convective rows are ON by default, so roughly
-        // 290 points of text now sits between "Weather radar" and "Winds aloft" — which put Winds
-        // aloft, Route-out-of-glide, Where-not-to-go, the LZ rows, declutter and the map buttons
-        // below the fold of a popover on a 13-inch iPad, a device with 1,376 points of height. There
-        // is no scroll affordance on the clipped edge, so the list simply looked as though it ended
-        // at Thunderstorm alert. Found by WindOverlayUITests, which flips `layer-wind` and lost the
-        // popover doing it. The ScrollView still bounds the content on a phone, where the system
-        // clamps the popover to the space it actually has.
-        .frame(minWidth: 480, minHeight: 300, maxHeight: 860)
+        // ⚠️ THIS CAP IS WHAT DECIDES HOW MUCH OF THE OVERLAY LIST A PILOT CAN SEE AT ONCE, and it is
+        // set to "as much of it as the device will give" rather than to a number someone liked.
+        // Measured on a 13-inch iPad (1,376 pt of height) with the default layers on, the overlays
+        // column is about 2,000 pt tall — every live layer carries an explanatory note while it is
+        // ON — so it ALWAYS scrolls, and the only question this cap settles is how much of it a
+        // pilot reaches without scrolling. There is no scroll affordance on the clipped edge, so
+        // whatever falls past it looks like the end of the list rather than the middle of it.
+        //
+        // That has now broken two UI tests, and each break was a pilot-facing fact first. At 460 the
+        // list appeared to end at Thunderstorm alert, hiding Winds aloft, Route-out-of-glide,
+        // Where-not-to-go, the LZ rows, declutter and the map buttons (`WindOverlayUITests`, which
+        // flips `layer-wind`). At 860, four lines added to the thunderstorm note were enough to push
+        // Where-not-to-go off the bottom — and XCUITest's coordinate tap on a row below the fold is
+        // silently DROPPED, which in the log reads exactly like a dead binding (`AvoidLayerUITests`).
+        // Hence 1,100, which still clears the tab bar on the tallest iPad; every smaller device is
+        // clamped to its own available space by the system.
+        //
+        // A row is not safe merely because it fits today. The real fix is fewer words on this panel.
+        .frame(minWidth: 480, minHeight: 300, maxHeight: 1_100)
         .background(p.bg)
         .presentationCompactAdaptation(.popover)
     }

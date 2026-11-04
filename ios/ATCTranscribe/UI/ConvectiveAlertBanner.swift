@@ -67,8 +67,14 @@ struct ConvectiveAlertBanner: View {
                     Text(headline)
                         .font(.dsHeadline).foregroundStyle(palette.text).lineLimit(1)
                         .accessibilityIdentifier("convective-headline")
+                    // ⚠️ THREE LINES, NOT TWO, SINCE THE CLEARANCE RULE CAN ADD A CLAUSE. The detail is
+                    // truncated from the END, and the end is where the age and the drift allowance sit —
+                    // the two facts that say how much of the rest to believe. "AIM wants 9,300 ft (93 kt
+                    // at tops)" is ~34 characters, which at phone width pushed both of them off a
+                    // two-line label. The label still takes only the lines it needs, so the banner is
+                    // unchanged in every case that fitted before.
                     Text(ConvectiveAlertText.detail(lead))
-                        .font(.dsLabelS).foregroundStyle(palette.textDim).lineLimit(2)
+                        .font(.dsLabelS).foregroundStyle(palette.textDim).lineLimit(3)
                         .accessibilityIdentifier("convective-detail")
                     // Named, not hidden. See the type comment: what this reads determines what it can
                     // miss, and the pilot is entitled to know which it is — which now varies per cell,

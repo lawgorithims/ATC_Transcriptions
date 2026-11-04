@@ -164,6 +164,42 @@ struct WindFieldSet: Sendable {
 }
 
 extension WindFieldSet {
+    /// The wind AT one altitude, interpolated between the two GFS levels that bracket it.
+    ///
+    /// This is what the storm alert's overflight clearance rule needs: AIM 7-1-28 asks for 1,000 ft of
+    /// clearance per 10 kt **at the cloud top**, which is a wind at a HEIGHT, not the column mean a glide
+    /// meets (`descentMeanWind`) and not whatever level the map's slider happens to sit on.
+    ///
+    /// Implemented as a zero-thickness `WindProfile.layerMean`: every one of its samples then lands on the
+    /// same height, so the mean IS the point wind — and the VECTOR averaging that keeps a wind backing
+    /// through the column from coming out as nonsense is the code already under test for the glide,
+    /// rather than a second interpolator that could disagree with it.
+    ///
+    /// ⚠️ THE SURFACE LEVEL IS LEFT OUT DELIBERATELY. It sits 10 m above whatever the ground is, so
+    /// placing it in a column needs a terrain elevation this function has no business knowing — and no
+    /// convective top is within reach of it. The lowest level kept is 925 hPa, about 2,500 ft.
+    ///
+    /// Above 200 hPa (~38,700 ft) `WindProfile` clamps to the top level rather than extrapolating. That
+    /// can only bite for an aircraft ABOVE a top that is itself above FL387, which is past almost every
+    /// certified ceiling; where it does, the clamp tends to over-read the wind (speeds usually fall above
+    /// the tropopause), and over-reading asks for more clearance, not less.
+    ///
+    /// nil when the coordinate is outside the grid, which the caller must read as "no wind", never as calm.
+    func windAt(lat: Double, lon: Double, altitudeFtMSL: Double) -> (fromDeg: Double, kts: Double)? {
+        assert(fields.count <= WindLevel.allCases.count, "WindFieldSet: more fields than levels")
+        assert(WindLevel.allCases.count <= 16, "WindFieldSet: level walk must stay bounded")
+        guard altitudeFtMSL.isFinite else { return nil }
+        var levels = [WindProfile.Level]()
+        for level in WindLevel.allCases {                              // bounded: 10 levels
+            guard let h = level.standardAltitudeFt, let f = field(level),
+                  let kt = f.speedKt(lat: lat, lon: lon),
+                  let dir = f.directionFromDeg(lat: lat, lon: lon) else { continue }
+            levels.append(.init(altitudeFtMSL: h, fromDeg: Double(dir), kts: Double(kt)))
+        }
+        guard !levels.isEmpty else { return nil }
+        return WindProfile.layerMean(levels, topFtMSL: altitudeFtMSL, bottomFtMSL: altitudeFtMSL)
+    }
+
     /// The mean wind through the column a glide from `fromFtMSL` down to `groundFt` descends through
     /// (`WindProfile.layerMean`). Pure — no age check; `WindAloftService.freshFieldSet` decides
     /// whether a run is fresh enough to be asked at all. Levels whose standard height is below the
