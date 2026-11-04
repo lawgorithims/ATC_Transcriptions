@@ -119,7 +119,7 @@ atc-maplibre/                (git worktree of ATC_Transcriptions, branch experim
 | `Audio/` | 17 | 2,600 | Audio sources (mic/stream/Stratux/replay), the VHF DSP chain, VAD segmentation, diarization, speaker embedding, calibration. |
 | `Experimental/` | 3 | 1,485 | The MapLibre GPU renderer, its loopback MBTiles HTTP server, and the throwaway globe spike. |
 | `Engine/` | 5 | 1,358 | The live pipeline orchestrator (an actor), the transcription session (the `@MainActor` UI wrapper), the background LLM refiner, the resident-model registry, the speaker labeler. |
-| `Hazards/` | 5 | 1,024 | NASA EONET natural-hazard events, NASA GIBS satellite tiles, FAA TFRs. |
+| `Hazards/` | 22 | 5,577 | NASA EONET natural-hazard events, NASA GIBS satellite tiles, FAA TFRs, FAA NOTAMs, RainViewer precipitation radar, GRIB2 winds aloft, and the storm-penetration alert's four sources: AWC Convective SIGMETs, AWC Center Weather Advisories, NWS Severe Thunderstorm Warnings and NOAA MRMS echo tops (`MRMSEchoTopService` + `RadarCellFinder`, with `Gunzip` and `PNGGrayRows` as the decode primitives). |
 | `Aircraft/` | 6 | 828 | Two ADS-B traffic providers (internet + Stratux), the bundled nav/airport coordinate tables. |
 | `Diagnostics/` | 6 | 698 | Battery/MetricKit telemetry, a CPU sampler, the clearance test-bench data model + crash-safe snapshot. |
 | `Models/` | 8 | 683 | Value types: `FlightPlan`, `Correction`, `SpeechSegment`, `AircraftProfile`, `TripStats`, route/procedure resolvers, airport config. |
@@ -419,9 +419,40 @@ restoring persisted state doesn't fire a storm of reconcilers.
 - **`LLMRefiner` (Engine/)** — the background LLM queue: serial (one generation at a time,
   the llama.cpp KV-cache invariant), bounded (`maxQueue = 8`, drops the oldest under load),
   with a 20 s report-only watchdog and an exactly-once delivery token.
-- **`ADSBService` / `StratuxService` / `EONETService` / `TFRService` (Aircraft/, Hazards/)**
-  — network services, each with a single edge-triggered `sync(...)` entry point (redundant
-  calls are no-ops) and server-anchored freshness.
+- **`ADSBService` / `StratuxService` / `EONETService` / `TFRService` /
+  `ConvectiveSigmetService` / `MRMSEchoTopService` (Aircraft/, Hazards/)** — network services, each
+  with a single edge-triggered `sync(...)` entry point (redundant calls are no-ops) and
+  server-anchored freshness. `MRMSEchoTopService` is the one exception to the shape: it is
+  **position-dependent** (one MRMS frame is a 7000 x 3500 grid, so the decode is windowed around the
+  aircraft via `setCenter`) and it keeps a *reference frame* to cross-correlate against, because a
+  radar grid states position and never velocity.
+- **`ConvectiveAlert` (Core/)** — the storm-penetration warning, and the one piece of alerting
+  logic whose *data source* was the design decision rather than the geometry. It projects the
+  aircraft's track and each cell's polygon forward together, gates on the cell's measured or
+  reported tops, and widens its avoidance radius by the data's age. It is **source-agnostic by
+  design**: it consumes `ConvectiveCell`s and four products supply them, because no one product
+  answers the whole question.
+
+  | source | polygon | tops | motion | a name the pilot can look up |
+  |---|---|---|---|---|
+  | Convective SIGMET (AWC) | area | stated | stated | yes |
+  | Center Weather Advisory (AWC) | smaller area | stated, **in the text only** | stated, in the text only | yes |
+  | NWS Severe Thunderstorm Warning | **one storm** | **none** | stated, recent | yes |
+  | MRMS echo tops (derived here) | one storm, measured | **measured** | derived, 20–25% slow | no |
+
+  `ConvectiveCellMerge` folds them into one list: identity goes to the highest-ranked source (the
+  name a controller would use), and every *number* takes the conservative value from whichever
+  source has it — tops the higher, bases the lower, severity the greater, validity the later,
+  outline the larger. `observedAt` is never merged, because the dismiss key and the motion-vector
+  ageing are both built on it.
+
+  The gap this closes is the one the banner used to have to admit: a Convective SIGMET needs ~40%
+  coverage, a line, or a severe cell, so **an isolated ordinary thunderstorm can be reported by
+  nobody**. MRMS finds it. Two measurements made that possible and are worth keeping: the CONUS
+  echo-top grid is **364 KB** gzipped (an earlier draft of this paragraph ruled MRMS out on size and
+  was wrong by an order of magnitude), and the only real blocker was GRIB2 data-representation
+  template **5.41** — a PNG payload, now implemented by `PNGGrayRows` as a *row-streaming* decoder
+  so a 49 MB bitmap never exists. See `ios/HANDOFF.md` §7 for what is still open.
 - **`PowerClimateStore` (Core/)** — the climatology fetch/cache actor.
 
 `TranscriptionSession` and `SpeakerLabeler` are `@MainActor` — records mutate and fuse on

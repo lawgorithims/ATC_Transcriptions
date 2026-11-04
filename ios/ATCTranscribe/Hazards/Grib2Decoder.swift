@@ -1,18 +1,32 @@
 import Foundation
 
-/// A GRIB2 reader scoped to EXACTLY the shape NCEP's NOMADS GRIB-filter returns for GFS wind fields, and
-/// deliberately nothing more. A general GRIB2 library is thousands of lines (a dozen grid projections, six
-/// packing schemes, JPEG2000 and PNG payloads, complex spatial differencing); this decoder handles
+/// A GRIB2 reader scoped to EXACTLY the two shapes this app meets — NCEP's NOMADS GRIB-filter output for
+/// GFS wind fields, and NOAA's MRMS radar grids — and deliberately nothing more. A general GRIB2 library
+/// is thousands of lines (a dozen grid projections, six packing schemes, JPEG2000 payloads, complex
+/// spatial differencing); this decoder handles
 ///
+///   * section 0 discipline 0 and 209 — meteorological products, and NCEP's local-use space (MRMS)
 ///   * section 3 template 3.0  — regular latitude/longitude grid
 ///   * section 4 template 4.0  — analysis/forecast at one level, one time
 ///   * section 5 template 5.0  — simple packing, `value = (R + X·2^E) / 10^D`
+///   * section 5 template 5.41 — the same arithmetic, with X carried as a greyscale PNG raster
 ///   * section 6 indicator 255 — no bitmap (every grid point has data)
 ///
-/// which is what `filter_gfs_0p25_1hr.pl?var_UGRD=on&var_VGRD=on` produced on every probe. Anything else —
-/// a different template, a bitmap, a truncated message, a foreign discipline — is DROPPED rather than
-/// guessed at, on the same principle as the METAR decoder: a wind arrow drawn from a misread payload is
-/// worse than no wind arrow, because the pilot cannot tell the difference.
+/// which is what `filter_gfs_0p25_1hr.pl?var_UGRD=on&var_VGRD=on` and
+/// `mrms/data/2D/EchoTop_30/*.grib2.gz` produced on every probe. Anything else — a different template, a
+/// bitmap, a truncated message, a foreign discipline — is DROPPED rather than guessed at, on the same
+/// principle as the METAR decoder: a wind arrow drawn from a misread payload is worse than no wind arrow,
+/// because the pilot cannot tell the difference.
+///
+/// # Two entry points, and why the second one exists
+///
+/// `messages(from:)` decodes whole fields and is what the wind layer uses: a 281 × 141 regional box is
+/// 39,621 points and materialising it is nothing. `windows(from:latRange:lonRange:)` decodes a lat/lon
+/// rectangle instead, and exists because the MRMS CONUS grid is **7000 × 3500 = 24.5 M points** — 98 MB
+/// as `[Float]`, for a question about a 200-mile box. The windowed path never builds the whole field; for
+/// a PNG payload it streams scanlines through `PNGGrayRows` and stops at the southern edge of the window.
+/// `maxGridPoints` deliberately rejects the MRMS grid on the `messages(from:)` path, so there is no way
+/// to ask for it by accident.
 ///
 /// Two GRIB2 encoding traps are handled explicitly, both of which silently produce plausible-but-wrong
 /// numbers if you assume C semantics:
@@ -32,7 +46,13 @@ enum Grib2Decoder {
         let referenceTime: Date?
         /// Forecast projection from `referenceTime`, in hours.
         let forecastHours: Int
-        /// GRIB2 discipline-0 parameter identity. Category 2 = momentum; number 2 = UGRD, 3 = VGRD.
+        /// Section 0's discipline. 0 = meteorological products (GFS); 209 = NCEP local use (MRMS).
+        /// ⚠️ The parameter tables are PER DISCIPLINE, so `paramCategory`/`paramNumber` mean nothing
+        /// without it: discipline 0 category 2 number 2 is wind, and discipline 209 category 3 number 45
+        /// is an MRMS echo top. A decoder that ignored this would read radar heights as metres per second.
+        let discipline: Int
+        /// Parameter identity within `discipline`. Discipline 0: category 2 = momentum, number 2 = UGRD,
+        /// 3 = VGRD.
         let paramCategory: Int
         let paramNumber: Int
         /// Fixed-surface identity: type 100 = isobaric (value in Pa), 103 = height above ground (m).
@@ -53,9 +73,68 @@ enum Grib2Decoder {
 
     // Hard caps so every loop below is statically bounded (rule 2).
     static let maxMessages = 40                 // 10 levels × U/V = 20; slack for a wider request
+    /// Cap for the WHOLE-FIELD path. ⚠️ The MRMS CONUS grid is 24.5 M points and is therefore rejected
+    /// here on purpose — it must be read through `windows(from:latRange:lonRange:)` or not at all.
     static let maxGridPoints = 1_000_000        // 60°×40° at 0.25° = 38,801 — vast slack
+    /// Cap for the WINDOWED path. A 6° × 8° box at MRMS's 0.01° is 600 × 800 = 480,000.
+    static let maxWindowPoints = 600_000
+    /// Points on a single grid row, either path. MRMS CONUS is 7000.
+    static let maxRowPoints = 16_384
     static let maxSectionsPerMessage = 24       // GRIB2 defines 8; repeated 2..7 groups add a few
     static let maxBitsPerValue = 32
+
+    /// Section 0 disciplines this decoder will read. 0 is the standard meteorological space; 209 is
+    /// NCEP's local-use discipline, which is what every MRMS product is published under.
+    static let supportedDisciplines: Set<Int> = [0, 209]
+
+    /// How section 7 carries the packed integers. Both templates share the section-5 header layout and
+    /// the same `value = (R + X·2^E) / 10^D` arithmetic — only the payload encoding differs.
+    enum Packing: Sendable, Equatable {
+        /// Template 5.0: X is a big-endian bit field, `bits` wide, with no padding between values.
+        case simple
+        /// Template 5.41: X is a greyscale PNG raster, `ni` wide by `nj` tall, `bits` deep.
+        case png
+    }
+
+    /// One rectangular sub-grid, normalised south-up and west-to-east like `Message.values`.
+    ///
+    /// `values` may contain `.nan` where the source grid had no value to give — which, on the windowed
+    /// PNG path, is how a short or malformed scanline is reported rather than as a plausible number.
+    /// Callers must treat NaN as "no data", never as zero.
+    struct Window: Sendable {
+        let referenceTime: Date?
+        let discipline: Int
+        let paramCategory: Int
+        let paramNumber: Int
+        let levelType: Int
+        let levelValue: Int
+        /// Window shape. `ni` = points per row (longitude), `nj` = rows (latitude).
+        let ni: Int
+        let nj: Int
+        /// The WINDOW's south-west corner, not the source grid's.
+        let minLat: Double
+        let minLon: Double
+        let dLat: Double
+        let dLon: Double
+        /// `ni * nj` values in the field's native unit, row-major, index `j * ni + i` at latitude
+        /// `minLat + j·dLat`, longitude `minLon + i·dLon`.
+        let values: [Float]
+
+        func lat(ofRow j: Int) -> Double {
+            assert(j >= 0 && j < nj, "Grib2Decoder.Window: row out of range")
+            return minLat + Double(j) * dLat
+        }
+        func lon(ofCol i: Int) -> Double {
+            assert(i >= 0 && i < ni, "Grib2Decoder.Window: column out of range")
+            return minLon + Double(i) * dLon
+        }
+        /// The value at a window cell, or nil where the source had none.
+        func value(row j: Int, col i: Int) -> Float? {
+            assert(j >= 0 && j < nj && i >= 0 && i < ni, "Grib2Decoder.Window: index out of range")
+            let v = values[j * ni + i]
+            return v.isFinite ? v : nil
+        }
+    }
 
     /// Decode every message in a concatenated GRIB2 stream, skipping any this decoder does not support.
     /// Returns an empty array (never throws, never traps) on garbage input.
@@ -83,6 +162,7 @@ enum Grib2Decoder {
     private struct Parts {
         var referenceTime: Date?
         var forecastHours = 0
+        var discipline = 0
         var grid: Grid?
         var product: Product?
         var drs: DRS?
@@ -92,13 +172,18 @@ enum Grib2Decoder {
     }
     private struct Grid { let ni, nj: Int; let la1, lo1, dLat, dLon: Double; let scanMode: Int }
     private struct Product { let category, number, levelType, levelValue: Int }
-    private struct DRS { let r: Double, e: Int, d: Int, bits: Int, points: Int }
+    private struct DRS { let r: Double, e: Int, d: Int, bits: Int, points: Int; let packing: Packing }
 
-    private static func message(_ b: [UInt8], start: Int, total: Int) -> Message? {
+    /// Walk one message's sections into `Parts`. Shared by both entry points so the two cannot drift on
+    /// which templates they accept.
+    private static func parse(_ b: [UInt8], start: Int, total: Int) -> Parts? {
         assert(total >= 16, "Grib2Decoder: message shorter than its indicator section")
         assert(start + total <= b.count, "Grib2Decoder: message overruns the buffer")
-        guard b[start + 7] == 2, b[start + 6] == 0 else { return nil }   // GRIB2, meteorological products
+        guard b[start + 7] == 2 else { return nil }                      // GRIB edition 2
+        let discipline = Int(b[start + 6])
+        guard supportedDisciplines.contains(discipline) else { return nil }
         var parts = Parts()
+        parts.discipline = discipline
         var p = start + 16
         var sections = 0
         let end = start + total
@@ -110,6 +195,11 @@ enum Grib2Decoder {
             p += len
             sections += 1
         }
+        return parts
+    }
+
+    private static func message(_ b: [UInt8], start: Int, total: Int) -> Message? {
+        guard let parts = parse(b, start: start, total: total) else { return nil }
         return assemble(b, parts)
     }
 
@@ -143,12 +233,17 @@ enum Grib2Decoder {
               parts.dataStart >= 0, parts.dataCount >= 0 else { return nil }
         let points = g.ni * g.nj
         guard points > 0, points <= maxGridPoints, d.points == points else { return nil }
+        // The whole-field path reads simple packing only. A PNG payload belongs to a grid big enough
+        // that materialising it is the thing `windows(...)` exists to avoid, so it is refused here
+        // rather than quietly allocating 98 MB.
+        guard d.packing == .simple else { return nil }
         guard let raw = unpackSimple(b, start: parts.dataStart, count: parts.dataCount,
                                      points: points, drs: d) else { return nil }
         assert(raw.count == points, "Grib2Decoder: unpacked count disagrees with the grid")
         guard let norm = normalise(raw, g) else { return nil }
         let sw = southWest(g)
         return Message(referenceTime: parts.referenceTime, forecastHours: parts.forecastHours,
+                       discipline: parts.discipline,
                        paramCategory: pr.category, paramNumber: pr.number,
                        levelType: pr.levelType, levelValue: pr.levelValue,
                        ni: g.ni, nj: g.nj,
@@ -241,15 +336,33 @@ enum Grib2Decoder {
         }
     }
 
-    /// Section 5 template 5.0 — simple packing parameters.
+    /// Section 5 templates 5.0 (simple packing) and 5.41 (PNG payload).
+    ///
+    /// ⚠️ THE TWO TEMPLATES HAVE AN IDENTICAL HEADER LAYOUT, which is the only reason this is one
+    /// function: octets 12-15 are R, 16-17 E, 18-19 D, octet 20 the bit width and octet 21 the original
+    /// field type, in both. They differ solely in what section 7 holds. That is also the trap — a decoder
+    /// that accepted 5.41 by widening this template check alone, and left `unpackSimple` to read the
+    /// payload, would read a PNG's signature and IHDR as packed data and produce a grid of plausible
+    /// nonsense. Hence `DRS.packing`, which `assemble` and `fill` both switch on.
+    ///
+    /// For 5.41 the bit width is the PNG's own depth, because NCEP's encoder rounds the requested width
+    /// up to 8, 16, 24 or 32 before writing it here. Greyscale covers 8 and 16; 24 and 32 are written as
+    /// RGB/RGBA rasters and are rejected by `PNGGrayRows.header`, not here, so a future MRMS product in
+    /// that shape fails loudly on decode rather than being misread.
     private static func drs(_ b: [UInt8], _ p: Int, _ len: Int) -> DRS? {
         assert(len >= 5, "Grib2Decoder: section 5 shorter than its header")
         assert(maxBitsPerValue <= 32, "Grib2Decoder: bit cap exceeds the accumulator width")
-        guard len >= 21, u16(b, p + 9) == 0 else { return nil }         // template 5.0 only
+        guard len >= 21 else { return nil }
+        let packing: Packing
+        switch u16(b, p + 9) {
+        case 0:  packing = .simple
+        case 41: packing = .png
+        default: return nil
+        }
         let bits = Int(b[p + 19])
         guard bits <= maxBitsPerValue else { return nil }
         return DRS(r: f32(b, p + 11), e: sm16(b, p + 15), d: sm16(b, p + 17),
-                   bits: bits, points: u32(b, p + 5))
+                   bits: bits, points: u32(b, p + 5), packing: packing)
     }
 
     // MARK: - unpacking
@@ -305,6 +418,210 @@ enum Grib2Decoder {
             }
         }
         return out
+    }
+
+    // MARK: - the windowed path
+
+    /// Decode only the values inside a lat/lon rectangle, from every message in the stream that can
+    /// supply them.
+    ///
+    /// This is what makes MRMS usable on a phone. The CONUS echo-top grid is 7000 × 3500; a 6° × 8° box
+    /// around the aircraft is 480,000 points, 0.5 MB as `[Float]` instead of 98 MB, and on the PNG path
+    /// the scanlines north of the window are inflated into a 14 KB buffer and discarded while the ones
+    /// south of it are never inflated at all.
+    ///
+    /// The ranges are inclusive and in the app's convention: latitude −90…90, longitude −180…180. Cells
+    /// that straddle an edge are INCLUDED rather than excluded — the caller is asking "what weather is
+    /// near me", and clipping a cell out of the answer because its centre fell 300 m outside the box is
+    /// the wrong direction to round in.
+    ///
+    /// ⚠️ A grid that wraps the antimeridian after normalisation (a global GFS field, where the western
+    /// edge normalises to 0° and the data runs east past 180°) is NOT handled: such a request returns no
+    /// window rather than a wrong one. Every grid this app windows is regional.
+    static func windows(from data: Data,
+                        latRange: ClosedRange<Double>,
+                        lonRange: ClosedRange<Double>) -> [Window] {
+        assert(maxWindowPoints > 0, "Grib2Decoder: window cap must be positive")
+        guard latRange.lowerBound >= -90, latRange.upperBound <= 90,
+              lonRange.lowerBound >= -180, lonRange.upperBound <= 180 else { return [] }
+        guard data.count >= 16 else { return [] }
+        let bytes = [UInt8](data)
+        assert(bytes.count == data.count, "Grib2Decoder: byte copy changed length")
+        var out: [Window] = []
+        var pos = 0
+        while pos + 16 <= bytes.count && out.count < maxMessages {   // bounded: pos strictly increases
+            guard bytes[pos] == 0x47, bytes[pos + 1] == 0x52,        // "GRIB"
+                  bytes[pos + 2] == 0x49, bytes[pos + 3] == 0x42 else { break }
+            let total = u64(bytes, pos + 8)
+            guard total >= 16, total <= bytes.count - pos else { break }
+            if let w = window(bytes, start: pos, total: total,
+                              latRange: latRange, lonRange: lonRange) { out.append(w) }
+            pos += total
+        }
+        return out
+    }
+
+    /// The window's extent in GEOGRAPHIC index space: `jg` counts north from the grid's southern edge,
+    /// `ig` east from its western edge, both independent of the scan order.
+    private struct IndexBox { let jgLo, jgHi, igLo, igHi: Int }
+
+    private static func indexBox(_ g: Grid, _ sw: (lat: Double, lon: Double),
+                                 latRange: ClosedRange<Double>,
+                                 lonRange: ClosedRange<Double>) -> IndexBox? {
+        assert(g.dLat > 0 && g.dLon > 0, "Grib2Decoder: steps must be positive")
+        assert(g.ni > 1 && g.nj > 1, "Grib2Decoder: degenerate grid reached the index box")
+        // floor on the low side and ceil on the high side, so a cell straddling either edge is kept.
+        let jgLoRaw = ((latRange.lowerBound - sw.lat) / g.dLat).rounded(.down)
+        let jgHiRaw = ((latRange.upperBound - sw.lat) / g.dLat).rounded(.up)
+        let igLoRaw = ((lonRange.lowerBound - sw.lon) / g.dLon).rounded(.down)
+        let igHiRaw = ((lonRange.upperBound - sw.lon) / g.dLon).rounded(.up)
+        // Clamp through Double before converting: a request far off the grid produces a ratio that
+        // would overflow Int on conversion, and Swift traps on that.
+        let jgLo = Int(max(0, min(Double(g.nj - 1), jgLoRaw)))
+        let jgHi = Int(max(0, min(Double(g.nj - 1), jgHiRaw)))
+        let igLo = Int(max(0, min(Double(g.ni - 1), igLoRaw)))
+        let igHi = Int(max(0, min(Double(g.ni - 1), igHiRaw)))
+        // An empty intersection clamps to a degenerate box at one edge; reject it rather than return
+        // a one-cell window of weather 2,000 miles away.
+        guard jgHiRaw >= 0, igHiRaw >= 0,
+              jgLoRaw <= Double(g.nj - 1), igLoRaw <= Double(g.ni - 1),
+              jgLo <= jgHi, igLo <= igHi else { return nil }
+        return IndexBox(jgLo: jgLo, jgHi: jgHi, igLo: igLo, igHi: igHi)
+    }
+
+    private static func window(_ b: [UInt8], start: Int, total: Int,
+                               latRange: ClosedRange<Double>,
+                               lonRange: ClosedRange<Double>) -> Window? {
+        guard let parts = parse(b, start: start, total: total),
+              let g = parts.grid, let pr = parts.product, let d = parts.drs,
+              parts.bitmapIndicator == 255,              // a bitmap means missing points — unsupported
+              parts.dataStart >= 0, parts.dataCount > 0 else { return nil }
+        guard g.ni <= maxRowPoints else { return nil }
+        let points = g.ni * g.nj
+        guard points > 0, d.points == points else { return nil }
+        let sw = southWest(g)
+        guard let box = indexBox(g, sw, latRange: latRange, lonRange: lonRange) else { return nil }
+        let wni = box.igHi - box.igLo + 1, wnj = box.jgHi - box.jgLo + 1
+        guard wni > 0, wnj > 0, wni * wnj <= maxWindowPoints else { return nil }
+
+        let values: [Float]?
+        switch d.packing {
+        case .simple: values = fillSimple(b, parts, g, d, box, wni: wni, wnj: wnj)
+        case .png:    values = fillPNG(b, parts, g, d, box, wni: wni, wnj: wnj)
+        }
+        guard let values else { return nil }
+        assert(values.count == wni * wnj, "Grib2Decoder: window buffer sized wrong")
+        return Window(referenceTime: parts.referenceTime, discipline: parts.discipline,
+                      paramCategory: pr.category, paramNumber: pr.number,
+                      levelType: pr.levelType, levelValue: pr.levelValue,
+                      ni: wni, nj: wnj,
+                      minLat: sw.lat + Double(box.jgLo) * g.dLat,
+                      minLon: sw.lon + Double(box.igLo) * g.dLon,
+                      dLat: g.dLat, dLon: g.dLon, values: values)
+    }
+
+    /// Template 5.0 into a window: every value is at a computable bit offset, so only the ones inside the
+    /// box are touched.
+    private static func fillSimple(_ b: [UInt8], _ parts: Parts, _ g: Grid, _ d: DRS,
+                                   _ box: IndexBox, wni: Int, wnj: Int) -> [Float]? {
+        assert(d.packing == .simple, "Grib2Decoder: wrong filler for the packing")
+        assert(wni > 0 && wnj > 0, "Grib2Decoder: empty window reached the filler")
+        let scale = pow(2.0, Double(d.e)) / pow(10.0, Double(d.d))
+        let offset = d.r / pow(10.0, Double(d.d))
+        // `bits == 0` is a legal constant field: every point equals `R / 10^D`.
+        guard d.bits > 0 else { return [Float](repeating: Float(offset), count: wni * wnj) }
+        let iNegative = (g.scanMode & 0x80) != 0
+        let jPositive = (g.scanMode & 0x40) != 0
+        var out = [Float](repeating: .nan, count: wni * wnj)
+        for jg in box.jgLo...box.jgHi {                          // bounded by the window cap (rule 2)
+            let jn = jPositive ? jg : (g.nj - 1 - jg)
+            let rowBase = jn * g.ni
+            let dstRow = (jg - box.jgLo) * wni
+            for ig in box.igLo...box.igHi {
+                let inx = iNegative ? (g.ni - 1 - ig) : ig
+                guard let x = packed(b, start: parts.dataStart, count: parts.dataCount,
+                                     bitOffset: (rowBase + inx) * d.bits, width: d.bits) else {
+                    return nil
+                }
+                out[dstRow + (ig - box.igLo)] = Float(offset + Double(x) * scale)
+            }
+        }
+        return out
+    }
+
+    /// Template 5.41 into a window: scanlines stream past in the PNG's own order, the ones inside the box
+    /// are sampled, and the decode is stopped the moment the box is behind us.
+    private static func fillPNG(_ b: [UInt8], _ parts: Parts, _ g: Grid, _ d: DRS,
+                                _ box: IndexBox, wni: Int, wnj: Int) -> [Float]? {
+        assert(d.packing == .png, "Grib2Decoder: wrong filler for the packing")
+        assert(wni > 0 && wnj > 0, "Grib2Decoder: empty window reached the filler")
+        let end = parts.dataStart + parts.dataCount
+        guard parts.dataStart >= 0, end <= b.count else { return nil }
+        let png = Array(b[parts.dataStart..<end])
+        guard let h = PNGGrayRows.header(png) else { return nil }
+        // The raster must BE the grid. A mismatch means the two sections disagree about the field's
+        // shape, and there is no safe way to choose which one is lying.
+        guard h.width == g.ni, h.height == g.nj, h.bitDepth == d.bits else { return nil }
+
+        let scale = pow(2.0, Double(d.e)) / pow(10.0, Double(d.d))
+        let offset = d.r / pow(10.0, Double(d.d))
+        let iNegative = (g.scanMode & 0x80) != 0
+        let jPositive = (g.scanMode & 0x40) != 0
+        let bps = h.bytesPerSample
+        // The STORED row span the window needs; on a north-down grid it is the mirror of the
+        // geographic one, and reading it the other way up puts Texas weather over Minnesota.
+        let jnLo = jPositive ? box.jgLo : (g.nj - 1 - box.jgHi)
+        let jnHi = jPositive ? box.jgHi : (g.nj - 1 - box.jgLo)
+        assert(jnLo >= 0 && jnHi < g.nj && jnLo <= jnHi, "Grib2Decoder: stored row span out of range")
+
+        var out = [Float](repeating: .nan, count: wni * wnj)
+        var rowsFilled = 0
+        let intact = PNGGrayRows.forEachRow(png) { jn, row in
+            guard jn >= jnLo else { return true }                // still north of the window
+            guard jn <= jnHi else { return false }               // past it (defensive; we stop below)
+            let jg = jPositive ? jn : (g.nj - 1 - jn)
+            let dstRow = (jg - box.jgLo) * wni
+            for ig in box.igLo...box.igHi {                      // bounded by the window cap (rule 2)
+                let inx = iNegative ? (g.ni - 1 - ig) : ig
+                let o = inx * bps
+                guard o + bps <= row.count else { return false }
+                // PNG samples are big-endian within the row, like every other integer in GRIB2.
+                let x: UInt32 = bps == 2 ? (UInt32(row[o]) << 8 | UInt32(row[o + 1]))
+                                         : UInt32(row[o])
+                out[dstRow + (ig - box.igLo)] = Float(offset + Double(x) * scale)
+            }
+            rowsFilled += 1
+            return jn < jnHi                                     // false on the last one we need
+        }
+        guard intact, rowsFilled == jnHi - jnLo + 1 else { return nil }
+        return out
+    }
+
+    /// Read a `width`-bit big-endian field at an arbitrary bit offset into section 7's payload.
+    ///
+    /// Simple packing leaves no padding between values, so a 10-bit field straddles byte boundaries three
+    /// times in four — which is exactly the case a byte-aligned reader gets subtly wrong rather than
+    /// obviously wrong. Returns nil if the field would run past the section.
+    @inline(__always)
+    private static func packed(_ b: [UInt8], start: Int, count: Int,
+                               bitOffset: Int, width: Int) -> UInt32? {
+        assert(width > 0 && width <= maxBitsPerValue, "Grib2Decoder: bit width out of range")
+        assert(bitOffset >= 0, "Grib2Decoder: negative bit offset")
+        let firstByte = bitOffset >> 3
+        let lastByte = (bitOffset + width - 1) >> 3
+        guard firstByte >= 0, lastByte < count, start + lastByte < b.count else { return nil }
+        // width ≤ 32 plus a ≤ 7-bit lead spans at most 5 octets, so 40 bits — inside UInt64.
+        var acc: UInt64 = 0
+        var k = firstByte
+        while k <= lastByte {                                    // bounded: ≤ 5 iterations (rule 2)
+            acc = (acc << 8) | UInt64(b[start + k])
+            k += 1
+        }
+        let spanBits = (lastByte - firstByte + 1) * 8
+        let shift = spanBits - (bitOffset & 7) - width
+        assert(shift >= 0, "Grib2Decoder: bit field span computed short")
+        let mask: UInt64 = (UInt64(1) << UInt64(width)) - 1
+        return UInt32(truncatingIfNeeded: (acc >> UInt64(shift)) & mask)
     }
 
     // MARK: - primitive reads (bounds guaranteed by the section-length guards above)

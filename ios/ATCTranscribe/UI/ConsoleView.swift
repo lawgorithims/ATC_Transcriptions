@@ -267,6 +267,16 @@ struct ConsoleView: View {
                 // "you are currently doing this" mode banner that must never be scrolled behind chatter.
                 if let profile = model.approachProfile { approachProfileStrip(profile) }
                 if let eng = model.nrstEngagement { nrstEngagedStrip(eng) }
+                // The storm-penetration warning sits ABOVE the satellite-hazard banner and the EFB
+                // suggestion, and that ordering is deliberate: a wildfire 40 NM off the route is
+                // awareness, while a thunderstorm the projected track enters in eight minutes is the
+                // one advisory in this stack with a deadline on it.
+                if !model.convectiveThreats.isEmpty {
+                    ConvectiveAlertBanner(threats: model.convectiveThreats, palette: model.palette) {
+                        model.dismissConvectiveAlert()
+                    }
+                    .transition(Self.barTransition)
+                }
                 if let sug = model.efbSuggestion { efbSuggestionBanner(sug) }
                 if let hz = model.hazardAlert, !hz.isEmpty { hazardBanner(hz) }
                 // A SIMULATED position outranks every other advisory in this stack: any of them may be

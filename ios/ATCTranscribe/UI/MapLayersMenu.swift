@@ -65,6 +65,30 @@ struct MapLayersPanel: View {
                     layerToggle($model.showHazards, "Natural hazards (NASA)", "flame", p, id: "layer-hazards")
                     layerToggle($model.showSmoke, "Smoke & satellite (NASA)", "smoke", p, id: "layer-smoke")
                     layerToggle($model.showWxRadar, "Weather radar (precip)", "cloud.rain", p, id: "layer-radar")
+                    layerToggle($model.convectiveAlertsEnabled, "Thunderstorm alert",
+                                "cloud.bolt.rain", p, id: "layer-convective")
+                    if model.convectiveAlertsEnabled {
+                        Text("Warns when your track will enter a thunderstorm, or pass within "
+                             + "\(Int(ConvectiveAlert.avoidNm)) NM of one, allowing for its tops, its "
+                             + "movement and how old the report is. It stays quiet above a cell's tops. "
+                             + "Reads Convective SIGMETs, Center Weather Advisories and NWS severe "
+                             + "thunderstorm warnings.")
+                            .font(.dsLabelS).foregroundStyle(p.textDim)
+                            .padding(.leading, 30)
+                            .accessibilityIdentifier("layers-convective-note")
+                    }
+                    // The other half of the storm alert, and the half that finds what nobody reported.
+                    layerToggle($model.radarStormCellsEnabled, "Storm alert from radar echo tops",
+                                "antenna.radiowaves.left.and.right", p, id: "layer-radarcells")
+                    if model.radarStormCellsEnabled {
+                        Text("Finds thunderstorms that carry no bulletin at all, by measuring how high "
+                             + "the radar echo reaches (NOAA MRMS). Gives a measured top per cell "
+                             + "instead of one figure for a whole area. Costs about 360 KB each refresh "
+                             + "— roughly 4 MB an hour — and needs your position to know where to look.")
+                            .font(.dsLabelS).foregroundStyle(p.textDim)
+                            .padding(.leading, 30)
+                            .accessibilityIdentifier("layers-radarcells-note")
+                    }
                     layerToggle($model.showWindAloft, "Winds aloft (animated)", "wind", p, id: "layer-wind")
                     // Striped stretches of the FILED route with no runway in glide at the filed
                     // altitude — the map half of the flight-plan strip's OUT OF GLIDE cell.

@@ -129,6 +129,61 @@ is in the `commsight-ux-decisions` memory note.
   `Core/ATCCorrector.swift` `HallucinationFilter.phrases`) as new Whisper phantom phrases surface.
 - `noisereduce` preprocessing stage from the Python is still not ported (see `AudioPreprocessor`).
 
+**Thunderstorm alert (`Core/ConvectiveAlert.swift`) — what it now reads, and what is still open.**
+
+The alert is **source-agnostic**: it consumes `ConvectiveCell`s, and four products supply them, because
+no one product answers the whole question. `ConvectiveCellMerge` folds them into one list — identity to
+the highest-ranked source (the name a controller would use), every number to whichever source has the
+conservative one.
+
+| source | polygon | tops | motion | file |
+|---|---|---|---|---|
+| Convective SIGMET (AWC) | area | stated | stated | `Hazards/ConvectiveSigmetService.swift` |
+| Center Weather Advisory | smaller area | **text only** | **text only** | `Hazards/CWAParser.swift` |
+| NWS Severe Tstm Warning | one storm | **none** | stated, recent | `Hazards/SevereWarningParser.swift` |
+| MRMS echo tops | one storm, measured | **measured** | derived | `Hazards/MRMSEchoTopService.swift` |
+
+MRMS closes the gap the bulletins leave: a Convective SIGMET needs ~40% coverage, a line, or a severe
+cell, so an isolated ordinary thunderstorm can be reported by nobody. Verified end to end on 2026-11-04
+against a 59,055 ft echo top at 26.87/−97.58 that **no** Convective SIGMET covered.
+
+Three things found by measurement that a future session should not have to rediscover:
+
+1. **MRMS is small.** The CONUS `EchoTop_30` grid is **364 KB** gzipped (an earlier note here ruled MRMS
+   out on size and was wrong by an order of magnitude). Discovery is a **1.4 KB** S3 listing using
+   `start-after` on the NOAA Open Data mirror, because keys sort chronologically.
+2. **The only format blocker was GRIB2 template 5.41** (PNG payload). `PNGGrayRows` decodes it
+   **row by row** rather than through ImageIO, because the CONUS bitmap is 49 MB and the window needs
+   ~0.5 MB of it; the decode stops at the southern edge of the window. Measured 96 ms for a 4° box.
+3. **Centroid tracking of threshold blobs does NOT give storm motion.** Tried first; against two real
+   frames inside Convective SIGMET 7C (bulletin: MOV FROM 270 at 20 kt) it returned FROM 031 @ 51 kt,
+   FROM 044 @ 66 kt and FROM 232 @ 59 kt — scattered through all four quadrants, because a 23 NM blob's
+   centroid wanders further than the storm translates. Replaced by whole-field cross-correlation
+   (`RadarCellFinder.fieldMotion`), which agreed with four independent bulletins to within 13°.
+
+**OPEN — in rough value order:**
+
+- **Derived motion reads 20–25% SLOW**, every time, measured against four bulletins. It is structural:
+  maximising overlap anchors on the persistent core while only the flanks translate. Currently paid for
+  with a wider drift allowance (`ConvectiveAlert.radarDriftErrorFraction = 0.40`) rather than a fudge
+  factor on the speed. A proper fix is per-cell TREC with sub-pixel peak interpolation.
+- **Overflight clearance uses the AIM's 5,000 ft FLOOR**, not the full rule (1,000 ft per 10 kt of wind
+  at the cloud top). `WindAloftService` already samples winds aloft and could supply it. A pilot
+  skimming 5,000 ft over a tall cell in a strong flow is still under-warned. Still the single
+  highest-value improvement to the feature.
+- **No map overlay.** The banner names the cell but nothing draws its polygon, so the pilot cannot see
+  WHERE it is without going to the WX tab. `TFRMapLayer` is the pattern, on both map engines. This now
+  matters more than it did: a radar-derived cell has no name to look up, so the outline is the only way
+  to see what it is talking about.
+- **MESH (hail) is 30 KB on the same cadence** and would give radar cells a real severity instead of
+  nil. Cheap, not wired.
+- **CONUS only.** Convective SIGMETs are CONUS + coastal waters; the MRMS CONUS grid likewise. MRMS also
+  publishes ALASKA and CARIB domains, which the decoder would handle unchanged — only the product paths
+  and a domain choice are missing.
+- **No FIS-B.** The Stratux integration is GPS/traffic only. FIS-B would give NEXRAD and lightning with
+  no internet at all, which matters when cellular dies at altitude. Not investigated beyond confirming
+  the current link does not carry it.
+
 ## 8. First moves in a fresh session
 
 1. Read the memory notes in §2 (esp. `commsight-ux-decisions`, `ios-testflight-upload-config`,
