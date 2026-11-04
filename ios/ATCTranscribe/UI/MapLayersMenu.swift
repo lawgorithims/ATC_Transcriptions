@@ -293,7 +293,17 @@ struct MapLayersPanel: View {
             .frame(width: 258)
         }
         .padding(16)
-        .frame(minWidth: 480, minHeight: 300, maxHeight: 460)
+        // ⚠️ THIS CAP IS WHAT DECIDES HOW MUCH OF THE OVERLAY LIST A PILOT CAN SEE AT ONCE, and 460
+        // stopped being enough the moment the storm-alert rows landed. Each live layer carries an
+        // explanatory note while it is ON, and the two convective rows are ON by default, so roughly
+        // 290 points of text now sits between "Weather radar" and "Winds aloft" — which put Winds
+        // aloft, Route-out-of-glide, Where-not-to-go, the LZ rows, declutter and the map buttons
+        // below the fold of a popover on a 13-inch iPad, a device with 1,376 points of height. There
+        // is no scroll affordance on the clipped edge, so the list simply looked as though it ended
+        // at Thunderstorm alert. Found by WindOverlayUITests, which flips `layer-wind` and lost the
+        // popover doing it. The ScrollView still bounds the content on a phone, where the system
+        // clamps the popover to the space it actually has.
+        .frame(minWidth: 480, minHeight: 300, maxHeight: 860)
         .background(p.bg)
         .presentationCompactAdaptation(.popover)
     }
