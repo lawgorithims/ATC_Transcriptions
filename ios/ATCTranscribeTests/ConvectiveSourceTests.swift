@@ -52,6 +52,26 @@ final class CWAParserTests: XCTestCase {
                       "mountain-wave turbulence is not a thunderstorm, and AOB FL450 is not a top")
     }
 
+    /// ⚠️ THE ONE FIELD NOBODY VALIDATES. `coords` arrive as JSON STRINGS, so a transposed or truncated
+    /// value does not fail to decode — it decodes to a latitude that cannot exist. Letting it through
+    /// deforms the ring the entry-time estimate is measured against, and trips `distanceNm`'s own
+    /// assertion in a debug build. The cell is dropped whole rather than drawn smaller than the storm.
+    func testACWAWithAnImpossibleVertexIsDroppedRatherThanDeformed() {
+        let bad = houstonTS.replacingOccurrences(of: #""lat":"31.683""#, with: #""lat":"318.683""#)
+        XCTAssertNotEqual(bad, houstonTS, "fixture changed: the substitution matched nothing")
+        XCTAssertTrue(CWAParser.cells(Data(bad.utf8)).isEmpty,
+                      "a latitude of 318° is not a small error, it is a different planet")
+    }
+
+    func testAPlausibleVertexIsTheOnlyKindThatPasses() {
+        XCTAssertTrue(ConvectiveAlert.isPlausible(Coord(lat: 29.5, lon: -95.2)))
+        XCTAssertTrue(ConvectiveAlert.isPlausible(Coord(lat: -90, lon: 180)), "the poles are real places")
+        XCTAssertFalse(ConvectiveAlert.isPlausible(Coord(lat: 90.1, lon: 0)))
+        XCTAssertFalse(ConvectiveAlert.isPlausible(Coord(lat: 0, lon: -180.5)))
+        XCTAssertFalse(ConvectiveAlert.isPlausible(Coord(lat: .nan, lon: 0)))
+        XCTAssertFalse(ConvectiveAlert.isPlausible(Coord(lat: 0, lon: .infinity)))
+    }
+
     /// ⚠️ TRAP 3: `coords` are JSON STRINGS here and NUMBERS on the airsigmet endpoint. A strict Double
     /// decode throws, and behind a failable wrapper that means every CWA silently vanishes.
     func testStringCoordinatesAreAccepted() throws {
@@ -477,8 +497,15 @@ final class ConvectiveCellMergeTests: XCTestCase {
 
     func testTheResultIsBoundedAndOrderedWorstFirst() {
         var cells: [ConvectiveCell] = []
+        // ⚠️ LAID OUT AS A GRID, NOT A LINE. Marching `maxCells + 20` cells along one meridian at 1.5°
+        // a step walks off the planet at k=47, and `distanceNm` rightly asserts on a latitude that
+        // cannot exist — which trapped the test process instead of failing the test, so the suite
+        // reported "0 failures" while silently skipping this case. Twelve rows of 1.5° by seven columns
+        // of 2.5° keeps every cell real and every pair far enough apart not to be merged.
         for k in 0..<(ConvectiveAlert.maxCells + 20) {
-            cells.append(cell("r\(k)", .radar, lat: 20 + Double(k) * 1.5, lon: -120 + Double(k) * 0.9,
+            cells.append(cell("r\(k)", .radar,
+                              lat: 25 + Double(k % 12) * 1.5,
+                              lon: -120 + Double(k / 12) * 2.5,
                               size: 0.2, tops: 20_000 + Double(k) * 500))
         }
         let merged = ConvectiveCellMerge.merge(cells)

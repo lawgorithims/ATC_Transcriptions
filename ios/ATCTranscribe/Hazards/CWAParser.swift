@@ -97,6 +97,12 @@ enum CWAParser {
         // The feed closes its rings (first vertex repeated last); the alert's ring convention does not.
         let open = Self.openRing(Array(ring))
         guard open.count >= 2 else { return nil }
+        // ⚠️ A BAD VERTEX REJECTS THE WHOLE CELL, it does not get dropped from the ring. Dropping it
+        // leaves a ring that still parses and still draws, but is SMALLER than the hazard it came from —
+        // and smaller is the direction that stops the alert firing. Losing the cell is also an
+        // under-warning, but an honest one: the other two sources still cover the same storm, and
+        // `ConvectiveCellMerge` folds whichever of them survived into the same banner.
+        guard open.allSatisfy(ConvectiveAlert.isPlausible) else { return nil }
 
         let series = r.seriesId ?? "?"
         let centre = r.cwsu ?? "CWA"

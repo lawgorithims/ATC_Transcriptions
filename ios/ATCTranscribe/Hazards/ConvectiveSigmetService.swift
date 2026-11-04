@@ -149,6 +149,9 @@ enum ConvectiveSigmetParser {
             .map { Coord(lat: $0.lat, lon: $0.lon) }
         // A 2-point line is handled by the distance math but cannot be entered; fewer than 2 is nothing.
         guard ring.count >= 2 else { return nil }
+        // Same rule as the CWA and warning parsers: an impossible vertex rejects the cell rather
+        // than deforming its ring. See `ConvectiveAlert.isPlausible`.
+        guard ring.allSatisfy(ConvectiveAlert.isPlausible) else { return nil }
 
         let series = r.seriesId ?? "?"
         // ⚠️ TOPS TAKE THE HIGHER OF THE PAIR, BASES THE LOWER. The feed carries two of each because a

@@ -129,7 +129,12 @@ enum RadarCellFinder {
     static func cells(from w: Grib2Decoder.Window,
                       observedAt: Date,
                       config: Config = Config()) -> [ConvectiveCell] {
-        assert(w.ni > 0 && w.nj > 0, "RadarCellFinder: empty window")
+        // ⚠️ NO ASSERTION ON THE WINDOW'S SHAPE. A zero-size or short-buffered window is exactly
+        // what a truncated download or a decode that ran off the end of the PNG produces, so it is
+        // GUARDED input, not a contract violation — the guard below returns no cells and the poller
+        // keeps the previous frame. An assertion here traps the whole process in a debug build on
+        // data a cell tower can cause, which is the opposite of the discipline the rest of this
+        // file follows (corruption returns nothing; it never traps).
         assert(config.unitToFeet > 0, "RadarCellFinder: unit conversion must be positive")
         assert(config.minCellPoints > 0, "RadarCellFinder: a cell needs at least one point")
         let n = w.ni * w.nj

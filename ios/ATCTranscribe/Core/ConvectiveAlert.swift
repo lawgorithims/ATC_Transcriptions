@@ -290,6 +290,18 @@ enum ConvectiveAlert {
 
     /// Distance from a point to a polygon in NM, 0 inside it. Reuses `HazardCorridor`'s segment math, so
     /// the projection and its <1% error characteristic are the ones already tested there.
+    /// True when a vertex is a coordinate that can exist on Earth.
+    ///
+    /// ⚠️ EVERY FEED THAT CARRIES A HAZARD POLYGON IS CHECKED THROUGH HERE, because none of them is
+    /// validated at the source: the CWA endpoint ships `lat`/`lon` as JSON *strings*, the airsigmet
+    /// endpoint as numbers, and `api.weather.gov` as GeoJSON pairs in the opposite order. A single
+    /// out-of-range vertex is not cosmetic — `distanceNm` asserts on it in a debug build, and in a
+    /// release build it silently deforms the polygon that the entry-time estimate is measured against.
+    static func isPlausible(_ c: Coord) -> Bool {
+        c.lat.isFinite && c.lon.isFinite
+            && (-90...90).contains(c.lat) && (-180...180).contains(c.lon)
+    }
+
     static func distanceNm(from p: Coord, toPolygon ring: [Coord]) -> Double {
         assert(ring.count <= maxVertices, "polygon clamped upstream")
         assert((-90...90).contains(p.lat), "latitude in range")
