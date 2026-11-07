@@ -37,6 +37,13 @@ struct MapLibreChartView: UIViewRepresentable {
     var wxTrend: [WxTrendPin] = []
     var tfrs: [TFR] = []
     var showTFRs: Bool = false
+    /// The merged convective cells to outline, the ids the banner is warning about, and the instant
+    /// their rings are advanced to — `AppModel.convectiveDrawCells` / `convectiveThreats` /
+    /// `convectiveDrawAt`. No `show` flag beside them: the list is empty unless a storm-alert source is
+    /// on and found something. See ConvectiveMapLayer.swift.
+    var stormCells: [ConvectiveCell] = []
+    var stormThreatIDs: Set<String> = []
+    var stormAt: Date = .distantPast
     var showAirspace: Bool = true                     // MapLayersMenu overlay toggles (parity with ChartMapView)
     var showNearby: Bool = true
     var showAirways: Bool = true
@@ -137,6 +144,9 @@ struct MapLibreChartView: UIViewRepresentable {
         c.inLZGlidePlan = lzGlidePlan
         c.onLZEnergyRendered = onLZEnergyRendered
         c.inGlideGaps = glideGapLines
+        c.inStormCells = stormCells
+        c.inStormThreatIDs = stormThreatIDs
+        c.inStormAt = stormAt
         c.cacheInputs(layer: layer, routeCoords: routeCoords, breadcrumbCoords: breadcrumbCoords,
                       radarTemplate: radarTemplate, holds: holds, ownship: ownship, ownshipCourse: ownshipCourse,
                       ownshipAccuracyM: ownshipAccuracyM, ownshipIntegrity: ownshipIntegrity,
@@ -193,6 +203,13 @@ struct MapLibreChartView: UIViewRepresentable {
         var inLZProbe: ((Coord) -> LZSampleInfo?)?     // the tap-card sampler; nil when the layer is off
         var inLZEnergyBands: [LZEnergyBand] = []      // live arrival-energy footprint; [] = nothing to draw
         var inGlideGaps: [[CLLocationCoordinate2D]] = []   // `AppModel.routeGlideGapLines`; [] = nothing
+        // Convective storm cells. Carried as the merged list plus the instant to advance it to and the
+        // ids the banner is warning about — the same three values the classic engine draws from, so
+        // both engines outline the same storms in the same places. See ConvectiveMapLayer.swift.
+        var inStormCells: [ConvectiveCell] = []
+        var inStormThreatIDs: Set<String> = []
+        var inStormAt: Date = .distantPast
+        private var appliedStormSig: String?           // skips the rebuild when nothing moved
         var inLZGlidePlan: LZGlidePlan?               // the rehearsed glide the pilot ARMED; nil = none
         var onLZEnergyRendered: ((Int) -> Void)? = nil
         private var installedLZSignature: String??   // double-optional: distinguishes "never installed"
@@ -427,6 +444,7 @@ struct MapLibreChartView: UIViewRepresentable {
                 refreshOverlays(map)
             }
             updateTFRs(inTFRs, on: map)
+            updateStormCells(on: map)
             updatePlate(inPlate, on: map)
             applyFocus(inFocus, on: map)
             updateWind(on: map)
@@ -733,6 +751,8 @@ struct MapLibreChartView: UIViewRepresentable {
             // is actually looking at. Traffic self-heals because it changes every second; a TFR set can
             // sit unchanged for hours, so it simply stays invisible.
             appliedTFRSig = nil
+            appliedStormSig = nil             // and the storm cells' three sources — a quiet
+                                             // afternoon's cell list is exactly as static as a TFR set
             appliedTrafficSig = nil
             appliedHoldSig = nil                 // holds sit unchanged for a whole approach — exactly the
                                                  // TFR case above, so without this the racetrack is built
@@ -766,6 +786,7 @@ struct MapLibreChartView: UIViewRepresentable {
                           integrity: lastOwnIntegrity, on: mapView)
             updateTraffic(lastTraffic, on: mapView)
             updateTFRs(cachedTFRs, on: mapView)
+            updateStormCells(on: mapView)        // reads inStormCells directly — no cache of its own
             updatePlate(plateState, on: mapView)
             updateAvoid(inAvoidSignature, on: mapView)   // a map left unchanged all flight must still draw
         }
@@ -861,7 +882,9 @@ struct MapLibreChartView: UIViewRepresentable {
                           "hold-line", "route-line", "route-glide-gap-line", "track-line",
                           "wxradar-layer", "lz-glide-line", "lz-layer", "avoid-layer",
                           "lz-energy-line", "lz-energy-fill",
-                          "tfr-label", "tfr-outline", "tfr-fill", "nav-sym",
+                          "tfr-label", "tfr-outline", "tfr-fill",
+                          "storm-label", "storm-arrow-dash", "storm-arrow-line",
+                          "storm-outline", "storm-fill", "nav-sym",
                           "airspace-label", "airways-label", "airspace-outline", "airspace-fill",
                           "airways-line", "night-veil-fill", "coastline", "land-fill"]
             for id in layers where style.layer(withIdentifier: id) != nil {          // bounded (rule 2)
@@ -870,6 +893,7 @@ struct MapLibreChartView: UIViewRepresentable {
             let sources = ["plate", "ownship", "accuracy", "traffic", "route-wpt", "holds", "route",
                            "route-glide-gap", "track",
                            "wxradar", "lz", "avoid", "lz-glide", "lz-energy", "tfr-labels", "tfr",
+                           "storm-labels", "storm-arrow", "storm",
                            "nav", "airspace-labels", "airspace", "airways", "night-veil", "land"]
             for id in sources where style.source(withIdentifier: id) != nil {        // bounded (rule 2)
                 if let s = style.source(withIdentifier: id) { style.removeSource(s) }
@@ -1097,6 +1121,57 @@ struct MapLibreChartView: UIViewRepresentable {
             glideLine.lineCap = NSExpression(forConstantValue: "round")
             glideLine.lineJoin = NSExpression(forConstantValue: "round")
             style.addLayer(glideLine)
+
+            // CONVECTIVE CELLS, added BELOW the TFR block that follows, so where a thunderstorm and a
+            // live NOTAM overlap the restriction keeps the top of the stack — "TFR stays the most
+            // alarming colour on the map" is a documented invariant of this palette, and layer order is
+            // half of what makes it true. Above the energy shading and the armed glide, because those
+            // are plans and this is weather that is already there.
+            let storm = currentMapTheme.convective
+            let stormSrc = MLNShapeSource(identifier: "storm", shape: nil, options: nil)
+            style.addSource(stormSrc)
+            let stormFill = MLNFillStyleLayer(identifier: "storm-fill", source: stormSrc)
+            stormFill.fillColor = NSExpression(forConstantValue: storm)
+            stormFill.fillOpacity = Self.stormOpacityExpr()
+            style.addLayer(stormFill)
+            let stormLine = MLNLineStyleLayer(identifier: "storm-outline", source: stormSrc)
+            stormLine.lineColor = NSExpression(forConstantValue: storm)
+            stormLine.lineWidth = Self.stormWidthExpr(threat: 3.0, known: 1.6)
+            stormLine.lineCap = NSExpression(forConstantValue: "round")
+            stormLine.lineJoin = NSExpression(forConstantValue: "round")
+            style.addLayer(stormLine)
+            // The motion arrows get TWO layers off one source, split by a layer filter rather than by a
+            // data-driven expression: `line-dasharray` is not data-driven in the style spec, so "dashed
+            // when the vector was derived here" cannot be a `match` the way the widths above are.
+            let arrowSrc = MLNShapeSource(identifier: "storm-arrow", shape: nil, options: nil)
+            style.addSource(arrowSrc)
+            let arrow = MLNLineStyleLayer(identifier: "storm-arrow-line", source: arrowSrc)
+            arrow.predicate = NSPredicate(format: "derived == 'no'")
+            arrow.lineColor = NSExpression(forConstantValue: storm)
+            arrow.lineWidth = Self.stormWidthExpr(threat: 2.6, known: 1.6)
+            arrow.lineJoin = NSExpression(forConstantValue: "round")
+            style.addLayer(arrow)
+            let arrowDash = MLNLineStyleLayer(identifier: "storm-arrow-dash", source: arrowSrc)
+            arrowDash.predicate = NSPredicate(format: "derived == 'yes'")
+            arrowDash.lineColor = NSExpression(forConstantValue: storm)
+            arrowDash.lineWidth = Self.stormWidthExpr(threat: 2.6, known: 1.6)
+            arrowDash.lineDashPattern = NSExpression(forConstantValue: [2.0, 1.6])
+            arrowDash.lineJoin = NSExpression(forConstantValue: "round")
+            style.addLayer(arrowDash)
+            let stormLblSrc = MLNShapeSource(identifier: "storm-labels", shape: nil, options: nil)
+            style.addSource(stormLblSrc)
+            let stormLbl = MLNSymbolStyleLayer(identifier: "storm-label", source: stormLblSrc)
+            stormLbl.text = NSExpression(forKeyPath: "alt")
+            stormLbl.textFontNames = NSExpression(forConstantValue: ["Arial Bold"])
+            stormLbl.textFontSize = NSExpression(forConstantValue: 9)
+            stormLbl.textColor = NSExpression(forConstantValue: storm)
+            stormLbl.textHaloColor = NSExpression(forConstantValue: UIColor.black.withAlphaComponent(0.6))
+            stormLbl.textHaloWidth = NSExpression(forConstantValue: 1.2)
+            stormLbl.textLineHeight = NSExpression(forConstantValue: 1.0)
+            // Zoom-gated like the TFR band: a cell's tops are worth reading when the pilot is looking at
+            // the weather, and at continental zoom sixty-four of them are a smear over the whole chart.
+            stormLbl.minimumZoomLevel = 5.0
+            style.addLayer(stormLbl)
 
             let red = ChartMapView.Coordinator.airspaceColor("TFR")     // #F71433 — reuse, no hand-typed hex
             let tfrSrc = MLNShapeSource(identifier: "tfr", shape: nil, options: nil); style.addSource(tfrSrc)
@@ -1859,6 +1934,15 @@ struct MapLibreChartView: UIViewRepresentable {
             (style.layer(withIdentifier: "tfr-fill") as? MLNFillStyleLayer)?.fillColor = tfr
             (style.layer(withIdentifier: "tfr-outline") as? MLNLineStyleLayer)?.lineColor = tfr
             (style.layer(withIdentifier: "tfr-label") as? MLNSymbolStyleLayer)?.textColor = tfr
+            // Convective violet, which at night becomes a dim rose: see `HazardAnnotation.tint`, where
+            // the finding that violet is a dark-adaptation violation is recorded. The cell outlines are
+            // a safety mark, so they must follow a theme switch rather than wait for a style reload.
+            let stormTint = NSExpression(forConstantValue: t.convective)
+            (style.layer(withIdentifier: "storm-fill") as? MLNFillStyleLayer)?.fillColor = stormTint
+            (style.layer(withIdentifier: "storm-outline") as? MLNLineStyleLayer)?.lineColor = stormTint
+            (style.layer(withIdentifier: "storm-arrow-line") as? MLNLineStyleLayer)?.lineColor = stormTint
+            (style.layer(withIdentifier: "storm-arrow-dash") as? MLNLineStyleLayer)?.lineColor = stormTint
+            (style.layer(withIdentifier: "storm-label") as? MLNSymbolStyleLayer)?.textColor = stormTint
             (style.layer(withIdentifier: "track-line") as? MLNLineStyleLayer)?.lineColor =
                 NSExpression(forConstantValue: t.track)
             (style.layer(withIdentifier: "route-line") as? MLNLineStyleLayer)?.lineColor =
@@ -2491,6 +2575,111 @@ struct MapLibreChartView: UIViewRepresentable {
         /// One polygon + one altitude-block point PER AFFECTED AREA (a NOTAM like the DC SFRA defines
         /// several — concatenating them drew a bogus wedge). All of a TFR's polygons carry the same "id"
         /// attribute, so a tap on any area resolves to the one NOTAM. nonisolated; bounded; >=2 assertions.
+        // MARK: convective storm cells
+
+        /// Weight by threat status: the same violet in both voices, loud for the cell being warned
+        /// about and a wash for one merely known to be there. See `ConvectiveOverlayStyle`.
+        static func stormOpacityExpr() -> NSExpression {
+            NSExpression(mglJSONObject: ["match", ["get", "wt"], "threat", 0.22, "known", 0.07, 0.07])
+        }
+
+        static func stormWidthExpr(threat: Double, known: Double) -> NSExpression {
+            NSExpression(mglJSONObject: ["match", ["get", "wt"],
+                                         "threat", threat, "known", known, known])
+        }
+
+        /// Push the storm-cell rings, motion arrows and tops blocks into their three sources.
+        ///
+        /// Skipped wholesale when nothing drawable moved: `updateUIView` runs on any published change —
+        /// traffic alone moves every second — and rebuilding sixty-four features per pass to hand
+        /// MapLibre an identical shape collection would burn battery to redraw the same storm.
+        func updateStormCells(on map: MLNMapView) {
+            guard let style = map.style else { return }        // style not up yet → applyLatest re-runs
+            let cells = ConvectiveCellDraw.drawable(inStormCells)
+            let sig = cells.map {
+                ConvectiveCellDraw.digest($0, at: inStormAt, isThreat: inStormThreatIDs.contains($0.id))
+            }.joined(separator: "|")
+            guard sig != appliedStormSig else { return }
+            appliedStormSig = sig
+            let f = Coordinator.stormFeatures(cells, threatIDs: inStormThreatIDs, at: inStormAt)
+            (style.source(withIdentifier: "storm") as? MLNShapeSource)?.shape =
+                MLNShapeCollectionFeature(shapes: f.shapes)
+            (style.source(withIdentifier: "storm-arrow") as? MLNShapeSource)?.shape =
+                MLNShapeCollectionFeature(shapes: f.arrows)
+            (style.source(withIdentifier: "storm-labels") as? MLNShapeSource)?.shape =
+                MLNShapeCollectionFeature(shapes: f.labels)
+        }
+
+        /// The storm cells under the finger, as probe candidates. The globe's half of the hit test the
+        /// classic engine does in `stormCandidates(at:here:radius:in:)`, and it splits the same way:
+        ///
+        /// * containment against the ring AS DRAWN, which works at any zoom — the TFR loop above takes
+        ///   the same route, and records why a rendered-feature query alone is not enough (it can only
+        ///   see what the renderer tessellated at this zoom);
+        /// * a rendered-outline query over the tap rect, which is what makes a 2-point squall LINE
+        ///   tappable at all — it has no interior for containment to find — and which also catches the
+        ///   edge of a cell tapped from just outside it.
+        ///
+        /// Both resolve through `drawable(inStormCells)`, the same list and the same instant
+        /// `updateStormCells` drew from, so a tap cannot name a cell that is not on the screen.
+        @MainActor func stormCandidates(in rect: CGRect, here: Coord, on mv: MLNMapView) -> [IdentifiedObject] {
+            assert(rect.width >= 0 && rect.height >= 0, "a tap rect has extent")
+            let drawn = ConvectiveCellDraw.drawable(inStormCells)
+            assert(drawn.count <= ConvectiveCellDraw.maxDrawn, "storm tap set bounded")
+            var out: [IdentifiedObject] = []
+            var hit = Set<String>()
+            for c in drawn where ConvectiveCellDraw.contains(c, at: inStormAt, here) {
+                guard hit.insert(c.id).inserted else { continue }
+                out.append(ConvectiveCellDraw.object(c, at: inStormAt))
+            }
+            for f in mv.visibleFeatures(in: rect, styleLayerIdentifiers: ["storm-outline"]) {
+                guard let id = f.attributes["id"] as? String, hit.insert(id).inserted,
+                      let c = drawn.first(where: { $0.id == id }) else { continue }
+                out.append(ConvectiveCellDraw.object(c, at: inStormAt))
+            }
+            out.sort { $0.ident < $1.ident }        // stable, like the classic engine's
+            return out
+        }
+
+        /// The GeoJSON for one storm snapshot. Pure, given the three inputs — and it shares every
+        /// geometric decision with the classic engine through `ConvectiveCellDraw`, which is the only
+        /// reason the two engines can be relied on to outline the same storm in the same place.
+        static func stormFeatures(_ cells: [ConvectiveCell], threatIDs: Set<String>, at: Date)
+            -> (shapes: [MLNShape], arrows: [MLNShape], labels: [MLNPointFeature]) {
+            assert(cells.count <= ConvectiveCellDraw.maxDrawn, "stormFeatures: caller must cap the list")
+            var shapes: [MLNShape] = [], arrows: [MLNShape] = [], labels: [MLNPointFeature] = []
+            for c in cells.prefix(ConvectiveCellDraw.maxDrawn) {          // bounded (rule 2)
+                let ring = ConvectiveCellDraw.ring(c, at: at)
+                guard ring.count >= 2 else { continue }
+                let wt = threatIDs.contains(c.id) ? "threat" : "known"
+                var rc = ring.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) }
+                // A 2-point LINE TS is a squall line with no interior — drawn as the line it is, in the
+                // same source, where the outline layer renders it and the fill layer ignores it.
+                let shape: MLNShape & MLNFeature = rc.count == 2
+                    ? MLNPolylineFeature(coordinates: &rc, count: UInt(rc.count))
+                    : MLNPolygonFeature(coordinates: &rc, count: UInt(rc.count))
+                shape.attributes = ["id": c.id, "wt": wt]
+                shapes.append(shape)
+
+                let arrow = ConvectiveCellDraw.motionArrow(c, at: at)
+                if arrow.count >= 2 {
+                    var ac = arrow.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) }
+                    let a = MLNPolylineFeature(coordinates: &ac, count: UInt(ac.count))
+                    a.attributes = ["id": c.id, "wt": wt,
+                                    "derived": c.source == .radar ? "yes" : "no"]
+                    arrows.append(a)
+                }
+                if let top = ConvectiveCellDraw.labelCoord(ring) {
+                    let p = MLNPointFeature()
+                    p.coordinate = CLLocationCoordinate2D(latitude: top.lat, longitude: top.lon)
+                    p.attributes = ["alt": ConvectiveCellDraw.altBlock(c)]
+                    labels.append(p)
+                }
+            }
+            assert(shapes.count <= ConvectiveCellDraw.maxDrawn, "stormFeatures: cap exceeded")
+            return (shapes, arrows, labels)
+        }
+
         static func tfrFeatures(_ tfrs: [TFR]) -> (polys: [MLNPolygonFeature], labels: [MLNPointFeature]) {
             assert(tfrs.count <= 4096, "tfrFeatures: absurd TFR count")
             var polys: [MLNPolygonFeature] = []; var lbls: [MLNPointFeature] = []
@@ -2773,7 +2962,8 @@ struct MapLibreChartView: UIViewRepresentable {
                 IdentifiedObject(kind: .airspace, ident: $0.name, coord: here, onRoute: false, airspace: $0)
             }
             // One ordering policy, shared with the classic engine and unit-tested — see MapProbe.merge.
-            var results = MapProbe.merge(ranked: ranked, liveTFRs: liveTFRs, airspaces: aspObjs)
+            var results = MapProbe.merge(ranked: ranked, storms: stormCandidates(in: rect, here: here, on: mv),
+                                         liveTFRs: liveTFRs, airspaces: aspObjs)
             if userPoint { results.insert(IdentifiedObject(kind: .userPoint, ident: UserPoint.token(here), coord: here, onRoute: false), at: 0) }
             // Off-field landability for the tapped GROUND. Appended last (see MapObjectKind.priority):
             // it is ambient context about the spot, never the thing the pilot reached for. Only when

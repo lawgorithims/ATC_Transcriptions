@@ -1255,6 +1255,8 @@ final class AppModel: ObservableObject {
     /// `--demo-hazards` screenshot mode: seed synthetic events and SUPPRESS the live poller so the
     /// seeded snapshot isn't clobbered by a live fetch (the demo has to work offline and on-screen).
     private var demoHazardsMode = false
+    /// `--demo-storms`: hold the seeded cells and keep both live pollers off them.
+    private var demoStormMode = false
     /// Ownship position of the last alert recompute — the movement dedup anchor.
     private var lastHazardAlertCenter: Coord?
     private static let hazardRecomputeNm: Double = 5
@@ -1276,6 +1278,21 @@ final class AppModel: ObservableObject {
     /// The storm-penetration banner's contents, worst first (empty = nothing to show). Recomputed off
     /// main by `refreshConvectiveAlert` on each snapshot and every 2 NM of ownship movement.
     @Published private(set) var convectiveThreats: [ConvectiveThreat] = []
+
+    /// Every storm cell the map should outline: the MERGED list, from the same pass that produced
+    /// `convectiveThreats`, so the shape under the banner is the shape the banner reasoned about.
+    ///
+    /// ⚠️ THIS IS THE MERGED LIST, NOT THE DISMISS-FILTERED ONE, AND THAT IS THE POINT. The X on the
+    /// banner means *stop shouting at me* — it does not mean the thunderstorm went away. A pilot
+    /// dismisses the text precisely when they have read it and are now flying around the thing, which
+    /// is the moment the outline is worth the most. So a dismissal takes a cell out of
+    /// `convectiveThreats`, which drops the banner and the bold weight with it, and leaves the cell
+    /// drawn in the quieter known-cell style. Filtering here instead would make tapping X erase the
+    /// weather from the map.
+    @Published private(set) var convectiveDrawCells: [ConvectiveCell] = []
+    /// The instant `convectiveDrawCells` was computed — the fixed time their rings are advanced to.
+    /// See the warning on `ConvectiveCellDraw` for why the map must not advance them to `Date()`.
+    @Published private(set) var convectiveDrawAt: Date = .distantPast
 
     /// ⚠️ THE ONE LAYER IN THIS APP THAT DEFAULTS **ON**.
     ///
@@ -1733,6 +1750,22 @@ final class AppModel: ObservableObject {
             hazardEvents = EONETEvent.demoEvents()
             hazardsUpdatedAt = Date()
             refreshHazardAlert()   // observers are inert during init — compute the banner explicitly
+        }
+        // screenshot/UI-test: seed synthetic storm cells on the demo corridor and switch both alert
+        // sources on. `demoStormMode` suppresses the two live pollers (see `syncConvective` and
+        // `syncRadarCells`) so a real AWC or MRMS fetch cannot land on top of them mid-screenshot.
+        // Pair with `--hold-ownship 42.5 -77.0 39000 270 300` to put an aeroplane on a track into one
+        // of them; without a position the alert has nothing to project and the cells draw unemphasised.
+        if args.contains("--demo-storms") {
+            demoStormMode = true
+            convectiveAlertsEnabled = true
+            radarStormCellsEnabled = true
+            let cells = ConvectiveCell.demoCells()
+            convectiveCells = cells.filter { $0.source != .radar }
+            radarCells = cells.filter { $0.source == .radar }
+            convectiveUpdatedAt = Date()
+            radarCellsUpdatedAt = Date()
+            refreshConvectiveAlert()   // observers are inert during init — compute the banner explicitly
         }
         // UI-test/demo: present a seeded TFR's detail card (verifies the tap→card path off-network).
         if args.contains("--demo-tfr") {
@@ -4487,7 +4520,7 @@ final class AppModel: ObservableObject {
     /// opt-in that is ON by default (see `convectiveAlertsEnabled`). The payload is ~4 KB for all of
     /// CONUS, so the 5-minute cadence costs almost nothing next to the radar tiles.
     private var convectiveActive: Bool {
-        scenePhaseActive && !thermalSerious && convectiveAlertsEnabled
+        scenePhaseActive && !thermalSerious && convectiveAlertsEnabled && !demoStormMode
     }
 
     func syncConvective() {
@@ -4499,7 +4532,7 @@ final class AppModel: ObservableObject {
     /// Foreground-only and thermally gated like the rest. Unlike them it also needs a POSITION to do
     /// anything at all — the service reports `.needsPosition` rather than looking broken.
     private var radarCellsActive: Bool {
-        scenePhaseActive && !thermalSerious && radarStormCellsEnabled
+        scenePhaseActive && !thermalSerious && radarStormCellsEnabled && !demoStormMode
     }
 
     func syncRadarCells() {
@@ -4577,12 +4610,9 @@ final class AppModel: ObservableObject {
         // in this function, so the field the clearance rule needs is asked for exactly when there is a
         // storm to measure. `setEnabled` is a guarded no-op when nothing actually moved.
         syncWind()
-        guard !bulletins.isEmpty || !radar.isEmpty, let here = presentPosition else {
-            convectiveThreats = []; return
+        guard !bulletins.isEmpty || !radar.isEmpty, let own = convectiveOwnship() else {
+            convectiveThreats = []; convectiveDrawCells = []; return
         }
-        let r = GPSReadout.merge(stratux: freshStratuxGPS, device: deviceLocation.fix)
-        let own = ConvectiveOwnship(position: here, altitudeFtMSL: r.altitudeFtMSL,
-                                    trackDeg: r.trackDeg, groundSpeedKt: r.groundSpeedKt)
         let dismissed = convectiveDismissedKeys
         let now = Date()
         // Sendable snapshot, or nil. Read on the main actor BEFORE the hop, like every other input here;
@@ -4596,22 +4626,25 @@ final class AppModel: ObservableObject {
             // "Convective SIGMET 7C" should not have it reappear because a radar cell joined it.
             let merged = ConvectiveCellMerge.merge(bulletins + radar)
             let live = merged.filter { !dismissed.contains($0.dismissKey) }
-            let threats = ConvectiveAlert.threats(cells: live, ownship: own, now: now) { cell in
-                // AIM 7-1-28's overflight rule wants the wind at THIS cell's own top. Sampled at the
-                // centroid of the polygon as OBSERVED rather than as advanced: a wind field varies over
-                // hundreds of miles and twenty minutes of storm drift is tens, so advancing it first
-                // would be arithmetic without a difference. nil only ever means the floor.
-                guard let tops = cell.topsFtMSL, let winds else { return nil }
-                let c = cell.centroid
-                return winds.windAt(lat: c.lat, lon: c.lon, altitudeFtMSL: tops)?.kts
+            let threats = ConvectiveAlert.threats(cells: live, ownship: own, now: now) {
+                Self.topWindKt($0, winds: winds)
             }
-            Task { @MainActor in self?.applyConvectiveThreats(threats, epoch: epoch) }
+            // `merged`, not `live`: the map keeps drawing a dismissed cell. See `convectiveDrawCells`.
+            Task { @MainActor in
+                self?.applyConvectiveThreats(threats, cells: merged, at: now, epoch: epoch)
+            }
         }
     }
 
-    private func applyConvectiveThreats(_ threats: [ConvectiveThreat], epoch: Int) {
+    /// One assignment for all three, on purpose: the banner, the outlines and the instant the outlines
+    /// are advanced to come out of a single pass and land together, so no render can catch the map
+    /// emphasising one storm while the banner names another.
+    private func applyConvectiveThreats(_ threats: [ConvectiveThreat], cells: [ConvectiveCell],
+                                        at: Date, epoch: Int) {
         guard convectiveEpoch == epoch else { return }   // a newer recompute/clear won
         convectiveThreats = threats
+        convectiveDrawCells = cells
+        convectiveDrawAt = at
     }
 
     /// The projection is a function of time as well as position, so it rides the ownship movement edge
@@ -4634,6 +4667,71 @@ final class AppModel: ObservableObject {
         }
         convectiveEpoch += 1
         convectiveThreats = []
+    }
+
+    /// The ownship state the storm alert reasons from, or nil when there is no position to reason
+    /// about. Two different sources on purpose — `refreshConvectiveAlert` records why.
+    private func convectiveOwnship() -> ConvectiveOwnship? {
+        guard let here = presentPosition else { return nil }
+        let r = GPSReadout.merge(stratux: freshStratuxGPS, device: deviceLocation.fix)
+        return ConvectiveOwnship(position: here, altitudeFtMSL: r.altitudeFtMSL,
+                                 trackDeg: r.trackDeg, groundSpeedKt: r.groundSpeedKt)
+    }
+
+    /// The wind at one cell's own top, which is the only wind AIM 7-1-28's overflight rule asks about.
+    ///
+    /// Sampled at the centroid of the polygon as OBSERVED rather than as advanced: a wind field varies
+    /// over hundreds of miles and twenty minutes of storm drift is tens, so advancing it first would be
+    /// arithmetic without a difference. nil only ever means the floor.
+    ///
+    /// `nonisolated static` so the off-main recompute and the on-demand single-cell verdict below can
+    /// share one definition. Two copies of this would be two clearance rules.
+    nonisolated static func topWindKt(_ cell: ConvectiveCell, winds: WindFieldSet?) -> Double? {
+        guard let tops = cell.topsFtMSL, let winds else { return nil }
+        let c = cell.centroid
+        return winds.windAt(lat: c.lat, lon: c.lon, altitudeFtMSL: tops)?.kts
+    }
+
+    /// What the alert concludes about ONE cell — the verdict on the tapped-cell card.
+    ///
+    /// The banner's own list is consulted first, so a cell a pilot can see named up there gets the
+    /// identical record, down to the minute it quotes.
+    ///
+    /// ⚠️ THE FALLBACK IS NOT REDUNDANT. `ConvectiveAlert.threats` returns only the `maxThreats` most
+    /// urgent cells, because a banner cannot carry more; the map draws up to `maxCells`. In a squall
+    /// line the fifth threatening cell is therefore drawn with no record on the banner, and a card that
+    /// read "no warning raised" over a cell the projected track penetrates would be the worst sentence
+    /// in this app. So the alert is re-run for that cell alone — one polygon against one projected
+    /// track, the same geometry and the same wind rule, with no cap in the way.
+    ///
+    /// Returns nil when the alert genuinely raises nothing, and when there is no position to reason
+    /// from — which the card must say differently, and does.
+    func convectiveThreat(for cell: ConvectiveCell) -> ConvectiveThreat? {
+        if let t = convectiveThreats.first(where: { $0.cell.id == cell.id }) { return t }
+        guard let own = convectiveOwnship() else { return nil }
+        let winds = windAloft.freshFieldSet
+        return ConvectiveAlert.threat(cell: cell, ownship: own, now: Date(),
+                                      topWindKt: Self.topWindKt(cell, winds: winds))
+    }
+
+    /// True when the pilot has silenced the banner for this exact bulletin.
+    ///
+    /// The map keeps drawing a dismissed cell (see `convectiveDrawCells`), so the card has to be able
+    /// to tell the pilot which of the two silences they are looking at: a cell the alert raised nothing
+    /// about, or one it raised and they switched off.
+    func isConvectiveDismissed(_ cell: ConvectiveCell) -> Bool {
+        convectiveDismissedKeys.contains(cell.dismissKey)
+    }
+
+    /// Undo one dismissal, from the tapped-cell card.
+    ///
+    /// Dismissal was a one-way door before this: the keys are only ever pruned when the bulletin leaves
+    /// the feed, so an X hit by accident — on a storm, on a touchscreen, in turbulence — silenced that
+    /// issuance for the rest of the flight with nothing anywhere offering it back. The card is where it
+    /// can be offered, because the card is reached by tapping the outline the dismissal left behind.
+    func restoreConvectiveAlert(_ cell: ConvectiveCell) {
+        guard convectiveDismissedKeys.remove(cell.dismissKey) != nil else { return }
+        refreshConvectiveAlert()
     }
 
     func syncTFRs() {

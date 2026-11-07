@@ -126,6 +126,56 @@ struct ConvectiveCell: Identifiable, Equatable, Sendable {
     }
 }
 
+extension ConvectiveCell {
+    /// Three synthetic cells on the `--demo-flightplan` corridor (KBOS→KORD, abeam BUF), seeded by
+    /// `--demo-storms` so the map layer and the banner can be driven with no network. One of each kind
+    /// the drawing has to tell apart, because a layer that only ever renders the easy case in testing
+    /// is a layer whose hard cases are unverified:
+    ///
+    /// * a **Convective SIGMET area** astride the track, with stated tops and stated motion — the cell
+    ///   the alert warns about, so it draws in the bold weight with a solid arrow;
+    /// * a **radar-derived cell** well north of the track, with no name anyone can look up and a motion
+    ///   vector computed here rather than stated — the quiet weight, and a dashed arrow;
+    /// * a **LINE TS** — a two-point squall line with no interior and no stated tops, which exercises
+    ///   both the polyline path and the dash in the altitude block.
+    ///
+    /// Positions are fixed, not relative to the aeroplane: a demo that moves with the ownship cannot be
+    /// screenshotted twice the same way.
+    static func demoCells(now: Date = Date()) -> [ConvectiveCell] {
+        /// A box `halfNm` to a side about (lat, lon), with longitude scaled for the parallel so the demo
+        /// cells look square on the chart instead of stretched.
+        func box(_ lat: Double, _ lon: Double, halfNm: Double) -> [Coord] {
+            let dLat = halfNm / 60.04
+            let dLon = halfNm / (60.04 * Foundation.cos(lat * .pi / 180))
+            return [Coord(lat: lat - dLat, lon: lon - dLon), Coord(lat: lat - dLat, lon: lon + dLon),
+                    Coord(lat: lat + dLat, lon: lon + dLon), Coord(lat: lat + dLat, lon: lon - dLon)]
+        }
+        var radar = ConvectiveCell(
+            id: "RADAR-4390-0792", label: "Radar cell 43.9N 79.2W",
+            polygon: box(43.9, -79.2, halfNm: 18), topsFtMSL: 36_500, baseFtMSL: nil,
+            observedAt: now.addingTimeInterval(-120), validUntil: now.addingTimeInterval(1_800),
+            severity: nil, movingFromDeg: 255, motionKt: 28)
+        radar.source = .radar
+        radar.dismissOverride = "RADAR-4390-0792"      // a radar cell is re-observed every two minutes
+        var line = ConvectiveCell(
+            id: "WST-22E", label: "Convective SIGMET 22E",
+            polygon: [Coord(lat: 41.30, lon: -79.00), Coord(lat: 41.00, lon: -77.50)],
+            topsFtMSL: nil, baseFtMSL: nil,            // "TOPS ABV FL450" unparsed → the dash in the block
+            observedAt: now.addingTimeInterval(-1_500), validUntil: now.addingTimeInterval(5_700),
+            severity: 3, movingFromDeg: nil, motionKt: nil)
+        line.source = .sigmet
+        return [
+            ConvectiveCell(id: "WST-7C", label: "Convective SIGMET 7C",
+                           polygon: box(42.5, -78.4, halfNm: 25),
+                           topsFtMSL: 41_000, baseFtMSL: nil,
+                           observedAt: now.addingTimeInterval(-1_080),   // 18 min: a visible advance
+                           validUntil: now.addingTimeInterval(6_120),
+                           severity: 5, movingFromDeg: 240, motionKt: 35),
+            radar, line,
+        ]
+    }
+}
+
 /// The ownship state the alert projects forward. Every field is optional because every one of them can be
 /// absent in the cockpit, and the alert has to behave sensibly rather than crash or go quiet when it is.
 struct ConvectiveOwnship: Equatable, Sendable {
@@ -603,5 +653,79 @@ enum ConvectiveAlertText {
             parts.append("±\(Int(t.driftUncertaintyNm.rounded())) NM drift")
         }
         return parts.joined(separator: " · ")
+    }
+
+    /// What produced a cell, and the caveat that belongs with THAT source.
+    ///
+    /// A Convective SIGMET is a forecaster's product and can miss an isolated cell; a radar-derived cell
+    /// is a measurement nobody has vetted, and its motion is inferred rather than reported. Those are
+    /// different kinds of limitation and a single generic line would misdescribe one of them.
+    ///
+    /// Takes a CELL rather than a threat, because the tapped-cell card has to name the source of a cell
+    /// the alert raised nothing about — and that is exactly the cell whose provenance a pilot is most
+    /// likely to be asking after.
+    static func sourceLine(_ cell: ConvectiveCell) -> String {
+        switch cell.source {
+        case .sigmet:
+            return "Convective SIGMET (AWC) · forecaster-issued · not an official briefing"
+        case .cwa:
+            return "Center Weather Advisory (AWC) · forecaster-issued · not an official briefing"
+        case .warning:
+            return "NWS severe thunderstorm warning · tops not stated · not an official briefing"
+        case .radar:
+            return cell.motionKt == nil
+                ? "Radar echo tops (MRMS) · no bulletin issued · movement unknown"
+                : "Radar echo tops (MRMS) · no bulletin issued · movement estimated from radar"
+        }
+    }
+
+    /// The cell's movement, for a card with room to say it twice.
+    ///
+    /// ⚠️ BOTH ENDS OF THE VECTOR, IN THAT ORDER, AND THAT IS THE POINT. The banner states it the way
+    /// the bulletin states it — "moving from 240° at 35 kt" — so it can be read against the printed
+    /// text without reversing a heading in the head. But *from* is not where it is going, and a pilot
+    /// deciding which way to turn needs *toward*, which is the number `movingTowardDeg` exists to
+    /// supply. The banner has one line and must pick; the card has two columns and need not.
+    ///
+    /// A derived speed says "or more": `RadarCellFinder.fieldMotion` reads 20–25% LOW, every time, so
+    /// the figure is a floor rather than a measurement — the same fact the dashed arrow carries.
+    static func motionLine(_ cell: ConvectiveCell) -> String {
+        guard let from = cell.movingFromDeg, let kt = cell.motionKt, let toward = cell.movingTowardDeg,
+              from.isFinite, kt.isFinite, kt > 0 else {
+            // A bulletin that stated no vector and a measurement that could not recover one are
+            // different facts, and a pilot can act on the difference — see `detail`.
+            return cell.source == .radar ? "Not measurable from the radar frames"
+                                         : "Not stated by the bulletin"
+        }
+        assert(toward.isFinite, "a reversed bearing is still a bearing")
+        return cell.source == .radar
+            ? String(format: "From %03.0f° at %.0f kt or more · toward %03.0f°", from, kt, toward)
+            : String(format: "From %03.0f° at %.0f kt · toward %03.0f°", from, kt, toward)
+    }
+
+    /// A cell's base, the way a chart says it: "Surface" at or below the ground, else the altitude.
+    ///
+    /// ⚠️ ZERO IS NOT A MISSING VALUE HERE, AND IT IS THE COMMON CASE. The AWC feed states
+    /// `altitudeLow` as 0 for a surface-based Convective SIGMET, so a card that only special-cased
+    /// `nil` would print "0 ft" for most thunderstorms in the feed while the map's own altitude block
+    /// — which goes through `AirspaceLabelAnnotation.altText` — printed SFC beside it.
+    static func baseLine(_ ftMSL: Double?) -> String {
+        guard let ftMSL, ftMSL > 0 else { return "Surface" }   // nil = surface too (see ConvectiveCell)
+        return altitudeText(ftMSL)
+    }
+
+    /// How long ago the product observed a cell, read at `now`: "just now", "18 min ago", "1 h 5 min ago".
+    ///
+    /// Clamped at the bottom for the reason `ConvectiveCellDraw.ageMinutes` is: `observedAt` is a
+    /// *stated* time and the device clock can be wrong, so an age can legitimately come out negative.
+    /// "In 3 min ago" is nonsense; "just now" is the honest reading of a clock disagreement.
+    static func observedAgeText(_ cell: ConvectiveCell, now: Date) -> String {
+        let minutes = now.timeIntervalSince(cell.observedAt) / 60
+        assert(minutes.isFinite || minutes.isNaN, "a time interval is a real number")
+        guard minutes.isFinite else { return "age unknown" }
+        if minutes < 1 { return "just now" }
+        if minutes < 90 { return "\(Int(minutes.rounded())) min ago" }
+        let hours = Int(minutes) / 60, rem = Int(minutes) % 60
+        return rem == 0 ? "\(hours) h ago" : "\(hours) h \(rem) min ago"
     }
 }

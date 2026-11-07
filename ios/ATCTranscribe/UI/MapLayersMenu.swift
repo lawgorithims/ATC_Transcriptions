@@ -68,14 +68,21 @@ struct MapLayersPanel: View {
                     layerToggle($model.convectiveAlertsEnabled, "Thunderstorm alert",
                                 "cloud.bolt.rain", p, id: "layer-convective")
                     if model.convectiveAlertsEnabled {
+                        // ⚠️ THIS NOTE GOT SHORTER WHEN THE MAP LAYER WAS ADDED, NOT LONGER, AND THAT
+                        // WAS DELIBERATE. Every live layer in this panel carries prose like this, the
+                        // column already runs to about two and a half screenfuls on a 13-inch iPad, and
+                        // the last four lines added here pushed a row below the fold where XCUITest's
+                        // taps on it were silently dropped. The parenthetical about where the wind comes
+                        // from and the full product names paid for the new clause: a pilot reading this
+                        // needs to know what the layer does and draws, not which model the fetch uses.
                         Text("Warns when your track will enter a thunderstorm, or pass within "
                              + "\(Int(ConvectiveAlert.avoidNm)) NM of one, allowing for its tops, its "
-                             + "movement and how old the report is. Overflying one is quiet only once "
-                             + "you clear its top by the AIM margin: 1,000 ft per 10 kt of wind up "
-                             + "there, never under "
-                             + "\(Int(ConvectiveAlert.overflightClearanceFt / 1_000)),000 ft (GFS wind, "
-                             + "fetched only while a storm is in range). Reads Convective SIGMETs, "
-                             + "Center Weather Advisories and NWS severe thunderstorm warnings.")
+                             + "movement and how old the report is. Overflying is quiet only once you "
+                             + "clear the top by the AIM margin: 1,000 ft per 10 kt of wind up there, "
+                             + "never under "
+                             + "\(Int(ConvectiveAlert.overflightClearanceFt / 1_000)),000 ft. Outlines "
+                             + "each cell on the map with its tops and heading. Reads Convective "
+                             + "SIGMETs, CWAs and NWS warnings.")
                             .font(.dsLabelS).foregroundStyle(p.textDim)
                             .padding(.leading, 30)
                             .accessibilityIdentifier("layers-convective-note")

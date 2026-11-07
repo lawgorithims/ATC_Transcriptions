@@ -1034,6 +1034,13 @@ struct ChartMapView: UIViewRepresentable {
                       accuracyM: ownshipAccuracyM, integrity: ownshipIntegrity)
         c.syncHazards(mv, events: model.showHazards ? model.hazardEvents : [])
         c.syncTFRs(mv, tfrs: model.showTFRs ? model.tfrs : [])
+        // The storm layer needs no toggle of its own: `convectiveDrawCells` is already empty unless the
+        // pilot switched a storm-alert source on and it found something, and a third control deciding
+        // whether the hazard you asked to be warned about is visible would be a control nobody can
+        // reason about. The alert's own toggles are in the same Map-layers panel.
+        c.syncConvectiveCells(mv, cells: model.convectiveDrawCells,
+                              threatIDs: Set(model.convectiveThreats.map(\.cell.id)),
+                              at: model.convectiveDrawAt)
     }
 
     /// Reconcile the superimposed plate overlay. ANY change (placement or opacity) rebuilds the overlay:
@@ -1184,6 +1191,20 @@ struct ChartMapView: UIViewRepresentable {
         var tfrLabelByKey: [String: [AirspaceLabelAnnotation]] = [:]   // altitude blocks, reusing the airspace annotation
         var tfrOverlayIDs: Set<ObjectIdentifier> = []                  // marks a polygon as a TFR for the renderer
         var tfrByID: [String: TFR] = [:]                              // the full TFR for the tap probe + change detection
+        // Convective storm cells — diffed like the hazard/TFR layers; reconcile + styling live in
+        // ConvectiveMapLayer.swift (stored properties can't move into the extension). One shape per
+        // cell (a polygon, or a polyline for a 2-point LINE TS), one optional motion arrow, one tops
+        // block. `stormDigestByKey` is the change detector: see ConvectiveCellDraw.digest.
+        var stormShapeByKey: [String: MKOverlay] = [:]
+        var stormArrowByKey: [String: StormMotionPolyline] = [:]
+        var stormLabelByKey: [String: AirspaceLabelAnnotation] = [:]
+        var stormOverlayStyle: [ObjectIdentifier: ConvectiveOverlayStyle] = [:]
+        var stormDigestByKey: [String: String] = [:]
+        /// The tap table for the storm layer: every cell currently drawn, and the instant its ring was
+        /// advanced to. Written by `syncConvectiveCells` in the same pass that draws, so a tap cannot
+        /// resolve to a cell that is not on screen or to a ring other than the one drawn.
+        var stormCellByID: [String: ConvectiveCell] = [:]
+        var stormDrawAt: Date = .distantPast
         var smokeOverlay: GIBSTileOverlay?                            // NASA GIBS satellite smoke layer (translucent, above the chart)
         var radarOverlay: RadarTileOverlay?                          // RainViewer precipitation radar (translucent, above the chart)
         var radarTemplate: String?                                   // last-applied radar tile URL (swap on change)
@@ -1301,7 +1322,12 @@ struct ChartMapView: UIViewRepresentable {
             // The SAME ordering policy the globe uses. This engine is not decorative: a MapLibre render
             // stall drops the pilot into it mid-flight, so a restriction that opens first on the globe
             // must open first here too.
-            var results = MapProbe.merge(ranked: ranked + hazards, liveTFRs: liveTFRs, airspaces: aspObjs)
+            // Storm cells, ABOVE the live TFRs in the merge — see `MapProbe.merge`. The two hit tests
+            // this needs (containment for a ring, screen distance for a squall line) live with the
+            // geometry in ConvectiveMapLayer.swift rather than inflating this function further.
+            let storms = stormCandidates(at: pt, here: here, radius: radius, in: mv)
+            var results = MapProbe.merge(ranked: ranked + hazards, storms: storms,
+                                         liveTFRs: liveTFRs, airspaces: aspObjs)
             if userPoint {   // long-press: offer the exact pressed coordinate as a droppable waypoint, first
                 results.insert(IdentifiedObject(kind: .userPoint, ident: UserPoint.token(here), coord: here, onRoute: false), at: 0)
             }
@@ -1653,6 +1679,9 @@ struct ChartMapView: UIViewRepresentable {
                 r.fillColor = color.withAlphaComponent(0.18)
                 return r
             }
+            // Convective cells — identity-keyed like the two above, and asked BEFORE the generic
+            // polygon/polyline branches, which would otherwise paint a storm as Class D airspace.
+            if let r = stormRenderer(for: overlay) { return r }
             if let poly = overlay as? MKPolygon {
                 let cls = airspaceClass[ObjectIdentifier(poly)] ?? "D"
                 let color = mapTheme.airspaceColor(cls)

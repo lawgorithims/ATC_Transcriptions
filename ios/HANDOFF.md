@@ -186,11 +186,44 @@ Three things found by measurement that a future session should not have to redis
   screenfuls and the clipped edge looks like the end of the list. The popover cap has been raised twice
   (460 → 860 → 1,100) chasing it, and each raise was forced by a UI test finding a row that had dropped
   below the fold — the second time as three silently dropped taps that read like a dead binding. The cap
-  is now "as much as the device will give"; the remaining fix is editorial, not geometric.
-- **No map overlay.** The banner names the cell but nothing draws its polygon, so the pilot cannot see
-  WHERE it is without going to the WX tab. `TFRMapLayer` is the pattern, on both map engines. This now
-  matters more than it did: a radar-derived cell has no name to look up, so the outline is the only way
-  to see what it is talking about.
+  is now "as much as the device will give"; the remaining fix is editorial, not geometric. The map-overlay
+  change below is the first one to pay that back rather than borrow against it: it needed a clause about
+  what it draws, and took the clause out of the convective note's own word count (the GFS parenthetical
+  and the spelled-out product names), leaving the panel shorter than it found it. Do the same.
+- ~~**No map overlay.**~~ — DONE (2026-11-04). `UI/ConvectiveMapLayer.swift` holds the engine-independent
+  geometry (`ConvectiveCellDraw`) plus the classic engine's reconcile; the MapLibre half is
+  `updateStormCells` / `stormFeatures` in `MapLibreChartView`. Each cell draws as an outline, a motion
+  arrow and a tops/base block, bold-and-filled for the cell the banner is warning about and a thin wash
+  for one merely known. Five things to know before changing it:
+  (a) **The ring is advanced to `AppModel.convectiveDrawAt`, not to `Date()`** — to the instant the alert
+  last reasoned, so the outline and the banner cannot contradict each other, and so the diff signature
+  does not change on every pass (it would, and sixty-four polygons would be rebuilt per second).
+  (b) **`convectiveDrawCells` is the MERGED list, not the dismiss-filtered one.** The X silences the
+  banner, not the weather; a dismissed cell keeps its outline and loses only the emphasis.
+  (c) **There is no layer toggle** — the list is empty unless a storm-alert source is on and found
+  something, and the alert's own toggles are already in the Map-layers panel.
+  (d) **The hue is `MapTheme.convective` (teal), and it was violet first.** Reusing the EONET storm
+  violet looked obviously right and read as a MOA on a sectional. The argument is on that theme field.
+  (e) A two-point **LINE TS** draws as a line, not a dropped polygon — it is a squall line, the most
+  dangerous shape in the feed.
+  (f) **The cells are tappable** (2026-11-05). `ConvectiveCellDraw.contains` / `.containing` / `.object`
+  answer the probe, and `MapObjectKind.convective` sorts ABOVE a live TFR in `MapProbe.merge` — weather
+  that can destroy the aircraft over a boundary that merely forbids it. Three things there:
+  the hit test is the ring **as drawn**, not as issued (a 20-minute-old cell at 45 kt is fifteen miles
+  from its bulletin, so testing `cell.polygon` would answer for an outline that is not on the screen);
+  a 2-point LINE TS has no interior, so each engine reaches it by ON-SCREEN distance instead
+  (`stormCandidates`), which is how the airway layer has always made a line tappable; and the card's
+  verdict comes from `AppModel.convectiveThreat(for:)`, which re-runs the alert for one cell when the
+  banner's capped list has no record of it — `ConvectiveAlert.threats` returns only `maxThreats`, so the
+  fifth cell of a squall line would otherwise read "no warning raised" over a penetration. The card also
+  offers **Restore this warning** for a dismissed bulletin, which was a one-way door before.
+  Not done: the experimental standalone MapLibre harness at the bottom of `MapLibreChartView.swift` does
+  not feed the layer — only the shipping `MapHostView` path does. `--demo-storms` seeds three cells (one
+  of each kind) on the KBOS→KORD corridor; pair it with `--hold-ownship 42.5 -77.0 39000 270 300`, or
+  with `--hold-ownship 41.19 -78.25 39000 270 300` to sit on the squall line. ⚠️ `-atc.map.engine.maplibre
+  NO` does NOT select the classic engine: the argument domain stores "NO" as a STRING and the model reads
+  `object(forKey:) as? Bool`, which yields nil and falls back to the default (MapLibre). Use `0`/`1`, or
+  the toggle in Settings → General → Map engine, and check the toggle before believing which engine ran.
 - **MESH (hail) is 30 KB on the same cadence** and would give radar cells a real severity instead of
   nil. Cheap, not wired.
 - **CONUS only.** Convective SIGMETs are CONUS + coastal waters; the MRMS CONUS grid likewise. MRMS also

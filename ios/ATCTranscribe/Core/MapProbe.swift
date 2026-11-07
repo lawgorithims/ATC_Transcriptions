@@ -62,7 +62,7 @@ enum Geo {
 /// What kind of thing the user tapped. Point features (airport/vor/fix/traffic/hazard) rank above
 /// the area feature (airspace) in a disambiguation list.
 enum MapObjectKind: String {
-    case airport, vor, fix, airspace, traffic, userPoint, hazard, tfr, airway, lzRisk
+    case airport, vor, fix, airspace, traffic, userPoint, hazard, tfr, airway, lzRisk, convective
 
     /// Lower sorts first: point features, then line features (airways), then a live TFR, then the
     /// containing areas. A TFR outranks airspace because it is a LIVE restriction with a reason and an
@@ -71,6 +71,12 @@ enum MapObjectKind: String {
     /// the bottom of it.
     var priority: Int {
         switch self {
+        // ⚠️ THE ONLY NEGATIVE PRIORITY IN THE TABLE, and the reason is physical rather than legal. A
+        // TFR is a boundary that must not be crossed; a convective cell is weather that does not care
+        // whether it is crossed, and it is the one thing reachable under a finger that can destroy the
+        // aircraft inside the alert's own look-ahead window. A tap will often find both, because
+        // thunderstorms sit over the same cities and airports the TFRs do — so the storm opens first.
+        case .convective: return -1
         case .airway:   return 1
         case .tfr:      return 2
         case .airspace: return 3
@@ -93,6 +99,7 @@ enum MapObjectKind: String {
         case .tfr:       return "TFR"
         case .airway:    return "Airway"
         case .lzRisk:    return "Off-field"
+        case .convective: return "Storm"
         }
     }
 
@@ -107,11 +114,19 @@ enum MapObjectKind: String {
 
     /// Anything with a location can be filed into the route; areas/lines/traffic cannot (an AIRWAY is
     /// filed by TYPING it between two fixes, not by tapping a spot on it).
+    ///
+    /// Exhaustive rather than a chain of `!=`, which this was: six exclusions deep, the next kind added
+    /// to the enum would have defaulted to ROUTABLE and quietly offered "Add to route" for whatever it
+    /// described. A switch makes every new kind state its answer.
     var isRoutable: Bool {
+        switch self {
         // .lzRisk is a reading about a patch of GROUND, not a navigable point — filing it into a
         // route would turn an advisory surface note into a waypoint the aircraft flies to.
-        self != .airspace && self != .traffic && self != .hazard && self != .tfr
-            && self != .airway && self != .lzRisk
+        // .convective is a thunderstorm, which is the one thing on this list a route must be built to
+        // MISS: "Add to route" on a storm cell would file a course into severe convection.
+        case .airspace, .traffic, .hazard, .tfr, .airway, .lzRisk, .convective: return false
+        case .airport, .vor, .fix, .userPoint:                                  return true
+        }
     }
 }
 
@@ -149,6 +164,13 @@ struct IdentifiedObject: Identifiable {
     var tfr: TFR? = nil               // populated when kind == .tfr
     var airwayArea: String? = nil     // populated when kind == .airway — the ARINC area for the MEA lookup
     var lzSample: LZSampleInfo? = nil // populated when kind == .lzRisk — score + the rules that made it
+    /// Populated when kind == .convective — the storm cell whose DRAWN outline was tapped.
+    ///
+    /// The alert's verdict for it is deliberately NOT carried alongside: `AppModel.convectiveThreat(for:)`
+    /// answers that at render time. The banner's own list is capped at `ConvectiveAlert.maxThreats`, so a
+    /// record copied from it would be missing for the fifth cell of a squall line — and a card reading
+    /// "no warning raised" over a cell the track penetrates is the worst sentence this app could print.
+    var cell: ConvectiveCell? = nil
 
     /// Stable across a single probe so `.sheet(item:)` / `ForEach` are well-behaved.
     ///
@@ -178,22 +200,29 @@ extension MapProbe {
     /// furniture and below every nearby VOR. `MapObjectKind.priority` says the opposite (tfr 2 before
     /// airspace 3), and so did the comment directly above the code doing it. One policy, here:
     ///
-    ///   1. live TFRs — a restriction that did not exist yesterday and expires tomorrow
-    ///   2. standing prohibited / restricted / national-defense areas
-    ///   3. the distance-ranked fixes, navaids, traffic and airways
-    ///   4. ambient airspace (B/C/D/MOA/W/A) — context, and never above the airport you tapped
+    ///   1. convective cells — weather that can destroy the aircraft, not merely forbid it
+    ///   2. live TFRs — a restriction that did not exist yesterday and expires tomorrow
+    ///   3. standing prohibited / restricted / national-defense areas
+    ///   4. the distance-ranked fixes, navaids, traffic and airways
+    ///   5. ambient airspace (B/C/D/MOA/W/A) — context, and never above the airport you tapped
     ///
     /// De-duplication is by `id`, which includes the altitude band, so two shelves of one restricted
     /// area both survive while a genuinely duplicated record collapses.
+    ///
+    /// `storms` is defaulted to nothing so that the tests and tap paths that predate the storm layer
+    /// still read as what they are — a merge with no weather in it — rather than every one of them
+    /// having to pass an empty array to say so.
     static func merge(ranked: [IdentifiedObject],
+                      storms: [IdentifiedObject] = [],
                       liveTFRs: [IdentifiedObject],
                       airspaces: [IdentifiedObject]) -> [IdentifiedObject] {
         assert(ranked.count + liveTFRs.count + airspaces.count <= 4096, "probe result set out of range")
+        assert(storms.count <= ConvectiveAlert.maxCells, "storm hits bounded by the drawn layer")
         let prohibitive = airspaces.filter { $0.airspace.map { isProhibitive($0.cls) } ?? false }
         let ambient = airspaces.filter { !($0.airspace.map { isProhibitive($0.cls) } ?? false) }
         var seen = Set<String>()
         var out: [IdentifiedObject] = []
-        for o in (liveTFRs + prohibitive + ranked + ambient).prefix(4096) where seen.insert(o.id).inserted {
+        for o in (storms + liveTFRs + prohibitive + ranked + ambient).prefix(4096) where seen.insert(o.id).inserted {
             out.append(o)
         }
         assert(out.count <= 4096, "merged probe result out of range")

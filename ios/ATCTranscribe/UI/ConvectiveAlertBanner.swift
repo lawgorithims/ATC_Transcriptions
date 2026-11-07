@@ -33,26 +33,6 @@ struct ConvectiveAlertBanner: View {
         return lead.kind == .penetration ? "cloud.bolt.rain.fill" : "exclamationmark.triangle.fill"
     }
 
-    /// What produced the cell on the banner, and the caveat that belongs with THAT source.
-    ///
-    /// A Convective SIGMET is a forecaster's product and can miss an isolated cell; a radar-derived cell
-    /// is a measurement nobody has vetted, and its motion is inferred rather than reported. Those are
-    /// different kinds of limitation and a single generic line would misdescribe one of them.
-    static func sourceLine(_ t: ConvectiveThreat) -> String {
-        switch t.cell.source {
-        case .sigmet:
-            return "Convective SIGMET (AWC) · forecaster-issued · not an official briefing"
-        case .cwa:
-            return "Center Weather Advisory (AWC) · forecaster-issued · not an official briefing"
-        case .warning:
-            return "NWS severe thunderstorm warning · tops not stated · not an official briefing"
-        case .radar:
-            return t.cell.motionKt == nil
-                ? "Radar echo tops (MRMS) · no bulletin issued · movement unknown"
-                : "Radar echo tops (MRMS) · no bulletin issued · movement estimated from radar"
-        }
-    }
-
     private var headline: String {
         guard let lead else { return "Convective weather nearby" }
         let more = threats.count > 1 ? " (+\(threats.count - 1) more)" : ""
@@ -79,7 +59,7 @@ struct ConvectiveAlertBanner: View {
                     // Named, not hidden. See the type comment: what this reads determines what it can
                     // miss, and the pilot is entitled to know which it is — which now varies per cell,
                     // because a radar-derived cell and a bulletin are known to different depths.
-                    Text(Self.sourceLine(lead))
+                    Text(ConvectiveAlertText.sourceLine(lead.cell))
                         .font(.dsLabelS).foregroundStyle(palette.textDim.opacity(0.8)).lineLimit(1)
                         .accessibilityIdentifier("convective-source")
                 }
