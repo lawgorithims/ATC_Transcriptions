@@ -120,6 +120,49 @@ is in the `commsight-ux-decisions` memory note.
 4. **Diarization quality** on a real feed — does it put ATC/aircraft on separate lines, or
    over-split / mislabel? Thresholds in `Diarizer.swift` are easy to tune; toggle in Settings → Speakers.
 
+**From the 2026-11-06 test flight (pilot report) — the GPS one is FIXED, the rest are open:**
+- ~~**The integrity monitor deleted the aeroplane on an ordinary signal dip.**~~ — DONE (2026-11-06).
+  `shouldSuppressOwnship` was `state >= .unreliable`, and `.unreliable` means accuracy past 100 m or a
+  fix 30 s late while moving — neither is evidence the position is WRONG, only that it is COARSE. One
+  such reading removed ownship, the track, the glide ring, terrain AGL and the storm alert at once.
+  Three changes: (a) the one property became two — `isTrustedForGuidance` (`< .unreliable`, for a
+  glidepath and the georeferenced plate) and `isPositionProbablyReal` (`< .suspect`, for anchoring a
+  clearance); the map gates on neither and always draws. (b) `Config.confirmUnreliableCount = 3` —
+  three consecutive observations before `.unreliable` is published, held at `.degraded` until then;
+  escalation only, clearing is immediate; NOT applied to `.suspect`, which is already pair-based and
+  latched. (c) The banner is dismissible, keyed to the state acknowledged so anything worse still
+  announces (`AppModel.showsIntegrityBanner`). ⚠️ The amber/red ownship symbols and the 1-sigma
+  accuracy ring already existed in `ChartMapView.ownPlane(for:)` and `syncAccuracyRing` — they were
+  unreachable, because the only states they were drawn for were the states that removed the symbol.
+  Demonstrate it with `--force-gps-integrity nominal|degraded|unreliable|suspect` (DEBUG only), which
+  pins the published verdict — applied in `DeviceLocation.forced(_:)` at the single publication point,
+  NOT inside the monitor, because the flight-simulator path builds its own assessment and never
+  reaches the detectors, so a monitor-side pin could not be used with `--hold-ownship`. A pinned
+  verdict carries `isSimulatedVerdict` and the banner shows a FORCED chip, so it can never be mistaken
+  for a real one. Verified: `--hold-ownship 42.5 -77.0 8000 90 140 --force-gps-integrity unreliable`
+  draws the red aeroplane, reports AGL, and the banner dismisses without taking the symbol with it.
+- **A crash cost the whole logbook track and stopped the recording**, and a flight may not save when
+  the record button is pressed again. The trail needs appending to disk as it is recorded rather than
+  held and written at stop. Not started.
+- **Ownship motion is jerky** — the symbol is moved per fix at the receiver's delivery rate; it needs
+  interpolation along the reported track/ground speed, with the glide geometry drawn from the same
+  interpolated position so it stops moving independently. Not started.
+- **No way to edit an aircraft once saved**, and no aircraft editor in Settings. Not started.
+- **ADS-B streaming never connects.** Not started.
+- **NRST is duplicated** — sidebar button and the top-bar `!` do the same thing; merge into one
+  top-bar NRST. Not started.
+- **The ruler wants a simultaneous two-finger long press**, not a double tap, and should look like a
+  ruler rather than like the flight path (`MapRulerGesture.swift` documents why it is neither a tap nor
+  a pan recognizer). Not started.
+- **Flight-plan bar button hierarchy** — the ForeFlight button is the largest; the check mark should
+  be, with send-to-ForeFlight demoted to a small button. Not started.
+- **Route labels drift during a pan** at large zoom-outs instead of staying with their route. Not
+  started.
+- **Terrain rendering is feasible from the AGL grid** — `terrain_conus.bin` is a 1-arc-minute int16
+  grid (~1.85 km cells, MAX-aggregated, CONUS). That suits a ForeFlight-style banded wash keyed to
+  ownship altitude; it is too coarse and too conservative for hillshading, which would look blocky and
+  overstate ridges. MapLibre would want terrain-RGB tiles, not the flat binary. Not started.
+
 **Known limits / candidate next work:**
 - **Diarization can't separate simultaneous talkers (overtalk).** The heuristic v1 splits on PTT
   gaps + acoustic clustering. The "very robust" upgrade = a dedicated **speaker-embedding CoreML

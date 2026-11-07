@@ -287,8 +287,10 @@ struct ConsoleView: View {
                 // GPS integrity / interference advisory. It belongs HERE in the bar stack, not as an
                 // overlay on the map: the map is full-bleed UNDER this chrome, so a top-aligned overlay
                 // on it renders beneath the top bar and is never seen.
-                GPSIntegrityBanner(assessment: model.gpsIntegrity, palette: model.palette,
-                                   threat: model.gpsThreat)
+                if model.showsGPSIntegrityBanner {
+                    GPSIntegrityBanner(assessment: model.gpsIntegrity, palette: model.palette,
+                                       threat: model.gpsThreat) { model.dismissGPSIntegrityBanner() }
+                }
             }
             // Two-finger drag UP over the top bars collapses the expandable strips (TopBar's toggles
             // reopen them). Single-finger interaction with the strips is unaffected.
@@ -706,12 +708,12 @@ struct ConsoleView: View {
     @ViewBuilder private func approachProfileStrip(_ profile: ApproachProfile) -> some View {
         let pos = model.presentPosition.flatMap { c -> ApproachProfile.Position? in
             let readout = GPSReadout.merge(stratux: model.freshStratuxGPS, device: model.deviceLocation.fix)
-            // The altitude needs the SAME gate as the coordinate. `presentPosition` already refuses an
-            // untrusted fix, but the altitude was taken raw — so a receiver the integrity monitor has
-            // called unreliable could still place the aeroplane on the glidepath and colour it green.
-            // Vertical error is exactly what this view is about, so a vertical figure nobody vouches for
-            // has no business in it. Same rule the AGL readout applies.
-            guard !model.gpsIntegrity.shouldSuppressOwnship || model.stratuxOwnshipTrusted,
+            // A glidepath is the one place that keeps the STRICTEST gate. `presentPosition` now admits
+            // a coarse fix — it is the right position, just a fuzzy one, and refusing it blanked half
+            // the app during an ordinary signal dip — but vertical error is exactly what this view is
+            // about, and a receiver the monitor has called unreliable must not place the aeroplane on
+            // a glidepath and colour it green. Hence `isTrustedForGuidance` here and not there.
+            guard model.gpsIntegrity.isTrustedForGuidance || model.stratuxOwnshipTrusted,
                   let alt = readout.altitudeFtMSL, alt.isFinite else { return nil }
             let rwy = AppModel.landingThreshold(airport: profile.airport,
                                                 runway: model.activeApproach?.runway ?? "")

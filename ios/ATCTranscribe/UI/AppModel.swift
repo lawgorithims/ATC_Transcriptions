@@ -443,7 +443,46 @@ final class AppModel: ObservableObject {
     /// Republished GPS integrity verdict. `deviceLocation` is a NESTED ObservableObject, so it does not
     /// republish this parent (the Flight Bag C2 rule) — views that observe `AppModel` (the map engines,
     /// the threat banner) need it mirrored here explicitly.
-    @Published private(set) var gpsIntegrity = GPSIntegrityAssessment()
+    @Published private(set) var gpsIntegrity = GPSIntegrityAssessment() {
+        didSet {
+            // An improvement clears the acknowledgement, so the next degradation announces itself
+            // again rather than inheriting a dismissal from a condition that has since passed.
+            if gpsIntegrity.state < .degraded { gpsIntegrityAckedUpTo = nil }
+        }
+    }
+    /// The worst integrity state the pilot has acknowledged, or nil for none.
+    ///
+    /// ⚠️ IT MUTES A STATE, NOT THE BANNER. Dismissing "accuracy degraded" silences exactly that; if
+    /// the fix then goes unusable or suspect the banner comes back, because that is new information
+    /// and the pilot has not been told it. Same principle as the convective dismiss key, for the same
+    /// reason: an X that mutes a whole category is an X that switches a safety advisory off for the
+    /// flight, and nobody intends that when they tap it.
+    @Published private(set) var gpsIntegrityAckedUpTo: GPSIntegrityState?
+
+    /// True when the integrity banner has something to say that the pilot has not already waved away.
+    var showsGPSIntegrityBanner: Bool {
+        Self.showsIntegrityBanner(state: gpsIntegrity.state,
+                                  interference: gpsThreat.threat.isInterference,
+                                  ackedUpTo: gpsIntegrityAckedUpTo)
+    }
+
+    /// The acknowledgement rule, pure so it can be pinned by a test: show from `.degraded` up, or for
+    /// any interference verdict, unless the pilot has already acknowledged a state at least this bad.
+    /// A WORSE state always re-announces — see `gpsIntegrityAckedUpTo`.
+    /// `nonisolated` because it touches no actor state — it is a decision table over three values, and
+    /// a test should be able to ask it a question without hopping to the main actor to do so.
+    nonisolated static func showsIntegrityBanner(state: GPSIntegrityState, interference: Bool,
+                                                 ackedUpTo: GPSIntegrityState?) -> Bool {
+        if interference { return ackedUpTo == nil }
+        guard state >= .degraded else { return false }
+        guard let acked = ackedUpTo else { return true }
+        return state > acked
+    }
+
+    /// X on the GPS integrity banner — acknowledge the CURRENT state and nothing worse.
+    func dismissGPSIntegrityBanner() {
+        gpsIntegrityAckedUpTo = max(gpsIntegrity.state, gpsIntegrityAckedUpTo ?? .unknown)
+    }
     /// The widened last fix behind `gpsIntegrity` (altitudes, velocity uncertainties, geoid undulation).
     @Published private(set) var gpsFix: DeviceFix?
     /// Height above the bundled terrain grid for the current fix — `.unavailable` with a stated reason
@@ -3517,7 +3556,7 @@ final class AppModel: ObservableObject {
     /// is not willing to show.
     var presentPosition: Coord? {
         if let s = trustedStratuxOwnship { return s }
-        return gpsIntegrity.shouldSuppressOwnship ? nil : deviceLocation.coord
+        return gpsIntegrity.isPositionProbablyReal ? deviceLocation.coord : nil
     }
 
     // MARK: flight recording (REC control + GPS bar read these; the map bridges flightRecorder.$trail)

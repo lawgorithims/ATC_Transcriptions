@@ -41,10 +41,18 @@ struct MapHostView: View {
     /// GPS integrity verdict, bridged like deviceCoord. Gates what the map is allowed to DRAW.
     @State private var gpsIntegrity = GPSIntegrityAssessment()
 
-    /// The device position the map may plot: nil when the integrity monitor says the fix can't be
-    /// trusted. Suppressing it HERE covers BOTH engines (MapLibre and the MKMapView fallback both take
-    /// `ownship:` from this one place) — a position the pilot will fly is worse than no position.
-    private var trustedDeviceCoord: Coord? { gpsIntegrity.shouldSuppressOwnship ? nil : deviceCoord }
+    /// The device position the map plots. ⚠️ IT IS NO LONGER GATED ON INTEGRITY, AND THAT IS THE FIX
+    /// FOR A REPORTED IN-FLIGHT FAULT: this returned nil whenever the monitor reached `.unreliable`,
+    /// so an ordinary signal dip — accuracy past 100 m, or 30 s between fixes in a turn — deleted the
+    /// aeroplane and its track from both engines at once.
+    ///
+    /// The state still reaches the engines, through `ownshipIntegrity` and `ownshipAccuracyM` beside
+    /// this: a coarse fix draws the amber symbol, a suspect one the red, and both carry the 1-sigma
+    /// accuracy ring that shows exactly how much the position could be out by. Those styles already
+    /// existed and were unreachable, because the only states they were built for were the states that
+    /// removed the symbol they were drawn on. A pilot who can see a red aeroplane inside a 300 m ring
+    /// knows more than one who can see nothing at all.
+    private var trustedDeviceCoord: Coord? { deviceCoord }
     /// Ownship for the engines: a FRESH, FIXED Stratux fix still wins (the aircraft's own receiver),
     /// else the device fix if it is trustworthy.
     ///
