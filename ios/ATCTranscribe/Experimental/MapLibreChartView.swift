@@ -1004,10 +1004,25 @@ struct MapLibreChartView: UIViewRepresentable {
         /// airspace altitude blocks. The airway label reuses the already-added "airways" source.
         private func setupLabelLayers(_ style: MLNStyle) {
             guard let awySrc = style.source(withIdentifier: "airways") as? MLNShapeSource else { return }
-            // Airway idents — one per run, placed along the line centre (white text, slate-blue halo).
+            // Airway idents, REPEATED ALONG THE LINE the way a sectional prints them.
+            //
+            // ⚠️ IT WAS "line-center" AND THE LABELS SLID ACROSS THE CHART ON EVERY PAN. Reported
+            // from the air: at wide zoom the J/Q/V idents drifted instead of staying with their
+            // airway. `Airways.inRegion` hands over whole runs, never clipped to the camera, so the
+            // GEOMETRY is stable — but MapLibre tiles a shape source internally, and "line-center"
+            // resolves to the centre of each tile-clipped piece. Re-tile on a pan and the centre
+            // moves, so the label walks along the line.
+            //
+            // "line" places labels at `symbolSpacing` intervals ALONG the geometry instead of at one
+            // computed point, which is both stable under re-tiling and what a pilot expects: an
+            // airway on a sectional carries its ident repeatedly, so it can be read wherever you
+            // happen to be looking rather than only at the midpoint of the run.
             let awyLabel = MLNSymbolStyleLayer(identifier: "airways-label", source: awySrc)
             awyLabel.text = NSExpression(forKeyPath: "ident")
-            awyLabel.symbolPlacement = NSExpression(forConstantValue: "line-center")
+            awyLabel.symbolPlacement = NSExpression(forConstantValue: "line")
+            // Far apart enough that a short run gets one label and a long one does not become a
+            // string of beads; MapLibre drops any that collide, so this is an upper bound on density.
+            awyLabel.symbolSpacing = NSExpression(forConstantValue: 260)
             awyLabel.textFontNames = NSExpression(forConstantValue: ["Arial Bold"])
             awyLabel.textFontSize = NSExpression(forConstantValue: 10)
             awyLabel.textColor = NSExpression(forConstantValue: UIColor.white)

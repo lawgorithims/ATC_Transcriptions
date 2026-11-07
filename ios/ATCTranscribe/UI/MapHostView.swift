@@ -960,16 +960,15 @@ struct MapChrome: View {
         }
     }
 
+    // ⚠️ THE FLOATING NRST BUTTON USED TO LIVE HERE AND IS NOW IN THE TOP BAR, merged with the
+    // emergency arm it duplicated. Reported from the air as two faults that were one: the two
+    // controls did the same thing, and this one stayed on screen after the pilot switched the map
+    // controls off — deliberately, since it had its own ungated overlay so an emergency aid could
+    // never be hidden by a display preference. Both intents survive the move: the control is no
+    // longer map chrome, so the map-controls toggle genuinely clears the map, and it is now in the
+    // one strip that is on screen on every tab and never scrolls or hides. See
+    // `ConsoleView.nrstButton`.
     @ViewBuilder private var chrome: some View {
-        if !nrstPanelShowing {
-            // FULL-WINDOW centring, deliberately — the same coordinate space `mapSideControls` uses, so
-            // the -58 offset keeps its documented meaning ("just above the zoom stack's top edge") and
-            // the two cannot drift apart. An earlier attempt to inset this by the measured chrome moved
-            // it down by half the chrome height and put it INSIDE the zoom stack, which is a collision
-            // that actually happens — where the chrome overlap it was guarding against does not: the
-            // chrome tops out around 420 pt with the profile strip up, and this sits near 620.
-            nrstButton.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
-        }
         // TOP-leading: high altitude belongs at the top of the screen, and the track then grows downward
         // from measured chrome rather than from a guessed centre.
         //
@@ -992,49 +991,5 @@ struct MapChrome: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                 .allowsHitTesting(false)          // read-only: never take a tap from the map
         }
-    }
-
-    /// The panel is already in front of the pilot — floating or docked — so the button has nothing left
-    /// to do and would only sit on top of the thing it opens. Safe to read now that the store is
-    /// observed: this recomputes the moment the panel opens or closes.
-    /// Trailing inset that clears a docked right pane, the same formula every sibling control uses
-    /// (`RadarStatusPill.trailingInset`, `RadarLoopBar`, the wind slider's `leftPaneInset`). The NRST
-    /// button was the one piece of map chrome without it, and since MapChrome now renders ABOVE the
-    /// widget canvas the button landed ON a docked pane — transcript docked right is a common cockpit
-    /// layout — and ate the taps and swipes meant for it. `widgets` is observed here, and both
-    /// `rightPane` and `rightPaneWidth` are @Published, so this re-lays out live on dock, undock and
-    /// resize.
-    private var rightPaneInset: CGFloat {
-        guard widgets.rightPane != nil else { return 12 }
-        return (widgets.rightPaneWidth > 0 ? widgets.rightPaneWidth : 320) + 12
-    }
-
-    private var nrstPanelShowing: Bool {
-        hSize != .compact
-            && (widgets.isVisible(.nrst) || widgets.leftPane == .nrst || widgets.rightPane == .nrst)
-    }
-
-    /// The engine-out NRST button. Text rather than a glyph because NRST is the label every GPS in every
-    /// panel has used for decades. Regular width shows the panel (or lifts it, if it is already up or
-    /// docked in a pane); compact rides a sheet. The panel closes by its own ✕, never by a second tap
-    /// here — SHOW, never toggle, so the outcome of a tap in an emergency is never "it went away".
-    private var nrstButton: some View {
-        Button {
-            Haptics.impact(.medium)
-            if hSize == .compact { model.showNRSTSheet = true } else { widgets.reveal(.nrst) }
-        } label: {
-            Text("NRST")
-                .font(.dsLabelSBold)
-                .foregroundStyle(model.palette.text)
-                .frame(width: 46, height: 40)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plainHaptic)
-        .background(model.palette.overlay, in: RoundedRectangle(cornerRadius: DS.Radius.r4))
-        .overlay(RoundedRectangle(cornerRadius: DS.Radius.r4).stroke(model.palette.bad.opacity(0.7), lineWidth: DS.Stroke.control))
-        .padding(.trailing, rightPaneInset)
-        .offset(y: -58)                                   // just above the zoom stack's top edge
-        .accessibilityIdentifier("map-nrst")
-        .accessibilityLabel("Nearest airports — engine-out glide ranking")
     }
 }

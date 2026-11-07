@@ -159,12 +159,35 @@ is in the `commsight-ux-decisions` memory note.
   A second, independent contributor to "it stopped recording": `currentBreadcrumbFix()` gates on
   `presentPosition`, which returned nil on a degraded fix — so the trail stopped whenever the GPS
   monitor cried wolf. Fixed by the integrity change above.
-- **A flight may not save when the record button is pressed again.** Partly addressed: the save sheet
-  is now `interactiveDismissDisabled`, because a swipe cleared `pendingLoggedFlight` without calling
-  save or discard, leaving the flight in the pending slot to reappear at the NEXT launch — which reads
-  as the logbook having dropped it. STILL OPEN: a stop that recorded nothing (no fix for the whole
-  recording) returns nil and says nothing at all, so the pilot cannot tell "saved" from "there was
-  nothing to save". There is no toast mechanism in the app to say it with.
+- ~~**A flight may not save when the record button is pressed again.**~~ — DONE (2026-11-07). The
+  swipe hole was closed earlier (the save sheet is `interactiveDismissDisabled`, because a swipe
+  cleared `pendingLoggedFlight` without calling save or discard and the flight reappeared at the
+  NEXT launch, reading as the logbook having dropped it). What remained was that the app never SAID
+  anything, plus two real data holes found while finishing it:
+  1. **A stop that caught no fix was mute.** `buildFlight` returns nil on an empty trail,
+     `toggleFlightRecording` set `pendingLoggedFlight = nil`, and no sheet appeared — so the pilot
+     could not tell a saved flight from an empty one. That is the whole of the reported doubt.
+  2. **⚠️ PRESSING REC OVER A RECOVERED RECORDING ALSO DID NOTHING, SILENTLY** — a silence the
+     crash fix itself created. `startRecording` refuses over `.recovered` (that guard is what stops
+     the first REC tap destroying the recovered trail) and returned without a word, so the fix for
+     losing the flight looked, from the cockpit, like a dead REC button.
+  3. **⚠️ A KILL WINDOW THAT LOST THE FLIGHT OUTRIGHT.** `stopRecording` deleted the active mirror
+     BEFORE writing the finished flight, so a kill between the two left neither file — on the one
+     action a pilot takes believing their flight is now safe. The order is reversed; the worst case
+     is now both files existing.
+  4. **⚠️ WHICH THE REORDER MADE POSSIBLE: both files at once.** `recoverOnLaunch` now prefers the
+     finished flight and deletes the stale mirror. Without that the pilot would get a save sheet AND
+     a "resume this flight" banner for the same flight, and resuming would append fresh points to a
+     trail finished minutes ago — one flight logged twice, the second one wrong.
+  New `UI/TransientMessage.swift` + `AppModel.say(_:icon:tone:)` is the mechanism the app had never
+  had: one slot, no queue, newest wins, auto-dismissing. ⚠️ NEVER USE IT FOR ANYTHING NEEDING AN
+  ANSWER — it leaves on a timer, so decisions and unsaved data stay in the banner stack
+  (`RecoveredRecordingBanner` is deliberately not a toast). Used for the two silences above and to
+  confirm both outcomes of the save sheet. `AppModel.flightRecorder` is now injectable, which also
+  closes a latent hazard: a default `FlightRecorder` reads the app's real Application Support
+  folder, so any `AppModel()` test shared a directory with a pilot's in-progress flight.
+  15 tests across `FlightRecorderRecoveryTests` and the new `LogbookSaveFeedbackTests`. Verified on
+  an iPhone: REC, REC again with no GPS → the amber capsule appears above the GPS bar.
 - ~~**Ownship motion is jerky, and the glide bands move independently.**~~ — DONE (2026-11-06). Two
   causes, both in the MapLibre engine (MapKit was never as bad: `MKAnnotation.coordinate` is
   `@objc dynamic` and MapKit glides the view between values; a shape source has no equivalent).
@@ -233,15 +256,61 @@ is in the `commsight-ux-decisions` memory note.
   (`-atc.adsbStreaming 1` and `-atc.map.engine.maplibre 0` both silently fail to take). Use
   `xcrun simctl spawn <device> defaults write com.flycommsight.atctranscribe <key> -bool YES`, or the
   in-app toggle, and confirm the toggle before concluding anything about the feature.
-- **NRST is duplicated** — sidebar button and the top-bar `!` do the same thing; merge into one
-  top-bar NRST. Not started.
-- **The ruler wants a simultaneous two-finger long press**, not a double tap, and should look like a
-  ruler rather than like the flight path (`MapRulerGesture.swift` documents why it is neither a tap nor
-  a pan recognizer). Not started.
-- **Flight-plan bar button hierarchy** — the ForeFlight button is the largest; the check mark should
-  be, with send-to-ForeFlight demoted to a small button. Not started.
-- **Route labels drift during a pan** at large zoom-outs instead of staying with their route. Not
-  started.
+- ~~**NRST is duplicated** — sidebar button and the top-bar `!` do the same thing.~~ — DONE
+  (2026-11-07). The map's floating `MapChrome.nrstButton` is gone; the top-bar control now reads
+  **NRST** instead of a warning triangle and is the only one. A triangle says "something is wrong",
+  which is not what the pilot is choosing when they press it — they are asking where to put the
+  aeroplane down, and NRST is the label every panel-mount GPS has used for decades. Tap arms, long
+  press stands down, unchanged.
+  ⚠️ THE SECOND HALF OF THE REPORT WAS "it remains even after I hide the map controls", AND A TEST
+  ASSERTED THAT AS CORRECT. `NRSTUITests.testNrstButtonSurvivesTheMapControlsToggle` pinned the map
+  button surviving `atc.map.zoomControls` — right in intent (a display preference must not hide an
+  emergency aid) and wrong in effect (the zoom stack went and a lone NRST button stayed floating over
+  the chart). Moving it satisfies both: the toggle now genuinely clears the map, and the control is
+  on screen on EVERY tab rather than just the map. That test is rewritten to assert the merge.
+  ⚠️ It costs 14pt of a bar this file documents as already over budget (`ConsoleView`, ~line 927).
+  Measured, the EFB-only compact bar is ~358pt of a 402pt window, so it fits with ~30pt spare on the
+  narrowest supported 375pt phone — but another control in this bar would not fit.
+- ~~**The ruler wants a simultaneous two-finger long press**, and should look like a ruler rather
+  than like the flight path.~~ — DONE (2026-11-07). Both halves:
+  **GESTURE.** `TwoFingerRulerRecognizer` recognised on a two-finger TAP (both fingers down and up
+  inside `tapWindow`). It is now a press: an undecided pair arms a `pressDuration` (0.5 s) timer,
+  travel past `moveSlop` cancels it into a pinch, and a lift before it matures fails immediately.
+  Once it matures the span may still be slid before lifting, so the ruler is laid where the fingers
+  END, not where they landed, and a haptic fires the moment it arms (the pilot is holding still and
+  watching the chart — without it the only confirmation comes too late to adjust).
+  ⚠️ THIS GIVES BACK THE TWO-FINGER TAP-TO-ZOOM-OUT. The old file's own summary said the only
+  thing a pilot lost was that gesture, because the map's tap had to wait on this recognizer failing.
+  A tap now fails here on first lift, so zoom-out fires as it always did. A press is also the gesture
+  a hand braced against vibration can actually make; a tap needs two fingers to arrive AND leave
+  together inside a window.
+  **APPEARANCE.** It was stroked in `palette.accent` — FAA sectional blue, the colour of the route
+  line and half the chart under it — with round end caps, which reads as a filed leg with waypoints.
+  Now `palette.text` on a `palette.bg` casing, which inverts correctly in all three themes without a
+  hardcoded colour (white-on-black cockpit, black-on-white day, red-on-black night) and matches
+  nothing else on the chart; perpendicular END BARS instead of dots, the way a dimension line is
+  terminated; and graduation ticks along the span, every fifth longer.
+  ⚠️ The ticks are spaced in POINTS, not nautical miles. They say "measuring instrument"; they are
+  not a scale and must not be read as one — the distance is in the label. Bounded at `maxTicks`.
+  Verified on an iPhone: a held two-finger press lays a graduated white rule reading "2708 NM · 165°T".
+- ~~**Flight-plan bar button hierarchy** — the ForeFlight button is the largest.~~ — DONE
+  (2026-11-07). Inverted. The check mark is now the only FILLED control on the strip (a 44pt accent
+  capsule) and ForeFlight is a paperplane glyph among the other small icons. Accepting the plan
+  happens on every visit to the strip; handing it to another app is occasional and only for pilots
+  who fly with both. The accessibility label still says "Send to ForeFlight", so it is smaller, not
+  harder to find.
+- ~~**Route labels drift during a pan** at large zoom-outs instead of staying with their route.~~ —
+  DONE (2026-11-07). `airways-label` used `symbolPlacement = "line-center"`.
+  ⚠️ THE GEOMETRY WAS NEVER THE PROBLEM, which is why this looks like a one-line fix for a
+  confusing symptom. `Airways.inRegion` selects idents whose vertices fall in the camera box but
+  hands back WHOLE runs, never clipped — so each feature is stable as the pilot pans. MapLibre,
+  however, tiles a shape source internally, and "line-center" resolves to the centre of each
+  tile-clipped piece; re-tile on a pan and that centre moves, so the ident walks along its airway.
+  Now `"line"` with `symbolSpacing = 260`, which places labels at intervals ALONG the geometry
+  instead of at one computed point. Stable under re-tiling, and it is also what a sectional does:
+  an airway carries its ident repeatedly so it can be read wherever you are looking, not only at
+  the midpoint of a run. Verified over Philadelphia at wide zoom — J110, V252, Q75, Q437, T459,
+  Q409, V166 all sit on and rotate with their lines across a pan.
 - **Terrain rendering is feasible from the AGL grid** — `terrain_conus.bin` is a 1-arc-minute int16
   grid (~1.85 km cells, MAX-aggregated, CONUS). That suits a ForeFlight-style banded wash keyed to
   ownship altitude; it is too coarse and too conservative for hillshading, which would look blocky and

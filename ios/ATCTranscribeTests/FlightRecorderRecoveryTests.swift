@@ -109,6 +109,63 @@ final class FlightRecorderRecoveryTests: XCTestCase {
         XCTAssertNil(FlightRecorder(directory: dir).recovered, "and it does not come back next launch")
     }
 
+    /// ⚠️ THE FINISHED FLIGHT REACHES DISK BEFORE THE MIRROR IS REMOVED. `stopRecording` used to
+    /// delete the active mirror FIRST and write the pending save second, so a kill in the window
+    /// between them left neither file and lost the flight outright — on the one action a pilot takes
+    /// believing their flight is now safe. The order is the fix; this pins the end state it produces.
+    func testStoppingLeavesTheFinishedFlightOnDiskAndNoMirror() throws {
+        recordAndCrash(points: 12)
+        let reborn = FlightRecorder(directory: dir)
+        XCTAssertNotNil(reborn.stopRecording())
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: pendingPath),
+                      "the finished flight must be on disk awaiting its save prompt")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: activePath),
+                       "and the in-progress mirror must be gone, or it would be recovered again")
+        // A relaunch now offers the save prompt and nothing else.
+        let next = FlightRecorder(directory: dir)
+        XCTAssertNotNil(next.recoveredPendingSave, "the save prompt survives a crash of its own")
+        XCTAssertEqual(next.state, .idle)
+    }
+
+    /// ⚠️ BOTH FILES AT ONCE — the state the reordering above can now produce, and the one that
+    /// would log a flight twice. A kill between writing the pending save and deleting the mirror
+    /// leaves a mirror of a recording that has ALREADY been closed off. Recovering it as well would
+    /// show a save sheet AND a "resume this flight" banner for the same flight, and resuming would
+    /// append fresh points to a trail finished minutes ago.
+    ///
+    /// Constructed by hand because the window is microseconds wide. The filenames are duplicated
+    /// here deliberately: they ARE the on-disk contract, so a rename that broke recovery in the app
+    /// should break this test too.
+    func testAStaleMirrorBesideAFinishedFlightIsDiscarded() throws {
+        recordAndCrash(points: 12)                      // leaves the active mirror
+        let finished = LoggedFlight(id: UUID(), startedAt: Date(timeIntervalSince1970: 1_793_000_000),
+                                    endedAt: Date(timeIntervalSince1970: 1_793_003_600),
+                                    durationSec: 3_600, distanceNM: 120, maxSpeedKt: 140,
+                                    avgSpeedKt: 120, maxAltFtMSL: 6_500, stops: [],
+                                    aircraftCallsign: "N8925T", aircraftType: nil, notes: "",
+                                    breadcrumb: [])
+        try JSONEncoder().encode(finished).write(to: URL(fileURLWithPath: pendingPath))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: activePath), "setup: both files exist")
+
+        let reborn = FlightRecorder(directory: dir)     // the relaunch into the ambiguous state
+
+        XCTAssertEqual(reborn.recoveredPendingSave?.aircraftCallsign, "N8925T",
+                       "the FINISHED flight is the one that survives")
+        XCTAssertEqual(reborn.state, .idle, "and the stale mirror does not also become a recovery")
+        XCTAssertNil(reborn.recovered)
+        XCTAssertTrue(reborn.trail.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: activePath),
+                       "the stale mirror is removed, not left to reappear at the next launch")
+    }
+
+    private var activePath: String {
+        dir.appendingPathComponent("flight_recorder_active_v1.json").path
+    }
+    private var pendingPath: String {
+        dir.appendingPathComponent("flight_recorder_pending_v1.json").path
+    }
+
     func testAFreshRecorderWithNothingOnDiskIsIdle() {
         let r = FlightRecorder(directory: dir)
         XCTAssertEqual(r.state, .idle)

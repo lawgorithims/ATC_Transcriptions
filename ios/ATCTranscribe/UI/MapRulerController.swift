@@ -113,11 +113,17 @@ final class MapRulerController: NSObject, UIGestureRecognizerDelegate {
         switch g.state {
         case .began:
             suspendMapGestures()
+            // The press matured into a ruler. Say so in the hand, because the pilot is holding
+            // still and watching the chart: without it the only confirmation is the ruler appearing
+            // when they lift, by which point it is too late to adjust the span.
+            if g.intent == .created { Haptics.impact(.rigid) }
         case .changed:
-            applyHold(g.current)
+            // `.created` has no hold — its ruler is laid at the fingers' final positions on lift.
+            if g.intent == .adjust { applyHold(g.current) }
         case .ended:
             if g.intent == .created {
-                createRuler(between: g.origins)
+                // `current`, not `origins`: the span may have been slid after the press armed it.
+                createRuler(between: g.current)
             } else {
                 applyHold(g.current)
             }

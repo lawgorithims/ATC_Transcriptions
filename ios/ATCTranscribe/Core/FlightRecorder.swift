@@ -133,8 +133,16 @@ private struct ActiveRecording: Codable {
         let flight = buildFlight(start: start, end: end)
         state = .idle
         trail = []; stops = []; startedAt = nil; distanceNM = 0
-        deleteFile(activeURL)
+        // ⚠️ THIS ORDER IS LOAD-BEARING AND IT USED TO BE THE OTHER WAY ROUND. The active mirror
+        // was deleted BEFORE the finished flight was written, so a kill in the window between the
+        // two — and a kill is the entire reason this mechanism exists — left NEITHER file on disk
+        // and lost the flight outright. The window is small; the loss is total, and it lands on the
+        // one action a pilot takes believing their flight is now safe.
+        //
+        // Writing the pending save FIRST means the worst case is both files existing, which
+        // `recoverOnLaunch` resolves in the pilot's favour rather than losing anything.
         if let flight { recoveredPendingSave = nil; persistPending(flight) }
+        deleteFile(activeURL)
         assert(state == .idle, "stopRecording: state not reset")
         return flight
     }
@@ -295,10 +303,18 @@ private struct ActiveRecording: Codable {
     }
 
     private func recoverOnLaunch() {
-        if let d = try? Data(contentsOf: pendingURL),
-           let f = try? JSONDecoder().decode(LoggedFlight.self, from: d) { recoveredPendingSave = f }
+        let pending = (try? Data(contentsOf: pendingURL))
+            .flatMap { try? JSONDecoder().decode(LoggedFlight.self, from: $0) }
+        if let pending { recoveredPendingSave = pending }
         guard let d = try? Data(contentsOf: activeURL),
               let a = try? JSONDecoder().decode(ActiveRecording.self, from: d), !a.points.isEmpty else { return }
+        // ⚠️ BOTH FILES CAN EXIST, AND THE FINISHED FLIGHT WINS. `stopRecording` now writes the
+        // pending save before deleting the active mirror, so a kill between those two leaves the
+        // mirror behind as a stale copy of a recording that has ALREADY been closed off. Recovering
+        // it as well would hand the pilot a save sheet AND a "resume this flight" banner for the
+        // same flight, and resuming would append new points onto a trail finished minutes ago — one
+        // flight logged twice, the second one wrong. The mirror is the stale one, so it goes.
+        if pending != nil { deleteFile(activeURL); return }
         trail = a.points; stops = a.stops; startedAt = a.startedAt; aircraftCallsign = a.aircraftCallsign
         distanceNM = a.distanceNM; maxSpeedKt = a.maxSpeedKt; maxAltFt = a.maxAltFt
         movingTimeSec = a.movingTimeSec; stoppedSince = a.stoppedSince; lastPoint = a.points.last

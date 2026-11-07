@@ -22,13 +22,19 @@ import UIKit
 ///     gesture that has not begun blocks nothing, so an ordinary pinch-zoom behaves exactly as it
 ///     did before this file existed. The moment either finger travels past `moveSlop` the
 ///     recognizer FAILS and the pinch is left entirely alone.
-///   * If instead both fingers lift inside `tapWindow` without travelling, it was a two-finger tap:
-///     the recognizer recognises, and a new ruler is laid between the two points. The map's own
-///     two-finger tap is made to require this one to fail, so the chart does not also zoom out.
+///   * If instead both fingers REST for `pressDuration` without travelling, it was a simultaneous
+///     two-finger long press: the recognizer recognises and a ruler is laid between them. The
+///     fingers may then be adjusted before lifting, and lifting commits.
 ///
-/// So the only thing a pilot loses is the two-finger tap-to-zoom-out, and only when the tap is a
-/// deliberate one. Pinch, rotate, one-finger pan and the double-tap zoom (while no ruler exists)
-/// are untouched.
+/// ⚠️ IT USED TO BE A TWO-FINGER TAP AND THE PILOT ASKED FOR A PRESS. A tap is the harder
+/// gesture to make deliberately in turbulence — two fingers have to arrive AND leave together
+/// inside a window — and it collided with the map's own two-finger tap-to-zoom-out, which had to be
+/// made to wait on this recognizer failing. A press collides with nothing: a tap now fails here
+/// immediately on lift, so zoom-out fires as it always did, and the ruler is armed by holding still,
+/// which is the one thing a hand braced against vibration can actually do.
+///
+/// So a pilot now loses NOTHING. Pinch, rotate, one-finger pan, the double-tap zoom and the
+/// two-finger tap-to-zoom-out all behave exactly as they did before this file existed.
 @MainActor
 final class TwoFingerRulerRecognizer: UIGestureRecognizer {
 
@@ -38,9 +44,10 @@ final class TwoFingerRulerRecognizer: UIGestureRecognizer {
     /// How far a finger may travel and still count as a tap rather than a pinch. Generous, because
     /// this is read in flight with gloves on and against vibration.
     static let moveSlop: CGFloat = 16
-    /// How long two fingers may rest before they stop being a tap. Past this the pilot is holding,
-    /// not tapping, and the gesture is left to the map.
-    static let tapWindow: TimeInterval = 0.45
+    /// How long two fingers must rest, together and still, before they mean a ruler. Short enough
+    /// not to feel like a wait, long enough that it cannot be produced by a pinch that happens to
+    /// start slowly — which is the only other thing two still fingers could be.
+    static let pressDuration: TimeInterval = 0.5
     /// Two fingers closer together than this are one clumsy touch, not a span worth measuring.
     static let minSpan: CGFloat = 32
 
@@ -54,20 +61,44 @@ final class TwoFingerRulerRecognizer: UIGestureRecognizer {
     var shouldAdjust: ([CGPoint]) -> Bool = { _ in false }
 
     private var touchPair: [UITouch] = []
-    /// How many of the two fingers have come off. A tap is only a tap once BOTH have: resolving on
-    /// the first lift would mean a pilot who lifts one finger and keeps dragging the other has
-    /// already laid a ruler down behind their hand.
     private var ended = 0
     private var began: TimeInterval = 0
+    /// Fires `pressDuration` after an undecided pair lands. Cancelled by travel, by a lift, and by
+    /// `reset()` — a timer that outlives its gesture would arm a ruler under whatever the pilot is
+    /// doing a moment later.
+    private var pressTimer: DispatchWorkItem?
 
     override func reset() {
         super.reset()
+        cancelPressTimer()
         intent = .undecided
         touchPair = []
         ended = 0
         current = []
         origins = []
         began = 0
+    }
+
+    private func cancelPressTimer() {
+        pressTimer?.cancel()
+        pressTimer = nil
+    }
+
+    /// Arm the press. Re-checks everything when it fires, because the world moved on in the half
+    /// second it was waiting: fingers may have lifted, a third may have landed, or the recognizer
+    /// may already have failed into a pinch.
+    private func startPressTimer() {
+        cancelPressTimer()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            guard self.state == .possible, self.intent == .undecided,
+                  self.touchPair.count == 2, self.ended == 0,
+                  self.travelled() <= Self.moveSlop else { return }
+            self.intent = .created
+            self.state = .began                       // the ruler exists from here; lifting commits
+        }
+        pressTimer = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.pressDuration, execute: work)
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
@@ -83,8 +114,10 @@ final class TwoFingerRulerRecognizer: UIGestureRecognizer {
         if shouldAdjust(origins) {
             intent = .adjust
             state = .began
+        } else {
+            // Stay `.possible` and start counting: see the note above about not blocking a pinch.
+            startPressTimer()
         }
-        // Otherwise stay `.possible`: see the note above about not blocking a pinch.
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
@@ -95,9 +128,14 @@ final class TwoFingerRulerRecognizer: UIGestureRecognizer {
         case .adjust:
             state = .changed
         case .undecided:
-            if travelled() > Self.moveSlop { state = .failed }   // it is a pinch; stand down
+            if travelled() > Self.moveSlop {
+                cancelPressTimer()
+                state = .failed                                  // it is a pinch; stand down
+            }
         case .created:
-            break
+            // Armed, and the pilot is still holding. Let them slide the span to where they want it
+            // before lifting — the ruler is laid where the fingers END, not where they landed.
+            state = .changed
         }
     }
 
@@ -111,14 +149,11 @@ final class TwoFingerRulerRecognizer: UIGestureRecognizer {
             // ruler somewhere the pilot did not put it.
             state = .ended
         case .undecided:
-            guard ended >= 2 else { return }                     // one finger up is not a tap yet
-            let quick = event.timestamp - began <= Self.tapWindow
-            if quick, travelled() <= Self.moveSlop, touchPair.count == 2 {
-                intent = .created
-                state = .ended                                   // a two-finger tap: lay a ruler
-            } else {
-                state = .failed
-            }
+            // A finger lifting before the press matured means this was never a ruler. Failing at
+            // once (rather than waiting for the second finger) is what lets the map's two-finger
+            // tap-to-zoom-out fire without a perceptible delay, since it waits on this failure.
+            cancelPressTimer()
+            state = .failed
         case .created:
             state = .ended
         }

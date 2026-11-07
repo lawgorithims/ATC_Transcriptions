@@ -507,12 +507,51 @@ final class AppModel: ObservableObject {
     let renderMeter = MapRenderMeter()
     /// Flight recorder (breadcrumb + metrics) and the logbook it saves finished flights to. Nested stores
     /// (same pattern as widgetStore/deviceLocation) — observers subscribe to them directly.
-    let flightRecorder = FlightRecorder()
+    /// ⚠️ INJECTABLE FOR TESTS ONLY, and it has to be. A default-constructed `FlightRecorder`
+    /// reads and writes the app's real Application Support folder, so any test touching an `AppModel`
+    /// shares one directory with a pilot's in-progress flight — the exact hazard `FlightRecorder.init`
+    /// warns about. A test that wants recorder behaviour passes its own temp-directory recorder.
+    let flightRecorder: FlightRecorder
     let logbook = Logbook()
     let rainViewer = RainViewerService()      // live precipitation-radar tiles for the weather-radar layer
     let windAloft = WindAloftService()        // GFS winds aloft for the animated wind-particle overlay
     /// A just-finished flight awaiting the save-to-logbook prompt (drives the SaveFlightSheet). Transient.
     @Published var pendingLoggedFlight: LoggedFlight?
+
+    /// The one thing the app is currently SAYING — see `TransientMessage`. nil most of the time.
+    @Published private(set) var transientMessage: TransientMessage?
+    private var transientMessageTask: Task<Void, Never>?
+
+    /// Say something once, then forget it.
+    ///
+    /// ⚠️ ONE SLOT, NO QUEUE, AND THE NEWEST WINS. A queue would make a pilot wait out stale
+    /// sentences to reach the current one, and in a cockpit the latest fact is the only one worth
+    /// the screen — a dropped message costs less than a backlog. It is also what keeps this bounded
+    /// (rule 2): there is exactly one message and one timer, however fast something calls it.
+    ///
+    /// ⚠️ NOT FOR ANYTHING REQUIRING AN ANSWER. It leaves on a timer; a decision must not.
+    func say(_ text: String, icon: String = "info.circle", tone: TransientMessage.Tone = .neutral) {
+        guard !text.isEmpty else { return }                               // param check (rule 7)
+        let m = TransientMessage(text: text, icon: icon, tone: tone)
+        transientMessageTask?.cancel()
+        transientMessage = m
+        transientMessageTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(m.visibleSec * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            // Only clear if it is still OUR message: a newer `say` already replaced the slot and
+            // owns its own timer, and clearing here would cut that one short.
+            guard let self, self.transientMessage?.id == m.id else { return }
+            self.transientMessage = nil
+        }
+        assert(transientMessage != nil, "say: nothing published")
+        assert(transientMessageTask != nil, "say: no dismissal scheduled")
+    }
+
+    func dismissTransientMessage() {
+        transientMessageTask?.cancel()
+        transientMessageTask = nil
+        transientMessage = nil
+    }
     private var deviceGPSPausedForBackground = false   // GPS was running when we backgrounded → resume on foreground
     /// Auto-download the filed route's plates when a plan is entered (the "pack your flight bag" flow).
     @Published var autoPackFlightBag = (UserDefaults.standard.object(forKey: "atc.autoPackBag") as? Bool ?? true) {
@@ -1580,7 +1619,12 @@ final class AppModel: ObservableObject {
     private var modelDirs: [String: String] = [:]   // whisper variant id → on-disk model folder
     private var audioDirPath: String?               // demo clips dir, kept for model re-load on switch
 
-    init() {
+    init(flightRecorder recorder: FlightRecorder? = nil) {
+        // Built HERE rather than as a default argument: a default argument expression is evaluated
+        // in a nonisolated context and `FlightRecorder` is `@MainActor`, so it will not compile.
+        // The internal name differs from the label so it cannot shadow `self.flightRecorder` later
+        // in this initialiser, which refers to the property by bare name.
+        self.flightRecorder = recorder ?? FlightRecorder()
         // SANITIZER: the Clearance Test Bench's sandbox ownship (N8925T / "Piper Seneca") must never
         // masquerade as the pilot's real aircraft. The crash-leak case is already handled up front by
         // `recoverIfInterrupted()` (breadcrumb restore); this is only a belt-and-suspenders for stale
@@ -3709,12 +3753,37 @@ final class AppModel: ObservableObject {
     /// REC control action: start recording (ensuring the shared GPS feed is up — idempotent, no 2nd session),
     /// or stop and hand the finished flight to the save-to-logbook prompt.
     func toggleFlightRecording() {
+        // ⚠️ A RECOVERED RECORDING OWNS THIS BUTTON UNTIL THE PILOT ANSWERS ITS BANNER, and saying
+        // so is the point. Without this branch the tap fell through to `startRecording`, which
+        // refuses over `.recovered` and returns — so the button did NOTHING, with nothing on screen
+        // to explain it. That guard is what stopped the crash destroying the trail, and it created a
+        // second silence in the process: the fix for losing the flight looked, from the cockpit,
+        // like a dead REC button.
+        if flightRecorder.state == .recovered {
+            say("Finish the recovered flight first — resume it or save it.",
+                icon: "clock.arrow.circlepath", tone: .warn)
+            return
+        }
         if flightRecorder.isRecording {
-            pendingLoggedFlight = flightRecorder.stopRecording()
+            finishRecording(flightRecorder.stopRecording())
         } else {
             deviceLocation.start()
             flightRecorder.startRecording(aircraftCallsign: selectedAircraft?.callsign)
         }
+    }
+
+    /// Hand a stopped recording to the save prompt — or say why there is no prompt.
+    ///
+    /// ⚠️ nil IS NOT AN ERROR AND IT IS NOT NOTHING. It means the recording captured no fix at
+    /// all, which happens for a real and ordinary reason: GPS never came up, or the whole recording
+    /// ran indoors. Setting `pendingLoggedFlight = nil` and returning left the pilot pressing REC
+    /// twice and getting silence, unable to tell a saved flight from an empty one — which reads
+    /// exactly like the logbook dropping flights, and is how it was reported.
+    private func finishRecording(_ flight: LoggedFlight?) {
+        pendingLoggedFlight = flight
+        guard flight == nil else { return }                 // the save sheet speaks for itself
+        say("Nothing to save — no GPS fix was recorded for that flight.",
+            icon: "location.slash", tone: .warn)
     }
     /// Carry on recording into a flight the app died in the middle of. The trail, the distance and the
     /// stop list are already back in memory — this just restarts the sampler and lets it keep appending.
@@ -3726,7 +3795,7 @@ final class AppModel: ObservableObject {
     /// Close off a recovered flight as it stands and hand it to the save prompt — the same prompt a
     /// normally-stopped flight goes to, so there is one save path and not two.
     func saveRecoveredRecording() {
-        pendingLoggedFlight = flightRecorder.stopRecording()
+        finishRecording(flightRecorder.stopRecording())
     }
 
     /// Direct-to originates at PRESENT POSITION (ForeFlight parity), falling back to the filed departure if

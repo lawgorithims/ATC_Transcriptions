@@ -18,10 +18,20 @@ struct MapRulerLayer: View {
     /// Planned cruise from the selected aircraft profile, used only when the aircraft is not moving.
     let cruiseKt: Int?
 
-    /// Drawn thicker than a chart line and with a dark casing under it, because this is read against
-    /// a sectional — which is already full of magenta and blue lines of its own.
+    /// Drawn thicker than a chart line and with a casing under it, because this is read against a
+    /// sectional — which is already full of magenta and blue lines of its own.
     private let lineWidth: CGFloat = 2.6
-    private let capRadius: CGFloat = 6
+    /// Half-length of the perpendicular bar at each end — a dimension line's terminator.
+    private let endBar: CGFloat = 9
+
+    /// ⚠️ GRADUATION SPACING IN POINTS, NOT NAUTICAL MILES, and that is deliberate. These marks
+    /// say "this is a measuring instrument"; they are not a scale and must not be read as one — the
+    /// distance is in the label, to three significant figures, where it cannot be misread. A
+    /// distance-based spacing would vanish at low zoom and carpet the chart at high.
+    private let tickSpacing: CGFloat = 13
+    /// Bounded (rule 2). A ruler drawn across a zoomed-in chart is thousands of points long, and the
+    /// ticks stop rather than the frame rate.
+    private let maxTicks = 240
 
     var body: some View {
         Canvas { ctx, size in
@@ -49,25 +59,70 @@ struct MapRulerLayer: View {
         line.move(to: seg.a)
         line.addLine(to: seg.b)
 
-        // Dark casing first, then the accent on top: the same two-pass trick the route line uses, and
-        // the only thing that keeps a thin line legible over both a white sectional and a night chart.
-        ctx.stroke(line, with: .color(.black.opacity(0.55)),
-                   style: StrokeStyle(lineWidth: lineWidth + 2.4, lineCap: .round))
-        ctx.stroke(line, with: .color(live ? palette.warn : palette.accent),
-                   style: StrokeStyle(lineWidth: lineWidth, lineCap: .round,
+        // ⚠️ NOT `palette.accent`, AND THAT IS THE WHOLE POINT OF THE REDESIGN. Accent is FAA
+        // sectional blue — the colour of the route line and of half the chart underneath it — so a
+        // ruler drawn in it read as a course the pilot had filed. Reported from the air as the ruler
+        // being confused with the flight path.
+        //
+        // `palette.text` on a `palette.bg` casing instead, which inverts correctly in all three
+        // themes without a hardcoded colour: white-on-black in the cockpit, black-on-white on the
+        // day chart, red-on-black at night. No chart feature and no route is ever drawn this way.
+        let ink = live ? palette.warn : palette.text
+        ctx.stroke(line, with: .color(palette.bg.opacity(0.85)),
+                   style: StrokeStyle(lineWidth: lineWidth + 3.4, lineCap: .round))
+        ctx.stroke(line, with: .color(ink),
+                   style: StrokeStyle(lineWidth: lineWidth, lineCap: .butt,
                                       dash: live ? [7, 4] : []))
 
+        drawGraduations(seg: seg, ink: ink, ctx: &ctx)
+
+        // END BARS, not dots. A dimension line is terminated square across its axis, and that one
+        // detail is what makes this read as a measurement at a glance rather than as a leg with
+        // waypoints at the ends — which is exactly what two round caps on a coloured line look like.
+        let (ux, uy) = unit(seg)
         for end in [seg.a, seg.b] {
-            let r = live ? capRadius + 1.5 : capRadius
-            let box = CGRect(x: end.x - r, y: end.y - r, width: r * 2, height: r * 2)
-            ctx.fill(Path(ellipseIn: box), with: .color(.black.opacity(0.6)))
-            ctx.fill(Path(ellipseIn: box.insetBy(dx: 1.6, dy: 1.6)),
-                     with: .color(live ? palette.warn : palette.accent))
+            var bar = Path()
+            bar.move(to: CGPoint(x: end.x - uy * endBar, y: end.y + ux * endBar))
+            bar.addLine(to: CGPoint(x: end.x + uy * endBar, y: end.y - ux * endBar))
+            ctx.stroke(bar, with: .color(palette.bg.opacity(0.85)),
+                       style: StrokeStyle(lineWidth: lineWidth + 3.4, lineCap: .round))
+            ctx.stroke(bar, with: .color(ink),
+                       style: StrokeStyle(lineWidth: lineWidth + 0.6, lineCap: .round))
         }
 
         let readout = MapRulerMath.readout(ruler, groundSpeedKt: groundSpeedKt,
                                            cruiseKt: cruiseKt, variation: MagneticVariation.at)
         drawLabel(readout, seg: seg, live: live, ctx: &ctx, size: size)
+    }
+
+    /// The rule's graduations: short perpendicular ticks along the span, every fifth one longer.
+    /// Drawn in the ink only — no casing — because they sit on top of a line that already has one.
+    private func drawGraduations(seg: MapRulerStore.ScreenSegment, ink: Color,
+                                 ctx: inout GraphicsContext) {
+        let dx = seg.b.x - seg.a.x, dy = seg.b.y - seg.a.y
+        let len = hypot(dx, dy)
+        guard len > tickSpacing * 2 else { return }      // too short to graduate; the bars say enough
+        let (ux, uy) = unit(seg)
+        let count = min(Int(len / tickSpacing), maxTicks)
+        guard count > 0 else { return }
+        var ticks = Path()
+        for i in 1..<max(count, 2) {                     // bounded by `maxTicks` (rule 2)
+            let d = CGFloat(i) * tickSpacing
+            guard d < len else { break }
+            let h: CGFloat = i % 5 == 0 ? 6 : 3.5
+            let p = CGPoint(x: seg.a.x + ux * d, y: seg.a.y + uy * d)
+            ticks.move(to: CGPoint(x: p.x - uy * h, y: p.y + ux * h))
+            ticks.addLine(to: CGPoint(x: p.x + uy * h, y: p.y - ux * h))
+        }
+        ctx.stroke(ticks, with: .color(ink), style: StrokeStyle(lineWidth: 1.4, lineCap: .butt))
+    }
+
+    /// Unit vector along the segment. Guarded: a zero-length ruler would divide by zero and put NaN
+    /// into every tick and bar, which Core Graphics draws as nothing at all.
+    private func unit(_ seg: MapRulerStore.ScreenSegment) -> (CGFloat, CGFloat) {
+        let dx = seg.b.x - seg.a.x, dy = seg.b.y - seg.a.y
+        let len = max(hypot(dx, dy), 0.001)
+        return (dx / len, dy / len)
     }
 
     private func drawLabel(_ readout: MapRulerReadout, seg: MapRulerStore.ScreenSegment,
