@@ -331,6 +331,40 @@ is in the `commsight-ux-decisions` memory note.
   different from traffic rather than as a bigger version of it. Verified over Philadelphia with live
   ADS-B: chevrons fanning out on their individual tracks.
 
+**⚠️ RUNNING XCUITEST ON A SHARED MAC — read this before trusting a UI-suite result.**
+
+Two sessions lost hours to this on 2026-11-07. Concurrent XCUITest runs on one Mac can kill each
+other at RUNNER BOOTSTRAP, and the failure does not say so.
+
+IT WEARS THREE MASKS, and only the first is obviously a harness problem:
+1. `Executed 0 tests` for every class, `TEST FAILED`, and no failure named anywhere. The log is
+   ~80 lines and the real line is `ATCTranscribeUITests-Runner encountered an error (Early
+   unexpected exit, operation never finished bootstrapping — Test crashed with signal kill before
+   establishing connection.)`.
+2. `Mach error -308 - (ipc/mig) server died`, 0 tests executed.
+3. ⚠️ THE DANGEROUS ONE: unrelated tests "fail" with waits timing out — an airport card that
+   never opened, a theme menu not hittable — ending in `FBSOpenApplicationServiceErrorDomain
+   Code=4, "Application info provider returned nil"`, i.e. the app left the device mid-run. Those
+   named failures are NOT REAL; the same tests passed on the next run. Someone who only knows mask
+   1 will take mask 3 at face value and go hunting in the product code.
+
+IT IS NOT "TWO RUNS ALWAYS DIE". A full iPad Pro 13-inch suite completed clean (68 / 13 skipped /
+0 failures) during the same window in which two iPhone runs were being killed. The pattern fits
+"whoever is mid-bootstrap while another run is active tends to lose" rather than a blanket rule —
+so do not write this off when you see a suite survive contention once.
+
+BEFORE A UI RUN, check nobody else is on the machine:
+`ps -eo pid,etime,command | grep '[x]codebuild ' ` and `xcrun simctl list devices booted`.
+Other Claude sessions show up with their own `-derivedDataPath`, which identifies whose run it is.
+
+⚠️ NEVER `xcrun simctl shutdown all` ON THIS MACHINE. It reaches other sessions' devices and will
+shut down a stranger's simulator mid-test — that happened on 2026-11-07 and silently invalidated a
+third session's run. Shut down only the device you booted, by UDID, the way `uitests.sh` already
+does with its own `$SIM`.
+
+ALSO: `TaskStop` on a backgrounded `xcodebuild` kills the shell, not necessarily `xcodebuild`
+itself. Check `ps` after stopping one, or the orphan keeps driving the simulator.
+
 **Known limits / candidate next work:**
 - **Diarization can't separate simultaneous talkers (overtalk).** The heuristic v1 splits on PTT
   gaps + acoustic clustering. The "very robust" upgrade = a dedicated **speaker-embedding CoreML
