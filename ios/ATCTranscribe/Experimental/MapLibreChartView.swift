@@ -32,6 +32,9 @@ struct MapLibreChartView: UIViewRepresentable {
     /// as the accuracy ring, and integrity tints both the ring and the ownship symbol.
     var ownshipAccuracyM: Double? = nil
     var ownshipIntegrity: GPSIntegrityState = .unknown
+    /// Ground speed, for the between-fix dead reckoning — see `OwnshipMotion`. nil or slow means the
+    /// symbol simply sits on its last fix, which is the right answer for a parked aeroplane.
+    var ownshipSpeedKt: Double? = nil
     var traffic: [Aircraft] = []
     /// Stations whose weather is deteriorating fast (chart markers). See `WxTrendPin`.
     var wxTrend: [WxTrendPin] = []
@@ -91,6 +94,8 @@ struct MapLibreChartView: UIViewRepresentable {
     /// Live arrival-energy bands. Empty whenever the fix is untrusted — a stale footprint is a
     /// claim about a situation that no longer exists.
     var lzEnergyBands: [LZEnergyBand] = []
+    /// Where `lzEnergyBands` was computed from — see `LZRiskController.energyAnchor`.
+    var lzEnergyAnchor: Coord? = nil
     var lzGlidePlan: LZGlidePlan?
     /// How many energy polygons were actually installed into the shape source, reported after each
     /// change. The band LIST reaching the view proves the maths ran; only this proves the map got it,
@@ -141,6 +146,7 @@ struct MapLibreChartView: UIViewRepresentable {
         c.setAvoidProvider(avoidProvider, signature: avoidSignature)
         c.inLZProbe = lzProbe
         c.inLZEnergyBands = lzEnergyBands
+        c.inLZEnergyAnchor = lzEnergyAnchor
         c.inLZGlidePlan = lzGlidePlan
         c.onLZEnergyRendered = onLZEnergyRendered
         c.inGlideGaps = glideGapLines
@@ -150,6 +156,7 @@ struct MapLibreChartView: UIViewRepresentable {
         c.cacheInputs(layer: layer, routeCoords: routeCoords, breadcrumbCoords: breadcrumbCoords,
                       radarTemplate: radarTemplate, holds: holds, ownship: ownship, ownshipCourse: ownshipCourse,
                       ownshipAccuracyM: ownshipAccuracyM, ownshipIntegrity: ownshipIntegrity,
+                      ownshipSpeedKt: ownshipSpeedKt,
                       traffic: traffic, wxTrend: wxTrend, tfrs: showTFRs ? tfrs : [], showAirspace: showAirspace,
                       showNearby: showNearby, showAirways: showAirways, declutter: declutter,
                       plateOverlay: plateOverlay,
@@ -294,6 +301,7 @@ struct MapLibreChartView: UIViewRepresentable {
         /// clean remount — no pixel scored for the previous aircraft can survive in MapLibre's cache.
         private var appliedLZSignature: String??
         private var appliedLZEnergySig: String?
+        var inLZEnergyAnchor: Coord?
         private var inOwnship: CLLocationCoordinate2D?
         private var inOwnCourse: Double?
         private var inTraffic: [Aircraft] = []
@@ -319,6 +327,7 @@ struct MapLibreChartView: UIViewRepresentable {
                          ownship: CLLocationCoordinate2D?,
                          ownshipCourse: Double?, ownshipAccuracyM: Double?,
                          ownshipIntegrity: GPSIntegrityState,
+                         ownshipSpeedKt: Double?,
                          traffic: [Aircraft], wxTrend: [WxTrendPin], tfrs: [TFR], showAirspace: Bool,
                          showNearby: Bool, showAirways: Bool, declutter: Bool,
                          plateOverlay: PlateOverlayState?,
@@ -331,6 +340,7 @@ struct MapLibreChartView: UIViewRepresentable {
             inHolds = holds
             inOwnship = ownship; inOwnCourse = ownshipCourse
             inOwnAccuracy = ownshipAccuracyM; inOwnIntegrity = ownshipIntegrity
+            inOwnSpeedKt = ownshipSpeedKt
             inTraffic = traffic; inWxTrend = wxTrend; inTFRs = tfrs; inShowAirspace = showAirspace; inShowNearby = showNearby
             inShowAirways = showAirways; inDeclutter = declutter
             inPlate = plateOverlay; inFocus = focus; self.restoreCamera = restoreCamera
@@ -684,6 +694,9 @@ struct MapLibreChartView: UIViewRepresentable {
             // and this view's projection go. A render-stall fallback to the classic engine rebuilds
             // the map, and a pilot's measurement must not disappear because of it.
             detachRuler()
+            // The ownship smoother's display link holds this coordinator and keeps firing at 30 Hz
+            // against a map that is going away. Same hazard as the particle MTKView below.
+            stopOwnshipDisplayLink()
             regionDebounce?.cancel(); regionDebounce = nil
             // Drop the host callback BEFORE stopping the server, so a torn-down coordinator can never
             // drive the host's engine state whichever callback wins the race.
@@ -1779,10 +1792,22 @@ struct MapLibreChartView: UIViewRepresentable {
         /// ownship cell, so a stationary aircraft re-tessellates nothing between sweeps.
         func updateLZEnergy(_ bands: [LZEnergyBand], on map: MLNMapView) {
             guard let src = map.style?.source(withIdentifier: "lz-energy") as? MLNShapeSource else { return }
+            // ⚠️ THE FOOTPRINT IS SLID FROM WHERE IT WAS COMPUTED TO WHERE THE AEROPLANE IS DRAWN.
+            // The sweep is a 64-ray march over the terrain grid and runs every five seconds; at 140 kt
+            // the aircraft is a quarter of a mile further on by the time the next one lands. So the
+            // bands used to sit still while the symbol moved, then jump — "the glide bars move
+            // independently of the plane", from the cockpit.
+            //
+            // Sliding is an approximation: the terrain under the new position is not the terrain the
+            // rays were marched over. It is a STRICTLY SMALLER error than leaving them, because today
+            // the footprint is both stale AND in the wrong place, and this fixes the second. The
+            // staleness is unchanged and bounded by the sweep period; raising that is a battery
+            // decision, not a rendering one.
+            let slide = bandSlide()
             let sig = bands.map { "\($0.classification.rawValue):\($0.rings.count)" }
                            .joined(separator: "|")
-                + String(format: "|%.4f,%.4f", bands.first?.rings.first?.first?.lat ?? 0,
-                         bands.first?.rings.first?.first?.lon ?? 0)
+                + String(format: "|%.4f,%.4f|%.5f,%.5f", bands.first?.rings.first?.first?.lat ?? 0,
+                         bands.first?.rings.first?.first?.lon ?? 0, slide.dLat, slide.dLon)
             guard sig != appliedLZEnergySig else { return }
             appliedLZEnergySig = sig
             guard !bands.isEmpty else { src.shape = nil; onLZEnergyRendered?(0); return }
@@ -1790,7 +1815,9 @@ struct MapLibreChartView: UIViewRepresentable {
             var features: [MLNPolygonFeature] = []
             for band in bands {                                          // bounded: 4 classes
                 for ring in band.rings.prefix(Self.maxEnergySectors) {   // bounded (rule 2)
-                    var pts = ring.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) }
+                    var pts = ring.map {
+                        CLLocationCoordinate2D(latitude: $0.lat + slide.dLat, longitude: $0.lon + slide.dLon)
+                    }
                     guard pts.count >= 4 else { continue }
                     let poly = MLNPolygonFeature(coordinates: &pts, count: UInt(pts.count))
                     poly.attributes = ["cls": band.classification.rawValue]
@@ -1801,6 +1828,20 @@ struct MapLibreChartView: UIViewRepresentable {
             // Report what the SOURCE received, not what arrived — a ring the guard above dropped is
             // exactly the failure this number exists to catch.
             onLZEnergyRendered?(features.count)
+        }
+
+        /// How far to slide the energy footprint: from the position its sweep was computed at to the
+        /// position the aeroplane is currently being DRAWN at (the smoothed one, so the bands ride
+        /// with the symbol rather than with the raw fix). Zero whenever either end is missing.
+        ///
+        /// A plain degree offset, not a geodesic translation: over the fraction of a mile this ever
+        /// covers the difference is centimetres, and a rigid slide is the point — the footprint must
+        /// keep its shape, which a per-vertex great-circle walk would not guarantee at the poles.
+        private func bandSlide() -> (dLat: Double, dLon: Double) {
+            guard let anchor = inLZEnergyAnchor, let here = ownMotion.displayed else { return (0, 0) }
+            let dLat = here.lat - anchor.lat, dLon = here.lon - anchor.lon
+            guard dLat.isFinite, dLon.isFinite else { return (0, 0) }
+            return (dLat, dLon)
         }
 
         /// Hard cap per class. A 64-ray sweep yields a few hundred sectors; anything beyond this is
@@ -2434,8 +2475,15 @@ struct MapLibreChartView: UIViewRepresentable {
         private var lastOwnCourse: Double?
         private var lastOwnAccuracy: Double?
         private var lastOwnIntegrity: GPSIntegrityState = .unknown
+        private var lastOwnSpeedKt: Double?
         var inOwnAccuracy: Double?
         var inOwnIntegrity: GPSIntegrityState = .unknown
+        var inOwnSpeedKt: Double?
+        /// Between-fix interpolation for the aeroplane symbol — see `OwnshipMotion`.
+        private var ownMotion = OwnshipMotion()
+        private var ownshipLink: CADisplayLink?
+        private var lastDrawnOwnship: Coord?
+        private var lastDrawnCourse: Double?
         private var lastTraffic: [Aircraft] = []
         // Last-APPLIED signatures — early-return guards so an unrelated AppModel publish (e.g. the audio VU
         // meter, ~10-30×/s) can't re-tessellate + re-upload unchanged route/ownship/traffic/TFR geometry.
@@ -2462,27 +2510,90 @@ struct MapLibreChartView: UIViewRepresentable {
                            accuracyM: Double? = nil, integrity: GPSIntegrityState = .unknown,
                            on map: MLNMapView) {
             lastOwnship = coord; lastOwnCourse = course
-            lastOwnAccuracy = accuracyM; lastOwnIntegrity = integrity
-            guard let src = map.style?.source(withIdentifier: "ownship") as? MLNShapeSource else { return }
-            // The signature carries integrity and a COARSE accuracy bucket as well as position: the ring
-            // must be rebuilt when the fix quality changes, but a metre of accuracy jitter at 1 Hz must
-            // not rebuild a 64-point polygon every tick.
-            let sig = coord.map {
-                "\(Self.qJit($0.latitude)),\(Self.qJit($0.longitude)),\(Self.qDeg(course ?? 0))"
-                + ",\(integrity.rawValue),\(Int((accuracyM ?? 0) / 5))"
-            } ?? "nil"
-            guard sig != appliedOwnSig else { return }
-            appliedOwnSig = sig
+            lastOwnAccuracy = accuracyM; lastOwnIntegrity = integrity; lastOwnSpeedKt = inOwnSpeedKt
             guard let coord else {                                       // no fix → hide symbol AND ring
-                src.shape = nil
+                ownMotion.reset()
+                stopOwnshipDisplayLink()
+                lastDrawnOwnship = nil; lastDrawnCourse = nil
+                appliedOwnSig = "nil"
+                (map.style?.source(withIdentifier: "ownship") as? MLNShapeSource)?.shape = nil
                 (map.style?.source(withIdentifier: "accuracy") as? MLNShapeSource)?.shape = nil
                 return
             }
-            let f = MLNPointFeature(); f.coordinate = coord
-            f.attributes = ["rot": (course.map { $0 - 90 } ?? 0), "img": Self.ownshipImageName(integrity)]
-            src.shape = f
+            // ⚠️ THE SYMBOL AND THE RING ARE NO LONGER GATED BY ONE SIGNATURE, AND THAT WAS HALF THE
+            // JERK. `qJit` is a ~12 m dead band and `qDeg` a 3° one. They exist for the RING — a
+            // 64-point polygon that must not be rebuilt for a metre of jitter at 1 Hz — but they were
+            // applied to the aeroplane too, so the symbol could only move in 12 m steps and could only
+            // turn in 3° steps. The ring keeps its dead band below; the symbol is one point feature
+            // and costs nothing, so it is free to move whenever it has moved.
+            ownMotion.ingest(Coord(lat: coord.latitude, lon: coord.longitude),
+                             trackDeg: course, speedKt: lastOwnSpeedKt, at: Date())
+            startOwnshipDisplayLink()
+            renderOwnshipSymbol(on: map)
+
+            let ringSig = "\(Self.qJit(coord.latitude)),\(Self.qJit(coord.longitude))"
+                + ",\(integrity.rawValue),\(Int((accuracyM ?? 0) / 5))"
+            guard ringSig != appliedOwnSig else { return }
+            appliedOwnSig = ringSig
             updateAccuracyRing(coord, accuracyM: accuracyM, integrity: integrity, on: map)
         }
+
+        /// Draw the aeroplane at the smoother's current position. One point feature — cheap enough to
+        /// run at display rate, which is the other half of the fix: between deliveries the symbol is
+        /// dead-reckoned forward rather than sitting still and then teleporting. See `OwnshipMotion`.
+        private func renderOwnshipSymbol(on map: MLNMapView) {
+            guard let src = map.style?.source(withIdentifier: "ownship") as? MLNShapeSource,
+                  let here = ownMotion.position(at: Date()) else { return }
+            // ⚠️ DO NOT REWRITE THE SOURCE WHEN NOTHING MOVED. The link ticks 30 times a second for as
+            // long as there is a fix, and a parked or settled aeroplane would otherwise upload the same
+            // point feature thirty times a second for the whole flight. Half a metre is far below what
+            // a pixel can show at any usable chart scale, so this costs nothing visible and takes the
+            // idle case to zero work. The course is in the test too: a turn moves the symbol's glyph
+            // without moving its position.
+            let moved = lastDrawnOwnship.map { Geo.nmBetween($0, here) >= 0.00027 } ?? true   // ~0.5 m
+            let turned = lastDrawnCourse != lastOwnCourse
+            guard moved || turned else { return }
+            lastDrawnOwnship = here; lastDrawnCourse = lastOwnCourse
+            let f = MLNPointFeature()
+            f.coordinate = CLLocationCoordinate2D(latitude: here.lat, longitude: here.lon)
+            f.attributes = ["rot": (lastOwnCourse.map { $0 - 90 } ?? 0),
+                            "img": Self.ownshipImageName(lastOwnIntegrity)]
+            src.shape = f
+        }
+
+        /// A display link, not a timer: it ticks in step with the compositor, so the motion is smooth
+        /// at whatever rate the screen is actually running and costs nothing extra on a ProMotion
+        /// panel. 30 fps is plenty for an aeroplane and halves the wakeups.
+        private func startOwnshipDisplayLink() {
+            guard ownshipLink == nil else { return }
+            let link = CADisplayLink(target: self, selector: #selector(tickOwnship))
+            link.preferredFramesPerSecond = 30
+            link.add(to: .main, forMode: .common)
+            ownshipLink = link
+        }
+
+        func stopOwnshipDisplayLink() {
+            ownshipLink?.invalidate()
+            ownshipLink = nil
+        }
+
+        @objc private func tickOwnship() {
+            guard let map else { return }
+            renderOwnshipSymbol(on: map)
+            // Slide the glide footprint with the symbol — but only once the aeroplane has actually
+            // moved far enough to be worth rebuilding a few hundred polygons for. At 140 kt that is
+            // about twice a second; parked it is never, which is the behaviour that matters for
+            // battery on a layer a pilot may leave on for a whole flight.
+            guard !inLZEnergyBands.isEmpty, let here = ownMotion.displayed else { return }
+            if let last = lastBandSlideAt, Geo.nmBetween(last, here) < Self.bandSlideNm { return }
+            lastBandSlideAt = here
+            updateLZEnergy(inLZEnergyBands, on: map)
+        }
+
+        /// Movement before the footprint is re-slid — ~37 m, the same gate the flight recorder uses to
+        /// tell travel from jitter.
+        static let bandSlideNm = 0.02
+        private var lastBandSlideAt: Coord?
 
         /// Symbol name matching the images registered in `setupDynamicLayers`.
         private static func ownshipImageName(_ state: GPSIntegrityState) -> String {

@@ -165,9 +165,30 @@ is in the `commsight-ux-decisions` memory note.
   as the logbook having dropped it. STILL OPEN: a stop that recorded nothing (no fix for the whole
   recording) returns nil and says nothing at all, so the pilot cannot tell "saved" from "there was
   nothing to save". There is no toast mechanism in the app to say it with.
-- **Ownship motion is jerky** — the symbol is moved per fix at the receiver's delivery rate; it needs
-  interpolation along the reported track/ground speed, with the glide geometry drawn from the same
-  interpolated position so it stops moving independently. Not started.
+- ~~**Ownship motion is jerky, and the glide bands move independently.**~~ — DONE (2026-11-06). Two
+  causes, both in the MapLibre engine (MapKit was never as bad: `MKAnnotation.coordinate` is
+  `@objc dynamic` and MapKit glides the view between values; a shape source has no equivalent).
+  (a) `updateOwnship` wrote `src.shape = f` — a teleport — once per delivery, and `DeviceLocation`
+  runs a 15 m `distanceFilter`, so on a 0.5 NM chart the aeroplane advanced a dozen points at a time.
+  (b) ONE signature gated the symbol and the accuracy ring together, and it carried `qJit` (~12 m dead
+  band) and `qDeg` (3°). Those exist for the RING — a 64-point polygon that must not rebuild for a
+  metre of jitter — but they also stopped the aeroplane moving under 12 m or turning under 3°.
+  Fix: `Core/OwnshipMotion.swift` dead-reckons the last fix forward along track at ground speed AND
+  eases the drawn position toward that estimate (smoothing only the second still steps once per fix;
+  only the first trades small regular steps for occasional large ones). A `CADisplayLink` at 30 fps
+  renders the symbol alone; the ring keeps its dead band. ⚠️ Bounds, because this draws the aeroplane
+  where the receiver has not said it is: `maxExtrapolationS = 2` (a lost signal must not fly the
+  symbol onward on a stale heading), `minSpeedKt = 15` (below that GPS course is noise and a parked
+  aeroplane would wander), both track and speed required, and `snapDistanceNm = 0.25` so a reposition
+  is taken instantly instead of crawling across the chart. The link skips the source write entirely
+  when nothing moved by 0.5 m and the course is unchanged, so idle costs nothing.
+  The glide bands now SLIDE from `LZRiskController.energyAnchor` (where the 5 s sweep was computed) to
+  where the symbol is drawn, re-slid on movement of `bandSlideNm = 0.02` (~37 m, ≈2 Hz at 140 kt,
+  never when parked). ⚠️ Sliding is an approximation — the terrain under the new position is not what
+  the rays were marched over — but it is a STRICTLY SMALLER error than before, when the footprint was
+  both stale and in the wrong place; this fixes the second. Shortening the 5 s sweep is a battery
+  decision, not a rendering one. NOT VERIFIED IN MOTION: the Simulator's held ownship does not move,
+  so smoothness itself was not watched — the interpolation maths is pinned by `OwnshipMotionTests`.
 - **No way to edit an aircraft once saved**, and no aircraft editor in Settings. Not started.
 - **ADS-B streaming never connects.** Not started.
 - **NRST is duplicated** — sidebar button and the top-bar `!` do the same thing; merge into one

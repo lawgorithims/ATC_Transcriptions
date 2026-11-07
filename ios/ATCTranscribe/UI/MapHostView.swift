@@ -66,6 +66,13 @@ struct MapHostView: View {
     /// the accuracy ring/tint — legitimate while a real Stratux fix is driving ownship, wrong the moment
     /// that fix is stale, because then the device GPS is driving and its integrity verdict DOES apply.
     private var stratuxHasFix: Bool { model.stratuxOwnshipTrusted }
+    /// Ground speed for the ownship smoother — the merged value, but only when whoever is driving the
+    /// symbol vouches for it. `OwnshipMotion` dead-reckons ALONG this between fixes, and projecting
+    /// along a speed nobody stands behind is how a parked aeroplane starts to wander off its stand.
+    private var ownshipSpeedKt: Double? {
+        guard stratuxHasFix || gpsIntegrity.speedUsable else { return nil }
+        return GPSReadout.merge(stratux: model.freshStratuxGPS, device: model.deviceLocation.fix).groundSpeedKt
+    }
     /// The flight recorder's breadcrumb, bridged from the nested recorder (like deviceCoord). Append-only
     /// during a recording, [] otherwise — the maps guard on its COUNT so it doesn't re-tessellate per tick.
     @State private var breadcrumb: [Coord] = []
@@ -488,6 +495,7 @@ struct MapHostView: View {
             ownshipCourse: model.stratuxGPS?.coordinate == nil ? deviceCourse : nil,
             ownshipAccuracyM: stratuxHasFix ? nil : gpsIntegrity.horizontalAccuracyM,
             ownshipIntegrity: stratuxHasFix ? .unknown : gpsIntegrity.state,
+            ownshipSpeedKt: ownshipSpeedKt,
             traffic: model.aircraft,
             wxTrend: wxPins,
             tfrs: model.tfrs,
@@ -571,6 +579,7 @@ struct MapHostView: View {
                 ? { [lzController] c in lzController.sample(lon: c.lon, lat: c.lat) }
                 : nil,
             lzEnergyBands: model.showLZEnergy ? lzController.energyBands : [],
+            lzEnergyAnchor: model.showLZEnergy ? lzController.energyAnchor : nil,
             // NOT gated on the layer toggles. The pilot armed this deliberately after rehearsing
             // it; switching the shading off is a decluttering decision and must not silently
             // delete the plan they intend to fly.
