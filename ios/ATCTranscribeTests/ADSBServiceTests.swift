@@ -39,6 +39,37 @@ final class ADSBServiceTests: XCTestCase {
         XCTAssertTrue(blankFlight.onGround)
     }
 
+    /// A verbatim adsb.lol `/v2/point` body, captured live the day the provider was changed.
+    ///
+    /// ⚠️ THIS EXISTS BECAUSE THE PREVIOUS PROVIDER WENT AWAY AND NOTHING NOTICED.
+    /// `api.airplanes.live` began answering 403 — they closed the open endpoint — and because a
+    /// traffic layer that is switched on and shows an empty sky looks exactly like a quiet one, it
+    /// was flown for a long time before being reported as "ADS-B never works". Pinning a real body
+    /// from the provider the app actually calls is the cheapest thing that turns the NEXT such change
+    /// from a silent nothing into a red test. The field names are readsb/tar1090's, which is why the
+    /// switch needed no decoder change at all.
+    func testDecodesARealBodyFromTheCurrentProvider() throws {
+        let json = "{\"ac\":["
+            + "{\"hex\":\"abe0bb\",\"flight\":\"SWA2114 \",\"lat\":40.570084,\"lon\":-74.077148,"
+            + "\"alt_baro\":5000,\"gs\":230.4,\"track\":40.95,\"seen\":0.0,\"seen_pos\":0.138,"
+            + "\"category\":\"A3\"},"
+            + "{\"hex\":\"a1b2c3\",\"flight\":\"N442QS  \",\"lat\":40.7,\"lon\":-73.9,"
+            + "\"alt_baro\":\"ground\",\"gs\":12.0,\"track\":180.0,\"seen\":1.2,\"seen_pos\":1.2}"
+            + "],\"now\":1794030450000,\"total\":2}"
+        let at = Date(timeIntervalSince1970: 1_794_030_450)
+        let (acs, serverNow) = try Aircraft.decode(Data(json.utf8), fetchedAt: at)
+        XCTAssertEqual(acs.count, 2, "both contacts decode from the live shape")
+        XCTAssertEqual(acs.first?.hex, "abe0bb")
+        // Trailing spaces are how these feeds pad the callsign field; the UI must not show them.
+        XCTAssertEqual(acs.first?.callsign?.trimmingCharacters(in: .whitespaces), "SWA2114")
+        // ⚠️ `now` arrives in MILLISECONDS and is normalised to seconds. A thousand-fold error here
+        // would date every contact to 1970 or the far future, and the server-anchored prune — which
+        // is what stops stale traffic reaching a prompt — would silently discard the whole snapshot.
+        XCTAssertEqual(try XCTUnwrap(serverNow).timeIntervalSince1970, 1_794_030_450, accuracy: 1)
+        // "ground" is a STRING where a number usually is. One odd value must not take the sky down.
+        XCTAssertEqual(acs.count, 2, "a non-numeric alt_baro does not discard the contact")
+    }
+
     func testMalformedElementDoesNotThrow() throws {
         let data = #"{"ac":[{"hex":"x"},{"nohex":true},{"hex":"y","alt_baro":{}}]}"#.data(using: .utf8)!
         let (acs, _) = try Aircraft.decode(data, fetchedAt: Date())

@@ -1832,7 +1832,7 @@ struct FlightPlanBar: View {
 // MARK: - Stratux / traffic strip
 
 /// Live ADS-B traffic in range — from the **Stratux receiver** when its link is enabled, otherwise
-/// airplanes.live. The always-on link toggle (top of the strip) streams traffic + GPS independent of
+/// adsb.lol. The always-on link toggle (top of the strip) streams traffic + GPS independent of
 /// the input source (that only gates cockpit audio + Start). Renders `model.aircraft` verbatim
 /// (freshness is the service actor's job). While the link is on it shows the LINK state:
 /// idle → connecting → **connected** (green) → error. Shown/hidden by the Stratux heading icon

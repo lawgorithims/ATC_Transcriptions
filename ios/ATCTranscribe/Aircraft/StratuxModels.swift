@@ -42,10 +42,10 @@ struct StratuxTraffic: Decodable {
 
     /// Map to Obelisk's `Aircraft`, or nil for a target with no usable identity. `receivedAt` is the
     /// device instant this message arrived — the freshness anchor (Stratux `Age` is the offset back to
-    /// the last fix), mirroring the airplanes.live `fetchedAt − seen` model so the same prune works.
+    /// the last fix), mirroring the adsb.lol `fetchedAt − seen` model so the same prune works.
     func aircraft(receivedAt: Date) -> Aircraft? {
         guard let icaoAddr, icaoAddr != 0 else { return nil }
-        let hex = String(format: "%06x", icaoAddr)          // 24-bit ICAO hex, lowercase (like airplanes.live)
+        let hex = String(format: "%06x", icaoAddr)          // 24-bit ICAO hex, lowercase (like adsb.lol)
         let hasPos = (positionValid ?? false) && lat != nil && lng != nil
         let ground = onGround ?? false
         let age = max(0, ageSec ?? 0)

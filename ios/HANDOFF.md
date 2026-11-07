@@ -190,7 +190,25 @@ is in the `commsight-ux-decisions` memory note.
   decision, not a rendering one. NOT VERIFIED IN MOTION: the Simulator's held ownship does not move,
   so smoothness itself was not watched — the interpolation maths is pinned by `OwnshipMotionTests`.
 - **No way to edit an aircraft once saved**, and no aircraft editor in Settings. Not started.
-- **ADS-B streaming never connects.** Not started.
+- ~~**ADS-B streaming never connects.**~~ — DONE (2026-11-06). Nothing was wrong with the client: the
+  PROVIDER went away. `api.airplanes.live/v2/point` now answers **403** with a body asking you to
+  email them for access — they closed the open endpoint. Because a traffic layer that is switched on
+  and shows an empty sky is indistinguishable from a quiet one, it failed silently. Switched to
+  `api.adsb.lol/v2/point/{lat}/{lon}/{radius}`, which serves the SAME `{ "now", "ac": [] }` body with
+  the same readsb/tar1090 field names, so `Aircraft.decode` needed no change whatsoever — the whole
+  repair is one URL. Verified live over JFK: ~18 contacts drawn. Also added: `ADSBFeedError
+  .refusedByProvider` for 401/403, which reads "feed refused this app" in the pill, because that
+  fault never resolves by waiting and must not look like bad luck; attribution moved to adsb.lol in
+  `ADSBService.attribution` and `AcknowledgementsView` (ODbL, free, no key — if this is ever traded
+  for a keyed or paid provider, both must move together); and
+  `ADSBServiceTests.testDecodesARealBodyFromTheCurrentProvider`, a verbatim live body, so the next
+  provider change is a red test instead of an empty sky. `opendata.adsb.fi` was verified working at
+  the same time as a fallback, but uses a different URL shape and an `aircraft` key.
+  ⚠️ TESTING NOTE, which has now cost time twice: a default declared as
+  `UserDefaults.standard.object(forKey:) as? Bool` CANNOT be set from a launch argument
+  (`-atc.adsbStreaming 1` and `-atc.map.engine.maplibre 0` both silently fail to take). Use
+  `xcrun simctl spawn <device> defaults write com.flycommsight.atctranscribe <key> -bool YES`, or the
+  in-app toggle, and confirm the toggle before concluding anything about the feature.
 - **NRST is duplicated** — sidebar button and the top-bar `!` do the same thing; merge into one
   top-bar NRST. Not started.
 - **The ruler wants a simultaneous two-finger long press**, not a double tap, and should look like a

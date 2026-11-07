@@ -10,12 +10,12 @@ enum StratuxStatus: Sendable, Equatable {
 
 /// Talks to a Stratux receiver (github.com/stratux/stratux) over its Wi-Fi: subscribes to the
 /// `/traffic` WebSocket for live ADS-B targets and polls `/getSituation` for ownship GPS. It
-/// publishes the SAME normalized `[Aircraft]` + freshness instant the airplanes.live `ADSBService`
+/// publishes the SAME normalized `[Aircraft]` + freshness instant the adsb.lol `ADSBService`
 /// does, so the corrector / traffic-page pipeline downstream is identical — the only difference is
 /// the source (on-board receiver vs internet, works in flight with no cell/Wi-Fi internet).
 ///
 /// Freshness: each target carries Stratux's `Age` (seconds since its last fix) anchored to the
-/// instant the message arrived, so the same server-anchored prune as airplanes.live drops a target
+/// instant the message arrived, so the same server-anchored prune as adsb.lol drops a target
 /// that stops being heard — even if the WebSocket itself goes quiet (a periodic prune republishes).
 actor StratuxService {
     struct Config: Sendable {

@@ -1391,7 +1391,7 @@ final class AppModel: ObservableObject {
     // its own Wi-Fi. The traffic/GPS link runs whenever `stratuxEnabled` is on and the app is
     // foregrounded — no Start needed (see `stratuxTrafficActive`); cockpit AUDIO additionally requires
     // picking "Stratux receiver" as the input source and starting a run. Host + audio port persisted;
-    // the traffic block feeds the SAME corrector pipeline as airplanes.live (see `applyTraffic`).
+    // the traffic block feeds the SAME corrector pipeline as adsb.lol (see `applyTraffic`).
     /// The always-on Stratux link switch: traffic + GPS stream whenever this is on and the app is
     /// foregrounded (standby off) — independent of the input source (that only gates audio). Toggled
     /// from the Stratux bar (console) or Settings; auto-enabled by picking the receiver as the input.
@@ -1612,7 +1612,7 @@ final class AppModel: ObservableObject {
                     self?.adsbHasPolledOnce = (status != .idle)
                 }
             })
-        // Stratux receiver: traffic feeds the SAME `applyTraffic` pipeline as airplanes.live; GPS +
+        // Stratux receiver: traffic feeds the SAME `applyTraffic` pipeline as adsb.lol; GPS +
         // link health drive UI status only. Active whenever the Stratux link is enabled + the app is
         // foregrounded — independent of the input source (see `stratuxTrafficActive`).
         stratuxService = StratuxService(
@@ -4374,7 +4374,7 @@ final class AppModel: ObservableObject {
 
     // MARK: ADS-B live traffic
 
-    /// Whether airplanes.live (internet) ADS-B should be polling now. It's a standalone TRAFFIC LAYER: it
+    /// Whether adsb.lol (internet) ADS-B should be polling now. It's a standalone TRAFFIC LAYER: it
     /// runs whenever the layer is toggled on and the app is foregrounded (standby off) — independent of a
     /// transcription session (mirrors how the Stratux link streams). Suppressed while the Stratux link is
     /// streaming (that path provides traffic on-board, works offline); both publish into the same
@@ -4464,7 +4464,7 @@ final class AppModel: ObservableObject {
     /// change, link toggle, standby, scene phase).
     func syncTraffic() { syncADSB(); syncStratux() }
 
-    /// Reconcile the airplanes.live poller (single edge-triggered call). Polls only while online ADS-B
+    /// Reconcile the adsb.lol poller (single edge-triggered call). Polls only while online ADS-B
     /// is ON, the Stratux link is not streaming, a live session is running, and the app is foregrounded.
     func syncADSB() {
         // Center on the AIRCRAFT (present position) so traffic follows you in flight; else the typed
@@ -4992,7 +4992,7 @@ final class AppModel: ObservableObject {
             if labels.count >= 40 { break }
         }
         guard !labels.isEmpty else { return ("", []) }
-        // Provider-neutral wording — the same block serves airplanes.live and the Stratux receiver.
+        // Provider-neutral wording — the same block serves adsb.lol and the Stratux receiver.
         return ("Traffic in range: " + labels.joined(separator: ", ") + ".", labels)
     }
 

@@ -264,7 +264,7 @@ final class ATCContext {
 
     /// Fresh in-range callsigns in SPOKEN telephony form — the CallsignSnap candidate list.
     /// Same source and freshness gate as the BB1 prompt bias (airline callsigns only). This feed
-    /// is UNAUTHENTICATED (airplanes.live), so CallsignSnap treats it accordingly: it never
+    /// is UNAUTHENTICATED (adsb.lol), so CallsignSnap treats it accordingly: it never
     /// rewrites callsign DIGITS from a candidate (a lone spoofed ghost cannot invent a flight
     /// number), only the misheard airline word when the digits already match a live aircraft;
     /// digit mismatches display as heard and are not attributed. Empty when traffic is stale.
