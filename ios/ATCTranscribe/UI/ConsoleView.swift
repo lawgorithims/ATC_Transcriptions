@@ -20,6 +20,11 @@ struct ConsoleView: View {
     @EnvironmentObject var widgets: WidgetStore
     @EnvironmentObject var metars: MetarStore     // re-passed into sheets (they don't inherit reliably)
     @EnvironmentObject var account: AccountStore   // ditto — SettingsSheet's Account page needs it
+    /// ⚠️ OBSERVED DIRECTLY, NOT THROUGH `model`. `FlightRecorder` is a NESTED ObservableObject, so it
+    /// does not republish `AppModel` (the Flight Bag C2 rule) — reading `model.flightRecorder.recovered`
+    /// would compile, render once, and never update, which is how the recovery banner would have
+    /// failed to appear in exactly the situation it exists for. It is injected at the app root.
+    @EnvironmentObject var recorder: FlightRecorder
     @Environment(\.horizontalSizeClass) private var hSize
     @Environment(\.scenePhase) private var scenePhase
 
@@ -129,8 +134,14 @@ struct ConsoleView: View {
         // `armEmergency(compact:)` on an iPad armed the compact path and raised the NRST sheet
         // instead of the docked panel. This is the only place the real answer is in scope.
         .onAppear { model.isCompactWindow = (hSize == .compact) }
+        // ⚠️ NOT SWIPE-DISMISSIBLE. A swipe clears `pendingLoggedFlight` without calling either
+        // `save()` or `discard()`, so the flight stays in the pending slot on disk and silently
+        // reappears at the NEXT launch — which reads, to the pilot who just flew it, exactly like the
+        // logbook having dropped their flight. Save and Discard are the only two outcomes, and both
+        // are one tap away.
         .sheet(item: $model.pendingLoggedFlight) { flight in   // recording stopped → save-to-logbook prompt
             SaveFlightSheet(flight: flight).environmentObject(model)
+                .interactiveDismissDisabled()
         }
         // The pulsing search highlight lives only while ITS object card is the active probe. When that card
         // is closed (probe → nil) or a different object is selected (probe id changes), drop the highlight —
@@ -267,6 +278,15 @@ struct ConsoleView: View {
                 // "you are currently doing this" mode banner that must never be scrolled behind chatter.
                 if let profile = model.approachProfile { approachProfileStrip(profile) }
                 if let eng = model.nrstEngagement { nrstEngagedStrip(eng) }
+                // A recording the app died in the middle of outranks every advisory below it. Those
+                // describe the world, which will still be there in a minute; this one is unsaved data
+                // with a pilot about to press REC on top of it (see RecoveredRecordingBanner).
+                if let rec = recorder.recovered {
+                    RecoveredRecordingBanner(recovered: rec, palette: model.palette,
+                                             onResume: { model.resumeRecoveredRecording() },
+                                             onSave: { model.saveRecoveredRecording() })
+                        .transition(Self.barTransition)
+                }
                 // The storm-penetration warning sits ABOVE the satellite-hazard banner and the EFB
                 // suggestion, and that ordering is deliberate: a wildfire 40 NM off the route is
                 // awareness, while a thunderstorm the projected track enters in eight minutes is the

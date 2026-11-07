@@ -3716,6 +3716,19 @@ final class AppModel: ObservableObject {
             flightRecorder.startRecording(aircraftCallsign: selectedAircraft?.callsign)
         }
     }
+    /// Carry on recording into a flight the app died in the middle of. The trail, the distance and the
+    /// stop list are already back in memory — this just restarts the sampler and lets it keep appending.
+    func resumeRecoveredRecording() {
+        deviceLocation.start()              // idempotent; the feed may not be up yet after a relaunch
+        flightRecorder.resumeRecovered()
+    }
+
+    /// Close off a recovered flight as it stands and hand it to the save prompt — the same prompt a
+    /// normally-stopped flight goes to, so there is one save path and not two.
+    func saveRecoveredRecording() {
+        pendingLoggedFlight = flightRecorder.stopRecording()
+    }
+
     /// Direct-to originates at PRESENT POSITION (ForeFlight parity), falling back to the filed departure if
     /// there's no GPS fix. Both callers (map "Direct-To" + voice "cleared direct") route through here.
     func directTo(_ ident: String) { editPlan { $0.directTo(ident, from: presentPosition) } }

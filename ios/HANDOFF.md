@@ -141,9 +141,30 @@ is in the `commsight-ux-decisions` memory note.
   verdict carries `isSimulatedVerdict` and the banner shows a FORCED chip, so it can never be mistaken
   for a real one. Verified: `--hold-ownship 42.5 -77.0 8000 90 140 --force-gps-integrity unreliable`
   draws the red aeroplane, reports AGL, and the banner dismisses without taking the symbol with it.
-- **A crash cost the whole logbook track and stopped the recording**, and a flight may not save when
-  the record button is pressed again. The trail needs appending to disk as it is recorded rather than
-  held and written at stop. Not started.
+- ~~**A crash cost the whole logbook track and stopped the recording.**~~ — DONE (2026-11-06). The
+  trail was ALREADY being written to disk and `recoverOnLaunch` was already reloading it; what was
+  missing was anything that READ the `.recovered` state. Nothing did — the whole branch was dead. So
+  the pilot saw a REC button reading "not recording" over a recovered trail, pressed it, and
+  `startRecording` called `resetAccumulators()` and then persisted the empty recording over the file:
+  the recovery destroyed what the crash had spared. Four changes: (a) `RecoveredRecordingBanner` in
+  the console stack offers **Resume** or **Save** (no Discard — dismissing is the only irreversible
+  action on that bar, and Save puts it somewhere deletion is deliberate); (b) `startRecording` now
+  refuses while `.recovered`; (c) `stopRecording` accepts `.recovered` and ends the flight at its LAST
+  BREADCRUMB, not `Date()`, so the hours the app spent shut are not logged as flight time; (d)
+  `persistEverySec = 20` beside the every-10-points rule, because a parked or slow aircraft only
+  appends on the 15 s heartbeat and ten points was 2½ minutes of exposure. ⚠️ `ConsoleView` observes
+  the recorder with its own `@EnvironmentObject`: `FlightRecorder` is a NESTED ObservableObject, so
+  `model.flightRecorder.recovered` would compile, render once and never update. `FlightRecorder(directory:)`
+  is injectable so `FlightRecorderRecoveryTests` never touches a real pilot's in-progress flight.
+  A second, independent contributor to "it stopped recording": `currentBreadcrumbFix()` gates on
+  `presentPosition`, which returned nil on a degraded fix — so the trail stopped whenever the GPS
+  monitor cried wolf. Fixed by the integrity change above.
+- **A flight may not save when the record button is pressed again.** Partly addressed: the save sheet
+  is now `interactiveDismissDisabled`, because a swipe cleared `pendingLoggedFlight` without calling
+  save or discard, leaving the flight in the pending slot to reappear at the NEXT launch — which reads
+  as the logbook having dropped it. STILL OPEN: a stop that recorded nothing (no fix for the whole
+  recording) returns nil and says nothing at all, so the pilot cannot tell "saved" from "there was
+  nothing to save". There is no toast mechanism in the app to say it with.
 - **Ownship motion is jerky** — the symbol is moved per fix at the receiver's delivery rate; it needs
   interpolation along the reported track/ground speed, with the glide geometry drawn from the same
   interpolated position so it stops moving independently. Not started.

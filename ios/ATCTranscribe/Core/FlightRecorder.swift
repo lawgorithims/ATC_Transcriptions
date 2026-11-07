@@ -13,6 +13,24 @@ struct BreadcrumbFix {
 
 enum RecordingState: Equatable { case idle, recording, recovered }
 
+/// What a recording recovered from disk contains, for the prompt that offers it back to the pilot.
+///
+/// ⚠️ THIS TYPE EXISTS BECAUSE THE RECOVERY DID NOT. The crash-safe mirror below has been written on
+/// every tenth point since it was added, and `recoverOnLaunch` has always reloaded it — into a
+/// `.recovered` state that NOTHING IN THE APP EVER READ. A pilot whose app died mid-flight saw a REC
+/// button that said "not recording", pressed it to start again, and `startRecording` reset the
+/// accumulators and overwrote the file. The trail survived the crash and was destroyed by the
+/// recovery. Reported from the air as "I lost all of my logbook track".
+struct RecoveredRecording: Equatable {
+    let startedAt: Date
+    /// Last breadcrumb — NOT `Date()`. The app was not running in between, and billing the pilot for
+    /// the hours it was shut would put a false duration in the logbook.
+    let lastPointAt: Date
+    let points: Int
+    let distanceNM: Double
+    var duration: TimeInterval { max(lastPointAt.timeIntervalSince(startedAt), 0) }
+}
+
 /// The crash-safe on-disk mirror of an in-progress recording (survives an app kill / a long flight).
 private struct ActiveRecording: Codable {
     var startedAt: Date
@@ -50,6 +68,11 @@ private struct ActiveRecording: Codable {
     private let stopSpeedKt = 3.0, taxiSpeedKt = 5.0
     private let stopDwellSec: TimeInterval = 120
     private let persistEveryNPoints = 10
+    /// ⚠️ AND ON A CLOCK, because the point count alone leaves a hole. A parked or slow aircraft only
+    /// appends on the 15 s heartbeat, so ten points is two and a half minutes of exposure — and the
+    /// taxi and run-up before departure are exactly when a pilot is also loading plates and charts,
+    /// which is when the app is most likely to be killed for memory.
+    private let persistEverySec: TimeInterval = 20
 
     private var samplerTask: Task<Void, Never>?
     private var foregrounded = true
@@ -59,15 +82,37 @@ private struct ActiveRecording: Codable {
     private var stoppedSince: Date?
     private var openStopIndex: Int?
     private var pointsSincePersist = 0
+    private var lastPersistAt = Date.distantPast
 
     var isRecording: Bool { state == .recording }
 
-    init() { recoverOnLaunch() }
+    /// A recording reloaded from disk after the app died, waiting for the pilot to resume or save it.
+    /// nil in every other state.
+    var recovered: RecoveredRecording? {
+        guard state == .recovered, let start = startedAt, let last = trail.last else { return nil }
+        return RecoveredRecording(startedAt: start, lastPointAt: last.t,
+                                  points: trail.count, distanceNM: distanceNM)
+    }
+
+    /// `directory` is injectable so a test can exercise the crash-and-recover path against a temp
+    /// folder. It defaults to Application Support, which is where a real recording lives — and tests
+    /// MUST pass their own, because `recoverOnLaunch` runs from this initialiser and a test that
+    /// shared the app's folder could both read a pilot's real in-progress flight and overwrite it.
+    init(directory: URL? = nil) {
+        dir = directory ?? Self.defaultDirectory
+        recoverOnLaunch()
+    }
 
     // MARK: control
 
     func startRecording(aircraftCallsign tail: String?) {
         assert(state != .recording, "startRecording while already recording")
+        // ⚠️ REFUSES OVER A RECOVERED RECORDING, AND THAT GUARD IS THE WHOLE BUG. Without it the next
+        // line resets the accumulators and the one after that overwrites the on-disk mirror, so the
+        // first tap of REC after a crash destroyed the flight the crash had spared. A recovered
+        // recording is ended by `resumeRecovered`, `stopRecording` or `discardRecovered` — all three
+        // of which the pilot reaches from the banner — never by implicitly starting a new one.
+        guard state != .recovered else { return }
         resetAccumulators()
         aircraftCallsign = tail
         startedAt = Date()
@@ -80,13 +125,15 @@ private struct ActiveRecording: Codable {
     /// Stop and produce the finished flight (breadcrumb downsampled to the logbook cap). Persists it to a
     /// pending slot so a crash during the save prompt can't lose it. Returns nil if nothing was recorded.
     func stopRecording() -> LoggedFlight? {
-        guard state == .recording, let start = startedAt else { return nil }
+        guard state == .recording || state == .recovered, let start = startedAt else { return nil }
         stopSampler()
-        let end = Date()
+        // A recovered flight ended when its last breadcrumb was laid down, not now: the app was shut
+        // in between, and `Date()` here would log the hours it spent closed as time in the air.
+        let end = state == .recovered ? (trail.last?.t ?? start) : Date()
         let flight = buildFlight(start: start, end: end)
         state = .idle
         trail = []; stops = []; startedAt = nil; distanceNM = 0
-        deleteFile(Self.activeURL)
+        deleteFile(activeURL)
         if let flight { recoveredPendingSave = nil; persistPending(flight) }
         assert(state == .idle, "stopRecording: state not reset")
         return flight
@@ -95,9 +142,9 @@ private struct ActiveRecording: Codable {
     func resumeRecovered() { guard state == .recovered else { return }; state = .recording; startSampler() }
     func discardRecovered() {
         guard state == .recovered else { return }
-        state = .idle; trail = []; stops = []; startedAt = nil; distanceNM = 0; deleteFile(Self.activeURL)
+        state = .idle; trail = []; stops = []; startedAt = nil; distanceNM = 0; deleteFile(activeURL)
     }
-    func clearPendingSave() { recoveredPendingSave = nil; deleteFile(Self.pendingURL) }
+    func clearPendingSave() { recoveredPendingSave = nil; deleteFile(pendingURL) }
 
     /// Scene-phase gating (from AppModel.handleScenePhase). Backgrounding flushes so no fix is lost; note the
     /// app uses WhenInUse GPS so the trail HAS a time gap while backgrounded — honest, and crash-safe on disk.
@@ -122,6 +169,13 @@ private struct ActiveRecording: Codable {
     }
     private func stopSampler() { samplerTask?.cancel(); samplerTask = nil }
 
+    #if DEBUG
+    /// Drive one sample synchronously. The sampler is a 2-second timer and a deterministic test cannot
+    /// wait on it; same pattern and same reason as `CIFP.reopenForTests`. Test-only — the branch does
+    /// not exist in a release build.
+    func forceSampleForTests() { tick() }
+    #endif
+
     private func tick() {
         guard state == .recording, let fix = fixProvider?() else { return }   // no fix → skip; timer keeps running
         guard fix.coord.lat.isFinite, fix.coord.lon.isFinite else { return }
@@ -143,7 +197,11 @@ private struct ActiveRecording: Codable {
         lastPoint = point
         if trail.count >= maxPoints { downsample() }
         pointsSincePersist += 1
-        if pointsSincePersist >= persistEveryNPoints { pointsSincePersist = 0; persistActive() }
+        if pointsSincePersist >= persistEveryNPoints
+            || now.timeIntervalSince(lastPersistAt) >= persistEverySec {
+            pointsSincePersist = 0
+            persistActive()
+        }
         assert(trail.count <= maxPoints, "append: trail exceeded cap")
         assert(distanceNM >= 0, "append: negative distance")
     }
@@ -207,6 +265,7 @@ private struct ActiveRecording: Codable {
     private func resetAccumulators() {
         trail = []; stops = []; distanceNM = 0; maxSpeedKt = 0; maxAltFt = 0; movingTimeSec = 0
         lastPoint = nil; stoppedSince = nil; openStopIndex = nil; pointsSincePersist = 0
+        lastPersistAt = .distantPast
     }
 
     // MARK: build + persistence
@@ -236,9 +295,9 @@ private struct ActiveRecording: Codable {
     }
 
     private func recoverOnLaunch() {
-        if let d = try? Data(contentsOf: Self.pendingURL),
+        if let d = try? Data(contentsOf: pendingURL),
            let f = try? JSONDecoder().decode(LoggedFlight.self, from: d) { recoveredPendingSave = f }
-        guard let d = try? Data(contentsOf: Self.activeURL),
+        guard let d = try? Data(contentsOf: activeURL),
               let a = try? JSONDecoder().decode(ActiveRecording.self, from: d), !a.points.isEmpty else { return }
         trail = a.points; stops = a.stops; startedAt = a.startedAt; aircraftCallsign = a.aircraftCallsign
         distanceNM = a.distanceNM; maxSpeedKt = a.maxSpeedKt; maxAltFt = a.maxAltFt
@@ -253,18 +312,20 @@ private struct ActiveRecording: Codable {
                                 distanceNM: distanceNM, maxSpeedKt: maxSpeedKt, maxAltFt: maxAltFt,
                                 movingTimeSec: movingTimeSec, stoppedSince: stoppedSince)
         guard let d = try? JSONEncoder().encode(a) else { return }
-        try? d.write(to: Self.activeURL, options: .atomic)
+        try? d.write(to: activeURL, options: .atomic)
+        lastPersistAt = Date()
     }
     private func persistPending(_ flight: LoggedFlight) {
         guard let d = try? JSONEncoder().encode(flight) else { return }
-        try? d.write(to: Self.pendingURL, options: .atomic)
+        try? d.write(to: pendingURL, options: .atomic)
     }
     private func deleteFile(_ url: URL) { try? FileManager.default.removeItem(at: url) }
 
-    private static var dir: URL {
+    private static var defaultDirectory: URL {
         (try? FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
                                       appropriateFor: nil, create: true)) ?? FileManager.default.temporaryDirectory
     }
-    private static var activeURL: URL { dir.appendingPathComponent("flight_recorder_active_v1.json") }
-    private static var pendingURL: URL { dir.appendingPathComponent("flight_recorder_pending_v1.json") }
+    private let dir: URL
+    private var activeURL: URL { dir.appendingPathComponent("flight_recorder_active_v1.json") }
+    private var pendingURL: URL { dir.appendingPathComponent("flight_recorder_pending_v1.json") }
 }
