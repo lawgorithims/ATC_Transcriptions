@@ -316,6 +316,21 @@ is in the `commsight-ux-decisions` memory note.
   ownship altitude; it is too coarse and too conservative for hillshading, which would look blocky and
   overstate ridges. MapLibre would want terrain-RGB tiles, not the flat binary. Not started.
 
+- ~~**Traffic drew as big orange discs.**~~ — DONE (2026-11-07, asked for after the flight test).
+  `ChartMapView.Coordinator.traffic` was a 26pt orange disc with a white airplane glyph; it is now
+  an 18pt orange CHEVRON. Over a busy terminal area the discs merged into one orange mass and hid
+  the chart; an arrowhead is smaller, occludes less, and carries the fact a disc threw away — which
+  way the target is going.
+  ⚠️ THE CHEVRON MUST POINT EAST AT ZERO ROTATION. Both engines pre-bake `rot = track - 90`
+  (MapLibre `traffic-sym`, and the classic engine's `CGAffineTransform` on the annotation view), so
+  a target tracking 090° draws unrotated. The `airplane` SF Symbol it replaced satisfied that by
+  pointing right. A chevron drawn pointing UP would put every target 90° out, which on a traffic
+  display is wrong DATA, not a cosmetic slip.
+  One image serves BOTH engines — MapLibre does `style.setImage(ChartMapView.Coordinator.traffic,…)`
+  — so this is a single definition. Ownship keeps its blue disc, which now reads as clearly
+  different from traffic rather than as a bigger version of it. Verified over Philadelphia with live
+  ADS-B: chevrons fanning out on their individual tracks.
+
 **Known limits / candidate next work:**
 - **Diarization can't separate simultaneous talkers (overtalk).** The heuristic v1 splits on PTT
   gaps + acoustic clustering. The "very robust" upgrade = a dedicated **speaker-embedding CoreML

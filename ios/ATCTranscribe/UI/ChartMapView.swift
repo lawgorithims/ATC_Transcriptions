@@ -1884,7 +1884,38 @@ struct ChartMapView: UIViewRepresentable {
                 img.draw(in: CGRect(x: (d - img.size.width) / 2, y: (d - img.size.height) / 2, width: img.size.width, height: img.size.height))
             }
         }
-        static let traffic: UIImage = disc("airplane", fill: .systemOrange, pt: 13, d: 26)
+        /// OTHER AIRCRAFT. A chevron, not a disc, and smaller than ownship.
+        ///
+        /// ⚠️ IT MUST POINT EAST AT ZERO ROTATION. Both engines pre-bake `rot = track - 90`, so a
+        /// target tracking 090° is drawn unrotated — the same convention the `airplane` SF Symbol
+        /// this replaces happened to satisfy by pointing right. A chevron drawn pointing up would put
+        /// every target on the display 90° out, which on a traffic display is wrong DATA, not a
+        /// cosmetic slip.
+        ///
+        /// Why a chevron at all: a filled disc is a position and nothing more, and at 26pt it covered
+        /// a meaningful piece of chart — over a busy terminal area the discs merged into a single
+        /// orange mass (reported from the air). An arrowhead is smaller, occludes less, and carries
+        /// the one fact a disc threw away: which way the thing is going.
+        ///
+        /// The dark outline is not decoration. Orange on a white sectional is low contrast at this
+        /// size, and traffic is the one overlay that must stay readable over every base.
+        private static func chevron(fill: UIColor, d: CGFloat) -> UIImage {
+            assert(d > 4, "chevron: too small to draw")
+            return UIGraphicsImageRenderer(size: CGSize(width: d, height: d)).image { _ in
+                let p = UIBezierPath()
+                p.move(to: CGPoint(x: d * 0.94, y: d * 0.50))     // tip, pointing east
+                p.addLine(to: CGPoint(x: d * 0.14, y: d * 0.12))  // upper trailing corner
+                p.addLine(to: CGPoint(x: d * 0.42, y: d * 0.50))  // the notch that makes it a chevron
+                p.addLine(to: CGPoint(x: d * 0.14, y: d * 0.88))  // lower trailing corner
+                p.close()
+                p.lineWidth = 1.3
+                p.lineJoinStyle = .round
+                fill.setFill(); p.fill()
+                UIColor.black.withAlphaComponent(0.85).setStroke(); p.stroke()
+            }
+        }
+
+        static let traffic: UIImage = chevron(fill: .systemOrange, d: 18)
         static let ownPlane: UIImage = disc("airplane", fill: .systemBlue, pt: 16, d: 32)
         private static let ownPlaneDegraded: UIImage = disc("airplane", fill: .systemOrange, pt: 16, d: 32)
         private static let ownPlaneSuspect: UIImage = disc("airplane", fill: .systemRed, pt: 16, d: 32)
