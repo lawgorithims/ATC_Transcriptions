@@ -189,7 +189,31 @@ is in the `commsight-ux-decisions` memory note.
   both stale and in the wrong place; this fixes the second. Shortening the 5 s sweep is a battery
   decision, not a rendering one. NOT VERIFIED IN MOTION: the Simulator's held ownship does not move,
   so smoothness itself was not watched — the interpolation maths is pinned by `OwnshipMotionTests`.
-- **No way to edit an aircraft once saved**, and no aircraft editor in Settings. Not started.
+- ~~**No way to edit an aircraft once saved**, and no aircraft editor in Settings.~~ — DONE
+  (2026-11-07). The EDITOR already existed: `AircraftSheet` has always handled add and edit alike
+  and `AppModel.saveAircraft` has always updated by id. What was missing was the way IN. The only
+  route was the flight-plan strip's callsign menu, whose "Edit …" entry appears for
+  `selectedAircraft` alone — so reaching any other aeroplane meant selecting it first, and
+  `selectAircraft` overwrites the filed plan's callsign and aircraft type. The pilot had to change
+  their flight plan to correct a landing distance. Added `UI/AircraftHangarView.swift`, reachable
+  from Settings → Aircraft (a new category row) and from the strip menu's "Manage aircraft…".
+  ⚠️ THE LOAD-BEARING PART IS `AppModel.updateAircraft`, which edits WITHOUT filing, because a
+  settings list that silently re-files the plan for whichever aeroplane the pilot tapped is how
+  someone ends up airborne under a callsign they did not choose. `saveAircraft` keeps its old
+  behaviour for the strip (you added it to fly it); `AircraftSheet.filesOnSave` picks between them,
+  defaulting to true so the existing call site is unchanged. The ONE exception is a corrected tail
+  number on the aeroplane already filed: `selectedAircraft` matches the plan to a profile BY
+  CALLSIGN, not by id, so without that the plan would point at a callsign no profile has, the
+  strip's checkmark would vanish and the trip stats would drop to "–" unexplained.
+  The list also names what each profile still leaves to a default ("Using defaults for glide ratio,
+  landing distance, turn-back height") — blank fields are not neutral, each substitutes a
+  conservative value the pilot did not choose — and respects the rotorcraft rules, so a helicopter
+  is not nagged for a fixed-wing landing distance or an impossible turn it has no business briefing.
+  Filing is deliberately NOT offered from the hangar; that stays with the strip.
+  10 new tests in `AircraftHangarTests`. Verified on an iPhone 17 Pro with four seeded profiles.
+  ⚠️ TESTING NOTE: seeding profiles with `simctl spawn … defaults write` pollutes the UNIT SUITE
+  — `AircraftProfileTests.testStoreDropsEmptyAndClears` reads the same real `UserDefaults` and fails
+  on the leftovers. Delete the key before running the suite.
 - ~~**ADS-B streaming never connects.**~~ — DONE (2026-11-06). Nothing was wrong with the client: the
   PROVIDER went away. `api.airplanes.live/v2/point` now answers **403** with a body asking you to
   email them for access — they closed the open endpoint. Because a traffic layer that is switched on

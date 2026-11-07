@@ -1371,6 +1371,7 @@ struct FlightPlanBar: View {
     @State private var altitudeText = ""
     @State private var alternateText = ""
     @State private var editingAircraft: AircraftProfile?
+    @State private var showHangar = false
     @State private var confirmClear = false
     @State private var showGlideGaps = false
     @State private var showBriefing = false
@@ -1413,6 +1414,19 @@ struct FlightPlanBar: View {
         .onChange(of: alternateFocused) { _, focused in if !focused { commitAlternate() } }
         .task(id: model.flightPlan) { fplURL = await model.writeFPLFile() }
         .sheet(item: $editingAircraft) { AircraftSheet(profile: $0).environmentObject(model) }
+        // The hangar supplies no chrome of its own (Settings pushes it), so the stack + Done are here.
+        .sheet(isPresented: $showHangar) {
+            NavigationStack {
+                AircraftHangarView().environmentObject(model)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { showHangar = false }
+                        }
+                    }
+            }
+            .tint(model.palette.accent)
+            .preferredColorScheme(model.theme.colorScheme)
+        }
         // The turn-back prompt banner asks this strip to open the editor (it owns the sheet). A task
         // keyed on the flag runs on appear too, so a strip opened BY the banner still answers it.
         .task(id: model.requestTurnbackEdit) {
@@ -1486,6 +1500,17 @@ struct FlightPlanBar: View {
                 Button { editingAircraft = selected } label: {
                     Label("Edit \(selected.callsign)…", systemImage: "pencil")
                 }
+                .accessibilityIdentifier("aircraft-edit-selected")
+            }
+            // ⚠️ THE REASON THIS ENTRY EXISTS. "Edit …" above reaches the FILED aeroplane only, so
+            // every other one in the hangar could be edited solely by selecting it first — and
+            // selecting rewrites the plan's callsign and type. Correcting a landing distance meant
+            // changing the flight plan. This opens the hangar, which edits without filing.
+            if !model.aircraftProfiles.isEmpty {
+                Button { showHangar = true } label: {
+                    Label("Manage aircraft…", systemImage: "airplane.circle")
+                }
+                .accessibilityIdentifier("aircraft-manage")
             }
         } label: {
             box(p) {

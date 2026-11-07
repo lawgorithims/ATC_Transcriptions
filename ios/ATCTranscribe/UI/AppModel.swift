@@ -4114,6 +4114,41 @@ final class AppModel: ObservableObject {
         selectAircraft(profile)
     }
 
+    /// Correct a saved aircraft WITHOUT filing it. The hangar editor (Settings → Aircraft, and the
+    /// strip's "Manage aircraft…") calls this; the flight-plan strip's own add/edit calls
+    /// `saveAircraft`, which also files it.
+    ///
+    /// ⚠️ WHY THESE ARE TWO METHODS AND NOT A FLAG ON ONE. `saveAircraft` ends in
+    /// `selectAircraft`, which overwrites the filed plan's callsign and aircraft type. That is right
+    /// when the pilot adds an aeroplane from the flight-plan strip — they added it to fly it — and
+    /// wrong when they correct a landing distance in a settings list, which would silently re-file
+    /// the plan for whichever aeroplane they happened to tap. Managing the hangar is not choosing
+    /// today's aeroplane, and a pilot mid-flight must be able to fix a typo without touching either.
+    ///
+    /// THE ONE CASE THE PLAN MUST STILL FOLLOW is a corrected tail number on the aeroplane that is
+    /// already filed. `selectedAircraft` matches the plan to a profile BY CALLSIGN, not by id, so
+    /// renaming "N8925T" to "N8925Q" would otherwise leave the plan pointing at a callsign no
+    /// profile has: the strip's checkmark would vanish and the trip stats would quietly drop back to
+    /// "–" with nothing to explain it. Same aeroplane, corrected tail, so the plan is corrected too.
+    func updateAircraft(_ profile: AircraftProfile) {
+        guard !profile.isEmpty else { return }                            // param check (rule 7)
+        guard let i = aircraftProfiles.firstIndex(where: { $0.id == profile.id }) else {
+            saveAircraft(profile)          // not in the hangar yet — that is an add, and an add files
+            return
+        }
+        // Read BEFORE the write, while the stored profile still carries the old callsign the plan
+        // was matched on.
+        let wasFiled = selectedAircraft?.id == profile.id
+        aircraftProfiles[i] = profile
+        if wasFiled {
+            selectAircraft(profile)        // carries a corrected tail onto the filed plan, + stats
+        } else {
+            // Cheap, and it covers the case where this edit changed WHICH profile the plan resolves
+            // to — a callsign edited to match the filed one hands the stats a different aeroplane.
+            refreshTripStats()
+        }
+    }
+
     /// Remove a profile from the hangar (the filed plan's callsign is left as-is — the plan, not
     /// the hangar, is the source of truth for the current flight). Stats refresh because the
     /// deleted profile's cruise/burn numbers may have been feeding ETE/FUEL.

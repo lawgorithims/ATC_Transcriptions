@@ -35,6 +35,15 @@ struct SettingsSheet: View {
                             categoryPage("Audio & speakers") { audioCategory }
                         }
                     }
+                    // Asked for directly: "need a way to edit the plane details in the settings".
+                    // First of the non-transcription rows because on an EFB the aeroplane is the
+                    // subject — and because with transcription gated off it becomes the first row.
+                    categoryLink("Aircraft", "airplane", aircraftSubtitle, id: "settings-cat-aircraft") {
+                        AircraftHangarView().environmentObject(model)
+                            .toolbar {
+                                ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+                            }
+                    }
                     categoryLink("Account", account.isSignedIn ? "person.crop.circle.fill" : "person.crop.circle",
                                  accountSubtitle, id: "settings-cat-account") {
                         AccountScreen()
@@ -78,6 +87,17 @@ struct SettingsSheet: View {
         }
         .tint(p.accent)
         .preferredColorScheme(model.theme.colorScheme)
+    }
+
+    /// Says how many aeroplanes are on file, and names the filed one — a subtitle reading "3
+    /// aircraft" tells the pilot the list is worth opening, which "Performance · glide · turn-back"
+    /// does not.
+    private var aircraftSubtitle: String {
+        let n = model.aircraftProfiles.count
+        guard n > 0 else { return "Add the aeroplane you fly · performance · glide" }
+        let filed = model.selectedAircraft?.callsign
+        let plural = n == 1 ? "1 aircraft" : "\(n) aircraft"
+        return filed.map { "\(plural) · \($0) filed" } ?? plural
     }
 
     /// Signed out, say what an account is *for* rather than just "Sign in" — the honest answer is

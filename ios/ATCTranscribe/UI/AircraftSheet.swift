@@ -8,6 +8,13 @@ struct AircraftSheet: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
     let profile: AircraftProfile
+    /// Whether saving also FILES this aircraft on the flight plan.
+    ///
+    /// True from the flight-plan strip, where picking an aeroplane means flying it. False from the
+    /// hangar list, where the pilot is correcting their records and the filed plan must not change
+    /// under them — see `AppModel.updateAircraft`, and the one exception it makes for a corrected
+    /// tail number on the aeroplane already filed.
+    var filesOnSave = true
 
     @State private var callsign = ""
     @State private var type = ""
@@ -251,7 +258,7 @@ struct AircraftSheet: View {
         // fraction of the ground an aeroplane needs, so keeping a book over-50-ft figure here would
         // make the landability layer demand a runway's worth of open ground from a helicopter.
         if isRotorcraft { updated.landingOver50Ft = nil }
-        model.saveAircraft(updated)
+        if filesOnSave { model.saveAircraft(updated) } else { model.updateAircraft(updated) }
         dismiss()
     }
 
