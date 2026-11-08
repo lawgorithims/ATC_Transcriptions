@@ -101,6 +101,8 @@ def main():
     src = sqlite3.connect(f"file:{a.map}?mode=ro", uri=True)
     meta = {k: v for k, v in src.execute("SELECT name, value FROM metadata")}
     assert meta.get("format") == "avoid1", "not an avoid map"
+    assert meta.get("avoid_schema") == C.MAP_SCHEMA, \
+        f"avoid_schema {meta.get('avoid_schema')}, not {C.MAP_SCHEMA}: rebuild it with merge.py"
     total = src.execute("SELECT COUNT(*) FROM tiles").fetchone()[0]
     cols = column_bytes(src)
     plan = bands(cols, int(a.max_mb * 1e6))

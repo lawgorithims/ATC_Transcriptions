@@ -15,7 +15,12 @@ final class AvoidMapLibrary: ObservableObject {
 
     /// The hosted dataset. Kept in step with `lz/avoid/publish.py`.
     static let base = "https://huggingface.co/datasets/SingularityUS/commsight-avoid/resolve/main"
-    static let catalogSchema = 2
+    /// 3 lists bands of map schema 2 (`AvoidMap.schema`). A build reading catalog 2 would install them
+    /// and draw z12 without land cover, so it must not understand this catalog, and it does not.
+    static let catalogSchema = 3
+    /// Each catalog schema has its own address, so a build that reads an older one keeps its map:
+    /// catalog 2 stays at `index.json`, with its own bands, for every build made before this change.
+    static let catalogPath = "index-v\(catalogSchema).json"
 
     struct Catalog: Decodable, Equatable {
         let schema: Int
@@ -84,7 +89,7 @@ final class AvoidMapLibrary: ObservableObject {
     }
 
     func refresh() async {
-        guard let url = URL(string: "\(Self.base)/index.json") else { return }
+        guard let url = URL(string: "\(Self.base)/\(Self.catalogPath)") else { return }
         var req = URLRequest(url: url)
         req.cachePolicy = .reloadRevalidatingCacheData
         req.timeoutInterval = 30

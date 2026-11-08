@@ -1,5 +1,7 @@
 import XCTest
 import Compression
+import CoreGraphics
+import ImageIO
 import SQLite3
 @testable import ATCTranscribe
 
@@ -29,11 +31,11 @@ final class AvoidMapTests: XCTestCase {
         return Data("AVD1".utf8) + Data(out.prefix(n))
     }
 
-    /// A one-tile avoid map at z12, with `byte` painted at one point's pixel (KLRU unless told). With
-    /// `band`, it is one longitude band as `lz/avoid/shard.py` writes it; without, a map of everything.
-    private func makeMap(_ name: String, byte: UInt8, builtAt: String = "2026-10-30T00:00:00Z",
-                         at point: (lat: Double, lon: Double)? = nil,
-                         band: (id: String, columns: ClosedRange<Int>)? = nil) throws -> URL {
+    /// An avoid map holding exactly `tiles` (XYZ rows), as `lz/avoid/merge.py` writes one. With `band`, it
+    /// is one longitude band as `lz/avoid/shard.py` writes it; without, a map of everything.
+    private func writeMap(_ name: String, tiles: [(z: Int, x: Int, y: Int, mask: [UInt8])],
+                          builtAt: String = "2026-10-30T00:00:00Z", schema: String = AvoidMap.schema,
+                          band: (id: String, columns: ClosedRange<Int>)? = nil) throws -> URL {
         let url = dir.appendingPathComponent(name)
         var db: OpaquePointer?
         XCTAssertEqual(sqlite3_open(url.path, &db), SQLITE_OK)
@@ -42,24 +44,46 @@ final class AvoidMapTests: XCTestCase {
         let ddl = """
         CREATE TABLE metadata (name TEXT, value TEXT);
         CREATE TABLE tiles (zoom_level INTEGER, tile_column INTEGER, tile_row INTEGER, tile_data BLOB);
-        INSERT INTO metadata VALUES ('format','avoid1'), ('avoid_schema','1'), ('minzoom','8'), ('maxzoom','12'),
+        INSERT INTO metadata VALUES ('format','avoid1'), ('avoid_schema','\(schema)'), ('minzoom','8'), ('maxzoom','12'),
           ('built_at','\(builtAt)'), ('slope_threshold_deg','6'), ('attribution','test'), ('caveat','test'),
           ('bounds','-125,24,-66,50')\(bandRows);
         """
         XCTAssertEqual(sqlite3_exec(db, ddl, nil, nil, nil), SQLITE_OK)
+        for t in tiles {
+            let data = blob(t.mask)
+            var st: OpaquePointer?
+            XCTAssertEqual(sqlite3_prepare_v2(db, "INSERT INTO tiles VALUES (?, ?, ?, ?)", -1, &st, nil), SQLITE_OK)
+            sqlite3_bind_int(st, 1, Int32(t.z))
+            sqlite3_bind_int(st, 2, Int32(t.x))
+            sqlite3_bind_int(st, 3, Int32((1 << t.z) - 1 - t.y))                   // TMS row
+            _ = data.withUnsafeBytes { sqlite3_bind_blob(st, 4, $0.baseAddress, Int32(data.count), nil) }
+            XCTAssertEqual(sqlite3_step(st), SQLITE_DONE)
+            sqlite3_finalize(st)
+        }
+        return url
+    }
+
+    /// A one-tile avoid map at z12, with `byte` painted at one point's pixel (KLRU unless told).
+    private func makeMap(_ name: String, byte: UInt8, builtAt: String = "2026-10-30T00:00:00Z",
+                         at point: (lat: Double, lon: Double)? = nil,
+                         band: (id: String, columns: ClosedRange<Int>)? = nil) throws -> URL {
         let at = point ?? klru
         let t = try XCTUnwrap(AvoidMap.tilePixel(lon: at.lon, lat: at.lat, z: 12))
         var mask = [UInt8](repeating: 0, count: 65_536)
         mask[t.py * 256 + t.px] = byte
-        let data = blob(mask)
-        var st: OpaquePointer?
-        XCTAssertEqual(sqlite3_prepare_v2(db, "INSERT INTO tiles VALUES (12, ?, ?, ?)", -1, &st, nil), SQLITE_OK)
-        sqlite3_bind_int(st, 1, Int32(t.x))
-        sqlite3_bind_int(st, 2, Int32((1 << 12) - 1 - t.y))                       // TMS row
-        _ = data.withUnsafeBytes { sqlite3_bind_blob(st, 3, $0.baseAddress, Int32(data.count), nil) }
-        XCTAssertEqual(sqlite3_step(st), SQLITE_DONE)
-        sqlite3_finalize(st)
-        return url
+        return try writeMap(name, tiles: [(12, t.x, t.y, mask)], builtAt: builtAt, band: band)
+    }
+
+    /// Pixels a rendered tile paints (alpha above zero).
+    private func paintedPixels(_ png: Data) throws -> Int {
+        let src = try XCTUnwrap(CGImageSourceCreateWithData(png as CFData, nil))
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(src, 0, nil))
+        var rgba = [UInt8](repeating: 0, count: 256 * 256 * 4)
+        let ctx = try XCTUnwrap(CGContext(data: &rgba, width: 256, height: 256, bitsPerComponent: 8, bytesPerRow: 1024,
+                                          space: CGColorSpaceCreateDeviceRGB(),
+                                          bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: 256, height: 256))
+        return stride(from: 3, to: rgba.count, by: 4).filter { rgba[$0] > 0 }.count
     }
 
     private let klru = (lat: 32.2894, lon: -106.9219)
@@ -166,6 +190,87 @@ final class AvoidMapTests: XCTestCase {
                      "below the map's minimum zoom there is nothing to draw")
     }
 
+    // MARK: land cover (schema 2: stored no finer than z11)
+
+    /// Each z11 pixel covers the 2×2 below it, from the parent's quadrant over the child. All four children
+    /// are checked against every parent bit, so a wrong offset, a swapped axis or a copied hazard fails.
+    func testAZ12TileTakesItsLandCoverFromItsZ11ParentsQuadrant() throws {
+        let t = try XCTUnwrap(AvoidMap.tilePixel(lon: klru.lon, lat: klru.lat, z: 12))
+        let (x0, y0) = (t.x & ~1, t.y & ~1)                                 // the parent's NW child
+        let parent = (0..<65_536).map { UInt8(truncatingIfNeeded: ($0 &* 2_654_435_761) >> 13) }
+        var own = [UInt8](repeating: 0, count: 65_536)
+        own[0] = AvoidReason.wires.rawValue
+        own[65_535] = AvoidReason.steep.rawValue
+        _ = try writeMap("avoid_conus-a.mbtiles", tiles: [(11, x0 >> 1, y0 >> 1, parent), (12, x0 + 1, y0, own)])
+        let store = AvoidMapStore(directory: dir)
+        store.reload()
+        for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+            let m = try XCTUnwrap(store.maskWithLandCover(z: 12, x: x0 + dx, y: y0 + dy), "child \(dx),\(dy)")
+            let stored = (dx, dy) == (1, 0) ? own : [UInt8](repeating: 0, count: 65_536)
+            let wrong = (0..<65_536).first { i in
+                let p = parent[(dy * 128 + i / 256 / 2) * 256 + dx * 128 + (i % 256) / 2]
+                return m[i] != stored[i] | (p & AvoidMap.landCover)
+            }
+            XCTAssertNil(wrong, "child \(dx),\(dy): first wrong pixel \(wrong ?? -1)")
+        }
+        XCTAssertNil(store.mask(z: 12, x: x0, y: y0), "a child with no tile of its own stores nothing")
+        XCTAssertEqual(store.maskWithLandCover(z: 11, x: x0 >> 1, y: y0 >> 1), parent, "z11 is drawn as stored")
+    }
+
+    func testAPointsReasonsTakeLandCoverFromZ11ButNotItsHazards() throws {
+        let t12 = try XCTUnwrap(AvoidMap.tilePixel(lon: klru.lon, lat: klru.lat, z: 12))
+        let t11 = try XCTUnwrap(AvoidMap.tilePixel(lon: klru.lon, lat: klru.lat, z: 11))
+        XCTAssertEqual([t11.x, t11.y], [t12.x >> 1, t12.y >> 1], "the same point at z11 is in the parent")
+        // A point in the sibling tile, which has no z12 tile of its own.
+        let sibling = (lat: klru.lat, lon: (Double(t12.x ^ 1) + 0.5) / 4096 * 360 - 180)
+        let s11 = try XCTUnwrap(AvoidMap.tilePixel(lon: sibling.lon, lat: sibling.lat, z: 11))
+        XCTAssertEqual([s11.x, s11.y], [t11.x, t11.y])
+        var own = [UInt8](repeating: 0, count: 65_536)
+        own[t12.py * 256 + t12.px] = AvoidReason.steep.rawValue
+        var parent = [UInt8](repeating: 0, count: 65_536)
+        // The wires at z11 came from a neighbouring z12 pixel (an overview ORs them up): not this point's.
+        parent[t11.py * 256 + t11.px] = AvoidReason.trees.rawValue | AvoidReason.wires.rawValue
+        parent[s11.py * 256 + s11.px] = AvoidReason.water.rawValue
+        _ = try writeMap("avoid_conus-a.mbtiles", tiles: [(11, t11.x, t11.y, parent), (12, t12.x, t12.y, own)])
+        let store = AvoidMapStore(directory: dir)
+        store.reload()
+        XCTAssertEqual(store.reasons(lon: klru.lon, lat: klru.lat), [.trees, .steep])
+        XCTAssertEqual(store.reasons(lon: sibling.lon, lat: sibling.lat), [.water], "no z12 tile, still its land cover")
+    }
+
+    func testTheRendererDrawsZ11LandCoverOnZ12OnlyWhenCoverIsShown() throws {
+        let t = try XCTUnwrap(AvoidMap.tilePixel(lon: klru.lon, lat: klru.lat, z: 12))
+        let trees = [UInt8](repeating: AvoidReason.trees.rawValue, count: 65_536)
+        var own = [UInt8](repeating: 0, count: 65_536)
+        own[t.py * 256 + t.px] = AvoidReason.wires.rawValue
+        _ = try writeMap("avoid_conus-a.mbtiles", tiles: [(11, t.x >> 1, t.y >> 1, trees), (12, t.x, t.y, own)])
+        let store = AvoidMapStore(directory: dir)
+        store.reload()
+        let r = AvoidTileRenderer(store: store)
+        let off = try XCTUnwrap(r.signature(theme: .cockpit, showCover: false))
+        let on = try XCTUnwrap(r.signature(theme: .cockpit, showCover: true))
+        let hazardOnly = try XCTUnwrap(r.tilePNG(signature: off, theme: .cockpit, showCover: false, z: 12, x: t.x, y: t.y))
+        let withCover = try XCTUnwrap(r.tilePNG(signature: on, theme: .cockpit, showCover: true, z: 12, x: t.x, y: t.y))
+        XCTAssertEqual(try paintedPixels(hazardOnly), 1, "cover off: the one power-line pixel")
+        XCTAssertEqual(try paintedPixels(withCover), 65_536, "cover on: the parent's trees under the line")
+        let bare = (x: t.x ^ 1, y: t.y)                                      // its sibling: no z12 tile at all
+        XCTAssertNil(r.tilePNG(signature: off, theme: .cockpit, showCover: false, z: 12, x: bare.x, y: bare.y))
+        let sibling = try XCTUnwrap(r.tilePNG(signature: on, theme: .cockpit, showCover: true, z: 12, x: bare.x, y: bare.y),
+                                    "land cover alone must still draw at z12")
+        XCTAssertEqual(try paintedPixels(sibling), 65_536)
+    }
+
+    /// Schema 1's z12 tiles carry their own land cover: this build would draw it twice, coarse over fine,
+    /// and a schema-1 build would read schema 2's z12 as having none. Each refuses the other's files.
+    func testAMapOfAnotherSchemaIsRefusedAndCleanedUp() throws {
+        let old = try writeMap("avoid_conus-a.mbtiles", tiles: [], schema: "1")
+        let store = AvoidMapStore(directory: dir)
+        store.reload()
+        XCTAssertFalse(store.isInstalled)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: old.path), "a file this build cannot read is not kept")
+        XCTAssertNil(AvoidMapStore.open(try writeMap("incoming.mbtiles", tiles: [], schema: "3")))
+    }
+
     // MARK: bands
 
     /// KLRU is in z8 column 51; this point is in column 53, and one in column 60 is in no band here.
@@ -240,9 +345,9 @@ final class AvoidMapTests: XCTestCase {
         _ = try makeMap("avoid_w108-w104-a.mbtiles", byte: AvoidReason.wires.rawValue, band: ("w108-w104", 50...52))
         let store = AvoidMapStore(directory: dir)
         store.reload()
-        func catalog(_ builtAt: String) -> Data {
+        func catalog(_ builtAt: String, schema: Int = 3) -> Data {
             Data("""
-            {"schema": 2, "built_at": "\(builtAt)", "shards": [
+            {"schema": \(schema), "built_at": "\(builtAt)", "shards": [
               {"id": "w108-w104", "path": "map/avoid_w108-w104.mbtiles", "bytes": 90000000, "sha256": "aa"},
               {"id": "w104-w100", "path": "map/avoid_w104-w100.mbtiles", "bytes": 60000000, "sha256": "bb"}]}
             """.utf8)
@@ -257,6 +362,10 @@ final class AvoidMapTests: XCTestCase {
         XCTAssertTrue(lib.adopt(catalogData: catalog("2026-11-01T00:00:00Z")))
         XCTAssertEqual(lib.missing.map(\.id), ["w108-w104", "w104-w100"], "a newer build supersedes every band")
         XCTAssertFalse(lib.adopt(catalogData: Data(#"{"schema": 1, "map": {}}"#.utf8)), "an old-schema catalog is refused")
+        XCTAssertFalse(lib.adopt(catalogData: catalog("2026-11-02T00:00:00Z", schema: 2)),
+                       "catalog 2 lists bands whose z12 tiles hold their own land cover")
+        XCTAssertEqual(AvoidMapLibrary.catalogPath, "index-v3.json",
+                       "lz/avoid/publish.py writes catalog 3 here; builds that read catalog 2 read index.json")
         XCTAssertEqual(AvoidMapLibrary(store: store).catalog?.built_at, "2026-11-01T00:00:00Z",
                        "the catalog survives a relaunch, so an offline pilot still learns the install is partial")
     }

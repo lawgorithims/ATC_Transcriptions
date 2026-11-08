@@ -39,10 +39,15 @@ enum AvoidReason: UInt8, CaseIterable, Sendable {
 
 enum AvoidMap {
     static let format = "avoid1"
-    static let schema = "1"
+    /// 2: trees, water and built-up areas are stored no finer than `landCoverZoom`; a z12 tile holds only
+    /// the hazards and steep ground, and takes its land cover from its z11 parent. A schema-1 reader would
+    /// draw those z12 tiles with no land cover and say nothing, so each schema refuses the other's files.
+    static let schema = "2"
     static let side = 256
     static let minZoom = 8
     static let maxZoom = 12
+    static let landCoverZoom = 11
+    static let landCover: UInt8 = AvoidReason.water.rawValue | AvoidReason.developed.rawValue | AvoidReason.trees.rawValue
     static let magic: [UInt8] = Array("AVD1".utf8)
 
     /// "AVD1" + raw DEFLATE (Apple's COMPRESSION_ZLIB takes no zlib wrapper) of 65,536 bytes.
@@ -199,17 +204,39 @@ final class AvoidMapStore: @unchecked Sendable {
 
     func covers(z: Int, x: Int) -> Bool { reader(z: z, x: x) != nil }
 
+    /// The tile as stored. At z12 that is the hazards and steep ground only: see `maskWithLandCover`.
     func mask(z: Int, x: Int, y: Int) -> [UInt8]? {
         guard let r = reader(z: z, x: x), let data = r.tileData(z: z, x: x, y: y) else { return nil }
         return AvoidMap.decode(data)
     }
 
-    /// Every reason at a coordinate (z12, the finest level). Empty = mapped and nothing to report;
-    /// nil = this ground is not installed.
+    /// The tile with every reason in it. At z12, its own hazards and steep ground plus the land cover of
+    /// its z11 parent's quadrant, each parent pixel covering 2×2: schema 2 stores land cover no finer
+    /// than z11. The parent is in the same band (a band is whole z8 columns). nil = neither is stored.
+    func maskWithLandCover(z: Int, x: Int, y: Int) -> [UInt8]? {
+        let own = mask(z: z, x: x, y: y)
+        guard z == AvoidMap.landCoverZoom + 1,
+              let parent = mask(z: AvoidMap.landCoverZoom, x: x >> 1, y: y >> 1) else { return own }
+        let side = AvoidMap.side
+        let ox = (x & 1) * side / 2, oy = (y & 1) * side / 2       // the parent's quadrant over this tile
+        var out = own ?? [UInt8](repeating: 0, count: side * side)
+        assert(out.count == side * side && parent.count == side * side, "a decoded tile is 256×256")
+        for py in 0..<side {                                            // bounded: 256 rows
+            let row = py * side
+            let parentRow = (oy + (py >> 1)) * side + ox
+            for px in 0..<side {                                        // bounded: 256 columns
+                out[row + px] |= parent[parentRow + (px >> 1)] & AvoidMap.landCover
+            }
+        }
+        return out
+    }
+
+    /// Every reason at a coordinate, at the finest level, read the way the map draws it (z12 with its
+    /// parent's land cover). Empty = mapped and nothing to report; nil = this ground is not installed.
     func reasons(lon: Double, lat: Double) -> [AvoidReason]? {
         guard let t = AvoidMap.tilePixel(lon: lon, lat: lat, z: AvoidMap.maxZoom),
               covers(z: AvoidMap.maxZoom, x: t.x) else { return nil }
-        guard let m = mask(z: AvoidMap.maxZoom, x: t.x, y: t.y) else { return [] }
+        guard let m = maskWithLandCover(z: AvoidMap.maxZoom, x: t.x, y: t.y) else { return [] }
         return AvoidReason.reasons(in: m[t.py * AvoidMap.side + t.px])
     }
 
@@ -267,7 +294,9 @@ final class AvoidTileRenderer: @unchecked Sendable {
         guard signature == self.signature(theme: theme, showCover: showCover) else { return nil }
         let key = "\(signature)/\(z)/\(x)/\(y)" as NSString
         if let hit = cache.object(forKey: key) { return hit as Data }
-        guard let mask = store.mask(z: z, x: x, y: y) else { return nil }
+        // Without the cover switch, land cover draws as nothing: no need to fetch the z11 parent.
+        guard let mask = showCover ? store.maskWithLandCover(z: z, x: x, y: y) : store.mask(z: z, x: x, y: y)
+        else { return nil }
         let lut = Self.lut(theme: theme, showCover: showCover)
         var pixels = [UInt32](repeating: 0, count: mask.count)
         var painted = 0

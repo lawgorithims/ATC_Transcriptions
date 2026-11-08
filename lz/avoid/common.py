@@ -10,6 +10,12 @@ THE GRID. Each 1-degree cell (id = NW corner, e.g. n33w107 covers 32-33 N, 107-1
 the z12 tiles that intersect it, but paints only the pixels whose CENTRES fall inside it
 (half-open: west/south edges in, east/north edges out). So neighbouring cells never paint the same
 pixel, and merging is a plain OR of their tiles.
+
+THE PUBLISHED LAYOUT (schema 2). Trees, water and built-up areas (LAND_COVER) are stored no finer than
+z11: z12 tiles carry the hazards and steep ground only, and the app takes a z12 tile's land cover from
+its z11 parent, each parent pixel covering 2x2. Land cover is drawn only when the pilot asks for it
+(off by default) and was 54% of z12's bytes. The cells and the merge still work at z12 throughout:
+z11 is built from the FULL z12 masks, and only then is land cover stripped from z12.
 """
 import math
 import os
@@ -32,6 +38,13 @@ COVER = WATER | DEVELOPED | TREES | STEEP
 HAZARD = ORCHARD | SOLAR | WIRES | OBSTACLE
 BIT_NAMES = {WATER: "water", DEVELOPED: "developed", TREES: "trees", STEEP: "steep",
              ORCHARD: "orchard", SOLAR: "solar", WIRES: "wires", OBSTACLE: "obstacle"}
+
+# The cover the app draws only on request (every bit NLCD gives; steep is drawn always), and the finest
+# zoom that stores it. Changing either is a new MAP_SCHEMA: an app reading this layout as the old one
+# would draw z12 with no land cover at all and say nothing.
+LAND_COVER = WATER | DEVELOPED | TREES
+LAND_COVER_ZOOM = ZOOM - 1
+MAP_SCHEMA = "2"                                # MBTiles `avoid_schema`; the app's AvoidMap.schema
 
 # Annual NLCD Collection 1.2 classes. 21 (developed, open space: parks, golf courses, verges) is
 # deliberately NOT developed here; 95 (emergent wetland: marsh) counts as water.

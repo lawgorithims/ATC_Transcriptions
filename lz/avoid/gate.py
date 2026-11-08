@@ -7,7 +7,10 @@ never fused into the map). They are independent of every source the map was buil
 ~24% of the HIFLD lines cite OSM, so line recall is partly circular.
 
 Each check runs at z12 (the map's resolution) and at z10, where a pilot looks at a whole region: the
-hazards must survive the zoom-out and the runways must not drown in their neighbours.
+hazards must survive the zoom-out and the runways must not drown in their neighbours. z12 is read the
+way the app reads it: its own hazards and steep ground, plus the land cover of the same point at z11,
+where schema 2 stores it. A layout check first proves that reading right (z12 has no land cover, z11
+has it), or a merge that dropped land cover from both would sail through every check that ignores it.
 
   hard  blocks publishing (exit 1)
   soft  reported for triage
@@ -104,14 +107,20 @@ ZOOMS = (C.ZOOM, 10)
 
 
 class MapSampler:
-    """Pixel lookup in the merged map at one zoom (tiles cached). A missing tile is all-clear: the
-    merge writes only tiles with something in them."""
+    """Pixel lookup in the merged map at one zoom, as the app reads it (tiles cached). A missing tile is
+    all-clear: the merge writes only tiles with something in them. Above LAND_COVER_ZOOM, a point's land
+    cover is read at that zoom — the same point there is its parent pixel, the app's 2x upsample."""
 
     def __init__(self, path, zoom):
         self.db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
         self.zoom, self.cache = zoom, {}
+        self.cover = MapSampler(path, C.LAND_COVER_ZOOM) if zoom > C.LAND_COVER_ZOOM else None
 
     def byte(self, lon, lat):
+        own = self.stored(lon, lat)
+        return own if self.cover is None else own | (self.cover.byte(lon, lat) & C.LAND_COVER)
+
+    def stored(self, lon, lat):
         n = 1 << self.zoom
         fx = (lon + 180.0) / 360.0 * n
         fy = (1.0 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2.0 * n
@@ -126,6 +135,42 @@ class MapSampler:
         if t is None:
             return 0
         return int(t[min(C.TILE - 1, int((fy - y) * C.TILE)), min(C.TILE - 1, int((fx - x) * C.TILE))])
+
+
+LAYOUT_MIN_Z11_COVER = 0.5      # z11 tiles holding some land cover; any ~20 km square of CONUS land has
+                                # a pond, a wood or a town. Guards against land cover lost from BOTH zooms.
+
+
+def check_layout(path):
+    """Schema 2 as built, over every tile (not sampled): no z12 tile carries land cover, and z11 does."""
+    db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    meta = dict(db.execute("SELECT name, value FROM metadata"))
+    failed = []
+    if meta.get("avoid_schema") != C.MAP_SCHEMA or meta.get("land_cover_maxzoom") != str(C.LAND_COVER_ZOOM):
+        failed.append(f"layout: avoid_schema {meta.get('avoid_schema')}, "
+                      f"land_cover_maxzoom {meta.get('land_cover_maxzoom')}")
+    share = {}
+    for z in (C.ZOOM, C.LAND_COVER_ZOOM):                            # bounded: two zooms
+        n = with_cover = 0
+        for (blob,) in db.execute("SELECT tile_data FROM tiles WHERE zoom_level=?", (z,)):   # bounded by the tiles
+            t = C.unpack_tile(blob)
+            assert t is not None, f"undecodable tile at z{z}"
+            n += 1
+            with_cover += bool((t & C.LAND_COVER).any())
+        share[z] = with_cover / n if n else 0.0
+    db.close()
+    ok12, ok11 = share[C.ZOOM] == 0.0, share[C.LAND_COVER_ZOOM] >= LAYOUT_MIN_Z11_COVER
+    print(f"{'PASS' if ok12 else 'HARD':5s} z{C.ZOOM}  {'tiles holding land cover':34s} {share[C.ZOOM]:6.1%} none",
+          flush=True)
+    print(f"{'PASS' if ok11 else 'HARD':5s} z{C.LAND_COVER_ZOOM}  {'tiles holding land cover':34s} "
+          f"{share[C.LAND_COVER_ZOOM]:6.1%} (bar {LAYOUT_MIN_Z11_COVER:.0%})", flush=True)
+    if not ok12:
+        failed.append(f"layout: {share[C.ZOOM]:.1%} of z12 tiles carry land cover")
+    if not ok11:
+        failed.append(f"layout: {share[C.LAND_COVER_ZOOM]:.1%} of z11 tiles carry land cover "
+                      f"< {LAYOUT_MIN_Z11_COVER:.0%}")
+    return [{"check": "tiles holding land cover", "zoom": z, "rate": round(s, 4), "level": "hard",
+             "pass": (ok12 if z == C.ZOOM else ok11)} for z, s in share.items()], failed
 
 
 def faa_fields():
@@ -215,7 +260,7 @@ def run(path):
     samplers = {z: MapSampler(path, z) for z in ZOOMS}
     rng = random.Random(1029)
     grid = faa_fields()
-    results, failed = [], []
+    results, failed = check_layout(path)
     for check in CHECKS:                                              # bounded: the check list
         pts = points(check, rng, grid)
         assert check["level"] == "info" or pts, f"{check['name']}: no OSM features — Overpass?"
