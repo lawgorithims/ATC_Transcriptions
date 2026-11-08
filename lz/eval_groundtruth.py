@@ -46,6 +46,11 @@ import urllib.parse
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+# ⚠️ KEEP IN STEP WITH `LZTileCompositor.avoidVetoMask`. The landability packs classify by land
+# cover, so a solar farm reads as open firm ground and an orchard reads as crop; these four bits are
+# what the avoid map can see and the packs cannot. `LZAvoidVetoTests` pins the Swift side.
+AVOID_VETO_MASK = 16 | 32 | 64 | 128      # orchard, solar, wires, obstacle
 sys.path.insert(0, HERE)
 import lzcommon as C                                                    # noqa: E402
 
@@ -172,13 +177,25 @@ class DeviceScore:
             if steps >= 1:
                 self.extent_veto_at = min(254, max(1, steps))
 
-    def verdict(self, cls, conf, slope, rough, hazard, flags, coarse, extent):
-        """UNKNOWN, EXCLUDED, or 0…100 — `LZTileCompositor.verdict`, line for line."""
+    def verdict(self, cls, conf, slope, rough, hazard, flags, coarse, extent, avoid=None):
+        """UNKNOWN, EXCLUDED, or 0…100 — `LZTileCompositor.verdict`, line for line.
+
+        `avoid` is the avoid map's bit field for the cell, or None when it was not consulted.
+
+        ⚠️ None IS NOT 0, exactly as on the device. None means the avoid map was unavailable and the
+        cell must score as it did before the veto existed; 0 means consulted and clear. Collapsing
+        them here would make this evaluator measure a layer no pilot runs.
+        """
         if cls == 0:
             return UNKNOWN
         if self.veto_no_data and slope == C.SLOPE_NODATA:
             return UNKNOWN
         if cls in self.veto_class:
+            return EXCLUDED
+        # The four hazards land cover cannot see — orchard 16, solar 32, wires 64, obstacle 128.
+        # Mirrors `LZTileCompositor.avoidVetoMask`; water/developed/trees/steep are deliberately
+        # NOT here, because the pack already judges those and double-vetoing worsens the runway rate.
+        if avoid is not None and (avoid & AVOID_VETO_MASK):
             return EXCLUDED
         if slope != C.SLOPE_NODATA and slope > self.slope_veto_above:
             return EXCLUDED
@@ -579,6 +596,20 @@ def main():
         return 0
 
     sampler = PackSampler(a.packs)
+    # ⚠️ SAY WHAT WAS NOT MEASURED. The device now vetoes cells the avoid map calls orchard,
+    # solar, wires or obstacle (`LZTileCompositor.avoidVetoMask`), but this evaluator does not yet
+    # READ the avoid bands: `evaluate_sets` calls `verdict` with eight fields and no `avoid`, so
+    # every number below describes the layer WITHOUT that veto. Printing them unqualified would be
+    # the precise failure this file exists to prevent — a table that looks like a measurement of
+    # what pilots get, and is not.
+    #
+    # To close it: fetch the bands (`lz/avoid/publish.py --verify` lists them), open the one whose
+    # longitude band contains each sample, read its z12 tile byte at that pixel, and pass `avoid=`.
+    # The Python `verdict` already accepts it, and `LZAvoidVetoTests` pins the Swift side.
+    print("\n  !! AVOID-MAP VETO NOT MEASURED - the sampler does not read the avoid bands yet.",
+          file=sys.stderr)
+    print("     Rates below are the layer WITHOUT the orchard/solar/wires/obstacle veto.\n",
+          file=sys.stderr)
     report = {"sets": evaluate_sets(scorer, sampler)}
     print(f"## Device verdict at independently mapped ground (default aircraft; green >= {GREEN_FROM}, "
           f"offered >= {OFFER_FROM})\n")

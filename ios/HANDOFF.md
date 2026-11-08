@@ -391,6 +391,35 @@ does with its own `$SIM`.
 ALSO: `TaskStop` on a backgrounded `xcodebuild` kills the shell, not necessarily `xcodebuild`
 itself. Check `ps` after stopping one, or the orphan keeps driving the simulator.
 
+**⚠️ THE LANDABILITY HAZARD VETO IS BUILT BUT UNMEASURED — read before ungating.**
+
+The off-field shading is developer-only (`AppModel.offFieldLayerAvailable == diagnosticsEnabled`)
+because the first ground-truth eval found it offering 79% of solar farms and 53% of Fresno's
+orchards and vineyards as landing candidates, serving ground under transmission lines 27% of the
+time, AND vetoing ~40% of runway centrelines. Cause: packs classify by LAND COVER, so a solar farm
+reads as open firm ground and an orchard as `classCrop`; the `hazard` plane is a softened scalar,
+not a veto. The avoid map already carries orchard/solar/wires/obstacle as explicit bits at ~30 m,
+and the two systems had never referenced each other.
+
+`LZTileCompositor.avoidVetoMask` + the `avoidMask` provider now veto on exactly those four bits.
+Water/developed/trees/steep are deliberately excluded — the pack already judges those, and
+double-vetoing is how the runway number gets worse. The veto sits AFTER the `.unknown` returns, so
+it only ever removes green and never paints a claim over unsurveyed ground. nil (no avoid map
+installed) scores exactly as before.
+
+⚠️ NOTHING HAS BEEN MEASURED. `lz/eval_groundtruth.py` cannot run from a sandboxed session — it
+fetches OSM features from Overpass at run time (ODbL: they must never fuse into a pack) and
+Overpass is unreachable there; only the `n34w119` pack is on disk, while the orchard numbers come
+from a Fresno box (`n36w120`). The evaluator's `verdict` now accepts `avoid=`, but its SAMPLER does
+not read the avoid bands, so it prints a loud "AVOID-MAP VETO NOT MEASURED" banner rather than
+reporting rates that look current and are not.
+
+To finish: fetch the avoid bands, have the sampler pass `avoid=`, then
+`~/chartenv/bin/python -I lz/eval_groundtruth.py --gate`. Only that can justify ungating, and the
+runway-centreline rate is the number most at risk from a change that only adds vetoes. ⚠️
+`obstacle` is in the mask but no feature set measures towers — add one before reading the gate as
+proof.
+
 **Known limits / candidate next work:**
 - **Diarization can't separate simultaneous talkers (overtalk).** The heuristic v1 splits on PTT
   gaps + acoustic clustering. The "very robust" upgrade = a dedicated **speaker-embedding CoreML

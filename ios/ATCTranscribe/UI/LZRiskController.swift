@@ -82,6 +82,13 @@ final class LZRiskController: ObservableObject {
             return
         }
         let c = LZTileCompositor(store: store, rules: rules, night: night)
+        // ⚠️ THE HAZARD VETO, AND IT IS SILENTLY OPTIONAL. The avoid map is a ~1 GB download the
+        // pilot may not have; when it is absent this closure returns nil, `verdict` treats that as
+        // "never consulted", and the layer scores exactly as it did before. That is deliberate — but
+        // it also means the shading is WEAKER without the avoid map than with it, and the layer
+        // currently gives the pilot no way to tell which they are looking at. Say so in the UI
+        // before this is ever ungated (`AppModel.offFieldLayerAvailable`).
+        c.avoidMask = { z, x, y in AvoidMapStore.shared.mask(z: z, x: x, y: y) }
         compositor = c
         compositorForSampling = c
         signature = c.signature

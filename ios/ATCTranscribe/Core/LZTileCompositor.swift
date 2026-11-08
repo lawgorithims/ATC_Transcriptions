@@ -147,6 +147,40 @@ final class LZTileCompositor {
     /// and must come back `unknown`; a vetoed CLASS or a slope past the limit is knowledge, and
     /// must come back `excluded` so it gets painted. Treating them alike is what made the Organ
     /// Mountains invisible.
+    /// Avoid-map bits that VETO a cell outright, because the landability packs cannot see them.
+    ///
+    /// ⚠️ THIS EXISTS BECAUSE THE LAYER OFFERED SOLAR FARMS. The packs classify ground by LAND
+    /// COVER — twelve classes, `classOpenFirm` through `classSnowIce`. A solar farm is flat, open
+    /// and unvegetated, so it reads as open firm ground. An orchard or vineyard is agriculture, so
+    /// it reads as `classCrop`, a perfectly good landing surface. Transmission lines are not a land
+    /// cover at all. The `hazard` plane exists but is a 0–255 scalar run through a utility curve,
+    /// so it DISCOUNTS rather than excludes. Nothing in a pack can say "those neat rows are trees"
+    /// or "there are wires over this field", and the first ground-truth eval measured the result:
+    /// 79% of solar farms and 53% of Fresno's orchards and vineyards offered as landing candidates,
+    /// and ground directly under transmission lines offered 27% of the time.
+    ///
+    /// The avoid map already carries exactly these as explicit bits at ~30 m. The two systems were
+    /// built for the same problem and had never referenced each other.
+    ///
+    /// ⚠️ ONLY THE FOUR THE PACKS ARE BLIND TO. Water, developed, trees and steep are deliberately
+    /// NOT here: the packs already judge those through `vetoClass` and the slope veto, and vetoing
+    /// them twice would add exclusions where the pack already has an opinion — which is how you make
+    /// the OTHER half of that eval worse. The same report found the layer already vetoing ~40% of
+    /// runway centrelines, so a change that only adds vetoes has to add them narrowly.
+    ///
+    /// ⚠️ `obstacle` IS INCLUDED BUT UNMEASURED — the eval's feature sets cover orchards, solar and
+    /// power lines, not towers. It is here because a tower is unambiguously not landable, but the
+    /// honest position is that its effect on the runway number has not been measured. Add a feature
+    /// set for it before reading the gate as proof.
+    static let avoidVetoMask: UInt8 =
+        AvoidReason.orchard.rawValue | AvoidReason.solar.rawValue
+        | AvoidReason.wires.rawValue | AvoidReason.obstacle.rawValue
+
+    /// The avoid map's bits for a tile, or nil when it is not installed. Injected rather than
+    /// reached for, so the compositor keeps no dependency on a ~1 GB optional download and every
+    /// test can drive it directly.
+    var avoidMask: ((_ z: Int, _ x: Int, _ y: Int) -> [UInt8]?)?
+
     @inline(__always)
     /// `extent` is OPTIONAL: nil on a schema-1 pack, which predates the plane.
     ///
@@ -156,10 +190,18 @@ final class LZTileCompositor {
     /// map of unusable terrain the moment this build shipped.
     private func verdict(cls: UInt8, conf: UInt8, slope: UInt8, rough: UInt8,
                          hazard: UInt8, flags: UInt8, coarse: Bool,
-                         extent: UInt8?) -> Verdict {
+                         extent: UInt8?, avoid: UInt8? = nil) -> Verdict {
         if cls == LZPack.classUnknown { return .unknown }
         if rules.vetoOnSlopeNoData && slope == LZPack.slopeNoData { return .unknown }
         if rules.vetoClass[Int(cls)] { return .excluded }
+        // ⚠️ NIL IS NOT ZERO, the same rule `extent` documents above. Nil means the avoid map was
+        // never consulted — it is an optional download — and the cell must then score EXACTLY as it
+        // did before this veto existed. Zero means consulted and clear, which is a measurement.
+        //
+        // Deliberately AFTER the two `.unknown` returns: this only ever removes green from ground
+        // the pack already has an opinion about. It never paints new area, so it cannot turn
+        // unsurveyed ground into a claim.
+        if let avoid, (avoid & Self.avoidVetoMask) != 0 { return .excluded }
         if slope != LZPack.slopeNoData && slope > rules.slopeVetoAbove { return .excluded }
         // Not enough room is an EXCLUSION, not a low score. A field that is beautiful and far too
         // short is not mediocre ground — it is ground you cannot use, and saying so plainly beats a
@@ -198,9 +240,9 @@ final class LZTileCompositor {
     /// The offline evaluator (`lz/eval_groundtruth.py`) must reproduce those numbers exactly; the pin
     /// is the only thing that stops it measuring a different layer from the one a pilot sees.
     func verdictCode(cls: UInt8, conf: UInt8, slope: UInt8, rough: UInt8, hazard: UInt8,
-                     flags: UInt8, coarse: Bool, extent: UInt8?) -> Int {
+                     flags: UInt8, coarse: Bool, extent: UInt8?, avoid: UInt8? = nil) -> Int {
         switch verdict(cls: cls, conf: conf, slope: slope, rough: rough, hazard: hazard,
-                       flags: flags, coarse: coarse, extent: extent) {
+                       flags: flags, coarse: coarse, extent: extent, avoid: avoid) {
         case .unknown: return -2
         case .excluded: return -1
         case .scored(let s): return s
@@ -226,12 +268,40 @@ final class LZTileCompositor {
         let key = "\(signature)/\(z)/\(x)/\(y)" as NSString
         if let hit = cache.object(forKey: key) { return hit as Data }
         guard let tile = store.planes(z: z, x: x, y: y) else { return nil }
-        guard let png = render(tile) else { return nil }
+        guard let png = render(tile, z: z, x: x, y: y) else { return nil }
         cache.setObject(png as NSData, forKey: key, cost: png.count)
         return png
     }
 
-    private func render(_ tile: LZTilePlanes) -> Data? {
+    /// The avoid map's byte for every pixel of an LZ tile, or nil when it cannot answer — not
+    /// installed, or shallower than the avoid map goes. Nil flows to `verdict` as "never consulted".
+    ///
+    /// ⚠️ The avoid map stops at z12 (~30 m); LZ tiles can be deeper. Below z12 each avoid pixel
+    /// is REPEATED across the sub-tile rather than interpolated, because these are hazard bits, not
+    /// a continuous field: half a power line is still a power line.
+    private func avoidBytes(z: Int, x: Int, y: Int) -> [UInt8]? {
+        guard let provider = avoidMask, z >= AvoidMap.minZoom else { return nil }
+        assert(z >= 0 && z <= 24, "avoidBytes: zoom out of range")
+        if z <= AvoidMap.maxZoom { return provider(z, x, y) }
+        let d = z - AvoidMap.maxZoom
+        guard d <= 8 else { return nil }                       // bounded (rule 2)
+        let scale = 1 << d
+        guard let parent = provider(AvoidMap.maxZoom, x >> d, y >> d),
+              parent.count == LZPack.planeBytes else { return nil }
+        let side = LZPack.side
+        let ox = (x % scale) * side, oy = (y % scale) * side
+        var out = [UInt8](repeating: 0, count: LZPack.planeBytes)
+        for py in 0..<side {                                   // bounded
+            let sy = (oy + py) / scale
+            for px in 0..<side {
+                out[py * side + px] = parent[sy * side + (ox + px) / scale]
+            }
+        }
+        assert(out.count == LZPack.planeBytes, "avoidBytes: wrong length")
+        return out
+    }
+
+    private func render(_ tile: LZTilePlanes, z: Int, x: Int, y: Int) -> Data? {
         let n = LZPack.planeBytes
         let cls = tile.planes[LZPack.planeClass]
         let conf = tile.planes[LZPack.planeConf]
@@ -244,6 +314,8 @@ final class LZTileCompositor {
         // same for all 65,536 of them.
         let extent: [UInt8]? = tile.planes.count > LZPack.planeExtent
             ? tile.planes[LZPack.planeExtent] : nil
+        // Same reasoning: one lookup per tile, not 65,536.
+        let avoid: [UInt8]? = avoidBytes(z: z, x: x, y: y)
 
         var pixels = [UInt32](repeating: 0, count: n)
         var painted = 0
@@ -251,7 +323,7 @@ final class LZTileCompositor {
             let c: UInt32
             switch verdict(cls: cls[i], conf: conf[i], slope: slope[i], rough: rough[i],
                            hazard: hazard[i], flags: flags[i], coarse: coarse,
-                           extent: extent?[i]) {
+                           extent: extent?[i], avoid: avoid?[i]) {
             case .unknown:  continue                  // the ONLY state that renders as nothing
             case .excluded: c = excludedColor         // known unlandable — say so
             case .scored(let s): c = ramp[s]
@@ -303,9 +375,12 @@ final class LZTileCompositor {
         // Deliberately NOT in the guard above: a schema-1 tile has no extent plane, and treating
         // its absence as a decode failure would make every older pack un-tappable.
         let extentRaw = tile.extentRaw(x: px, y: py)
+        // The tapped card has to agree with the shading, or the pilot gets a green pixel and a
+        // card that excludes it.
+        let avoidRaw = avoidBytes(z: zoom, x: tx, y: ty).map { $0[py * LZPack.side + px] }
         let v = verdict(cls: cls, conf: confRaw, slope: slopeRaw, rough: roughRaw,
                         hazard: hazardRaw, flags: flagsRaw, coarse: tile.isCoarseTerrain,
-                        extent: extentRaw)
+                        extent: extentRaw, avoid: avoidRaw)
         let s = scoreValue(v)
         let excluded: Bool = { if case .excluded = v { return true }; return false }()
         let fired = firedRules(cls: cls, conf: confRaw, slope: slopeRaw, flags: flagsRaw,
