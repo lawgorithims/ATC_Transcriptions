@@ -95,7 +95,7 @@ struct LiveNotamFetcher: NotamFetching {
         var req = URLRequest(url: url, timeoutInterval: 30)
         req.setValue(cred.clientID, forHTTPHeaderField: "client_id")
         req.setValue(cred.clientSecret, forHTTPHeaderField: "client_secret")
-        req.setValue("CommSight/1.0", forHTTPHeaderField: "User-Agent")
+        req.setValue("Obelisk/1.0", forHTTPHeaderField: "User-Agent")
         do {
             let (data, resp) = try await NetworkActivity.data(for: req, "NOTAMs", .hazards)
             let code = (resp as? HTTPURLResponse)?.statusCode ?? 0

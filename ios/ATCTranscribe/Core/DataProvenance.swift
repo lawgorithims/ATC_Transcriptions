@@ -7,7 +7,7 @@ import Foundation
 ///
 ///   * A pilot must be able to see whether what they are looking at has EXPIRED. Silently drawing an
 ///     out-of-cycle chart is worse than drawing nothing, because it looks authoritative.
-///   * Two datasets on different cycles should not be silently fused. CommSight does fuse them today
+///   * Two datasets on different cycles should not be silently fused. Obelisk does fuse them today
 ///     (the airport card alone mixes CIFP, the plate index, OurAirports and live weather), so rather
 ///     than failing those queries — which would remove most of the app — provenance is STAMPED and
 ///     mismatches are SURFACED.

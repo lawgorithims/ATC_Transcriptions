@@ -29,7 +29,7 @@ struct OnboardingDownloadView: View {
                         .resizable().scaledToFit()
                         .frame(width: 64, height: 64)
                         .clipShape(RoundedRectangle(cornerRadius: DS.Radius.r4))
-                    Text("CommSight").font(.title2.weight(.bold)).foregroundStyle(p.text)
+                    Text("Obelisk").font(.title2.weight(.bold)).foregroundStyle(p.text)
                     Text("On-device air-traffic-control transcription runs a speech model that lives on your device. Download it once to get started — it stays offline afterward.")
                         .font(.subheadline).foregroundStyle(p.textDim)
                         .multilineTextAlignment(.center)

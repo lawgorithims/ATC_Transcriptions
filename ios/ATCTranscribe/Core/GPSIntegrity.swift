@@ -61,9 +61,45 @@ struct GPSIntegrityAssessment: Equatable, Sendable {
     /// with no baro. nil until two fixes span the baseline with usable altitudes.
     var verticalSpeedFpm: Double?
 
-    /// Ownship should not be drawn at all in these states — a position we don't believe is worse than
-    /// no position, because the pilot will fly it.
-    var shouldSuppressOwnship: Bool { state >= .unreliable }
+    /// This verdict was PINNED by `--force-gps-integrity`, not measured. Always false in a release
+    /// build, because the only thing that can set it does not exist in one.
+    ///
+    /// It is carried on the assessment rather than kept beside it so that every consumer sees it — the
+    /// banner says "forced" on its face. A test affordance that looks exactly like the real thing is
+    /// one a pilot can leave armed by accident, and this one's whole purpose is to make the app behave
+    /// as though the GPS were failing.
+    var isSimulatedVerdict = false
+
+    // MARK: What each consumer is allowed to do with this fix
+    //
+    // ⚠️ THERE USED TO BE ONE PROPERTY HERE — `shouldSuppressOwnship`, `state >= .unreliable` — AND IT
+    // DELETED THE AEROPLANE FROM THE MAP. It conflated two unrelated questions, and a pilot reported
+    // the consequence from the air: the symbol and the track vanish whenever the signal dips.
+    //
+    // `.unreliable` is reached by accuracy past 100 m or a fix 30 s late while moving. Neither is
+    // evidence that the position is WRONG; both say it is COARSE. A coarse position is right to within
+    // a few hundred metres, which is nothing against a leg measured in miles — and removing it costs
+    // the ownship symbol, the track, the glide ring, terrain AGL and the storm alert all at once,
+    // leaving the pilot with no picture at the moment the picture got harder to come by. The old
+    // comment argued "a position we don't believe is worse than no position, because the pilot will
+    // fly it". That is true of a FABRICATED position and false of a fuzzy one, and only the fuzzy case
+    // was firing. The symbol already had a red degraded variant (`ownPlane(for:)`) and a 1-sigma
+    // accuracy ring; both were unreachable, because the only states they were drawn for were the
+    // states that removed the thing they were drawn on.
+    //
+    // So: the symbol is always drawn when there is a fix, in the style its state earns, and the two
+    // questions are asked separately below.
+
+    /// Trusted to fly a vertical profile off — an approach glidepath, an AGL-critical figure. The
+    /// strictest gate, and the one `shouldSuppressOwnship` used to be: anything coarser than
+    /// `.degraded` is not good enough to put an aeroplane on a glidepath with.
+    var isTrustedForGuidance: Bool { state < .unreliable }
+
+    /// The receiver's position is probably WHERE WE ACTUALLY ARE, however coarsely. False only when
+    /// the solution is self-inconsistent or software-generated — the spoofing bucket. This is the gate
+    /// for anchoring a clearance (Direct-To, join-approach): a course drawn from a fix that is 150 m
+    /// out is fine, a course drawn from a fix that is fifty miles out is a trap.
+    var isPositionProbablyReal: Bool { state < .suspect }
 
     /// One-line reason phrase, worst-first, for the banner and the log ("position jump · accuracy degraded").
     var reasonText: String { reasons.map(\.label).joined(separator: " · ") }
@@ -80,11 +116,13 @@ struct GPSIntegrityEvent: Equatable, Sendable {
 extension GPSLogStamp {
     /// Project an assessment (+ the fix it came from) into the JSONL log column. Returns nil in the
     /// `unknown` state so a run with no GPS feed logs no GPS field at all rather than a row of nils.
-    /// Position is written only when the monitor trusts it — the log must not record a coordinate the
-    /// app refused to plot.
+    /// Position is written whenever it is probably real, which is also when the app plots it — the log
+    /// and the map must agree about what happened. The state and reasons are logged beside it, so a
+    /// coarse position is recorded AS coarse rather than silently dropped; a post-flight review can
+    /// then see both where the aircraft was and how much to believe it, which a gap cannot show.
     init?(assessment a: GPSIntegrityAssessment, fix: DeviceFix?) {
         guard a.state != .unknown else { return nil }
-        let trusted = !a.shouldSuppressOwnship ? fix : nil
+        let trusted = a.isPositionProbablyReal ? fix : nil
         self.init(state: String(describing: a.state),
                   reasons: a.reasons.isEmpty ? nil : a.reasons.map(\.rawValue),
                   accuracyM: a.horizontalAccuracyM,
@@ -129,6 +167,21 @@ final class GPSIntegrityMonitor {
         /// A suspect verdict is LATCHED this long: a spoof that settles into a smooth false track would
         /// otherwise clear itself one fix later, and the pilot needs to keep seeing it.
         var suspectHoldS = 60.0
+        /// ⚠️ HOW MANY CONSECUTIVE BAD OBSERVATIONS IT TAKES TO CALL A FIX UNUSABLE. One is not enough
+        /// and never was: CoreLocation routinely emits a single fix with a blown accuracy estimate as
+        /// the receiver re-acquires — under a wing in a steep turn, through a windscreen heater, on a
+        /// handover between constellations — and the next fix is fine. Reporting the worst state on
+        /// the strength of one reading is what made this monitor cry wolf in flight.
+        ///
+        /// Until the count is met the verdict is held at `.degraded`, so the pilot is still TOLD the
+        /// signal is poor; what they are not told is that it is unusable, on evidence of one sample.
+        /// Escalation only — clearing is immediate, because a receiver that has recovered should not
+        /// have to prove it three times while the banner stays up.
+        ///
+        /// Does NOT apply to `.suspect`. That bucket is already built on agreement between two fixes
+        /// rather than one reading, it latches for `suspectHoldS` on purpose, and softening it would
+        /// weaken the one detector here that is actually about spoofing.
+        var confirmUnreliableCount = 3
         /// Pairwise checks are skipped across gaps longer than this — a backgrounded app resuming is a
         /// gap, not a teleport, and must never be reported as one.
         var maxPairGapS = 30.0
@@ -146,6 +199,9 @@ final class GPSIntegrityMonitor {
     private var suspectUntil: Date?
     /// What tripped the latch, so the held warning keeps naming the real cause.
     private var suspectReasons: [GPSIntegrityReason] = []
+    /// Consecutive observations that wanted `.unreliable` — see `Config.confirmUnreliableCount`.
+    private var unreliableRun = 0
+
 
     init(config: Config = .init()) {
         self.config = config
@@ -198,6 +254,7 @@ final class GPSIntegrityMonitor {
         events.removeAll(keepingCapacity: true)
         suspectUntil = nil
         suspectReasons = []
+        unreliableRun = 0
         assessment = GPSIntegrityAssessment()
     }
 
@@ -260,6 +317,17 @@ final class GPSIntegrityMonitor {
         var state = reasons.reduce(GPSIntegrityState.nominal) { max($0, Self.severity(of: $1, staleAge: staleAge, config: config)) }
         var reasons = reasons
 
+        // Confirmation before condemnation. A lone fix that wants `.unreliable` is held at `.degraded`
+        // until `confirmUnreliableCount` of them agree — see that field for why one is not evidence.
+        // Counted, not timed, so it behaves the same at 1 Hz and at the 15 m distance filter.
+        if state == .unreliable {
+            unreliableRun = min(unreliableRun + 1, config.confirmUnreliableCount)
+            if unreliableRun < config.confirmUnreliableCount { state = .degraded }
+        } else if state < .unreliable {
+            unreliableRun = 0                      // recovered, or never started — clearing is immediate
+        }
+        assert(unreliableRun <= config.confirmUnreliableCount, "confirmation run exceeded its cap")
+
         if state == .suspect {
             suspectUntil = now.addingTimeInterval(config.suspectHoldS)
             suspectReasons = reasons.filter { Self.severity(of: $0, staleAge: staleAge, config: config) == .suspect }
@@ -286,6 +354,44 @@ final class GPSIntegrityMonitor {
         assessment = next
         return next
     }
+
+    #if DEBUG
+    /// Rewrite a live assessment as the pinned state, keeping the fields that still make sense.
+    ///
+    /// The accuracy is WIDENED to something each state would plausibly carry, because the point of
+    /// forcing a state is to see what it looks like, and the 1-sigma ring drawn from a real 5 m fix is
+    /// smaller than the ownship symbol sitting on it. `.suspect` keeps the real figure: a spoofed fix
+    /// characteristically reports excellent accuracy, and that is part of what it looks like.
+    ///
+    /// Applied by `DeviceLocation` at the point every verdict is published — not inside `apply`,
+    /// because the flight-simulator path builds its own assessment and never reaches the detectors,
+    /// and a flag that could not be used with `--hold-ownship` could not be used at all: a held
+    /// ownship is the only way to put a steady aeroplane on the map in the Simulator.
+    ///
+    /// Pure and `static` so a test can ask what forcing produces without driving a monitor.
+    static func forcing(_ a: GPSIntegrityAssessment, to state: GPSIntegrityState) -> GPSIntegrityAssessment {
+        var out = a
+        out.state = state
+        out.isSimulatedVerdict = true
+        switch state {
+        case .degraded:
+            out.reasons = [.accuracyDegraded]
+            out.horizontalAccuracyM = max(a.horizontalAccuracyM ?? 0, 45)
+        case .unreliable:
+            out.reasons = [.accuracyUnusable]
+            out.horizontalAccuracyM = max(a.horizontalAccuracyM ?? 0, 250)
+        case .suspect:
+            out.reasons = [.positionJump]
+        case .unknown, .nominal:
+            out.reasons = []
+        }
+        // The same consequences the real states carry, so what is demonstrated is the real behaviour.
+        out.courseUsable = state < .unreliable && a.courseUsable
+        out.speedUsable = state < .unreliable && a.speedUsable
+        if state >= .unreliable { out.verticalSpeedFpm = nil }
+        return out
+    }
+    #endif
 
     /// Worst reason first, ties broken by declaration order. `sorted(by:)` is NOT stable, so without an
     /// explicit tiebreak two equally-severe reasons (a jump that is also an impossible speed) could swap

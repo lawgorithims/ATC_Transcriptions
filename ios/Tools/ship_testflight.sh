@@ -11,7 +11,7 @@
 #   signing has neither problem (no devices needed), but Xcode only applies it at EXPORT.
 #   So the working recipe is: archive UNSIGNED, then sign-for-distribution at export, where
 #   `-allowProvisioningUpdates` + the ASC API key mint the cloud distribution cert + profile.
-#   This is the exact process that shipped build 1 of CommSight (2026-06-27).
+#   This is the exact process that shipped build 1 of Obelisk (2026-06-27).
 #
 # Required env (the actual values are NOT in this public repo — see ios/RECOVERY.md):
 #   ASC_KEY_ID      App Store Connect API key id   (Users and Access → Integrations)
@@ -159,6 +159,6 @@ EXP_RC=$?
 an orphaned Development cert must be revoked in the portal first (see ios/RECOVERY.md)."
 
 log "done"
-echo "Uploaded build $BUILD_NUMBER. It appears under App Store Connect → CommSight → TestFlight"
+echo "Uploaded build $BUILD_NUMBER. It appears under App Store Connect → Obelisk → TestFlight"
 echo "after ~10-30 min of processing. Add yourself as an internal tester, then install via the"
 echo "TestFlight app. (cleanup trap restores the keychain + Resources/Models on exit.)"

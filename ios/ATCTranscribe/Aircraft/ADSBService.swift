@@ -45,7 +45,14 @@ enum TrafficFeedState: Equatable {
     var pillSpins: Bool { self == .loading }
 }
 
-enum ADSBFeedError: Error, Equatable { case rateLimited, http(Int), badURL }
+enum ADSBFeedError: Error, Equatable {
+    case rateLimited, http(Int), badURL
+    /// The provider answered, and refused this client — 401/403. A DIFFERENT problem from a server
+    /// fault or a dead network, and the only one the pilot can do nothing about: retrying forever is
+    /// pointless and the app has to say so rather than looking merely unlucky. See `LiveAircraftFetcher`
+    /// for how this fault actually reached a cockpit.
+    case refusedByProvider
+}
 
 /// Abstraction over the actual network fetch so the service's freshness/lifecycle logic is
 /// unit-testable without a network (tests inject a fake; the app uses `LiveAircraftFetcher`).
@@ -54,7 +61,7 @@ protocol AircraftFetching: Sendable {
     func fetch(center: Coord, radiusNm: Int) async throws -> (aircraft: [Aircraft], serverNow: Date?)
 }
 
-/// Polls airplanes.live for aircraft within a radius of a center point while streaming is on and a
+/// Polls adsb.lol for aircraft within a radius of a center point while streaming is on and a
 /// session is active, prunes contacts against a **server-anchored** clock, and publishes the pruned
 /// snapshot. The injected corrector block carries an absolute expiry (see `AppModel.injectTraffic`)
 /// that is re-checked at read time, so a stalled/failed/backgrounded poller can never leak stale
@@ -68,7 +75,7 @@ actor ADSBService {
         var maxAircraft = 60
     }
 
-    static let attribution = "Aircraft data: airplanes.live"
+    static let attribution = "Aircraft data: adsb.lol"
 
     private let config: Config
     private let fetcher: AircraftFetching
@@ -179,6 +186,9 @@ actor ADSBService {
     private static func describe(_ error: Error) -> String {
         switch error {
         case ADSBFeedError.rateLimited: return "rate limited"
+        // Says what it is, because the pilot's next move differs: everything else here is worth
+        // waiting out, and this one never resolves on its own.
+        case ADSBFeedError.refusedByProvider: return "feed refused this app"
         case ADSBFeedError.http(let c): return "http \(c)"
         case is URLError: return "offline"
         default: return "feed error"
@@ -188,23 +198,41 @@ actor ADSBService {
 
 // MARK: - Live network fetcher
 
-/// The production `AircraftFetching`: a GET to airplanes.live `/v2/point` on an ephemeral,
-/// no-cache `URLSession`, decoded via `Aircraft.decode`. HTTPS so ATS is satisfied.
+/// The production `AircraftFetching`: a GET to adsb.lol `/v2/point` on an ephemeral, no-cache
+/// `URLSession`, decoded via `Aircraft.decode`. HTTPS so ATS is satisfied.
+///
+/// ⚠️ THE PROVIDER CHANGED BECAUSE THE OLD ONE STOPPED ANSWERING, AND IT FAILED SILENTLY FOR LONG
+/// ENOUGH TO BE REPORTED AS "ADS-B never works". This was `api.airplanes.live/v2/point`, which now
+/// returns **403** with a body asking you to email them for access — they closed the open endpoint.
+/// Nothing in the client was wrong; the feed had simply gone away underneath it, and a layer that is
+/// switched on and shows an empty sky is indistinguishable from a quiet one.
+///
+/// adsb.lol serves the SAME `/v2/point/{lat}/{lon}/{radius}` shape and the same `{ "now", "ac": [] }`
+/// body — both are readsb/tar1090 derived — so `Aircraft.decode` needed no change at all. It is a
+/// free community network and asks for attribution, which is in `attribution` and in the
+/// acknowledgements list; if that is ever traded for a paid or keyed provider, both must move too.
+///
+/// If this reports `refusedByProvider` again, the feed has not broken — it has been withdrawn, and
+/// the fix is a provider decision rather than a code change. `opendata.adsb.fi` was verified working
+/// at the same time as a second option, though it uses a different URL shape and an `aircraft` key.
 struct LiveAircraftFetcher: AircraftFetching {
     var session: URLSession = .adsb
 
     func fetch(center: Coord, radiusNm: Int) async throws -> (aircraft: [Aircraft], serverNow: Date?) {
         let lat = String(format: "%.4f", center.lat)
         let lon = String(format: "%.4f", center.lon)
-        guard let url = URL(string: "https://api.airplanes.live/v2/point/\(lat)/\(lon)/\(radiusNm)") else {
+        guard let url = URL(string: "https://api.adsb.lol/v2/point/\(lat)/\(lon)/\(radiusNm)") else {
             throw ADSBFeedError.badURL
         }
         var req = URLRequest(url: url)
-        req.setValue("CommSight/1.0 (on-device ATC transcription)", forHTTPHeaderField: "User-Agent")
+        req.setValue("Obelisk/1.0 (on-device ATC transcription)", forHTTPHeaderField: "User-Agent")
         let (data, response) = try await session.data(for: req)
         let fetchedAt = Date()   // bytes have arrived — anchor freshness here
         if let http = response as? HTTPURLResponse {
             if http.statusCode == 429 { throw ADSBFeedError.rateLimited }
+            // 401/403 is the provider shutting the door, not a glitch — name it so the pill can say
+            // something true and the next person does not spend a day reading the decoder.
+            if http.statusCode == 401 || http.statusCode == 403 { throw ADSBFeedError.refusedByProvider }
             guard (200..<300).contains(http.statusCode) else { throw ADSBFeedError.http(http.statusCode) }
         }
         return try Aircraft.decode(data, fetchedAt: fetchedAt)

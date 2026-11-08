@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""build_terrain_grid.py — build CommSight's bundled terrain-elevation grid for the AGL readout.
+"""build_terrain_grid.py — build Obelisk's bundled terrain-elevation grid for the AGL readout.
 
 WHAT IT MAKES
     Resources/terrain/terrain_conus.bin  — a raw little-endian int16 grid of terrain elevation in

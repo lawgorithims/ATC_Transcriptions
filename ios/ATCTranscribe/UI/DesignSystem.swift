@@ -119,6 +119,11 @@ enum EntityTint {
         // Earth tone, deliberately outside the navigation-symbol families: this is ground
         // assessment, not a chart entity the pilot can navigate to.
         case .lzRisk:    return .hex(0x8D9B6A)
+        // The map's storm teal, one step deeper. `MapTheme.convective` is 0x2BD4E0, which had to be
+        // bright to read over a precipitation mosaic; a white glyph on it is unreadable, and this
+        // badge is a white glyph on a 26pt circle. Same hue, so the card and the outline still read as
+        // one thing, and deep enough for the symbol inside it.
+        case .convective: return .hex(0x11A2B2)
         }
     }
     private static func nightColor(_ kind: MapObjectKind) -> Color {
@@ -133,6 +138,8 @@ enum EntityTint {
         case .tfr:       return .hex(0xFF3B30)
         case .airway:    return .hex(0xB0521E)
         case .lzRisk:    return .hex(0x8A6A34)
+        // The map's night salmon. Cyan at night is a dark-adaptation violation — see MapTheme.
+        case .convective: return .hex(0xE09070)
         }
     }
     /// Route-leg chip color (flight-plan strip / route editor).

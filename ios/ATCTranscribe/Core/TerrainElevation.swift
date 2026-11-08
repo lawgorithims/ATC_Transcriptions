@@ -346,7 +346,10 @@ final class TerrainElevation {
         assert(Self.coarseVerticalAccuracyM < Self.maxVerticalAccuracyM, "hedge before refusing")
 
         guard isAvailable else { return .unavailable(.gridUnavailable) }
-        if let integrity, integrity.shouldSuppressOwnship { return .unavailable(.positionNotTrusted) }
+        // Only a position that may be FABRICATED is refused. A coarse one is still worth an AGL: the
+        // grid's cells are ~1.85 km, so a fix 150 m out usually lands in the same cell, and withdrawing
+        // terrain awareness because the signal dipped is the same mistake that used to delete ownship.
+        if let integrity, !integrity.isPositionProbablyReal { return .unavailable(.positionNotTrusted) }
         guard let altM = fix.altitudeMSLm, altM.isFinite else { return .unavailable(.noAltitude) }
         // `DeviceLocation` already resolves CoreLocation's `verticalAccuracy <= 0` sentinel to nil, so
         // a non-positive value arriving here is a malformed fix and is treated the same as a missing

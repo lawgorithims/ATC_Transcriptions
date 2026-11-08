@@ -86,7 +86,7 @@ enum ProcedureRoute {
             guard let coord = leg.coord, !leg.fix.isEmpty, !CIFP.isRunwayPseudoFix(leg.fix) else { continue }
             assert(coord.lat.isFinite && coord.lon.isFinite, "procedure leg coordinate is not finite")
             guard isPlausibleApproachLeg(coord, field: field) else {
-                NSLog("CommSight: REFUSED implausible approach leg %@ %@ fix=%@ (%.4f, %.4f)",
+                NSLog("Obelisk: REFUSED implausible approach leg %@ %@ fix=%@ (%.4f, %.4f)",
                       proc.airport, proc.ident, leg.fix, coord.lat, coord.lon)
                 continue
             }

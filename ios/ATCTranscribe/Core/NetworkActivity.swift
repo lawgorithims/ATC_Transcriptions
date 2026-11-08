@@ -18,12 +18,15 @@ import Combine
 ///      for the job that matters, which is the whole point.
 ///   2. **Background work yields.** While anything urgent is running or waiting, background work does
 ///      not start. Opening radar does not have to out-race a chart prefetch.
-///   3. **The pilot can see and steer it.** The queue is visible, categories can be paused, and a
-///      queued job can be pulled to the front.
+///   3. **The pilot can see and steer it.** The queue is visible, categories can be paused, a queued
+///      job can be pulled to the front, and any single row can be stopped.
 ///
-/// This is deliberately NOT a bandwidth limiter or a scheduler with preemption. A job already in
-/// flight is left alone — cancelling a half-finished transfer wastes the bytes it already spent, which
-/// on a bad link is the opposite of helping. What is controlled is what STARTS next.
+/// This is deliberately NOT a bandwidth limiter or a scheduler with preemption: what it decides is
+/// what STARTS next. It does not stop work the pilot asked for on its own initiative either —
+/// cancelling a half-finished transfer wastes the bytes it already spent, which on a bad link is the
+/// opposite of helping. The two exceptions are both deliberate taps or switches by the pilot: a row
+/// they stop themselves (`cancel`), and a prefetch the app never asked permission for, which dies
+/// when its category is switched off (`setPaused`).
 @MainActor
 final class NetworkActivity: ObservableObject {
     static let shared = NetworkActivity()
@@ -91,6 +94,24 @@ final class NetworkActivity: ObservableObject {
         var isActive: Bool { self == .queued || self == .running || self == .paused }
     }
 
+    /// What a job does when its category is switched off.
+    ///
+    /// `.wait` is right for work the pilot asked for: it waits visibly rather than failing somewhere
+    /// they cannot see, which is the whole reason a paused category queues instead of erroring.
+    ///
+    /// `.giveUp` is for a producer that RE-ASKS BY ITSELF — the map's chart loader (every pan), the
+    /// route and around-me prefetchers (every fix). Parking those is what made a paused category
+    /// look like it was still downloading: the parked row vanishes the moment its caller's Task is
+    /// torn down by the next pan, and an identical row appears in its place a frame later. Telling
+    /// the producer "no" ends that loop at the door, and the producer asks again when the pilot
+    /// switches the category back on, because asking again is all those callers ever do.
+    enum PausePolicy { case wait, giveUp }
+
+    /// The pilot has this category switched off and the caller asked not to wait. A distinct type,
+    /// not a `failed`, so the UI can say "paused" where it would otherwise say "download failed" —
+    /// the pilot did this on purpose and must not be told their charts are broken.
+    struct Paused: Error { let category: Category }
+
     struct Job: Identifiable, Equatable {
         let id: UUID
         let label: String               // "Radar — 10 min loop", "Chart pack: Denver"
@@ -100,6 +121,12 @@ final class NetworkActivity: ObservableObject {
         var bytes: Int                  // transferred so far, when the caller reports it
         let queuedAt: Date
         var startedAt: Date?
+        /// Set by `prioritise` — "Get now" on one row. That job is admitted even though its
+        /// category is paused, and THE PAUSE ITSELF IS LEFT ALONE. Un-pausing the whole category
+        /// (what "Get now" used to do) meant one tap on one row silently restarted every other
+        /// download the pilot had just stopped, which from the cockpit is indistinguishable from
+        /// the pause not working at all.
+        var overridesPause = false
 
         /// How long the pilot has been waiting on this one.
         func age(_ now: Date = Date()) -> TimeInterval { now.timeIntervalSince(queuedAt) }
@@ -108,8 +135,10 @@ final class NetworkActivity: ObservableObject {
     // MARK: Observable state
 
     @Published private(set) var jobs: [Job] = []
-    /// Categories the pilot has switched off. Jobs in them queue and wait rather than failing —
-    /// a paused download that silently errored would be worse than one that visibly waits.
+    /// Categories the pilot has switched off. Work the pilot asked for queues and waits rather than
+    /// failing — a paused download that silently errored would be worse than one that visibly waits.
+    /// Work that asks for itself on a timer or a gesture is refused outright instead, so a paused
+    /// category stops producing rows at all; see `PausePolicy`.
     ///
     /// DELIBERATELY NOT PERSISTED, unlike the two `DownloadPolicy` settings beside it. Pausing here
     /// is triage — "not right now, I need the radar" — not a standing preference, and the categories
@@ -190,41 +219,67 @@ final class NetworkActivity: ObservableObject {
     func run<T>(_ label: String,
                 category: Category,
                 priority: Priority = .normal,
+                whenPaused: PausePolicy = .wait,
                 _ work: @escaping () async throws -> T) async throws -> T {
+        // Refused at the door, before a row is ever created — see `PausePolicy.giveUp`.
+        if whenPaused == .giveUp, pausedCategories.contains(category) { throw Paused(category: category) }
+
         let id = UUID()
         jobs.append(Job(id: id, label: label, category: category, priority: priority,
                         state: .queued, bytes: 0, queuedAt: Date(), startedAt: nil))
         trim()
-        await waitForTurn(id)
+        let admitted = await waitForTurn(id, whenPaused: whenPaused)
         defer { pump() }
+        guard admitted else { throw Paused(category: category) }
 
         guard let i = index(id) else { throw CancellationError() }   // dropped from the list entirely
         guard jobs[i].state != .cancelled else { throw CancellationError() }
         update(id) { $0.state = .running; $0.startedAt = Date() }
+
+        // THE WORK RUNS IN A CHILD TASK so that `cancel(id)` can reach it. Without a handle a
+        // running row had no stop at all: the queue could refuse to START work but never end it, so
+        // a 70 MB chart pack crawling over a link that cannot carry it was unstoppable from the one
+        // screen that exists to give the pilot control of the link. `URLSession`'s async methods
+        // honour task cancellation, so cancelling this is what actually ends the transfer.
+        let task = Task { try await work() }
+        stoppers[id] = { task.cancel() }
+        defer { stoppers[id] = nil }
         do {
-            let out = try await work()
+            let out = try await task.value
             update(id) { $0.state = .finished }
             return out
         } catch {
-            update(id) { $0.state = .failed(Self.plainError(error)) }
+            // Do NOT overwrite a deliberate stop with "Did not finish." — `cancel` already set
+            // `.cancelled`, and the row must keep saying the pilot stopped it.
+            if let i = index(id), jobs[i].state != .cancelled {
+                update(id) { $0.state = .failed(Self.plainError(error)) }
+            }
             throw error
         }
     }
 
-    /// Park until the admission rule says this job may start.
-    private func waitForTurn(_ id: UUID) async {
+    /// Park until the admission rule says this job may start. `false` means the job gave up because
+    /// its category is paused and the caller asked not to wait (`PausePolicy.giveUp`).
+    @discardableResult
+    private func waitForTurn(_ id: UUID, whenPaused: PausePolicy) async -> Bool {
         while true {                                            // bounded by pump()/cancel (rule 2)
-            guard let i = index(id) else { return }             // gone — run() turns this into a throw
+            guard let i = index(id) else { return true }        // gone — run() turns this into a throw
             let me = jobs[i]
-            if me.state == .cancelled { return }                // run() throws CancellationError
+            if me.state == .cancelled { return true }           // run() throws CancellationError
+            // A category pause does not apply to a row the pilot explicitly asked for with "Get now".
+            let blocked = pausedCategories.contains(me.category) && !me.overridesPause
+            if blocked, whenPaused == .giveUp {
+                jobs.remove(at: i)        // leave no row behind: nobody is waiting on this any more
+                return false
+            }
             let ahead = jobs.prefix(i).filter { $0.state == .queued || $0.state == .paused }.map(\.priority)
             let running = jobs.filter { $0.state == .running }.map(\.priority)
             if Self.mayStart(candidate: me.priority,
-                             categoryPaused: pausedCategories.contains(me.category),
+                             categoryPaused: blocked,
                              running: running, waitingAhead: Array(ahead), limit: concurrencyLimit) {
-                return
+                return true
             }
-            update(id) { $0.state = pausedCategories.contains($0.category) ? .paused : .queued }
+            update(id) { $0.state = blocked ? .paused : .queued }
             // ⚠️ CANCELLATION HAS TO REACH A PARKED JOB. A caller that cancels its own Task while
             // this one is waiting for a turn would otherwise leave the continuation un-resumed
             // forever: the task never finishes, its `defer` never runs, and the row sits in the
@@ -241,6 +296,10 @@ final class NetworkActivity: ObservableObject {
             }
         }
     }
+
+    /// Stop handles for jobs that are RUNNING, so `cancel` can end the transfer and not merely
+    /// recolour the row. Keyed by job id and torn down by `run`'s `defer`.
+    private var stoppers: [UUID: () -> Void] = [:]
 
     /// Mark a job cancelled from outside the actor and wake it, so `waitForTurn` re-evaluates,
     /// sees `.cancelled` and lets `run` throw. Safe if the job already finished or was resumed.
@@ -266,7 +325,18 @@ final class NetworkActivity: ObservableObject {
     func setPaused(_ category: Category, _ paused: Bool) {
         if paused { pausedCategories.insert(category) } else { pausedCategories.remove(category) }
         for i in jobs.indices where jobs[i].category == category && jobs[i].state.isActive {
-            if jobs[i].state != .running {
+            if jobs[i].state == .running {
+                // WORK THE APP STARTED WITHOUT BEING ASKED STOPS HERE. Leaving a prefetch running
+                // through a pause is why "switch chart packs off" read as doing nothing: the pilot
+                // switches it off, the row keeps spinning, and the next pan queues another one. The
+                // bytes a prefetch has spent were never asked for, so they are the cheapest thing in
+                // the app to throw away.
+                //
+                // Work the PILOT asked for keeps going and is theirs to stop on its own row. A pause
+                // is triage — "not right now, I need the radar" — not a reason to discard the
+                // download they are actually waiting on.
+                if paused, jobs[i].priority == .background { cancel(jobs[i].id) }
+            } else if !jobs[i].overridesPause {
                 jobs[i].state = paused ? .paused : .queued
             }
         }
@@ -282,17 +352,25 @@ final class NetworkActivity: ObservableObject {
         var job = jobs.remove(at: i)
         job.priority = .urgent
         job.state = .queued
-        pausedCategories.remove(job.category)      // asking for it IS unpausing it
+        job.overridesPause = true                  // this ONE row jumps the pause; the pause stands
         jobs.insert(job, at: 0)
         pump()
     }
 
-    /// Stop a job that has not started. A RUNNING job is deliberately not stoppable: the bytes it
-    /// has already pulled are spent either way, and on a bad link throwing them away to start over
-    /// is the opposite of helping. The UI only offers this on jobs that are still waiting.
+    /// Stop a job. One that has not started simply leaves the queue; a RUNNING one is cancelled at
+    /// its `URLSession` task, which discards the bytes it has already pulled.
+    ///
+    /// ⚠️ THIS USED TO REFUSE RUNNING WORK, on the grounds that spent bytes are spent either way and
+    /// restarting a half-finished transfer on a bad link is the opposite of helping. That reasoning
+    /// is right for a METAR and wrong for a chart pack: tens of megabytes over a link that cannot
+    /// carry them, with the pilot watching the screen whose entire purpose is to give them control
+    /// of the link, and no way to stop it. So the choice is the pilot's and the row says what it
+    /// costs. Note what did NOT change: `setPaused` still never stops work the pilot asked for, so
+    /// the only way a requested transfer dies is a deliberate tap on its own row.
     func cancel(_ id: UUID) {
-        guard let i = index(id), jobs[i].state != .running else { return }
+        guard let i = index(id), jobs[i].state.isActive else { return }
         jobs[i].state = .cancelled
+        stoppers[id]?()
         pump()
     }
 
@@ -361,24 +439,27 @@ final class NetworkActivity: ObservableObject {
 extension NetworkActivity {
     @MainActor
     static func data(for req: URLRequest, _ label: String, _ category: Category,
-                     _ priority: Priority = .normal) async throws -> (Data, URLResponse) {
-        try await shared.run(label, category: category, priority: priority) {
+                     _ priority: Priority = .normal,
+                     whenPaused: PausePolicy = .wait) async throws -> (Data, URLResponse) {
+        try await shared.run(label, category: category, priority: priority, whenPaused: whenPaused) {
             try await URLSession.shared.data(for: req)
         }
     }
 
     @MainActor
     static func download(for req: URLRequest, _ label: String, _ category: Category,
-                         _ priority: Priority = .normal) async throws -> (URL, URLResponse) {
-        try await shared.run(label, category: category, priority: priority) {
+                         _ priority: Priority = .normal,
+                         whenPaused: PausePolicy = .wait) async throws -> (URL, URLResponse) {
+        try await shared.run(label, category: category, priority: priority, whenPaused: whenPaused) {
             try await URLSession.shared.download(for: req)
         }
     }
 
     @MainActor
     static func download(from url: URL, _ label: String, _ category: Category,
-                         _ priority: Priority = .normal) async throws -> (URL, URLResponse) {
-        try await shared.run(label, category: category, priority: priority) {
+                         _ priority: Priority = .normal,
+                         whenPaused: PausePolicy = .wait) async throws -> (URL, URLResponse) {
+        try await shared.run(label, category: category, priority: priority, whenPaused: whenPaused) {
             try await URLSession.shared.download(from: url)
         }
     }

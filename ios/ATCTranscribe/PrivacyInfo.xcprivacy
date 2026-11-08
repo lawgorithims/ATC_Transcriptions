@@ -1,0 +1,157 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Privacy manifest — REQUIRED for App Store submission since May 2024. Without it the upload
+  is accepted and then bounced by email (ITMS-91053, "Missing API declaration").
+
+  Two independent halves:
+
+   * NSPrivacyAccessedAPITypes — "required reason" APIs. Every entry below was found by auditing
+     the source, not by copying a template; each one names the call sites it covers. Declaring an
+     API the app does not use is noise, and missing one the app does use is the rejection.
+
+   * NSPrivacyCollectedDataTypes — what leaves the device. This must agree with the App Privacy
+     answers in App Store Connect; Apple compares them. Keep the two in step when either changes.
+
+  Deliberately ABSENT, and each absence is a fact about the app rather than an omission:
+   - No tracking, no tracking domains, no advertising identifier, no analytics SDK.
+   - Charts, plates, procedures, routes, the logbook and notes never leave the device.
+   - Transcription is compiled out of this build (see Core/Features.swift), so no audio is
+     captured at all. If that gate is ever flipped, revisit this file in the same change.
+-->
+<plist version="1.0">
+<dict>
+    <key>NSPrivacyTracking</key>
+    <false/>
+
+    <key>NSPrivacyTrackingDomains</key>
+    <array/>
+
+    <key>NSPrivacyCollectedDataTypes</key>
+    <array>
+        <!--
+          Account data, and ONLY when a pilot chooses to sign in. An account is optional: the app
+          is fully usable without one and makes no network call to us until someone signs in.
+          Linked to the pilot by definition — the whole point is to recognise them next time.
+        -->
+        <dict>
+            <key>NSPrivacyCollectedDataType</key>
+            <string>NSPrivacyCollectedDataTypeEmailAddress</string>
+            <key>NSPrivacyCollectedDataTypeLinked</key>
+            <true/>
+            <key>NSPrivacyCollectedDataTypeTracking</key>
+            <false/>
+            <key>NSPrivacyCollectedDataTypePurposes</key>
+            <array>
+                <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+            </array>
+        </dict>
+        <dict>
+            <key>NSPrivacyCollectedDataType</key>
+            <string>NSPrivacyCollectedDataTypeName</string>
+            <key>NSPrivacyCollectedDataTypeLinked</key>
+            <true/>
+            <key>NSPrivacyCollectedDataTypeTracking</key>
+            <false/>
+            <key>NSPrivacyCollectedDataTypePurposes</key>
+            <array>
+                <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+            </array>
+        </dict>
+        <dict>
+            <key>NSPrivacyCollectedDataType</key>
+            <string>NSPrivacyCollectedDataTypeUserID</string>
+            <key>NSPrivacyCollectedDataTypeLinked</key>
+            <true/>
+            <key>NSPrivacyCollectedDataTypeTracking</key>
+            <false/>
+            <key>NSPrivacyCollectedDataTypePurposes</key>
+            <array>
+                <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+            </array>
+        </dict>
+
+        <!--
+          Position, and only while the online traffic layer is switched on.
+          `Aircraft/ADSBService.swift` asks api.airplanes.live for traffic around a point, and that
+          point is ownship's present position when there is a GPS fix. It is sent to a third party,
+          so it is declared, even though nothing identifying goes with it.
+
+          NOT linked: that request carries no account, no device id and no cookie — it is an
+          unauthenticated GET, so the position cannot be tied back to a person by us or by them.
+          Nothing else sends position anywhere: the moving map, plates, glide rings, the nearest-
+          airport page and the logbook are all computed on-device.
+        -->
+        <dict>
+            <key>NSPrivacyCollectedDataType</key>
+            <string>NSPrivacyCollectedDataTypePreciseLocation</string>
+            <key>NSPrivacyCollectedDataTypeLinked</key>
+            <false/>
+            <key>NSPrivacyCollectedDataTypeTracking</key>
+            <false/>
+            <key>NSPrivacyCollectedDataTypePurposes</key>
+            <array>
+                <string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+            </array>
+        </dict>
+    </array>
+
+    <key>NSPrivacyAccessedAPITypes</key>
+    <array>
+        <!-- Every app preference. ~25 files; all of it this app's own data, in its own suite. -->
+        <dict>
+            <key>NSPrivacyAccessedAPIType</key>
+            <string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+            <key>NSPrivacyAccessedAPITypeReasons</key>
+            <array>
+                <string>CA92.1</string>
+            </array>
+        </dict>
+
+        <!--
+          C617.1 = timestamps of files inside the app's own container.
+          UI/ChartLibrary.swift (329, 331, 574, 579): picking the newest downloaded chart pack and
+          ordering the cache for eviction. Core/AirportContextStore.swift (145): cache staleness.
+          All of these read files the app itself wrote into its container — never user documents.
+        -->
+        <dict>
+            <key>NSPrivacyAccessedAPIType</key>
+            <string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
+            <key>NSPrivacyAccessedAPITypeReasons</key>
+            <array>
+                <string>C617.1</string>
+            </array>
+        </dict>
+
+        <!--
+          E174.1 = check for space before writing.
+          UI/ChartLibrary.swift (853) reads volumeAvailableCapacityForImportantUsage before starting
+          a chart download, so a multi-gigabyte pack fails up front instead of half-landing.
+        -->
+        <dict>
+            <key>NSPrivacyAccessedAPIType</key>
+            <string>NSPrivacyAccessedAPICategoryDiskSpace</string>
+            <key>NSPrivacyAccessedAPITypeReasons</key>
+            <array>
+                <string>E174.1</string>
+            </array>
+        </dict>
+
+        <!--
+          35F9.1 = measuring elapsed time between events inside the app.
+          CACurrentMediaTime() is built on mach_absolute_time(), so it falls in this category even
+          though neither call site has anything to do with the boot clock:
+          UI/WindParticleRenderer.swift (384) advances the wind animation; UI/Haptics.swift (44)
+          debounces repeat taps.
+        -->
+        <dict>
+            <key>NSPrivacyAccessedAPIType</key>
+            <string>NSPrivacyAccessedAPICategorySystemBootTime</string>
+            <key>NSPrivacyAccessedAPITypeReasons</key>
+            <array>
+                <string>35F9.1</string>
+            </array>
+        </dict>
+    </array>
+</dict>
+</plist>

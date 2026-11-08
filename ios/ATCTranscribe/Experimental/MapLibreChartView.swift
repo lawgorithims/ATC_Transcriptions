@@ -32,11 +32,21 @@ struct MapLibreChartView: UIViewRepresentable {
     /// as the accuracy ring, and integrity tints both the ring and the ownship symbol.
     var ownshipAccuracyM: Double? = nil
     var ownshipIntegrity: GPSIntegrityState = .unknown
+    /// Ground speed, for the between-fix dead reckoning — see `OwnshipMotion`. nil or slow means the
+    /// symbol simply sits on its last fix, which is the right answer for a parked aeroplane.
+    var ownshipSpeedKt: Double? = nil
     var traffic: [Aircraft] = []
     /// Stations whose weather is deteriorating fast (chart markers). See `WxTrendPin`.
     var wxTrend: [WxTrendPin] = []
     var tfrs: [TFR] = []
     var showTFRs: Bool = false
+    /// The merged convective cells to outline, the ids the banner is warning about, and the instant
+    /// their rings are advanced to — `AppModel.convectiveDrawCells` / `convectiveThreats` /
+    /// `convectiveDrawAt`. No `show` flag beside them: the list is empty unless a storm-alert source is
+    /// on and found something. See ConvectiveMapLayer.swift.
+    var stormCells: [ConvectiveCell] = []
+    var stormThreatIDs: Set<String> = []
+    var stormAt: Date = .distantPast
     var showAirspace: Bool = true                     // MapLayersMenu overlay toggles (parity with ChartMapView)
     var showNearby: Bool = true
     var showAirways: Bool = true
@@ -84,6 +94,8 @@ struct MapLibreChartView: UIViewRepresentable {
     /// Live arrival-energy bands. Empty whenever the fix is untrusted — a stale footprint is a
     /// claim about a situation that no longer exists.
     var lzEnergyBands: [LZEnergyBand] = []
+    /// Where `lzEnergyBands` was computed from — see `LZRiskController.energyAnchor`.
+    var lzEnergyAnchor: Coord? = nil
     var lzGlidePlan: LZGlidePlan?
     /// How many energy polygons were actually installed into the shape source, reported after each
     /// change. The band LIST reaching the view proves the maths ran; only this proves the map got it,
@@ -134,12 +146,17 @@ struct MapLibreChartView: UIViewRepresentable {
         c.setAvoidProvider(avoidProvider, signature: avoidSignature)
         c.inLZProbe = lzProbe
         c.inLZEnergyBands = lzEnergyBands
+        c.inLZEnergyAnchor = lzEnergyAnchor
         c.inLZGlidePlan = lzGlidePlan
         c.onLZEnergyRendered = onLZEnergyRendered
         c.inGlideGaps = glideGapLines
+        c.inStormCells = stormCells
+        c.inStormThreatIDs = stormThreatIDs
+        c.inStormAt = stormAt
         c.cacheInputs(layer: layer, routeCoords: routeCoords, breadcrumbCoords: breadcrumbCoords,
                       radarTemplate: radarTemplate, holds: holds, ownship: ownship, ownshipCourse: ownshipCourse,
                       ownshipAccuracyM: ownshipAccuracyM, ownshipIntegrity: ownshipIntegrity,
+                      ownshipSpeedKt: ownshipSpeedKt,
                       traffic: traffic, wxTrend: wxTrend, tfrs: showTFRs ? tfrs : [], showAirspace: showAirspace,
                       showNearby: showNearby, showAirways: showAirways, declutter: declutter,
                       plateOverlay: plateOverlay,
@@ -193,6 +210,13 @@ struct MapLibreChartView: UIViewRepresentable {
         var inLZProbe: ((Coord) -> LZSampleInfo?)?     // the tap-card sampler; nil when the layer is off
         var inLZEnergyBands: [LZEnergyBand] = []      // live arrival-energy footprint; [] = nothing to draw
         var inGlideGaps: [[CLLocationCoordinate2D]] = []   // `AppModel.routeGlideGapLines`; [] = nothing
+        // Convective storm cells. Carried as the merged list plus the instant to advance it to and the
+        // ids the banner is warning about — the same three values the classic engine draws from, so
+        // both engines outline the same storms in the same places. See ConvectiveMapLayer.swift.
+        var inStormCells: [ConvectiveCell] = []
+        var inStormThreatIDs: Set<String> = []
+        var inStormAt: Date = .distantPast
+        private var appliedStormSig: String?           // skips the rebuild when nothing moved
         var inLZGlidePlan: LZGlidePlan?               // the rehearsed glide the pilot ARMED; nil = none
         var onLZEnergyRendered: ((Int) -> Void)? = nil
         private var installedLZSignature: String??   // double-optional: distinguishes "never installed"
@@ -277,6 +301,7 @@ struct MapLibreChartView: UIViewRepresentable {
         /// clean remount — no pixel scored for the previous aircraft can survive in MapLibre's cache.
         private var appliedLZSignature: String??
         private var appliedLZEnergySig: String?
+        var inLZEnergyAnchor: Coord?
         private var inOwnship: CLLocationCoordinate2D?
         private var inOwnCourse: Double?
         private var inTraffic: [Aircraft] = []
@@ -302,6 +327,7 @@ struct MapLibreChartView: UIViewRepresentable {
                          ownship: CLLocationCoordinate2D?,
                          ownshipCourse: Double?, ownshipAccuracyM: Double?,
                          ownshipIntegrity: GPSIntegrityState,
+                         ownshipSpeedKt: Double?,
                          traffic: [Aircraft], wxTrend: [WxTrendPin], tfrs: [TFR], showAirspace: Bool,
                          showNearby: Bool, showAirways: Bool, declutter: Bool,
                          plateOverlay: PlateOverlayState?,
@@ -314,6 +340,7 @@ struct MapLibreChartView: UIViewRepresentable {
             inHolds = holds
             inOwnship = ownship; inOwnCourse = ownshipCourse
             inOwnAccuracy = ownshipAccuracyM; inOwnIntegrity = ownshipIntegrity
+            inOwnSpeedKt = ownshipSpeedKt
             inTraffic = traffic; inWxTrend = wxTrend; inTFRs = tfrs; inShowAirspace = showAirspace; inShowNearby = showNearby
             inShowAirways = showAirways; inDeclutter = declutter
             inPlate = plateOverlay; inFocus = focus; self.restoreCamera = restoreCamera
@@ -324,6 +351,55 @@ struct MapLibreChartView: UIViewRepresentable {
         var inSearchHighlight: CLLocationCoordinate2D?
         var onSearchPoint: (CGPoint?) -> Void = { _ in }
         /// Stream the search highlight's screen point (or nil) so the SwiftUI pulsing marker rides the map.
+        /// The measuring rulers' gestures and projection for THIS map view.
+        ///
+        /// ⚠️ `MainActor.assumeIsolated`, AND DELIBERATELY NOT A `Task` HOP. This coordinator is not
+        /// actor-isolated — it conforms to `MLNMapViewDelegate`, whose methods are nonisolated — while
+        /// the ruler store and controller are `@MainActor`. But every call site below is a UIKit
+        /// gesture callback, a map-delegate callback or `dismantleUIView`, and UIKit makes all three
+        /// on the main thread only. Asserting that is both true and useful: it traps loudly if it ever
+        /// stops being true, where `Task { @MainActor in … }` would instead silently make the rulers'
+        /// projection lag the chart by a frame on every pan — a measuring line that visibly slides
+        /// behind the terrain it is measuring.
+        var ruler: MapRulerController?
+
+        nonisolated func attachRuler(to map: MLNMapView) {
+            MainActor.assumeIsolated { attachRulerOnMain(to: map) }
+        }
+
+        @MainActor
+        private func attachRulerOnMain(to map: MLNMapView) {
+            let controller = MapRulerController(
+                toCoord: { [weak map] point in
+                    guard let map else { return nil }
+                    let ll = map.convert(point, toCoordinateFrom: map)
+                    // On the globe projection a point outside the sphere converts to something
+                    // non-finite or out of range; a ruler end there would poison every number taken
+                    // from it, so the gesture simply declines that touch.
+                    guard ll.latitude.isFinite, ll.longitude.isFinite,
+                          abs(ll.latitude) <= 90, abs(ll.longitude) <= 180 else { return nil }
+                    return Coord(lat: ll.latitude, lon: ll.longitude)
+                },
+                toPoint: { [weak map] coord in
+                    guard let map else { return .zero }
+                    return map.convert(CLLocationCoordinate2D(latitude: coord.lat, longitude: coord.lon),
+                                       toPointTo: map)
+                })
+            controller.attach(to: map)
+            ruler = controller
+        }
+
+        /// Re-project the rulers, beside the plate anchors, on every camera tick.
+        nonisolated func emitRulerSegments() {
+            MainActor.assumeIsolated { ruler?.refreshSegments() }
+        }
+
+        /// Drop this view's recognizers and projection. The rulers themselves live in the shared
+        /// store and survive — see the note in `teardown`.
+        nonisolated func detachRuler() {
+            MainActor.assumeIsolated { ruler?.detach(); ruler = nil }
+        }
+
         func emitSearchPoint(_ map: MLNMapView) {
             guard let cc = inSearchHighlight else { onSearchPoint(nil); return }
             onSearchPoint(map.convert(cc, toPointTo: map))
@@ -364,6 +440,7 @@ struct MapLibreChartView: UIViewRepresentable {
             updateLZEnergy(inLZEnergyBands, on: map)
             updateLZGlidePlan(inLZGlidePlan, on: map)
             emitSearchPoint(map)               // keep the pulsing search marker glued to its spot
+            emitRulerSegments()                // ... and the measuring rulers
             applyNorthLock(map)                // chart north-up lock (rotate gesture + bearing)
             applyMapCommand(map)               // one-shot side-bar zoom / center-on-ownship
             applyOverlayToggles(inShowAirspace, inShowNearby, inShowAirways, declutter: inDeclutter, on: map)
@@ -377,6 +454,7 @@ struct MapLibreChartView: UIViewRepresentable {
                 refreshOverlays(map)
             }
             updateTFRs(inTFRs, on: map)
+            updateStormCells(on: map)
             updatePlate(inPlate, on: map)
             applyFocus(inFocus, on: map)
             updateWind(on: map)
@@ -550,6 +628,9 @@ struct MapLibreChartView: UIViewRepresentable {
             }
             m.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(handleTap(_:))))
             m.addGestureRecognizer(UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:))))
+            // The measuring rulers, on the SAME controller the classic engine uses — the pilot must not
+            // get a different-behaving ruler because the GPU chart is live. See `MapRulerController`.
+            attachRuler(to: m)
             if globeProjection {
                 // Globe: the fork clears "space" (outside the sphere) to transparent, so make the map non-opaque
                 // and float a night-sky starfield BEHIND it — space reads as black with stars while the ocean
@@ -609,6 +690,13 @@ struct MapLibreChartView: UIViewRepresentable {
         /// Cancel the pending region-settle work and stop the loopback server (called from dismantleUIView).
         func teardown() {
             NotificationCenter.default.removeObserver(self, name: UIApplication.didBecomeActiveNotification, object: nil)
+            // The rulers themselves live in the shared store and SURVIVE this — only the recognizers
+            // and this view's projection go. A render-stall fallback to the classic engine rebuilds
+            // the map, and a pilot's measurement must not disappear because of it.
+            detachRuler()
+            // The ownship smoother's display link holds this coordinator and keeps firing at 30 Hz
+            // against a map that is going away. Same hazard as the particle MTKView below.
+            stopOwnshipDisplayLink()
             regionDebounce?.cancel(); regionDebounce = nil
             // Drop the host callback BEFORE stopping the server, so a torn-down coordinator can never
             // drive the host's engine state whichever callback wins the race.
@@ -676,6 +764,8 @@ struct MapLibreChartView: UIViewRepresentable {
             // is actually looking at. Traffic self-heals because it changes every second; a TFR set can
             // sit unchanged for hours, so it simply stays invisible.
             appliedTFRSig = nil
+            appliedStormSig = nil             // and the storm cells' three sources — a quiet
+                                             // afternoon's cell list is exactly as static as a TFR set
             appliedTrafficSig = nil
             appliedHoldSig = nil                 // holds sit unchanged for a whole approach — exactly the
                                                  // TFR case above, so without this the racetrack is built
@@ -709,6 +799,7 @@ struct MapLibreChartView: UIViewRepresentable {
                           integrity: lastOwnIntegrity, on: mapView)
             updateTraffic(lastTraffic, on: mapView)
             updateTFRs(cachedTFRs, on: mapView)
+            updateStormCells(on: mapView)        // reads inStormCells directly — no cache of its own
             updatePlate(plateState, on: mapView)
             updateAvoid(inAvoidSignature, on: mapView)   // a map left unchanged all flight must still draw
         }
@@ -720,6 +811,7 @@ struct MapLibreChartView: UIViewRepresentable {
         func mapView(_ mapView: MLNMapView, regionDidChangeAnimated animated: Bool) {
             emitPlateAnchors(mapView)              // keep the plate corner gear pinned (NOT debounced — must be live)
             emitSearchPoint(mapView)
+            emitRulerSegments()
             regionDebounce?.cancel()
             let work = DispatchWorkItem { [weak self, weak mapView] in
                 guard let self, let mapView else { return }
@@ -741,7 +833,9 @@ struct MapLibreChartView: UIViewRepresentable {
 
         /// Stream the plate corner gear's screen anchors continuously during an active pan/zoom (cheap:
         /// projects 2 points, guarded to no-op when no plate is loaded), so the gear rides the plate live.
-        func mapViewRegionIsChanging(_ mapView: MLNMapView) { emitPlateAnchors(mapView); emitSearchPoint(mapView) }
+        func mapViewRegionIsChanging(_ mapView: MLNMapView) {
+            emitPlateAnchors(mapView); emitSearchPoint(mapView); emitRulerSegments()
+        }
 
         /// Tracks WHICH style object the overlay layers were built into.
         ///
@@ -801,7 +895,9 @@ struct MapLibreChartView: UIViewRepresentable {
                           "hold-line", "route-line", "route-glide-gap-line", "track-line",
                           "wxradar-layer", "lz-glide-line", "lz-layer", "avoid-layer",
                           "lz-energy-line", "lz-energy-fill",
-                          "tfr-label", "tfr-outline", "tfr-fill", "nav-sym",
+                          "tfr-label", "tfr-outline", "tfr-fill",
+                          "storm-label", "storm-arrow-dash", "storm-arrow-line",
+                          "storm-outline", "storm-fill", "nav-sym",
                           "airspace-label", "airways-label", "airspace-outline", "airspace-fill",
                           "airways-line", "night-veil-fill", "coastline", "land-fill"]
             for id in layers where style.layer(withIdentifier: id) != nil {          // bounded (rule 2)
@@ -810,6 +906,7 @@ struct MapLibreChartView: UIViewRepresentable {
             let sources = ["plate", "ownship", "accuracy", "traffic", "route-wpt", "holds", "route",
                            "route-glide-gap", "track",
                            "wxradar", "lz", "avoid", "lz-glide", "lz-energy", "tfr-labels", "tfr",
+                           "storm-labels", "storm-arrow", "storm",
                            "nav", "airspace-labels", "airspace", "airways", "night-veil", "land"]
             for id in sources where style.source(withIdentifier: id) != nil {        // bounded (rule 2)
                 if let s = style.source(withIdentifier: id) { style.removeSource(s) }
@@ -907,10 +1004,25 @@ struct MapLibreChartView: UIViewRepresentable {
         /// airspace altitude blocks. The airway label reuses the already-added "airways" source.
         private func setupLabelLayers(_ style: MLNStyle) {
             guard let awySrc = style.source(withIdentifier: "airways") as? MLNShapeSource else { return }
-            // Airway idents — one per run, placed along the line centre (white text, slate-blue halo).
+            // Airway idents, REPEATED ALONG THE LINE the way a sectional prints them.
+            //
+            // ⚠️ IT WAS "line-center" AND THE LABELS SLID ACROSS THE CHART ON EVERY PAN. Reported
+            // from the air: at wide zoom the J/Q/V idents drifted instead of staying with their
+            // airway. `Airways.inRegion` hands over whole runs, never clipped to the camera, so the
+            // GEOMETRY is stable — but MapLibre tiles a shape source internally, and "line-center"
+            // resolves to the centre of each tile-clipped piece. Re-tile on a pan and the centre
+            // moves, so the label walks along the line.
+            //
+            // "line" places labels at `symbolSpacing` intervals ALONG the geometry instead of at one
+            // computed point, which is both stable under re-tiling and what a pilot expects: an
+            // airway on a sectional carries its ident repeatedly, so it can be read wherever you
+            // happen to be looking rather than only at the midpoint of the run.
             let awyLabel = MLNSymbolStyleLayer(identifier: "airways-label", source: awySrc)
             awyLabel.text = NSExpression(forKeyPath: "ident")
-            awyLabel.symbolPlacement = NSExpression(forConstantValue: "line-center")
+            awyLabel.symbolPlacement = NSExpression(forConstantValue: "line")
+            // Far apart enough that a short run gets one label and a long one does not become a
+            // string of beads; MapLibre drops any that collide, so this is an upper bound on density.
+            awyLabel.symbolSpacing = NSExpression(forConstantValue: 260)
             awyLabel.textFontNames = NSExpression(forConstantValue: ["Arial Bold"])
             awyLabel.textFontSize = NSExpression(forConstantValue: 10)
             awyLabel.textColor = NSExpression(forConstantValue: UIColor.white)
@@ -1037,6 +1149,57 @@ struct MapLibreChartView: UIViewRepresentable {
             glideLine.lineCap = NSExpression(forConstantValue: "round")
             glideLine.lineJoin = NSExpression(forConstantValue: "round")
             style.addLayer(glideLine)
+
+            // CONVECTIVE CELLS, added BELOW the TFR block that follows, so where a thunderstorm and a
+            // live NOTAM overlap the restriction keeps the top of the stack — "TFR stays the most
+            // alarming colour on the map" is a documented invariant of this palette, and layer order is
+            // half of what makes it true. Above the energy shading and the armed glide, because those
+            // are plans and this is weather that is already there.
+            let storm = currentMapTheme.convective
+            let stormSrc = MLNShapeSource(identifier: "storm", shape: nil, options: nil)
+            style.addSource(stormSrc)
+            let stormFill = MLNFillStyleLayer(identifier: "storm-fill", source: stormSrc)
+            stormFill.fillColor = NSExpression(forConstantValue: storm)
+            stormFill.fillOpacity = Self.stormOpacityExpr()
+            style.addLayer(stormFill)
+            let stormLine = MLNLineStyleLayer(identifier: "storm-outline", source: stormSrc)
+            stormLine.lineColor = NSExpression(forConstantValue: storm)
+            stormLine.lineWidth = Self.stormWidthExpr(threat: 3.0, known: 1.6)
+            stormLine.lineCap = NSExpression(forConstantValue: "round")
+            stormLine.lineJoin = NSExpression(forConstantValue: "round")
+            style.addLayer(stormLine)
+            // The motion arrows get TWO layers off one source, split by a layer filter rather than by a
+            // data-driven expression: `line-dasharray` is not data-driven in the style spec, so "dashed
+            // when the vector was derived here" cannot be a `match` the way the widths above are.
+            let arrowSrc = MLNShapeSource(identifier: "storm-arrow", shape: nil, options: nil)
+            style.addSource(arrowSrc)
+            let arrow = MLNLineStyleLayer(identifier: "storm-arrow-line", source: arrowSrc)
+            arrow.predicate = NSPredicate(format: "derived == 'no'")
+            arrow.lineColor = NSExpression(forConstantValue: storm)
+            arrow.lineWidth = Self.stormWidthExpr(threat: 2.6, known: 1.6)
+            arrow.lineJoin = NSExpression(forConstantValue: "round")
+            style.addLayer(arrow)
+            let arrowDash = MLNLineStyleLayer(identifier: "storm-arrow-dash", source: arrowSrc)
+            arrowDash.predicate = NSPredicate(format: "derived == 'yes'")
+            arrowDash.lineColor = NSExpression(forConstantValue: storm)
+            arrowDash.lineWidth = Self.stormWidthExpr(threat: 2.6, known: 1.6)
+            arrowDash.lineDashPattern = NSExpression(forConstantValue: [2.0, 1.6])
+            arrowDash.lineJoin = NSExpression(forConstantValue: "round")
+            style.addLayer(arrowDash)
+            let stormLblSrc = MLNShapeSource(identifier: "storm-labels", shape: nil, options: nil)
+            style.addSource(stormLblSrc)
+            let stormLbl = MLNSymbolStyleLayer(identifier: "storm-label", source: stormLblSrc)
+            stormLbl.text = NSExpression(forKeyPath: "alt")
+            stormLbl.textFontNames = NSExpression(forConstantValue: ["Arial Bold"])
+            stormLbl.textFontSize = NSExpression(forConstantValue: 9)
+            stormLbl.textColor = NSExpression(forConstantValue: storm)
+            stormLbl.textHaloColor = NSExpression(forConstantValue: UIColor.black.withAlphaComponent(0.6))
+            stormLbl.textHaloWidth = NSExpression(forConstantValue: 1.2)
+            stormLbl.textLineHeight = NSExpression(forConstantValue: 1.0)
+            // Zoom-gated like the TFR band: a cell's tops are worth reading when the pilot is looking at
+            // the weather, and at continental zoom sixty-four of them are a smear over the whole chart.
+            stormLbl.minimumZoomLevel = 5.0
+            style.addLayer(stormLbl)
 
             let red = ChartMapView.Coordinator.airspaceColor("TFR")     // #F71433 — reuse, no hand-typed hex
             let tfrSrc = MLNShapeSource(identifier: "tfr", shape: nil, options: nil); style.addSource(tfrSrc)
@@ -1644,10 +1807,22 @@ struct MapLibreChartView: UIViewRepresentable {
         /// ownship cell, so a stationary aircraft re-tessellates nothing between sweeps.
         func updateLZEnergy(_ bands: [LZEnergyBand], on map: MLNMapView) {
             guard let src = map.style?.source(withIdentifier: "lz-energy") as? MLNShapeSource else { return }
+            // ⚠️ THE FOOTPRINT IS SLID FROM WHERE IT WAS COMPUTED TO WHERE THE AEROPLANE IS DRAWN.
+            // The sweep is a 64-ray march over the terrain grid and runs every five seconds; at 140 kt
+            // the aircraft is a quarter of a mile further on by the time the next one lands. So the
+            // bands used to sit still while the symbol moved, then jump — "the glide bars move
+            // independently of the plane", from the cockpit.
+            //
+            // Sliding is an approximation: the terrain under the new position is not the terrain the
+            // rays were marched over. It is a STRICTLY SMALLER error than leaving them, because today
+            // the footprint is both stale AND in the wrong place, and this fixes the second. The
+            // staleness is unchanged and bounded by the sweep period; raising that is a battery
+            // decision, not a rendering one.
+            let slide = bandSlide()
             let sig = bands.map { "\($0.classification.rawValue):\($0.rings.count)" }
                            .joined(separator: "|")
-                + String(format: "|%.4f,%.4f", bands.first?.rings.first?.first?.lat ?? 0,
-                         bands.first?.rings.first?.first?.lon ?? 0)
+                + String(format: "|%.4f,%.4f|%.5f,%.5f", bands.first?.rings.first?.first?.lat ?? 0,
+                         bands.first?.rings.first?.first?.lon ?? 0, slide.dLat, slide.dLon)
             guard sig != appliedLZEnergySig else { return }
             appliedLZEnergySig = sig
             guard !bands.isEmpty else { src.shape = nil; onLZEnergyRendered?(0); return }
@@ -1655,7 +1830,9 @@ struct MapLibreChartView: UIViewRepresentable {
             var features: [MLNPolygonFeature] = []
             for band in bands {                                          // bounded: 4 classes
                 for ring in band.rings.prefix(Self.maxEnergySectors) {   // bounded (rule 2)
-                    var pts = ring.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) }
+                    var pts = ring.map {
+                        CLLocationCoordinate2D(latitude: $0.lat + slide.dLat, longitude: $0.lon + slide.dLon)
+                    }
                     guard pts.count >= 4 else { continue }
                     let poly = MLNPolygonFeature(coordinates: &pts, count: UInt(pts.count))
                     poly.attributes = ["cls": band.classification.rawValue]
@@ -1666,6 +1843,20 @@ struct MapLibreChartView: UIViewRepresentable {
             // Report what the SOURCE received, not what arrived — a ring the guard above dropped is
             // exactly the failure this number exists to catch.
             onLZEnergyRendered?(features.count)
+        }
+
+        /// How far to slide the energy footprint: from the position its sweep was computed at to the
+        /// position the aeroplane is currently being DRAWN at (the smoothed one, so the bands ride
+        /// with the symbol rather than with the raw fix). Zero whenever either end is missing.
+        ///
+        /// A plain degree offset, not a geodesic translation: over the fraction of a mile this ever
+        /// covers the difference is centimetres, and a rigid slide is the point — the footprint must
+        /// keep its shape, which a per-vertex great-circle walk would not guarantee at the poles.
+        private func bandSlide() -> (dLat: Double, dLon: Double) {
+            guard let anchor = inLZEnergyAnchor, let here = ownMotion.displayed else { return (0, 0) }
+            let dLat = here.lat - anchor.lat, dLon = here.lon - anchor.lon
+            guard dLat.isFinite, dLon.isFinite else { return (0, 0) }
+            return (dLat, dLon)
         }
 
         /// Hard cap per class. A 64-ray sweep yields a few hundred sectors; anything beyond this is
@@ -1799,6 +1990,15 @@ struct MapLibreChartView: UIViewRepresentable {
             (style.layer(withIdentifier: "tfr-fill") as? MLNFillStyleLayer)?.fillColor = tfr
             (style.layer(withIdentifier: "tfr-outline") as? MLNLineStyleLayer)?.lineColor = tfr
             (style.layer(withIdentifier: "tfr-label") as? MLNSymbolStyleLayer)?.textColor = tfr
+            // Convective violet, which at night becomes a dim rose: see `HazardAnnotation.tint`, where
+            // the finding that violet is a dark-adaptation violation is recorded. The cell outlines are
+            // a safety mark, so they must follow a theme switch rather than wait for a style reload.
+            let stormTint = NSExpression(forConstantValue: t.convective)
+            (style.layer(withIdentifier: "storm-fill") as? MLNFillStyleLayer)?.fillColor = stormTint
+            (style.layer(withIdentifier: "storm-outline") as? MLNLineStyleLayer)?.lineColor = stormTint
+            (style.layer(withIdentifier: "storm-arrow-line") as? MLNLineStyleLayer)?.lineColor = stormTint
+            (style.layer(withIdentifier: "storm-arrow-dash") as? MLNLineStyleLayer)?.lineColor = stormTint
+            (style.layer(withIdentifier: "storm-label") as? MLNSymbolStyleLayer)?.textColor = stormTint
             (style.layer(withIdentifier: "track-line") as? MLNLineStyleLayer)?.lineColor =
                 NSExpression(forConstantValue: t.track)
             (style.layer(withIdentifier: "route-line") as? MLNLineStyleLayer)?.lineColor =
@@ -2290,8 +2490,15 @@ struct MapLibreChartView: UIViewRepresentable {
         private var lastOwnCourse: Double?
         private var lastOwnAccuracy: Double?
         private var lastOwnIntegrity: GPSIntegrityState = .unknown
+        private var lastOwnSpeedKt: Double?
         var inOwnAccuracy: Double?
         var inOwnIntegrity: GPSIntegrityState = .unknown
+        var inOwnSpeedKt: Double?
+        /// Between-fix interpolation for the aeroplane symbol — see `OwnshipMotion`.
+        private var ownMotion = OwnshipMotion()
+        private var ownshipLink: CADisplayLink?
+        private var lastDrawnOwnship: Coord?
+        private var lastDrawnCourse: Double?
         private var lastTraffic: [Aircraft] = []
         // Last-APPLIED signatures — early-return guards so an unrelated AppModel publish (e.g. the audio VU
         // meter, ~10-30×/s) can't re-tessellate + re-upload unchanged route/ownship/traffic/TFR geometry.
@@ -2318,27 +2525,90 @@ struct MapLibreChartView: UIViewRepresentable {
                            accuracyM: Double? = nil, integrity: GPSIntegrityState = .unknown,
                            on map: MLNMapView) {
             lastOwnship = coord; lastOwnCourse = course
-            lastOwnAccuracy = accuracyM; lastOwnIntegrity = integrity
-            guard let src = map.style?.source(withIdentifier: "ownship") as? MLNShapeSource else { return }
-            // The signature carries integrity and a COARSE accuracy bucket as well as position: the ring
-            // must be rebuilt when the fix quality changes, but a metre of accuracy jitter at 1 Hz must
-            // not rebuild a 64-point polygon every tick.
-            let sig = coord.map {
-                "\(Self.qJit($0.latitude)),\(Self.qJit($0.longitude)),\(Self.qDeg(course ?? 0))"
-                + ",\(integrity.rawValue),\(Int((accuracyM ?? 0) / 5))"
-            } ?? "nil"
-            guard sig != appliedOwnSig else { return }
-            appliedOwnSig = sig
+            lastOwnAccuracy = accuracyM; lastOwnIntegrity = integrity; lastOwnSpeedKt = inOwnSpeedKt
             guard let coord else {                                       // no fix → hide symbol AND ring
-                src.shape = nil
+                ownMotion.reset()
+                stopOwnshipDisplayLink()
+                lastDrawnOwnship = nil; lastDrawnCourse = nil
+                appliedOwnSig = "nil"
+                (map.style?.source(withIdentifier: "ownship") as? MLNShapeSource)?.shape = nil
                 (map.style?.source(withIdentifier: "accuracy") as? MLNShapeSource)?.shape = nil
                 return
             }
-            let f = MLNPointFeature(); f.coordinate = coord
-            f.attributes = ["rot": (course.map { $0 - 90 } ?? 0), "img": Self.ownshipImageName(integrity)]
-            src.shape = f
+            // ⚠️ THE SYMBOL AND THE RING ARE NO LONGER GATED BY ONE SIGNATURE, AND THAT WAS HALF THE
+            // JERK. `qJit` is a ~12 m dead band and `qDeg` a 3° one. They exist for the RING — a
+            // 64-point polygon that must not be rebuilt for a metre of jitter at 1 Hz — but they were
+            // applied to the aeroplane too, so the symbol could only move in 12 m steps and could only
+            // turn in 3° steps. The ring keeps its dead band below; the symbol is one point feature
+            // and costs nothing, so it is free to move whenever it has moved.
+            ownMotion.ingest(Coord(lat: coord.latitude, lon: coord.longitude),
+                             trackDeg: course, speedKt: lastOwnSpeedKt, at: Date())
+            startOwnshipDisplayLink()
+            renderOwnshipSymbol(on: map)
+
+            let ringSig = "\(Self.qJit(coord.latitude)),\(Self.qJit(coord.longitude))"
+                + ",\(integrity.rawValue),\(Int((accuracyM ?? 0) / 5))"
+            guard ringSig != appliedOwnSig else { return }
+            appliedOwnSig = ringSig
             updateAccuracyRing(coord, accuracyM: accuracyM, integrity: integrity, on: map)
         }
+
+        /// Draw the aeroplane at the smoother's current position. One point feature — cheap enough to
+        /// run at display rate, which is the other half of the fix: between deliveries the symbol is
+        /// dead-reckoned forward rather than sitting still and then teleporting. See `OwnshipMotion`.
+        private func renderOwnshipSymbol(on map: MLNMapView) {
+            guard let src = map.style?.source(withIdentifier: "ownship") as? MLNShapeSource,
+                  let here = ownMotion.position(at: Date()) else { return }
+            // ⚠️ DO NOT REWRITE THE SOURCE WHEN NOTHING MOVED. The link ticks 30 times a second for as
+            // long as there is a fix, and a parked or settled aeroplane would otherwise upload the same
+            // point feature thirty times a second for the whole flight. Half a metre is far below what
+            // a pixel can show at any usable chart scale, so this costs nothing visible and takes the
+            // idle case to zero work. The course is in the test too: a turn moves the symbol's glyph
+            // without moving its position.
+            let moved = lastDrawnOwnship.map { Geo.nmBetween($0, here) >= 0.00027 } ?? true   // ~0.5 m
+            let turned = lastDrawnCourse != lastOwnCourse
+            guard moved || turned else { return }
+            lastDrawnOwnship = here; lastDrawnCourse = lastOwnCourse
+            let f = MLNPointFeature()
+            f.coordinate = CLLocationCoordinate2D(latitude: here.lat, longitude: here.lon)
+            f.attributes = ["rot": (lastOwnCourse.map { $0 - 90 } ?? 0),
+                            "img": Self.ownshipImageName(lastOwnIntegrity)]
+            src.shape = f
+        }
+
+        /// A display link, not a timer: it ticks in step with the compositor, so the motion is smooth
+        /// at whatever rate the screen is actually running and costs nothing extra on a ProMotion
+        /// panel. 30 fps is plenty for an aeroplane and halves the wakeups.
+        private func startOwnshipDisplayLink() {
+            guard ownshipLink == nil else { return }
+            let link = CADisplayLink(target: self, selector: #selector(tickOwnship))
+            link.preferredFramesPerSecond = 30
+            link.add(to: .main, forMode: .common)
+            ownshipLink = link
+        }
+
+        func stopOwnshipDisplayLink() {
+            ownshipLink?.invalidate()
+            ownshipLink = nil
+        }
+
+        @objc private func tickOwnship() {
+            guard let map else { return }
+            renderOwnshipSymbol(on: map)
+            // Slide the glide footprint with the symbol — but only once the aeroplane has actually
+            // moved far enough to be worth rebuilding a few hundred polygons for. At 140 kt that is
+            // about twice a second; parked it is never, which is the behaviour that matters for
+            // battery on a layer a pilot may leave on for a whole flight.
+            guard !inLZEnergyBands.isEmpty, let here = ownMotion.displayed else { return }
+            if let last = lastBandSlideAt, Geo.nmBetween(last, here) < Self.bandSlideNm { return }
+            lastBandSlideAt = here
+            updateLZEnergy(inLZEnergyBands, on: map)
+        }
+
+        /// Movement before the footprint is re-slid — ~37 m, the same gate the flight recorder uses to
+        /// tell travel from jitter.
+        static let bandSlideNm = 0.02
+        private var lastBandSlideAt: Coord?
 
         /// Symbol name matching the images registered in `setupDynamicLayers`.
         private static func ownshipImageName(_ state: GPSIntegrityState) -> String {
@@ -2431,6 +2701,111 @@ struct MapLibreChartView: UIViewRepresentable {
         /// One polygon + one altitude-block point PER AFFECTED AREA (a NOTAM like the DC SFRA defines
         /// several — concatenating them drew a bogus wedge). All of a TFR's polygons carry the same "id"
         /// attribute, so a tap on any area resolves to the one NOTAM. nonisolated; bounded; >=2 assertions.
+        // MARK: convective storm cells
+
+        /// Weight by threat status: the same violet in both voices, loud for the cell being warned
+        /// about and a wash for one merely known to be there. See `ConvectiveOverlayStyle`.
+        static func stormOpacityExpr() -> NSExpression {
+            NSExpression(mglJSONObject: ["match", ["get", "wt"], "threat", 0.22, "known", 0.07, 0.07])
+        }
+
+        static func stormWidthExpr(threat: Double, known: Double) -> NSExpression {
+            NSExpression(mglJSONObject: ["match", ["get", "wt"],
+                                         "threat", threat, "known", known, known])
+        }
+
+        /// Push the storm-cell rings, motion arrows and tops blocks into their three sources.
+        ///
+        /// Skipped wholesale when nothing drawable moved: `updateUIView` runs on any published change —
+        /// traffic alone moves every second — and rebuilding sixty-four features per pass to hand
+        /// MapLibre an identical shape collection would burn battery to redraw the same storm.
+        func updateStormCells(on map: MLNMapView) {
+            guard let style = map.style else { return }        // style not up yet → applyLatest re-runs
+            let cells = ConvectiveCellDraw.drawable(inStormCells)
+            let sig = cells.map {
+                ConvectiveCellDraw.digest($0, at: inStormAt, isThreat: inStormThreatIDs.contains($0.id))
+            }.joined(separator: "|")
+            guard sig != appliedStormSig else { return }
+            appliedStormSig = sig
+            let f = Coordinator.stormFeatures(cells, threatIDs: inStormThreatIDs, at: inStormAt)
+            (style.source(withIdentifier: "storm") as? MLNShapeSource)?.shape =
+                MLNShapeCollectionFeature(shapes: f.shapes)
+            (style.source(withIdentifier: "storm-arrow") as? MLNShapeSource)?.shape =
+                MLNShapeCollectionFeature(shapes: f.arrows)
+            (style.source(withIdentifier: "storm-labels") as? MLNShapeSource)?.shape =
+                MLNShapeCollectionFeature(shapes: f.labels)
+        }
+
+        /// The storm cells under the finger, as probe candidates. The globe's half of the hit test the
+        /// classic engine does in `stormCandidates(at:here:radius:in:)`, and it splits the same way:
+        ///
+        /// * containment against the ring AS DRAWN, which works at any zoom — the TFR loop above takes
+        ///   the same route, and records why a rendered-feature query alone is not enough (it can only
+        ///   see what the renderer tessellated at this zoom);
+        /// * a rendered-outline query over the tap rect, which is what makes a 2-point squall LINE
+        ///   tappable at all — it has no interior for containment to find — and which also catches the
+        ///   edge of a cell tapped from just outside it.
+        ///
+        /// Both resolve through `drawable(inStormCells)`, the same list and the same instant
+        /// `updateStormCells` drew from, so a tap cannot name a cell that is not on the screen.
+        @MainActor func stormCandidates(in rect: CGRect, here: Coord, on mv: MLNMapView) -> [IdentifiedObject] {
+            assert(rect.width >= 0 && rect.height >= 0, "a tap rect has extent")
+            let drawn = ConvectiveCellDraw.drawable(inStormCells)
+            assert(drawn.count <= ConvectiveCellDraw.maxDrawn, "storm tap set bounded")
+            var out: [IdentifiedObject] = []
+            var hit = Set<String>()
+            for c in drawn where ConvectiveCellDraw.contains(c, at: inStormAt, here) {
+                guard hit.insert(c.id).inserted else { continue }
+                out.append(ConvectiveCellDraw.object(c, at: inStormAt))
+            }
+            for f in mv.visibleFeatures(in: rect, styleLayerIdentifiers: ["storm-outline"]) {
+                guard let id = f.attributes["id"] as? String, hit.insert(id).inserted,
+                      let c = drawn.first(where: { $0.id == id }) else { continue }
+                out.append(ConvectiveCellDraw.object(c, at: inStormAt))
+            }
+            out.sort { $0.ident < $1.ident }        // stable, like the classic engine's
+            return out
+        }
+
+        /// The GeoJSON for one storm snapshot. Pure, given the three inputs — and it shares every
+        /// geometric decision with the classic engine through `ConvectiveCellDraw`, which is the only
+        /// reason the two engines can be relied on to outline the same storm in the same place.
+        static func stormFeatures(_ cells: [ConvectiveCell], threatIDs: Set<String>, at: Date)
+            -> (shapes: [MLNShape], arrows: [MLNShape], labels: [MLNPointFeature]) {
+            assert(cells.count <= ConvectiveCellDraw.maxDrawn, "stormFeatures: caller must cap the list")
+            var shapes: [MLNShape] = [], arrows: [MLNShape] = [], labels: [MLNPointFeature] = []
+            for c in cells.prefix(ConvectiveCellDraw.maxDrawn) {          // bounded (rule 2)
+                let ring = ConvectiveCellDraw.ring(c, at: at)
+                guard ring.count >= 2 else { continue }
+                let wt = threatIDs.contains(c.id) ? "threat" : "known"
+                var rc = ring.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) }
+                // A 2-point LINE TS is a squall line with no interior — drawn as the line it is, in the
+                // same source, where the outline layer renders it and the fill layer ignores it.
+                let shape: MLNShape & MLNFeature = rc.count == 2
+                    ? MLNPolylineFeature(coordinates: &rc, count: UInt(rc.count))
+                    : MLNPolygonFeature(coordinates: &rc, count: UInt(rc.count))
+                shape.attributes = ["id": c.id, "wt": wt]
+                shapes.append(shape)
+
+                let arrow = ConvectiveCellDraw.motionArrow(c, at: at)
+                if arrow.count >= 2 {
+                    var ac = arrow.map { CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon) }
+                    let a = MLNPolylineFeature(coordinates: &ac, count: UInt(ac.count))
+                    a.attributes = ["id": c.id, "wt": wt,
+                                    "derived": c.source == .radar ? "yes" : "no"]
+                    arrows.append(a)
+                }
+                if let top = ConvectiveCellDraw.labelCoord(ring) {
+                    let p = MLNPointFeature()
+                    p.coordinate = CLLocationCoordinate2D(latitude: top.lat, longitude: top.lon)
+                    p.attributes = ["alt": ConvectiveCellDraw.altBlock(c)]
+                    labels.append(p)
+                }
+            }
+            assert(shapes.count <= ConvectiveCellDraw.maxDrawn, "stormFeatures: cap exceeded")
+            return (shapes, arrows, labels)
+        }
+
         static func tfrFeatures(_ tfrs: [TFR]) -> (polys: [MLNPolygonFeature], labels: [MLNPointFeature]) {
             assert(tfrs.count <= 4096, "tfrFeatures: absurd TFR count")
             var polys: [MLNPolygonFeature] = []; var lbls: [MLNPointFeature] = []
@@ -2499,7 +2874,7 @@ struct MapLibreChartView: UIViewRepresentable {
                 let q = Coordinator.plateQuad(s)
                 // `displayImage` is non-optional, so the old "nil or ok" told us nothing; its SIZE is
                 // the thing worth logging — a zero-sized plate is the failure this line looks for.
-                NSLog("CommSight PLATE dbg: layer=%@ img=%.0fx%.0f quadTL=%.4f,%.4f quadBR=%.4f,%.4f center=%.4f,%.4f zoom=%.2f layers=[%@]",
+                NSLog("Obelisk PLATE dbg: layer=%@ img=%.0fx%.0f quadTL=%.4f,%.4f quadBR=%.4f,%.4f center=%.4f,%.4f zoom=%.2f layers=[%@]",
                       inLayer.rawValue, s.displayImage.size.width, s.displayImage.size.height,
                       q.topLeft.latitude, q.topLeft.longitude, q.bottomRight.latitude, q.bottomRight.longitude,
                       map.centerCoordinate.latitude, map.centerCoordinate.longitude, map.zoomLevel, ids)
@@ -2713,7 +3088,8 @@ struct MapLibreChartView: UIViewRepresentable {
                 IdentifiedObject(kind: .airspace, ident: $0.name, coord: here, onRoute: false, airspace: $0)
             }
             // One ordering policy, shared with the classic engine and unit-tested — see MapProbe.merge.
-            var results = MapProbe.merge(ranked: ranked, liveTFRs: liveTFRs, airspaces: aspObjs)
+            var results = MapProbe.merge(ranked: ranked, storms: stormCandidates(in: rect, here: here, on: mv),
+                                         liveTFRs: liveTFRs, airspaces: aspObjs)
             if userPoint { results.insert(IdentifiedObject(kind: .userPoint, ident: UserPoint.token(here), coord: here, onRoute: false), at: 0) }
             // Off-field landability for the tapped GROUND. Appended last (see MapObjectKind.priority):
             // it is ambient context about the spot, never the thing the pilot reached for. Only when

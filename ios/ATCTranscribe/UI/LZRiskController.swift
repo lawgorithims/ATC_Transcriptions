@@ -137,6 +137,12 @@ final class LZRiskController: ObservableObject {
 
     /// Current arrival-energy bands, or empty when the layer has nothing trustworthy to draw.
     @Published private(set) var energyBands: [LZEnergyBand] = []
+    /// WHERE the bands above were computed from. The sweep runs every five seconds and the aeroplane
+    /// does not wait — at 140 kt it is a quarter of a mile further on before the next one lands — so
+    /// the map slides the footprint from this anchor to where the aeroplane is being drawn. Without it
+    /// the bands sat still and then jumped, which is what "the glide bars move independently" looked
+    /// like from the cockpit. nil whenever there are no bands.
+    @Published private(set) var energyAnchor: Coord?
     /// One line for the badge: whether wind was used, whether coverage was lost, whose glide ratio,
     /// and — once the map has answered — how many band polygons it actually drew.
     @Published private(set) var energyStatus: String = ""
@@ -220,6 +226,7 @@ final class LZRiskController: ObservableObject {
             return
         }
         energyBands = field.bands
+        energyAnchor = coord          // slide them from here — see `energyAnchor`
         energyFieldSnapshot = field
         var parts = [String]()
         // Say what the footprint was charged for, the same words the airport list uses.
@@ -235,6 +242,7 @@ final class LZRiskController: ObservableObject {
     func clearEnergy(reason: String) {
         guard !energyBands.isEmpty || energyStatus != reason else { return }
         energyBands = []
+        energyAnchor = nil
         energyFieldSnapshot = nil
         // A reason is a whole answer, not a base to append a polygon count to — "layer off · 0 drawn"
         // reads as a fault report about a layer nobody asked to draw.

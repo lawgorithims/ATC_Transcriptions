@@ -428,7 +428,7 @@ enum CIFP {
     private static func noteReadFailure(_ rc: Int32, _ what: String) {
         guard !loggedReadFailure else { return }
         loggedReadFailure = true
-        NSLog("CommSight: CIFP %@ failed — %@ (%d). Procedure lookups may be empty for the rest of this launch.",
+        NSLog("Obelisk: CIFP %@ failed — %@ (%d). Procedure lookups may be empty for the rest of this launch.",
               what, String(cString: sqlite3_errstr(rc)), rc)
     }
 

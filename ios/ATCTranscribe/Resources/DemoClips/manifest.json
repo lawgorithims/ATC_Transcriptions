@@ -1,6 +1,6 @@
 {
-  "description": "Short labeled US ATC snippets used as CommSight's on-device performance check (proof-of-life) and Replay demo. Chosen brief (~3-5 s) so the check runs in seconds, and drawn from the domain the shipped small-v2 model is fine-tuned for.",
-  "source": "CommSight US human-verified gold test set (2026-06 scraping runs). US live-ATC feeds; references human-corrected.",
+  "description": "Short labeled US ATC snippets used as Obelisk's on-device performance check (proof-of-life) and Replay demo. Chosen brief (~3-5 s) so the check runs in seconds, and drawn from the domain the shipped small-v2 model is fine-tuned for.",
+  "source": "Obelisk US human-verified gold test set (2026-06 scraping runs). US live-ATC feeds; references human-corrected.",
   "sample_rate": 16000,
   "channels": 1,
   "snippets": [

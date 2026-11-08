@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""build_terrain_relief.py — bake CommSight's bundled dark terrain-relief base ("Dark (minimal)").
+"""build_terrain_relief.py — bake Obelisk's bundled dark terrain-relief base ("Dark (minimal)").
 
 WHAT IT MAKES
     Resources/basemap/terrain_base.mbtiles — WebP shaded-relief tiles, z0-z10, CONUS, served by the
@@ -7,7 +7,7 @@ WHAT IT MAKES
 
 WHY PRE-BAKED, NOT A LIVE HILLSHADE LAYER
     MapLibre ships MLNHillshadeStyleLayer / MLNRasterDEMSource / MLNColorReliefStyleLayer, and they
-    are compiled into our xcframework — but CommSight renders on a GLOBE, and the fork's globe port
+    are compiled into our xcframework — but Obelisk renders on a GLOBE, and the fork's globe port
     never reached those render paths (hillshade_layer_tweaker.cpp still emits a plain Mercator tile
     matrix). A hillshade layer would draw as unsubdivided flat quads on the sphere. The RASTER path
     IS globe-correct, so relief ships as ordinary pixels — no fork work, offline by construction, and

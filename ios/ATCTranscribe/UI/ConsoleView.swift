@@ -19,6 +19,12 @@ struct ConsoleView: View {
     @EnvironmentObject var downloads: ModelDownloadManager
     @EnvironmentObject var widgets: WidgetStore
     @EnvironmentObject var metars: MetarStore     // re-passed into sheets (they don't inherit reliably)
+    @EnvironmentObject var account: AccountStore   // ditto — SettingsSheet's Account page needs it
+    /// ⚠️ OBSERVED DIRECTLY, NOT THROUGH `model`. `FlightRecorder` is a NESTED ObservableObject, so it
+    /// does not republish `AppModel` (the Flight Bag C2 rule) — reading `model.flightRecorder.recovered`
+    /// would compile, render once, and never update, which is how the recovery banner would have
+    /// failed to appear in exactly the situation it exists for. It is injected at the app root.
+    @EnvironmentObject var recorder: FlightRecorder
     @Environment(\.horizontalSizeClass) private var hSize
     @Environment(\.scenePhase) private var scenePhase
 
@@ -69,8 +75,22 @@ struct ConsoleView: View {
         }
         .tint(p.accent)
         .preferredColorScheme(model.theme.colorScheme)
+        // What the app says once — see `TransientMessage`. An OVERLAY, not a row in the banner
+        // stack: a message that appears and leaves must not reflow the map, the advisories and the
+        // bottom bar on its way in and out. Above the tab bar and the GPS strip so it covers no
+        // readout, and ignoring the keyboard so it does not ride up over a route being typed.
+        .overlay(alignment: .bottom) {
+            if let m = model.transientMessage {
+                TransientMessageView(message: m, palette: p) { model.dismissTransientMessage() }
+                    .padding(.bottom, 96)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .ignoresSafeArea(.keyboard)
+            }
+        }
+        .animation(.easeInOut(duration: 0.22), value: model.transientMessage)
         .sheet(isPresented: $model.showSettings) {
             SettingsSheet().environmentObject(model).environmentObject(downloads)
+                .environmentObject(account)
         }
         .sheet(isPresented: $model.showWhatsNew) {
             WhatsNewSheet().environmentObject(model)
@@ -127,8 +147,14 @@ struct ConsoleView: View {
         // `armEmergency(compact:)` on an iPad armed the compact path and raised the NRST sheet
         // instead of the docked panel. This is the only place the real answer is in scope.
         .onAppear { model.isCompactWindow = (hSize == .compact) }
+        // ⚠️ NOT SWIPE-DISMISSIBLE. A swipe clears `pendingLoggedFlight` without calling either
+        // `save()` or `discard()`, so the flight stays in the pending slot on disk and silently
+        // reappears at the NEXT launch — which reads, to the pilot who just flew it, exactly like the
+        // logbook having dropped their flight. Save and Discard are the only two outcomes, and both
+        // are one tap away.
         .sheet(item: $model.pendingLoggedFlight) { flight in   // recording stopped → save-to-logbook prompt
             SaveFlightSheet(flight: flight).environmentObject(model)
+                .interactiveDismissDisabled()
         }
         // The pulsing search highlight lives only while ITS object card is the active probe. When that card
         // is closed (probe → nil) or a different object is selected (probe id changes), drop the highlight —
@@ -238,7 +264,7 @@ struct ConsoleView: View {
                 // ⚠️ It also holds the ONLY render site of `model.detail` in the app (see :1872 region).
                 // Flight-plan import — an EFB feature that must keep working — writes all three of its
                 // outcomes there (AppModel importFPL: too large / unreadable / imported), reached from
-                // the "Open in CommSight" .fpl share-sheet hand-off. Gating InputBar without replacing
+                // the "Open in Obelisk" .fpl share-sheet hand-off. Gating InputBar without replacing
                 // that surface makes FPL import succeed or fail in total silence. So the gated build
                 // renders `detail` on its own thin strip in the same slot.
                 if Features.transcription {
@@ -265,6 +291,25 @@ struct ConsoleView: View {
                 // "you are currently doing this" mode banner that must never be scrolled behind chatter.
                 if let profile = model.approachProfile { approachProfileStrip(profile) }
                 if let eng = model.nrstEngagement { nrstEngagedStrip(eng) }
+                // A recording the app died in the middle of outranks every advisory below it. Those
+                // describe the world, which will still be there in a minute; this one is unsaved data
+                // with a pilot about to press REC on top of it (see RecoveredRecordingBanner).
+                if let rec = recorder.recovered {
+                    RecoveredRecordingBanner(recovered: rec, palette: model.palette,
+                                             onResume: { model.resumeRecoveredRecording() },
+                                             onSave: { model.saveRecoveredRecording() })
+                        .transition(Self.barTransition)
+                }
+                // The storm-penetration warning sits ABOVE the satellite-hazard banner and the EFB
+                // suggestion, and that ordering is deliberate: a wildfire 40 NM off the route is
+                // awareness, while a thunderstorm the projected track enters in eight minutes is the
+                // one advisory in this stack with a deadline on it.
+                if !model.convectiveThreats.isEmpty {
+                    ConvectiveAlertBanner(threats: model.convectiveThreats, palette: model.palette) {
+                        model.dismissConvectiveAlert()
+                    }
+                    .transition(Self.barTransition)
+                }
                 if let sug = model.efbSuggestion { efbSuggestionBanner(sug) }
                 if let hz = model.hazardAlert, !hz.isEmpty { hazardBanner(hz) }
                 // A SIMULATED position outranks every other advisory in this stack: any of them may be
@@ -275,8 +320,10 @@ struct ConsoleView: View {
                 // GPS integrity / interference advisory. It belongs HERE in the bar stack, not as an
                 // overlay on the map: the map is full-bleed UNDER this chrome, so a top-aligned overlay
                 // on it renders beneath the top bar and is never seen.
-                GPSIntegrityBanner(assessment: model.gpsIntegrity, palette: model.palette,
-                                   threat: model.gpsThreat)
+                if model.showsGPSIntegrityBanner {
+                    GPSIntegrityBanner(assessment: model.gpsIntegrity, palette: model.palette,
+                                       threat: model.gpsThreat) { model.dismissGPSIntegrityBanner() }
+                }
             }
             // Two-finger drag UP over the top bars collapses the expandable strips (TopBar's toggles
             // reopen them). Single-finger interaction with the strips is unaffected.
@@ -694,12 +741,12 @@ struct ConsoleView: View {
     @ViewBuilder private func approachProfileStrip(_ profile: ApproachProfile) -> some View {
         let pos = model.presentPosition.flatMap { c -> ApproachProfile.Position? in
             let readout = GPSReadout.merge(stratux: model.freshStratuxGPS, device: model.deviceLocation.fix)
-            // The altitude needs the SAME gate as the coordinate. `presentPosition` already refuses an
-            // untrusted fix, but the altitude was taken raw — so a receiver the integrity monitor has
-            // called unreliable could still place the aeroplane on the glidepath and colour it green.
-            // Vertical error is exactly what this view is about, so a vertical figure nobody vouches for
-            // has no business in it. Same rule the AGL readout applies.
-            guard !model.gpsIntegrity.shouldSuppressOwnship || model.stratuxOwnshipTrusted,
+            // A glidepath is the one place that keeps the STRICTEST gate. `presentPosition` now admits
+            // a coarse fix — it is the right position, just a fuzzy one, and refusing it blanked half
+            // the app during an ordinary signal dip — but vertical error is exactly what this view is
+            // about, and a receiver the monitor has called unreliable must not place the aeroplane on
+            // a glidepath and colour it green. Hence `isTrustedForGuidance` here and not there.
+            guard model.gpsIntegrity.isTrustedForGuidance || model.stratuxOwnshipTrusted,
                   let alt = readout.altitudeFtMSL, alt.isFinite else { return nil }
             let rwy = AppModel.landingThreshold(airport: profile.airport,
                                                 runway: model.activeApproach?.runway ?? "")
@@ -966,7 +1013,7 @@ struct TopBar: View {
             // stands alone so the larger control icons fit one row.
             if hSize == .regular {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("CommSight").font(.dsHeadline).foregroundStyle(p.text)
+                    Text("Obelisk").font(.dsHeadline).foregroundStyle(p.text)
                     // The masthead states the product's purpose on every iPad launch, so in the EFB-only
                     // build it would be the most prominent piece of hidden-feature copy in the app.
                     Text(Features.transcription ? "On-device ATC transcription" : "Electronic flight bag")
@@ -977,8 +1024,11 @@ struct TopBar: View {
         }
     }
 
-    /// The one-tap engine-out arm, parked beside the logo because that corner is the only piece of
-    /// chrome that is on screen on every tab and never scrolls, moves or hides behind a menu.
+    /// THE one-tap engine-out arm — singular since the map's duplicate was removed — parked beside
+    /// the logo because that corner is the only piece of chrome that is on screen on every tab and
+    /// never scrolls, moves or hides behind a menu. That property is also what lets the map-controls
+    /// toggle now genuinely clear the map: the pilot's display preference can no longer collide with
+    /// keeping an emergency aid reachable, because the aid is not on the map any more.
     ///
     /// One press: show the map, light the off-field landability + glide-energy layers, and bring the
     /// nearest-airport panel to the front. It ARMS ONLY — pressing it twice re-arms, it never undoes,
@@ -999,10 +1049,20 @@ struct TopBar: View {
         // off at all. `onTapGesture` + `onLongPressGesture` resolve exclusively: a long press fires
         // the long press and nothing else. The button TRAIT is added back for VoiceOver and for the
         // UI test, both of which should still see this as a button, because it is one.
-        Image(systemName: "exclamationmark.triangle.fill")
-            .font(.system(size: iconSize, weight: .semibold))
+        // ⚠️ "NRST", NOT A WARNING TRIANGLE, AND IT IS NOW THE ONLY ONE. The map carried a second,
+        // identical control (`MapChrome.nrstButton`) that armed the same thing; the pilot reported
+        // them as duplicates and asked for one, in this bar. NRST is the label every panel-mount GPS
+        // has used for decades — a triangle says "something is wrong", which is not what a pilot is
+        // choosing when they press it; they are asking where to put the aeroplane down.
+        //
+        // ⚠️ IT IS 44pt WIDE, ON A BAR THIS FILE ALREADY DOCUMENTS AS OVER BUDGET. Measured, the
+        // EFB-only compact bar is ~358pt of the 402pt iPhone 17 Pro window, so the 14pt this adds
+        // over the old 30pt glyph still fits — with about 30pt to spare on the narrowest supported
+        // 375pt phone. A word is worth that; another control in this bar would not be.
+        Text("NRST")
+            .font(.dsLabelSBold)
             .foregroundStyle(armed ? p.bg : p.bad)
-            .frame(width: hit.width, height: hit.height)
+            .frame(width: 44, height: hit.height)
             .background(armed ? p.bad : p.bad.opacity(0.14),
                         in: RoundedRectangle(cornerRadius: DS.Radius.r2))
             .overlay(RoundedRectangle(cornerRadius: DS.Radius.r2)
@@ -1019,10 +1079,13 @@ struct TopBar: View {
             }
             .accessibilityElement()
             .accessibilityAddTraits(.isButton)
+            // The identifier stays `emergency-button` although the label now reads NRST: it names
+            // what the control DOES (arms the engine-out aids), nine UI-test sites depend on it, and
+            // the map's `map-nrst` is gone, so there is no longer a second id to confuse it with.
             .accessibilityIdentifier("emergency-button")
-            .accessibilityLabel("Emergency")
+            .accessibilityLabel("NRST — nearest airports")
             .accessibilityValue(armed ? "Armed" : "Off")
-            .accessibilityHint("Shows nearest airports and the off-field landability layers. Press and hold to stand down.")
+            .accessibilityHint("Shows the nearest airports ranked by engine-out glide, and the off-field landability layers. Press and hold to stand down.")
             .accessibilityAction { model.armEmergency(compact: compact) }
     }
 
@@ -1337,6 +1400,7 @@ struct FlightPlanBar: View {
     @State private var altitudeText = ""
     @State private var alternateText = ""
     @State private var editingAircraft: AircraftProfile?
+    @State private var showHangar = false
     @State private var confirmClear = false
     @State private var showGlideGaps = false
     @State private var showBriefing = false
@@ -1379,6 +1443,19 @@ struct FlightPlanBar: View {
         .onChange(of: alternateFocused) { _, focused in if !focused { commitAlternate() } }
         .task(id: model.flightPlan) { fplURL = await model.writeFPLFile() }
         .sheet(item: $editingAircraft) { AircraftSheet(profile: $0).environmentObject(model) }
+        // The hangar supplies no chrome of its own (Settings pushes it), so the stack + Done are here.
+        .sheet(isPresented: $showHangar) {
+            NavigationStack {
+                AircraftHangarView().environmentObject(model)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { showHangar = false }
+                        }
+                    }
+            }
+            .tint(model.palette.accent)
+            .preferredColorScheme(model.theme.colorScheme)
+        }
         // The turn-back prompt banner asks this strip to open the editor (it owns the sheet). A task
         // keyed on the flag runs on appear too, so a strip opened BY the banner still answers it.
         .task(id: model.requestTurnbackEdit) {
@@ -1421,9 +1498,8 @@ struct FlightPlanBar: View {
             }
             centerColumn(p)
             HStack(spacing: 10) {
-                if model.foreflightEnabled { sendButton(p) }
                 Spacer(minLength: 4)
-                actionIcons(p)
+                actionIcons(p)        // ForeFlight is one of these now, not a capsule of its own
             }
             ScrollView(.horizontal, showsIndicators: false) { statsRow(p) }
         }
@@ -1452,6 +1528,17 @@ struct FlightPlanBar: View {
                 Button { editingAircraft = selected } label: {
                     Label("Edit \(selected.callsign)…", systemImage: "pencil")
                 }
+                .accessibilityIdentifier("aircraft-edit-selected")
+            }
+            // ⚠️ THE REASON THIS ENTRY EXISTS. "Edit …" above reaches the FILED aeroplane only, so
+            // every other one in the hangar could be edited solely by selecting it first — and
+            // selecting rewrites the plan's callsign and type. Correcting a landing distance meant
+            // changing the flight plan. This opens the hangar, which edits without filing.
+            if !model.aircraftProfiles.isEmpty {
+                Button { showHangar = true } label: {
+                    Label("Manage aircraft…", systemImage: "airplane.circle")
+                }
+                .accessibilityIdentifier("aircraft-manage")
             }
         } label: {
             box(p) {
@@ -1585,10 +1672,9 @@ struct FlightPlanBar: View {
     // MARK: right column — actions
 
     private func rightColumn(_ p: Palette) -> some View {
-        VStack(alignment: .trailing, spacing: 6) {
-            if model.foreflightEnabled { sendButton(p) }
-            actionIcons(p)
-        }
+        // One row now. ForeFlight used to sit above this as a filled capsule and was the largest
+        // thing on the strip — see `sendButton` for why it is not any more.
+        actionIcons(p).frame(maxWidth: .infinity, alignment: .trailing)
     }
 
     /// The small action icons (.fpl import/share / map / collapse) — shared by both layouts.
@@ -1617,19 +1703,37 @@ struct FlightPlanBar: View {
             }
             .buttonStyle(.plainHaptic)
             .accessibilityIdentifier("flight-plan-map").accessibilityLabel("View route on map")
+            if model.foreflightEnabled { sendButton(p) }
+            // ⚠️ THE PRIMARY ACTION, AND IT IS THE ONLY FILLED CONTROL ON THE STRIP. ForeFlight used
+            // to hold that position; the pilot reported it as far too big for what it does. Accepting
+            // the plan is what happens on every single visit to this strip — handing it to another
+            // app is occasional, and only for the pilots who fly with both.
             Button {
                 Haptics.impact(.light)
                 commitPendingEdits()   // the number-pad altitude has no submit — don't lose it
                 withAnimation(.easeInOut(duration: 0.22)) { model.showFlightPlanBar = false }
             } label: {
-                Image(systemName: "checkmark").font(.dsLabelBold).foregroundStyle(p.accent)
+                Image(systemName: "checkmark")
+                    .font(.dsLabelBold)
+                    .foregroundStyle(.white)
+                    .frame(width: 44, height: 30)
+                    .background(Capsule().fill(p.accent))
+                    .contentShape(Capsule())
             }
             .buttonStyle(.plainHaptic)
-            .accessibilityIdentifier("plan-bar-done").accessibilityLabel("Collapse flight plan")
+            .accessibilityIdentifier("plan-bar-done").accessibilityLabel("Done — collapse flight plan")
         }
     }
 
     /// One-tap hand-off of the CURRENT strip contents (pending edits are committed first).
+    ///
+    /// ⚠️ DEMOTED FROM A FILLED CAPSULE TO A GLYPH, deliberately. It was the biggest control on the
+    /// strip, which made the second-most-common action look like the main one — reported from the
+    /// air exactly that way. Sending to ForeFlight is a hand-off to another app, taken occasionally
+    /// and only by pilots who fly with both; the check mark beside it is pressed every time.
+    ///
+    /// It keeps the paperplane and its accessibility LABEL still says ForeFlight, so nothing is
+    /// harder to find — only smaller.
     private func sendButton(_ p: Palette) -> some View {
         let enabled = model.offersForeFlight && model.flightPlan != nil
         return Button {
@@ -1637,14 +1741,13 @@ struct FlightPlanBar: View {
             commitPendingEdits()
             model.openInForeFlight()
         } label: {
-            Label("ForeFlight", systemImage: "paperplane.fill")
-                .font(.dsLabelBold)
-                .foregroundStyle(enabled ? .white : p.textDim)
-                .padding(.horizontal, 12).padding(.vertical, 6)
-                .background(Capsule().fill(enabled ? p.accent : p.surfaceAlt))
+            Image(systemName: "paperplane.fill")
+                .font(.dsLabel)
+                .foregroundStyle(enabled ? p.accent : p.textDim)
         }
         .buttonStyle(.plainHaptic).disabled(!enabled)
         .accessibilityIdentifier("plan-send-foreflight")
+        .accessibilityLabel("Send to ForeFlight")
     }
 
     // MARK: stats row — the ForeFlight trip overview
@@ -1798,7 +1901,7 @@ struct FlightPlanBar: View {
 // MARK: - Stratux / traffic strip
 
 /// Live ADS-B traffic in range — from the **Stratux receiver** when its link is enabled, otherwise
-/// airplanes.live. The always-on link toggle (top of the strip) streams traffic + GPS independent of
+/// adsb.lol. The always-on link toggle (top of the strip) streams traffic + GPS independent of
 /// the input source (that only gates cockpit audio + Start). Renders `model.aircraft` verbatim
 /// (freshness is the service actor's job). While the link is on it shows the LINK state:
 /// idle → connecting → **connected** (green) → error. Shown/hidden by the Stratux heading icon

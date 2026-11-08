@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""lzcommon.py — shared geometry, plane layout and blob format for the CommSight LZ pipeline.
+"""lzcommon.py — shared geometry, plane layout and blob format for the Obelisk LZ pipeline.
 
 WHAT THIS IS
     The single source of truth that every other lz/ script imports. If a constant appears here it

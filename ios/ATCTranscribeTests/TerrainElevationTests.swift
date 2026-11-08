@@ -222,11 +222,16 @@ final class TerrainElevationTests: XCTestCase {
         XCTAssertEqual(reading.verticalAccuracyM, 30)
     }
 
-    func testUntrustedPositionYieldsNoReading() throws {
+    /// Only a position that may be FABRICATED is refused. A merely coarse one still gets an AGL: the
+    /// grid's cells are ~1.85 km, so a fix a few hundred metres out usually picks the same cell — and
+    /// withdrawing terrain awareness because the signal dipped is the same mistake that used to delete
+    /// ownship from the map.
+    func testOnlyADisownedPositionYieldsNoReading() throws {
         let grid = TerrainElevation(directory: try makeGrid())
         let f = fix(lat: 41.5, lon: -99.5, altitudeM: 1304.8)
-        let unreliable = GPSIntegrityAssessment(state: .unreliable, reasons: [.accuracyUnusable])
-        XCTAssertEqual(grid.agl(fix: f, integrity: unreliable).unavailable, .positionNotTrusted)
+        let coarse = GPSIntegrityAssessment(state: .unreliable, reasons: [.accuracyUnusable])
+        XCTAssertNotNil(grid.agl(fix: f, integrity: coarse).reading,
+                        "a coarse fix still lands in a 1.85 km cell")
         let suspect = GPSIntegrityAssessment(state: .suspect, reasons: [.positionJump])
         XCTAssertEqual(grid.agl(fix: f, integrity: suspect).unavailable, .positionNotTrusted,
                        "the horizontal error picks the cell — a disowned position picks the wrong one")

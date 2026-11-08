@@ -41,10 +41,18 @@ struct MapHostView: View {
     /// GPS integrity verdict, bridged like deviceCoord. Gates what the map is allowed to DRAW.
     @State private var gpsIntegrity = GPSIntegrityAssessment()
 
-    /// The device position the map may plot: nil when the integrity monitor says the fix can't be
-    /// trusted. Suppressing it HERE covers BOTH engines (MapLibre and the MKMapView fallback both take
-    /// `ownship:` from this one place) — a position the pilot will fly is worse than no position.
-    private var trustedDeviceCoord: Coord? { gpsIntegrity.shouldSuppressOwnship ? nil : deviceCoord }
+    /// The device position the map plots. ⚠️ IT IS NO LONGER GATED ON INTEGRITY, AND THAT IS THE FIX
+    /// FOR A REPORTED IN-FLIGHT FAULT: this returned nil whenever the monitor reached `.unreliable`,
+    /// so an ordinary signal dip — accuracy past 100 m, or 30 s between fixes in a turn — deleted the
+    /// aeroplane and its track from both engines at once.
+    ///
+    /// The state still reaches the engines, through `ownshipIntegrity` and `ownshipAccuracyM` beside
+    /// this: a coarse fix draws the amber symbol, a suspect one the red, and both carry the 1-sigma
+    /// accuracy ring that shows exactly how much the position could be out by. Those styles already
+    /// existed and were unreachable, because the only states they were built for were the states that
+    /// removed the symbol they were drawn on. A pilot who can see a red aeroplane inside a 300 m ring
+    /// knows more than one who can see nothing at all.
+    private var trustedDeviceCoord: Coord? { deviceCoord }
     /// Ownship for the engines: a FRESH, FIXED Stratux fix still wins (the aircraft's own receiver),
     /// else the device fix if it is trustworthy.
     ///
@@ -58,6 +66,13 @@ struct MapHostView: View {
     /// the accuracy ring/tint — legitimate while a real Stratux fix is driving ownship, wrong the moment
     /// that fix is stale, because then the device GPS is driving and its integrity verdict DOES apply.
     private var stratuxHasFix: Bool { model.stratuxOwnshipTrusted }
+    /// Ground speed for the ownship smoother — the merged value, but only when whoever is driving the
+    /// symbol vouches for it. `OwnshipMotion` dead-reckons ALONG this between fixes, and projecting
+    /// along a speed nobody stands behind is how a parked aeroplane starts to wander off its stand.
+    private var ownshipSpeedKt: Double? {
+        guard stratuxHasFix || gpsIntegrity.speedUsable else { return nil }
+        return GPSReadout.merge(stratux: model.freshStratuxGPS, device: model.deviceLocation.fix).groundSpeedKt
+    }
     /// The flight recorder's breadcrumb, bridged from the nested recorder (like deviceCoord). Append-only
     /// during a recording, [] otherwise — the maps guard on its COUNT so it doesn't re-tessellate per tick.
     @State private var breadcrumb: [Coord] = []
@@ -81,6 +96,9 @@ struct MapHostView: View {
     @State private var searchPoint: CGPoint?
     /// Show the manual zoom / center-on-aircraft control bar on the map (toggled in the layers menu).
     @AppStorage("atc.map.zoomControls") private var showZoomControls = true
+    /// The measuring rulers. Observed here so laying one down redraws the overlay; the gestures that
+    /// create and move them live on the map view itself (`MapRulerController`).
+    @ObservedObject private var rulerStore = MapRulerStore.shared
 
     struct PlateAnchors: Equatable { var tl: CGPoint; var tr: CGPoint }
 
@@ -343,6 +361,19 @@ struct MapHostView: View {
                 SearchHighlightMarker(kind: hl.kind, theme: model.theme).position(x: pt.x, y: pt.y).allowsHitTesting(false)
             }
         }
+        // The measuring rulers. Drawn here rather than inside an engine so both engines render the
+        // identical thing; the engines only supply the screen projection (`emitRulerSegments`). NOT
+        // gated on `live`: a frozen ruler is a measurement the pilot took and must still be there
+        // when they come back to the tab, and the layer costs nothing while the store is empty.
+        .overlay {
+            if !rulerStore.isEmpty {
+                MapRulerLayer(store: rulerStore,
+                              palette: model.palette,
+                              groundSpeedKt: GPSReadout.merge(stratux: model.freshStratuxGPS,
+                                                              device: model.deviceLocation.fix).groundSpeedKt,
+                              cruiseKt: model.selectedAircraft?.cruiseKts)
+            }
+        }
         .overlay(alignment: .top) { statusPills }
         .overlay(alignment: .topTrailing) {
             if live {
@@ -464,10 +495,14 @@ struct MapHostView: View {
             ownshipCourse: model.stratuxGPS?.coordinate == nil ? deviceCourse : nil,
             ownshipAccuracyM: stratuxHasFix ? nil : gpsIntegrity.horizontalAccuracyM,
             ownshipIntegrity: stratuxHasFix ? .unknown : gpsIntegrity.state,
+            ownshipSpeedKt: ownshipSpeedKt,
             traffic: model.aircraft,
             wxTrend: wxPins,
             tfrs: model.tfrs,
             showTFRs: model.showTFRs,
+            stormCells: model.convectiveDrawCells,
+            stormThreatIDs: Set(model.convectiveThreats.map(\.cell.id)),
+            stormAt: model.convectiveDrawAt,
             showAirspace: model.showAirspace,
             showNearby: model.showNearby,
             showAirways: model.showAirways,
@@ -544,6 +579,7 @@ struct MapHostView: View {
                 ? { [lzController] c in lzController.sample(lon: c.lon, lat: c.lat) }
                 : nil,
             lzEnergyBands: model.showLZEnergy ? lzController.energyBands : [],
+            lzEnergyAnchor: model.showLZEnergy ? lzController.energyAnchor : nil,
             // NOT gated on the layer toggles. The pilot armed this deliberately after rehearsing
             // it; switching the shading off is a decluttering decision and must not silently
             // delete the plan they intend to fly.
@@ -623,6 +659,10 @@ struct MapHostView: View {
         case .failed:
             statusPill("Chart download failed — tap to retry", "wifi.exclamationmark")
                 .onTapGesture { Task { await store.setLayer(model.chartLayer, routeRects: ChartGeo.routeRects(route)) } }
+        case .paused where model.chartLayer.isRaster:
+            // Names the switch that is doing it, so the fix is one tap away in Data activity rather
+            // than a hunt for a signal problem that does not exist.
+            statusPill("Chart packs are switched off in Data activity", "pause.circle")
         default: EmptyView()
         }
     }
@@ -920,16 +960,15 @@ struct MapChrome: View {
         }
     }
 
+    // ⚠️ THE FLOATING NRST BUTTON USED TO LIVE HERE AND IS NOW IN THE TOP BAR, merged with the
+    // emergency arm it duplicated. Reported from the air as two faults that were one: the two
+    // controls did the same thing, and this one stayed on screen after the pilot switched the map
+    // controls off — deliberately, since it had its own ungated overlay so an emergency aid could
+    // never be hidden by a display preference. Both intents survive the move: the control is no
+    // longer map chrome, so the map-controls toggle genuinely clears the map, and it is now in the
+    // one strip that is on screen on every tab and never scrolls or hides. See
+    // `ConsoleView.nrstButton`.
     @ViewBuilder private var chrome: some View {
-        if !nrstPanelShowing {
-            // FULL-WINDOW centring, deliberately — the same coordinate space `mapSideControls` uses, so
-            // the -58 offset keeps its documented meaning ("just above the zoom stack's top edge") and
-            // the two cannot drift apart. An earlier attempt to inset this by the measured chrome moved
-            // it down by half the chrome height and put it INSIDE the zoom stack, which is a collision
-            // that actually happens — where the chrome overlap it was guarding against does not: the
-            // chrome tops out around 420 pt with the profile strip up, and this sits near 620.
-            nrstButton.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .trailing)
-        }
         // TOP-leading: high altitude belongs at the top of the screen, and the track then grows downward
         // from measured chrome rather than from a guessed centre.
         //
@@ -952,49 +991,5 @@ struct MapChrome: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                 .allowsHitTesting(false)          // read-only: never take a tap from the map
         }
-    }
-
-    /// The panel is already in front of the pilot — floating or docked — so the button has nothing left
-    /// to do and would only sit on top of the thing it opens. Safe to read now that the store is
-    /// observed: this recomputes the moment the panel opens or closes.
-    /// Trailing inset that clears a docked right pane, the same formula every sibling control uses
-    /// (`RadarStatusPill.trailingInset`, `RadarLoopBar`, the wind slider's `leftPaneInset`). The NRST
-    /// button was the one piece of map chrome without it, and since MapChrome now renders ABOVE the
-    /// widget canvas the button landed ON a docked pane — transcript docked right is a common cockpit
-    /// layout — and ate the taps and swipes meant for it. `widgets` is observed here, and both
-    /// `rightPane` and `rightPaneWidth` are @Published, so this re-lays out live on dock, undock and
-    /// resize.
-    private var rightPaneInset: CGFloat {
-        guard widgets.rightPane != nil else { return 12 }
-        return (widgets.rightPaneWidth > 0 ? widgets.rightPaneWidth : 320) + 12
-    }
-
-    private var nrstPanelShowing: Bool {
-        hSize != .compact
-            && (widgets.isVisible(.nrst) || widgets.leftPane == .nrst || widgets.rightPane == .nrst)
-    }
-
-    /// The engine-out NRST button. Text rather than a glyph because NRST is the label every GPS in every
-    /// panel has used for decades. Regular width shows the panel (or lifts it, if it is already up or
-    /// docked in a pane); compact rides a sheet. The panel closes by its own ✕, never by a second tap
-    /// here — SHOW, never toggle, so the outcome of a tap in an emergency is never "it went away".
-    private var nrstButton: some View {
-        Button {
-            Haptics.impact(.medium)
-            if hSize == .compact { model.showNRSTSheet = true } else { widgets.reveal(.nrst) }
-        } label: {
-            Text("NRST")
-                .font(.dsLabelSBold)
-                .foregroundStyle(model.palette.text)
-                .frame(width: 46, height: 40)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plainHaptic)
-        .background(model.palette.overlay, in: RoundedRectangle(cornerRadius: DS.Radius.r4))
-        .overlay(RoundedRectangle(cornerRadius: DS.Radius.r4).stroke(model.palette.bad.opacity(0.7), lineWidth: DS.Stroke.control))
-        .padding(.trailing, rightPaneInset)
-        .offset(y: -58)                                   // just above the zoom stack's top edge
-        .accessibilityIdentifier("map-nrst")
-        .accessibilityLabel("Nearest airports — engine-out glide ranking")
     }
 }

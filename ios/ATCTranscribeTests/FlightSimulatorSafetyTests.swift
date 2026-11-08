@@ -71,16 +71,17 @@ final class FlightSimulatorSafetyTests: XCTestCase {
         XCTAssertEqual(loc.integrity.state, .unknown)
     }
 
-    /// The simulated stream must read as NOMINAL rather than being flagged and suppressed. Feeding it
-    /// to the integrity monitor would latch `.suspect` at any speed multiplier, and `.suspect` hides
-    /// ownship — the very aircraft under test.
+    /// The simulated stream must read as NOMINAL rather than being flagged. Feeding it to the integrity
+    /// monitor would latch `.suspect` at any speed multiplier, which refuses the aircraft under test as
+    /// a clearance anchor and takes it off the approach plate.
     func testTheSimulatedStreamIsNotSuppressed() {
         let loc = DeviceLocation()
         guard let sim = Self.simulator() else { return XCTFail("fixture profile must be flyable") }
         loc.startSimulation(sim, speedMultiplier: 10)
         XCTAssertEqual(loc.integrity.state, .nominal)
-        XCTAssertFalse(loc.integrity.shouldSuppressOwnship,
-                       "the aircraft under test must remain visible")
+        XCTAssertTrue(loc.integrity.isPositionProbablyReal,
+                      "the aircraft under test must anchor its own clearances")
+        XCTAssertTrue(loc.integrity.isTrustedForGuidance)
         XCTAssertNotNil(loc.trustedCoord)
         loc.stopSimulation()
     }

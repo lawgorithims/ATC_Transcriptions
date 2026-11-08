@@ -128,6 +128,10 @@ struct MapObjectView: View {
 
     private func title(_ o: IdentifiedObject) -> String {
         if o.kind == .userPoint { return UserPoint.label(o.ident) }
+        // A storm cell's `ident` is the internal key the layers diff on ("WST-7C", "RADAR-4390-0792").
+        // `label` is what the pilot can look up on a bulletin or hear a controller say, and for a radar
+        // cell it is the only description of it that exists anywhere.
+        if o.kind == .convective, let l = o.cell?.label, !l.isEmpty { return l }
         return o.ident.isEmpty ? o.kind.label : o.ident
     }
     private var directBinding: Binding<Bool> {
@@ -172,6 +176,7 @@ struct MapObjectView: View {
         case .tfr:       return o.tfr?.type.label ?? "TFR"
         case .airway:    return "Enroute airway"
         case .lzRisk:    return "Off-field landability"
+        case .convective: return o.cell?.source == .radar ? "Thunderstorm — radar-derived" : "Thunderstorm"
         }
     }
 
@@ -200,9 +205,11 @@ struct MapObjectView: View {
                     Spacer()
                 }
             }
+            if o.kind == .convective, let c = o.cell { convectiveVerdict(c) }
             infoSection(o)
             if o.kind == .hazard { hazardFooter }
             if o.kind == .tfr { tfrFooter }
+            if o.kind == .convective { convectiveFooter }
             if o.kind == .lzRisk, let lz = o.lzSample { lzSection(lz) }
             actionSection(o)
         }
@@ -909,6 +916,7 @@ struct MapObjectView: View {
         case .tfr:       return "Temporary Flight Restriction — FAA"
         case .airway:    return "Enroute airway — file it between two of its fixes"
         case .lzRisk:    return "Advisory ground assessment — not a landing recommendation"
+        case .convective: return "Thunderstorm cell"
         }
     }
 
@@ -1021,6 +1029,36 @@ struct MapObjectView: View {
                 // own Section below the identity block — this case only carries the position.
                 KV("Position", coordText(o.coord))
                 bearingRow(o.coord)
+            case .convective:
+                if let c = o.cell {
+                    // The pilot's own units, from the banner's formatter: flight levels above 18,000.
+                    KV("Tops", c.topsFtMSL.map { ConvectiveAlertText.altitudeText($0) } ?? "Not stated")
+                    // nil base means the hazard reaches the ground — a stated fact, not a gap — and so
+                    // does a stated zero, which is what the AWC feed sends for most cells.
+                    KV("Base", ConvectiveAlertText.baseLine(c.baseFtMSL))
+                    KV("Movement", ConvectiveAlertText.motionLine(c))
+                    // A bulletin is ISSUED and a radar frame is OBSERVED. The distinction is not
+                    // pedantry: one is a forecaster's judgement with a validity period, the other is a
+                    // measurement two minutes old that nobody has looked at.
+                    KV(c.source == .radar ? "Observed" : "Issued", Self.tfrTime(c.observedAt, at: o.coord))
+                    // Its own row rather than appended to the time, because it is the number that
+                    // decides how much of the rest of this card to believe.
+                    KV("Age", ConvectiveAlertText.observedAgeText(c, now: Date()))
+                    KV("Valid until", Self.tfrTime(c.validUntil, at: o.coord)
+                        + (c.isExpired(at: Date()) ? " · expired, carried forward" : ""))
+                    if c.topsFtMSL == nil {
+                        Text("No top was stated. That is a gap in the product, not a low cell — treat it as reaching higher than you are until something says otherwise.")
+                            .font(.dsLabel).foregroundStyle(p.textDim)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    // Named, not hidden, exactly as on the banner: what this reads determines what it
+                    // can miss, and that now varies per cell.
+                    Text(ConvectiveAlertText.sourceLine(c))
+                        .font(.dsLabel).foregroundStyle(p.textDim)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier("storm-card-source")
+                }
+                bearingRow(o.coord)
             }
         }
         .foregroundStyle(p.text)
@@ -1107,6 +1145,72 @@ struct MapObjectView: View {
         } footer: {
             let stale = model.tfrsUpdatedAt.map { Self.relative.localizedString(for: $0, relativeTo: Date()) }
             Text("FAA TFR feed\(stale.map { ", updated \($0)" } ?? ""). Boundaries are approximate — confirm against the official NOTAM before flight.")
+                .font(.dsLabelS)
+                .foregroundStyle(model.palette.textDim)
+        }
+    }
+
+    /// What the ALERT concluded about the tapped cell — the first section on the card, because it is
+    /// the only one that answers "why am I being shown this".
+    ///
+    /// The headline and the detail are `ConvectiveAlertText.headline` / `.detail`, the same two
+    /// functions the banner renders, for the same reason both map engines take their geometry from
+    /// `ConvectiveCellDraw`: a card and a banner describing one storm differently is worse than either
+    /// of them alone. So the card inherits the whole wording, the AIM clearance clause included.
+    ///
+    /// The verdict and the dismissal are ORTHOGONAL, and the first version of this got that wrong.
+    /// It read `if let threat … else if dismissed …`, which made the dismissed branch unreachable in
+    /// the one case that matters: a dismissed cell still threatens, so the recompute returns a record,
+    /// so the card took the first branch and never offered Restore — exactly when the pilot needs it.
+    /// They are two independent facts about the same cell and the section states both.
+    ///
+    /// The verdict is either a warning in the banner's own words, or "no warning raised" — said as a
+    /// statement about the projection and its window, never as a claim that the cell is harmless.
+    /// The dismissal note is added underneath when the banner has been silenced for this bulletin,
+    /// because the outline stays behind and that is precisely when a pilot taps it.
+    @ViewBuilder private func convectiveVerdict(_ c: ConvectiveCell) -> some View {
+        let p = model.palette
+        let threat = model.convectiveThreat(for: c)
+        let dismissed = model.isConvectiveDismissed(c)
+        Section("Warning") {
+            if let t = threat {
+                Text(ConvectiveAlertText.headline(t))
+                    .font(.dsHeadline)
+                    .foregroundStyle(t.kind == .penetration ? p.bad : p.warn)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("storm-card-headline")
+                Text(ConvectiveAlertText.detail(t))
+                    .font(.dsLabel).foregroundStyle(p.text)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("storm-card-detail")
+            } else {
+                Text("No warning raised").font(.dsHeadline).foregroundStyle(p.text)
+                    .accessibilityIdentifier("storm-card-quiet")
+                Text("Your projected track over the next \(Int(ConvectiveAlert.lookAheadMin)) minutes stays more than \(Int(ConvectiveAlert.avoidNm)) NM clear of this cell, or clears its top by the margin AIM 7-1-28 asks for. It is drawn because it is close enough to matter if the track changes — yours or its own.")
+                    .font(.dsLabel).foregroundStyle(p.textDim)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if dismissed {
+                Text("Dismissed — you silenced the banner for this bulletin, so nothing above is on screen anywhere else. The next issuance of the same series is a different storm and alerts again.")
+                    .font(.dsLabel).foregroundStyle(p.textDim)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("storm-card-dismissed")
+                actionRow("Restore this warning", "bell.badge") {
+                    model.restoreConvectiveAlert(c); onClose()
+                }
+            }
+        }
+    }
+
+    /// What the storm layer is, and the one number a pilot should leave the card with.
+    ///
+    /// The AIM figure lives here rather than in the warning above, which has to be readable at a
+    /// glance; and the extrapolation is named rather than implied, because every position on this card
+    /// is the output of one — see `ConvectiveCellDraw`.
+    private var convectiveFooter: some View {
+        Section {
+        } footer: {
+            Text("The outline is extrapolated from the product's own motion vector to the moment the alert last ran; the age above says how far that is being pushed. AIM 7-1-28 asks for \(Int(ConvectiveAlert.avoidNm)) NM from any thunderstorm identified as severe or giving an intense radar echo. Awareness only — no substitute for airborne radar or an official briefing.")
                 .font(.dsLabelS)
                 .foregroundStyle(model.palette.textDim)
         }
@@ -1277,6 +1381,7 @@ struct MapObjectView: View {
         case .tfr:       return "exclamationmark.octagon"
         case .airway:    return "point.topleft.down.to.point.bottomright.curvepath"
         case .lzRisk:    return "square.grid.3x3.square"
+        case .convective: return "cloud.bolt.rain.fill"
         }
     }
 }

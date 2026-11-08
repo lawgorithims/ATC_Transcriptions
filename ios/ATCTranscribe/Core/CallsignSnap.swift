@@ -118,7 +118,7 @@ enum CallsignSnap {
             return (text, Result(verdict: "verified_exact", original: heard, snapped: match))
         }
         // SECURITY (red-hat 2026-07-07): the candidate list comes from UNAUTHENTICATED ADS-B
-        // (airplanes.live) — anyone can inject a ghost aircraft one digit off from a real one.
+        // (adsb.lol) — anyone can inject a ghost aircraft one digit off from a real one.
         // So the digit-changing rewrite path is disabled: the pilot-visible callsign DIGITS are
         // never invented from traffic. A snap may fix only the misheard AIRLINE WORD / phonetics
         // (digits identical to a live aircraft); if the digits differ, we display as heard and

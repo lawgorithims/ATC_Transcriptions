@@ -549,7 +549,7 @@ private func inflated(_ r: MKMapRect, by f: Double) -> MKMapRect {
 /// cache, and downloading live in the shared `ChartLibrary` (warmed/prefetched before the map opens),
 /// so this store mostly opens already-on-disk packs with no network. All state mutated on the main actor.
 @MainActor final class ChartStore: ObservableObject {
-    enum Phase: Equatable { case idle, loadingCatalog, downloading, ready, empty, zoomOut, failed(String) }
+    enum Phase: Equatable { case idle, loadingCatalog, downloading, ready, empty, zoomOut, failed(String), paused }
     @Published var phase: Phase = .idle
     @Published private(set) var readers: [MBTilesReader] = []
 
@@ -616,7 +616,8 @@ private func inflated(_ r: MKMapRect, by f: Double) -> MKMapRect {
             }
         }
         var todo = layer.entries(catalog).filter { e in
-            loaded[e.id] == nil && !inFlight.contains(e.id) && rects.contains { e.mapRect.intersects($0) }
+            loaded[e.id] == nil && !inFlight.contains(e.id) && !library.wasStopped(e.id)
+                && rects.contains { e.mapRect.intersects($0) }
         }
         // Load in batches of 6 so a single pan never mass-downloads; if truncated we self-drive the rest.
         let truncated = gated && todo.count > 6
@@ -668,7 +669,13 @@ private func inflated(_ r: MKMapRect, by f: Double) -> MKMapRect {
             return
         }
         if inFlight.isEmpty, layer == activeLayer {
-            phase = !loaded.isEmpty ? .ready : (anyFailed ? .failed("Chart download failed") : (gated ? .zoomOut : .empty))
+            // A pack that did not arrive because the pilot switched chart packs OFF is not a failure,
+            // and must not be reported as one: "Chart download failed — tap to retry" over a pause
+            // the pilot set themselves sends them hunting for a network problem that is not there.
+            let paused = NetworkActivity.shared.isPaused(.charts)
+            phase = !loaded.isEmpty ? .ready
+                  : paused ? .paused
+                  : (anyFailed ? .failed("Chart download failed") : (gated ? .zoomOut : .empty))
         }
     }
 
@@ -750,6 +757,10 @@ struct ChartMapView: UIViewRepresentable {
         let hold = UILongPressGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleLongPress(_:)))
         hold.delegate = context.coordinator
         mv.addGestureRecognizer(hold)
+        // The measuring rulers. Their recognizers go on the MAP VIEW, not on a SwiftUI overlay, because
+        // the whole problem is arbitrating with MapKit's own pinch, rotate and two-finger tap — which
+        // can only be done from inside the same recognizer graph. See `MapRulerController`.
+        context.coordinator.attachRuler(to: mv)
         context.coordinator.requestLocation()
         let realistic = model.terrain3DEnabled && !model.thermalSerious
         Self.configure(mv, for: layer, realistic: realistic)
@@ -826,6 +837,7 @@ struct ChartMapView: UIViewRepresentable {
         c.onSearchPoint = onSearchPoint
         c.searchHighlightCoord = searchHighlight
         c.emitSearchPoint(mv)                             // keep the pulsing search marker glued to its spot
+        c.emitRulerSegments()                             // ... and the measuring rulers
         c.routeLegs = route                               // hit-test source for filed waypoints
         c.routeIdents = Set(route.map { $0.ident })
         let realistic = model.terrain3DEnabled && !model.thermalSerious
@@ -1022,6 +1034,13 @@ struct ChartMapView: UIViewRepresentable {
                       accuracyM: ownshipAccuracyM, integrity: ownshipIntegrity)
         c.syncHazards(mv, events: model.showHazards ? model.hazardEvents : [])
         c.syncTFRs(mv, tfrs: model.showTFRs ? model.tfrs : [])
+        // The storm layer needs no toggle of its own: `convectiveDrawCells` is already empty unless the
+        // pilot switched a storm-alert source on and it found something, and a third control deciding
+        // whether the hazard you asked to be warned about is visible would be a control nobody can
+        // reason about. The alert's own toggles are in the same Map-layers panel.
+        c.syncConvectiveCells(mv, cells: model.convectiveDrawCells,
+                              threatIDs: Set(model.convectiveThreats.map(\.cell.id)),
+                              at: model.convectiveDrawAt)
     }
 
     /// Reconcile the superimposed plate overlay. ANY change (placement or opacity) rebuilds the overlay:
@@ -1096,6 +1115,34 @@ struct ChartMapView: UIViewRepresentable {
                             mv.convert(corners.tr, toPointTo: mv)))
         }
 
+        /// The measuring rulers' gestures and projection for THIS map view. Engine-agnostic: the same
+        /// controller is attached by the MapLibre coordinator with its own two conversions.
+        var ruler: MapRulerController?
+
+        func attachRuler(to mv: MKMapView) {
+            let controller = MapRulerController(
+                toCoord: { [weak mv] point in
+                    guard let mv else { return nil }
+                    let ll = mv.convert(point, toCoordinateFrom: mv)
+                    // A projection can hand back a non-finite or out-of-range coordinate for a point
+                    // outside the globe; a ruler end there would poison every number derived from it.
+                    guard ll.latitude.isFinite, ll.longitude.isFinite,
+                          abs(ll.latitude) <= 90, abs(ll.longitude) <= 180 else { return nil }
+                    return Coord(lat: ll.latitude, lon: ll.longitude)
+                },
+                toPoint: { [weak mv] coord in
+                    guard let mv else { return .zero }
+                    return mv.convert(CLLocationCoordinate2D(latitude: coord.lat, longitude: coord.lon),
+                                      toPointTo: mv)
+                })
+            controller.attach(to: mv)
+            ruler = controller
+        }
+
+        /// Re-project the rulers. Called wherever the plate anchors are — i.e. on every camera tick —
+        /// so a frozen ruler stays over the ground it measured.
+        func emitRulerSegments() { ruler?.refreshSegments() }
+
         var searchHighlightCoord: CLLocationCoordinate2D?
         var onSearchPoint: (CGPoint?) -> Void = { _ in }
         var lastMapCommandToken = 0
@@ -1144,6 +1191,20 @@ struct ChartMapView: UIViewRepresentable {
         var tfrLabelByKey: [String: [AirspaceLabelAnnotation]] = [:]   // altitude blocks, reusing the airspace annotation
         var tfrOverlayIDs: Set<ObjectIdentifier> = []                  // marks a polygon as a TFR for the renderer
         var tfrByID: [String: TFR] = [:]                              // the full TFR for the tap probe + change detection
+        // Convective storm cells — diffed like the hazard/TFR layers; reconcile + styling live in
+        // ConvectiveMapLayer.swift (stored properties can't move into the extension). One shape per
+        // cell (a polygon, or a polyline for a 2-point LINE TS), one optional motion arrow, one tops
+        // block. `stormDigestByKey` is the change detector: see ConvectiveCellDraw.digest.
+        var stormShapeByKey: [String: MKOverlay] = [:]
+        var stormArrowByKey: [String: StormMotionPolyline] = [:]
+        var stormLabelByKey: [String: AirspaceLabelAnnotation] = [:]
+        var stormOverlayStyle: [ObjectIdentifier: ConvectiveOverlayStyle] = [:]
+        var stormDigestByKey: [String: String] = [:]
+        /// The tap table for the storm layer: every cell currently drawn, and the instant its ring was
+        /// advanced to. Written by `syncConvectiveCells` in the same pass that draws, so a tap cannot
+        /// resolve to a cell that is not on screen or to a ring other than the one drawn.
+        var stormCellByID: [String: ConvectiveCell] = [:]
+        var stormDrawAt: Date = .distantPast
         var smokeOverlay: GIBSTileOverlay?                            // NASA GIBS satellite smoke layer (translucent, above the chart)
         var radarOverlay: RadarTileOverlay?                          // RainViewer precipitation radar (translucent, above the chart)
         var radarTemplate: String?                                   // last-applied radar tile URL (swap on change)
@@ -1261,7 +1322,12 @@ struct ChartMapView: UIViewRepresentable {
             // The SAME ordering policy the globe uses. This engine is not decorative: a MapLibre render
             // stall drops the pilot into it mid-flight, so a restriction that opens first on the globe
             // must open first here too.
-            var results = MapProbe.merge(ranked: ranked + hazards, liveTFRs: liveTFRs, airspaces: aspObjs)
+            // Storm cells, ABOVE the live TFRs in the merge — see `MapProbe.merge`. The two hit tests
+            // this needs (containment for a ring, screen distance for a squall line) live with the
+            // geometry in ConvectiveMapLayer.swift rather than inflating this function further.
+            let storms = stormCandidates(at: pt, here: here, radius: radius, in: mv)
+            var results = MapProbe.merge(ranked: ranked + hazards, storms: storms,
+                                         liveTFRs: liveTFRs, airspaces: aspObjs)
             if userPoint {   // long-press: offer the exact pressed coordinate as a droppable waypoint, first
                 results.insert(IdentifiedObject(kind: .userPoint, ident: UserPoint.token(here), coord: here, onRoute: false), at: 0)
             }
@@ -1304,12 +1370,14 @@ struct ChartMapView: UIViewRepresentable {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
             emitPlateAnchors(mv)
             emitSearchPoint(mv)
+            emitRulerSegments()
         }
 
         /// Fires continuously DURING a pan/zoom — keeps the plate's corner controls glued to the plate.
         func mapViewDidChangeVisibleRegion(_ mv: MKMapView) {
             emitPlateAnchors(mv)
             emitSearchPoint(mv)
+            emitRulerSegments()
         }
 
         /// Recompute the in-view context layers (airspace outlines [Class B/C/D + special use] + nearby navaids/airports)
@@ -1611,6 +1679,9 @@ struct ChartMapView: UIViewRepresentable {
                 r.fillColor = color.withAlphaComponent(0.18)
                 return r
             }
+            // Convective cells — identity-keyed like the two above, and asked BEFORE the generic
+            // polygon/polyline branches, which would otherwise paint a storm as Class D airspace.
+            if let r = stormRenderer(for: overlay) { return r }
             if let poly = overlay as? MKPolygon {
                 let cls = airspaceClass[ObjectIdentifier(poly)] ?? "D"
                 let color = mapTheme.airspaceColor(cls)
@@ -1813,7 +1884,38 @@ struct ChartMapView: UIViewRepresentable {
                 img.draw(in: CGRect(x: (d - img.size.width) / 2, y: (d - img.size.height) / 2, width: img.size.width, height: img.size.height))
             }
         }
-        static let traffic: UIImage = disc("airplane", fill: .systemOrange, pt: 13, d: 26)
+        /// OTHER AIRCRAFT. A chevron, not a disc, and smaller than ownship.
+        ///
+        /// ⚠️ IT MUST POINT EAST AT ZERO ROTATION. Both engines pre-bake `rot = track - 90`, so a
+        /// target tracking 090° is drawn unrotated — the same convention the `airplane` SF Symbol
+        /// this replaces happened to satisfy by pointing right. A chevron drawn pointing up would put
+        /// every target on the display 90° out, which on a traffic display is wrong DATA, not a
+        /// cosmetic slip.
+        ///
+        /// Why a chevron at all: a filled disc is a position and nothing more, and at 26pt it covered
+        /// a meaningful piece of chart — over a busy terminal area the discs merged into a single
+        /// orange mass (reported from the air). An arrowhead is smaller, occludes less, and carries
+        /// the one fact a disc threw away: which way the thing is going.
+        ///
+        /// The dark outline is not decoration. Orange on a white sectional is low contrast at this
+        /// size, and traffic is the one overlay that must stay readable over every base.
+        private static func chevron(fill: UIColor, d: CGFloat) -> UIImage {
+            assert(d > 4, "chevron: too small to draw")
+            return UIGraphicsImageRenderer(size: CGSize(width: d, height: d)).image { _ in
+                let p = UIBezierPath()
+                p.move(to: CGPoint(x: d * 0.94, y: d * 0.50))     // tip, pointing east
+                p.addLine(to: CGPoint(x: d * 0.14, y: d * 0.12))  // upper trailing corner
+                p.addLine(to: CGPoint(x: d * 0.42, y: d * 0.50))  // the notch that makes it a chevron
+                p.addLine(to: CGPoint(x: d * 0.14, y: d * 0.88))  // lower trailing corner
+                p.close()
+                p.lineWidth = 1.3
+                p.lineJoinStyle = .round
+                fill.setFill(); p.fill()
+                UIColor.black.withAlphaComponent(0.85).setStroke(); p.stroke()
+            }
+        }
+
+        static let traffic: UIImage = chevron(fill: .systemOrange, d: 18)
         static let ownPlane: UIImage = disc("airplane", fill: .systemBlue, pt: 16, d: 32)
         private static let ownPlaneDegraded: UIImage = disc("airplane", fill: .systemOrange, pt: 16, d: 32)
         private static let ownPlaneSuspect: UIImage = disc("airplane", fill: .systemRed, pt: 16, d: 32)

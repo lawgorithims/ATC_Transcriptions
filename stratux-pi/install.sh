@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Install the CommSight cockpit-audio gateway on a Raspberry Pi (beside Stratux).
+# Install the Obelisk cockpit-audio gateway on a Raspberry Pi (beside Stratux).
 # Idempotent: re-running upgrades the code and restarts the service. Leaves an existing
 # /etc/default/cockpit-audio config untouched.
 #
@@ -53,5 +53,5 @@ systemctl --no-pager --lines=0 status "$SERVICE.service" || true
 PORT="$(grep -E '^AUDIO_PORT=' "/etc/default/$SERVICE" 2>/dev/null | cut -d= -f2)"; PORT="${PORT:-8090}"
 echo
 echo "Installed. Verify:   curl http://localhost:${PORT}/health"
-echo "In CommSight:        Settings -> Stratux receiver -> set this Pi's address (port ${PORT}),"
+echo "In Obelisk:          Settings -> Stratux receiver -> set this Pi's address (port ${PORT}),"
 echo "                     pick \"Stratux receiver\" as the input source, then Start."

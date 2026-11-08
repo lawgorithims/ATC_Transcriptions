@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Remove the CommSight cockpit-audio gateway. Does NOT touch Stratux.
+# Remove the Obelisk cockpit-audio gateway. Does NOT touch Stratux.
 #
 #   sudo ./uninstall.sh
 #

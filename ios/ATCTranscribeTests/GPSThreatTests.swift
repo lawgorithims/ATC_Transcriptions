@@ -394,7 +394,12 @@ final class GPSThreatTests: XCTestCase {
     /// not values a test invented. A blown-accuracy fix under a clean sky must come out as jamming.
     func testBlownAccuracyFromTheRealMonitorClassifiesAsJamming() {
         let m = GPSIntegrityMonitor()
-        let integrity = m.ingest(fix(dt: 0, accuracy: 250, speedMps: 60))
+        // Sustained, not momentary: the monitor now wants `confirmUnreliableCount` agreeing readings
+        // before it will call a fix unusable, and jamming is sustained by nature. A single blown
+        // estimate is a re-acquisition, and classifying that as jamming is how you cry wolf.
+        m.ingest(fix(dt: 0, accuracy: 250, speedMps: 60))
+        m.ingest(fix(dt: 1, accuracy: 250, speedMps: 60))
+        let integrity = m.ingest(fix(dt: 2, accuracy: 250, speedMps: 60))
         XCTAssertEqual(integrity.state, .unreliable)
         let a = GPSThreatClassifier.classify(integrity: integrity, predictedDOP: sky(pdop: 1.8, hdop: 1.0),
                                              satellitesAboveMask: 11, now: t0)

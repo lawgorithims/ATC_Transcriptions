@@ -90,7 +90,7 @@ final class CockpitDeviceTests: XCTestCase {
         XCTAssertEqual(h.battery?.clampedPercent ?? 0, 76.5, accuracy: 0.01)
         XCTAssertEqual(h.battery?.minutesRemaining, 143)
         XCTAssertTrue(h.filter?.enabled ?? false)
-        // The toggle under test: filter on, but CommSight is deliberately fed the RAW feed.
+        // The toggle under test: filter on, but Obelisk is deliberately fed the RAW feed.
         XCTAssertFalse(h.filter?.servingFiltered ?? true)
     }
 

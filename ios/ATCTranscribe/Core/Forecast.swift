@@ -87,7 +87,7 @@ struct ForecastPeriod: Decodable, Equatable, Sendable {
         func get(_ urlString: String) async -> Data? {
             guard let url = URL(string: urlString) else { return nil }
             var req = URLRequest(url: url); req.timeoutInterval = 15
-            req.setValue("CommSight iOS (flycommsight.com)", forHTTPHeaderField: "User-Agent")
+            req.setValue("Obelisk iOS (obeliskaerospace.com)", forHTTPHeaderField: "User-Agent")
             guard let (data, resp) = try? await NetworkActivity.data(for: req, "Forecast", .weather),
                   (resp as? HTTPURLResponse)?.statusCode == 200 else { return nil }
             return data

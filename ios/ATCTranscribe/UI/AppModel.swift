@@ -297,6 +297,8 @@ final class AppModel: ObservableObject {
             if didFinishInit {                 // a plan is an `eonetActive` input (route hazard alerts)
                 syncEONET()
                 syncTFRs()
+                syncConvective()
+                syncRadarCells()
                 // Skip the dismissal reset in the sandbox — the bench preserves the pilot's real
                 // dismissals across the whole session (see diagnosticBeginBench/EndBench).
                 if flightPlan != oldValue, !diagnosticActive { hazardDismissedIDs.removeAll(); refreshHazardAlert() }
@@ -347,7 +349,7 @@ final class AppModel: ObservableObject {
     /// layer, and live traffic. Transient (not persisted); opened from the flight-plan strip's Map
     /// button. An `eonetActive` input (the sheet shows hazards even when the home-map background is off).
     @Published var showRouteMap = false {
-        didSet { if didFinishInit, showRouteMap != oldValue { syncEONET(); syncTFRs() } }
+        didSet { if didFinishInit, showRouteMap != oldValue { syncEONET(); syncTFRs(); syncConvective(); syncRadarCells() } }
     }
     /// Debug/UI-test only: present the Airport Climate sheet on launch with synthetic data
     /// (`--demo-climate`). Not persisted; never set outside the launch-arg path.
@@ -441,7 +443,46 @@ final class AppModel: ObservableObject {
     /// Republished GPS integrity verdict. `deviceLocation` is a NESTED ObservableObject, so it does not
     /// republish this parent (the Flight Bag C2 rule) — views that observe `AppModel` (the map engines,
     /// the threat banner) need it mirrored here explicitly.
-    @Published private(set) var gpsIntegrity = GPSIntegrityAssessment()
+    @Published private(set) var gpsIntegrity = GPSIntegrityAssessment() {
+        didSet {
+            // An improvement clears the acknowledgement, so the next degradation announces itself
+            // again rather than inheriting a dismissal from a condition that has since passed.
+            if gpsIntegrity.state < .degraded { gpsIntegrityAckedUpTo = nil }
+        }
+    }
+    /// The worst integrity state the pilot has acknowledged, or nil for none.
+    ///
+    /// ⚠️ IT MUTES A STATE, NOT THE BANNER. Dismissing "accuracy degraded" silences exactly that; if
+    /// the fix then goes unusable or suspect the banner comes back, because that is new information
+    /// and the pilot has not been told it. Same principle as the convective dismiss key, for the same
+    /// reason: an X that mutes a whole category is an X that switches a safety advisory off for the
+    /// flight, and nobody intends that when they tap it.
+    @Published private(set) var gpsIntegrityAckedUpTo: GPSIntegrityState?
+
+    /// True when the integrity banner has something to say that the pilot has not already waved away.
+    var showsGPSIntegrityBanner: Bool {
+        Self.showsIntegrityBanner(state: gpsIntegrity.state,
+                                  interference: gpsThreat.threat.isInterference,
+                                  ackedUpTo: gpsIntegrityAckedUpTo)
+    }
+
+    /// The acknowledgement rule, pure so it can be pinned by a test: show from `.degraded` up, or for
+    /// any interference verdict, unless the pilot has already acknowledged a state at least this bad.
+    /// A WORSE state always re-announces — see `gpsIntegrityAckedUpTo`.
+    /// `nonisolated` because it touches no actor state — it is a decision table over three values, and
+    /// a test should be able to ask it a question without hopping to the main actor to do so.
+    nonisolated static func showsIntegrityBanner(state: GPSIntegrityState, interference: Bool,
+                                                 ackedUpTo: GPSIntegrityState?) -> Bool {
+        if interference { return ackedUpTo == nil }
+        guard state >= .degraded else { return false }
+        guard let acked = ackedUpTo else { return true }
+        return state > acked
+    }
+
+    /// X on the GPS integrity banner — acknowledge the CURRENT state and nothing worse.
+    func dismissGPSIntegrityBanner() {
+        gpsIntegrityAckedUpTo = max(gpsIntegrity.state, gpsIntegrityAckedUpTo ?? .unknown)
+    }
     /// The widened last fix behind `gpsIntegrity` (altitudes, velocity uncertainties, geoid undulation).
     @Published private(set) var gpsFix: DeviceFix?
     /// Height above the bundled terrain grid for the current fix — `.unavailable` with a stated reason
@@ -466,12 +507,51 @@ final class AppModel: ObservableObject {
     let renderMeter = MapRenderMeter()
     /// Flight recorder (breadcrumb + metrics) and the logbook it saves finished flights to. Nested stores
     /// (same pattern as widgetStore/deviceLocation) — observers subscribe to them directly.
-    let flightRecorder = FlightRecorder()
+    /// ⚠️ INJECTABLE FOR TESTS ONLY, and it has to be. A default-constructed `FlightRecorder`
+    /// reads and writes the app's real Application Support folder, so any test touching an `AppModel`
+    /// shares one directory with a pilot's in-progress flight — the exact hazard `FlightRecorder.init`
+    /// warns about. A test that wants recorder behaviour passes its own temp-directory recorder.
+    let flightRecorder: FlightRecorder
     let logbook = Logbook()
     let rainViewer = RainViewerService()      // live precipitation-radar tiles for the weather-radar layer
     let windAloft = WindAloftService()        // GFS winds aloft for the animated wind-particle overlay
     /// A just-finished flight awaiting the save-to-logbook prompt (drives the SaveFlightSheet). Transient.
     @Published var pendingLoggedFlight: LoggedFlight?
+
+    /// The one thing the app is currently SAYING — see `TransientMessage`. nil most of the time.
+    @Published private(set) var transientMessage: TransientMessage?
+    private var transientMessageTask: Task<Void, Never>?
+
+    /// Say something once, then forget it.
+    ///
+    /// ⚠️ ONE SLOT, NO QUEUE, AND THE NEWEST WINS. A queue would make a pilot wait out stale
+    /// sentences to reach the current one, and in a cockpit the latest fact is the only one worth
+    /// the screen — a dropped message costs less than a backlog. It is also what keeps this bounded
+    /// (rule 2): there is exactly one message and one timer, however fast something calls it.
+    ///
+    /// ⚠️ NOT FOR ANYTHING REQUIRING AN ANSWER. It leaves on a timer; a decision must not.
+    func say(_ text: String, icon: String = "info.circle", tone: TransientMessage.Tone = .neutral) {
+        guard !text.isEmpty else { return }                               // param check (rule 7)
+        let m = TransientMessage(text: text, icon: icon, tone: tone)
+        transientMessageTask?.cancel()
+        transientMessage = m
+        transientMessageTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(m.visibleSec * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            // Only clear if it is still OUR message: a newer `say` already replaced the slot and
+            // owns its own timer, and clearing here would cut that one short.
+            guard let self, self.transientMessage?.id == m.id else { return }
+            self.transientMessage = nil
+        }
+        assert(transientMessage != nil, "say: nothing published")
+        assert(transientMessageTask != nil, "say: no dismissal scheduled")
+    }
+
+    func dismissTransientMessage() {
+        transientMessageTask?.cancel()
+        transientMessageTask = nil
+        transientMessage = nil
+    }
     private var deviceGPSPausedForBackground = false   // GPS was running when we backgrounded → resume on foreground
     /// Auto-download the filed route's plates when a plan is entered (the "pack your flight bag" flow).
     @Published var autoPackFlightBag = (UserDefaults.standard.object(forKey: "atc.autoPackBag") as? Bool ?? true) {
@@ -567,6 +647,7 @@ final class AppModel: ObservableObject {
     private var lastEFBRecordID: UUID?
     private var efbCancellable: AnyCancellable?
     private var deviceCoordCancellable: AnyCancellable?   // re-centers online ADS-B as the aircraft moves
+    private var windFieldCancellable: AnyCancellable?     // re-runs the storm alert when a wind field lands
     /// Cached EFB command grounding (fixes/airports/SIDs/STARs), keyed on the (airport ident, plan)
     /// it was built for, so `interpretForEFB` doesn't hit CIFP (SQLite) on the main actor per
     /// transmission (L4). Rebuilt off-main by `refreshEFBGrounding` on the setupLive commit and on
@@ -607,10 +688,15 @@ final class AppModel: ObservableObject {
     func overlayPlate(_ proc: AirportProcedure, airport: String, pdf: URL) {
         guard let img = PlateImageRenderer.firstPageImage(pdfURL: pdf) else { return }
         let aspect = Double(img.size.width / max(img.size.height, 1))
-        // Georef-only by design: placement comes from the FAA's embedded georeference (exact), and the
-        // manual move/scale UI was removed with it. A plate with no georef entry (SIDs/STARs/minimums —
-        // schematic, not to scale) deliberately does NOT overlay; the send-to-map buttons are hidden for
-        // those, so this guard is defense in depth — do not add a hand-placed fallback back.
+        // Georef-only by design: the placement comes from the georeference table and there is no manual
+        // move/scale UI. A plate with no georef entry — a SID, STAR or minimums page, which is
+        // schematic and not to scale — deliberately does NOT overlay; the send-to-map buttons are
+        // hidden for those, so this guard is defence in depth. Do NOT add a hand-placed fallback back.
+        //
+        // Airport diagrams DO overlay, as of the fitted half of the table (Tools/build_apd_georef.py).
+        // Theirs is not the FAA's own embedded transform — the FAA publishes none for diagrams — but a
+        // fit to the runways the chart draws, gated on evidence that did not go into the fit, median
+        // residual 2.9 m. See the header of `PlateGeoref`.
         guard let g = PlateGeoref.lookup(pdf: proc.pdf) else { return }
         showPlateMenu = false
         plateOverlay = PlateOverlayState(name: proc.name, airport: airport, pdf: proc.pdf, image: img,
@@ -801,12 +887,12 @@ final class AppModel: ObservableObject {
         guard useMapLibreMap, !mapLibreRenderFailed else { return }
         guard mapLibreRetriesLeft > 0 else {
             mapLibreRenderFailed = true
-            NSLog("CommSight: MapLibre render stalled with no retries left — falling back to the classic map")
+            NSLog("Obelisk: MapLibre render stalled with no retries left — falling back to the classic map")
             return
         }
         mapLibreRetriesLeft -= 1
         mapLibreRemountToken &+= 1
-        NSLog("CommSight: MapLibre render stalled — remounting (%d retries left)", mapLibreRetriesLeft)
+        NSLog("Obelisk: MapLibre render stalled — remounting (%d retries left)", mapLibreRetriesLeft)
     }
 
     /// Returning to the Map tab rebuilds a fresh MapLibre coordinator, so a cold-launch stall that stranded us
@@ -1068,7 +1154,7 @@ final class AppModel: ObservableObject {
     /// Updated (with exit hysteresis) from `ProcessInfo.thermalStateDidChangeNotification` via
     /// `applyThermal` — see there for why the exit is delayed.
     @Published var thermalSerious = ProcessInfo.processInfo.thermalState.rawValue >= ProcessInfo.ThermalState.serious.rawValue {
-        didSet { if didFinishInit, thermalSerious != oldValue { syncEONET(); syncTFRs(); syncRadar(); syncWind() } }   // hot → pause the pollers too
+        didSet { if didFinishInit, thermalSerious != oldValue { syncEONET(); syncTFRs(); syncRadar(); syncWind(); syncConvective(); syncRadarCells() } }   // hot → pause the pollers too
     }
     /// The single pending "clear thermalSerious" timer (M7). A device hovering at the threshold used
     /// to flip thermalSerious repeatedly, and each flip destroys + rebuilds the whole ChartMapView
@@ -1247,6 +1333,8 @@ final class AppModel: ObservableObject {
     /// `--demo-hazards` screenshot mode: seed synthetic events and SUPPRESS the live poller so the
     /// seeded snapshot isn't clobbered by a live fetch (the demo has to work offline and on-screen).
     private var demoHazardsMode = false
+    /// `--demo-storms`: hold the seeded cells and keep both live pollers off them.
+    private var demoStormMode = false
     /// Ownship position of the last alert recompute — the movement dedup anchor.
     private var lastHazardAlertCenter: Coord?
     private static let hazardRecomputeNm: Double = 5
@@ -1259,11 +1347,90 @@ final class AppModel: ObservableObject {
     @Published private(set) var tfrStatus: TFRStatus = .idle
     private var tfrService: TFRService!
 
+    // Convective SIGMET storm-penetration alert (AWC) — the only in-flight product that states a
+    // thunderstorm's shape, its tops AND its motion, which is what an avoidance call needs. See
+    // `ConvectiveSigmetService` for why this is not built on the precipitation radar the map draws.
+    @Published private(set) var convectiveCells: [ConvectiveCell] = []
+    @Published private(set) var convectiveUpdatedAt: Date?
+    @Published private(set) var convectiveStatus: ConvectiveStatus = .idle
+    /// The storm-penetration banner's contents, worst first (empty = nothing to show). Recomputed off
+    /// main by `refreshConvectiveAlert` on each snapshot and every 2 NM of ownship movement.
+    @Published private(set) var convectiveThreats: [ConvectiveThreat] = []
+
+    /// Every storm cell the map should outline: the MERGED list, from the same pass that produced
+    /// `convectiveThreats`, so the shape under the banner is the shape the banner reasoned about.
+    ///
+    /// ⚠️ THIS IS THE MERGED LIST, NOT THE DISMISS-FILTERED ONE, AND THAT IS THE POINT. The X on the
+    /// banner means *stop shouting at me* — it does not mean the thunderstorm went away. A pilot
+    /// dismisses the text precisely when they have read it and are now flying around the thing, which
+    /// is the moment the outline is worth the most. So a dismissal takes a cell out of
+    /// `convectiveThreats`, which drops the banner and the bold weight with it, and leaves the cell
+    /// drawn in the quieter known-cell style. Filtering here instead would make tapping X erase the
+    /// weather from the map.
+    @Published private(set) var convectiveDrawCells: [ConvectiveCell] = []
+    /// The instant `convectiveDrawCells` was computed — the fixed time their rings are advanced to.
+    /// See the warning on `ConvectiveCellDraw` for why the map must not advance them to `Date()`.
+    @Published private(set) var convectiveDrawAt: Date = .distantPast
+
+    /// ⚠️ THE ONE LAYER IN THIS APP THAT DEFAULTS **ON**.
+    ///
+    /// Every other overlay defaults off, because the pilot should choose what clutters the map and a
+    /// poller nobody asked for is wasted bandwidth. This one is different in kind: it is the warning for
+    /// flying into a thunderstorm, and a warning a pilot has to find in a menu before it can save them
+    /// is not much of a warning. `UserDefaults.bool(forKey:)` returns false for an unset key, so the
+    /// default is read through `object(forKey:)` — that distinction is the whole mechanism here.
+    @Published var convectiveAlertsEnabled =
+        UserDefaults.standard.object(forKey: "atc.alert.convective") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(convectiveAlertsEnabled, forKey: "atc.alert.convective")
+            guard didFinishInit, convectiveAlertsEnabled != oldValue else { return }
+            syncConvective()
+            refreshConvectiveAlert()           // off → clears the banner; on → recomputes
+        }
+    }
+    /// Bulletins the pilot dismissed, keyed by `ConvectiveCell.dismissKey` — id AND issue time, so a
+    /// reissued series number alerts again. See the warning on that property.
+    private var convectiveDismissedKeys: Set<String> = []
+    private var convectiveEpoch = 0
+    /// Ownship position at the last recompute — the movement dedup anchor.
+    private var lastConvectiveCenter: Coord?
+    /// Tighter than the 5 NM hazard-corridor edge: this alert reports minutes-to-encounter, so it is
+    /// recomputed roughly every 24 s at jet speeds rather than every minute.
+    private static let convectiveRecomputeNm: Double = 2
+    private var convectiveService: ConvectiveSigmetService!
+
+    // MRMS radar-derived storm cells — the source that finds a thunderstorm nobody issued a bulletin
+    // about, and the only one that supplies a MEASURED top. See `MRMSEchoTopService` for why it is a
+    // separate poller: it is position-dependent and its motion has to be cross-correlated, not read.
+    @Published private(set) var radarCells: [ConvectiveCell] = []
+    @Published private(set) var radarCellsUpdatedAt: Date?
+    @Published private(set) var radarCellStatus: MRMSEchoTopService.Status = .idle
+
+    /// The second alert layer that defaults ON, and for the same reason as `convectiveAlertsEnabled`:
+    /// it is the half of the storm warning that covers the cell no bulletin mentions, which is the case
+    /// the pilot is least able to catch for themselves. It carries a real cost the others do not — about
+    /// 364 KB per refresh, ~4.4 MB/hour — so it gets its own switch and the menu states the number.
+    @Published var radarStormCellsEnabled =
+        UserDefaults.standard.object(forKey: "atc.alert.radarcells") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(radarStormCellsEnabled, forKey: "atc.alert.radarcells")
+            guard didFinishInit, radarStormCellsEnabled != oldValue else { return }
+            syncRadarCells()
+            if !radarStormCellsEnabled { radarCells = []; radarCellsUpdatedAt = nil }
+            refreshConvectiveAlert()
+        }
+    }
+    private var radarCellService: MRMSEchoTopService!
+    /// Ownship position last handed to the MRMS poller. Coarser than the alert's own recompute edge —
+    /// the service only needs to know when the aircraft is leaving the window it decoded.
+    private var lastRadarCellCenter: Coord?
+    private static let radarCellRecentreNm: Double = 15
+
     // Stratux receiver: an on-board ADS-B/GPS box (+ a cockpit-audio sidecar on its Pi) reached over
     // its own Wi-Fi. The traffic/GPS link runs whenever `stratuxEnabled` is on and the app is
     // foregrounded — no Start needed (see `stratuxTrafficActive`); cockpit AUDIO additionally requires
     // picking "Stratux receiver" as the input source and starting a run. Host + audio port persisted;
-    // the traffic block feeds the SAME corrector pipeline as airplanes.live (see `applyTraffic`).
+    // the traffic block feeds the SAME corrector pipeline as adsb.lol (see `applyTraffic`).
     /// The always-on Stratux link switch: traffic + GPS stream whenever this is on and the app is
     /// foregrounded (standby off) — independent of the input source (that only gates audio). Toggled
     /// from the Stratux bar (console) or Settings; auto-enabled by picking the receiver as the input.
@@ -1331,6 +1498,8 @@ final class AppModel: ObservableObject {
             guard didFinishInit, stratuxGPS?.coordinate != oldValue?.coordinate else { return }
             syncGrounding()
             maybeRefreshHazardAlertForMovement()   // vicinity hazard check rides the same movement edge
+            maybeRefreshConvectiveForMovement()    // and so does the storm-penetration projection
+            maybeRecentreRadarCells()             // and the radar window follows the aircraft
         }
     }
     /// When the last Stratux fix was RECEIVED (device clock). The wire struct carries no timestamp, and
@@ -1450,7 +1619,12 @@ final class AppModel: ObservableObject {
     private var modelDirs: [String: String] = [:]   // whisper variant id → on-disk model folder
     private var audioDirPath: String?               // demo clips dir, kept for model re-load on switch
 
-    init() {
+    init(flightRecorder recorder: FlightRecorder? = nil) {
+        // Built HERE rather than as a default argument: a default argument expression is evaluated
+        // in a nonisolated context and `FlightRecorder` is `@MainActor`, so it will not compile.
+        // The internal name differs from the label so it cannot shadow `self.flightRecorder` later
+        // in this initialiser, which refers to the property by bare name.
+        self.flightRecorder = recorder ?? FlightRecorder()
         // SANITIZER: the Clearance Test Bench's sandbox ownship (N8925T / "Piper Seneca") must never
         // masquerade as the pilot's real aircraft. The crash-leak case is already handled up front by
         // `recoverIfInterrupted()` (breadcrumb restore); this is only a belt-and-suspenders for stale
@@ -1462,7 +1636,7 @@ final class AppModel: ObservableObject {
            !aircraftProfiles.contains(where: { $0.callsign.caseInsensitiveCompare(fp.callsign) == .orderedSame }) {
             fp.callsign = ""; fp.aircraftType = ""
             flightPlan = fp.isEmpty ? nil : fp
-            NSLog("CommSight: stripped test-bench sandbox aircraft from the persisted flight plan.")
+            NSLog("Obelisk: stripped test-bench sandbox aircraft from the persisted flight plan.")
         }
         // Build the ADS-B service first. Its callbacks hop to the main actor: `onUpdate` applies the
         // pruned contacts + re-injects the corrector block with a fresh expiry; `onStatus` surfaces
@@ -1482,7 +1656,7 @@ final class AppModel: ObservableObject {
                     self?.adsbHasPolledOnce = (status != .idle)
                 }
             })
-        // Stratux receiver: traffic feeds the SAME `applyTraffic` pipeline as airplanes.live; GPS +
+        // Stratux receiver: traffic feeds the SAME `applyTraffic` pipeline as adsb.lol; GPS +
         // link health drive UI status only. Active whenever the Stratux link is enabled + the app is
         // foregrounded — independent of the input source (see `stratuxTrafficActive`).
         stratuxService = StratuxService(
@@ -1513,8 +1687,24 @@ final class AppModel: ObservableObject {
                 Task { @MainActor in self?.tfrStatus = status }
             })
 
+        convectiveService = ConvectiveSigmetService(
+            onUpdate: { [weak self] cells, at in
+                Task { @MainActor in self?.applyConvective(cells, snapshotAt: at) }
+            },
+            onStatus: { [weak self] status in
+                Task { @MainActor in self?.convectiveStatus = status }
+            })
+
+        radarCellService = MRMSEchoTopService(
+            onUpdate: { [weak self] cells, at in
+                Task { @MainActor in self?.applyRadarCells(cells, frameAt: at) }
+            },
+            onStatus: { [weak self] status in
+                Task { @MainActor in self?.radarCellStatus = status }
+            })
+
         if diagnosticRecovered {
-            NSLog("CommSight: restored the real flight plan after an interrupted test bench.")
+            NSLog("Obelisk: restored the real flight plan after an interrupted test bench.")
         }
 
         let args = CommandLine.arguments
@@ -1566,8 +1756,16 @@ final class AppModel: ObservableObject {
         if let i = args.firstIndex(of: "--hold-ownship"), i + 3 < args.count,
            let lat = Double(args[i + 1]), let lon = Double(args[i + 2]), let alt = Double(args[i + 3]) {
             let here = Coord(lat: lat, lon: lon)
+            // Optional TRACK and GROUND SPEED, e.g. `--hold-ownship 37.21 -90.42 16000 30 300`.
+            // Added for the convective alert, which has two branches: with no velocity it can only test
+            // where the aeroplane IS, so the projection — the half that warns BEFORE the storm, and the
+            // whole point of the feature — was undrivable in the running app and testable only in
+            // isolation. A non-numeric next argument (the following flag) simply reads as absent.
+            let track = (i + 4 < args.count) ? Double(args[i + 4]) : nil
+            let gs = (i + 5 < args.count) ? Double(args[i + 5]) : nil
             Task { @MainActor [weak self] in
-                self?.deviceLocation.holdSimulation(at: here, altitudeFtMSL: alt)
+                self?.deviceLocation.holdSimulation(at: here, altitudeFtMSL: alt,
+                                                    headingDeg: track, groundSpeedKt: gs ?? 0)
             }
         }
         #endif
@@ -1624,7 +1822,7 @@ final class AppModel: ObservableObject {
         if args.contains("--demo-efb") {
             efbSuggestion = EFBSuggestion.make(id: "demo",
                                                command: ATCCommand(kind: .directTo, target: "BOSOX", qualifier: ""),
-                                               source: "commsight 3 4 5 cleared direct bosox")
+                                               source: "obelisk 3 4 5 cleared direct bosox")
         }
         // screenshot/demo: seed synthetic EONET hazards near the demo route and turn the layer on.
         // `demoHazardsMode` suppresses the live poller (see `syncEONET`) so these seeded events are
@@ -1635,6 +1833,22 @@ final class AppModel: ObservableObject {
             hazardEvents = EONETEvent.demoEvents()
             hazardsUpdatedAt = Date()
             refreshHazardAlert()   // observers are inert during init — compute the banner explicitly
+        }
+        // screenshot/UI-test: seed synthetic storm cells on the demo corridor and switch both alert
+        // sources on. `demoStormMode` suppresses the two live pollers (see `syncConvective` and
+        // `syncRadarCells`) so a real AWC or MRMS fetch cannot land on top of them mid-screenshot.
+        // Pair with `--hold-ownship 42.5 -77.0 39000 270 300` to put an aeroplane on a track into one
+        // of them; without a position the alert has nothing to project and the cells draw unemphasised.
+        if args.contains("--demo-storms") {
+            demoStormMode = true
+            convectiveAlertsEnabled = true
+            radarStormCellsEnabled = true
+            let cells = ConvectiveCell.demoCells()
+            convectiveCells = cells.filter { $0.source != .radar }
+            radarCells = cells.filter { $0.source == .radar }
+            convectiveUpdatedAt = Date()
+            radarCellsUpdatedAt = Date()
+            refreshConvectiveAlert()   // observers are inert during init — compute the banner explicitly
         }
         // UI-test/demo: present a seeded TFR's detail card (verifies the tap→card path off-network).
         if args.contains("--demo-tfr") {
@@ -1753,13 +1967,38 @@ final class AppModel: ObservableObject {
         // flight that was awaiting its save prompt at a crash so it isn't lost.
         flightRecorder.fixProvider = { [weak self] in self?.currentBreadcrumbFix() }
         if let recovered = flightRecorder.recoveredPendingSave { pendingLoggedFlight = recovered }
-        // Keep the online-ADS-B poll centered on the aircraft as it flies (throttled to ~10 NM).
+        // Keep the position-dependent pollers centered on the aircraft as it flies (each throttled by
+        // its own distance edge).
+        //
+        // ⚠️ THIS IS THE **DEVICE GPS** MOVEMENT EDGE, AND IT IS THE ONLY ONE MOST PILOTS HAVE. The
+        // other one lives in `stratuxGPS.didSet` and fires only when an in-cockpit box is connected —
+        // so anything hung solely off that edge silently does nothing for everybody flying on the
+        // iPad's own GPS. `maybeRecentreRadarCells` in particular would never run, and the MRMS window
+        // would stay where it was first decoded for the whole flight; the storm projection would
+        // likewise only refresh when a new bulletin landed, every five minutes, rather than as the
+        // aircraft closed on a cell.
         deviceCoordCancellable = deviceLocation.$coord
             // Deferred to the next main-actor turn: @Published fires in willSet, so reading
             // presentPosition synchronously here would see the PRE-update (still-nil-on-first-fix)
             // coordinate and never start the poller. After the hop the coord is assigned, so the first
             // fix reliably (re)centers ADS-B on the aircraft.
-            .sink { [weak self] _ in Task { @MainActor in self?.recenterADSBIfMoved() } }
+            .sink { [weak self] _ in
+                Task { @MainActor in
+                    self?.recenterADSBIfMoved()
+                    self?.maybeRefreshConvectiveForMovement()
+                    self?.maybeRecentreRadarCells()
+                }
+            }
+        // ⚠️ THE ALERT THAT ASKED FOR THE WIND HAS ALREADY FINISHED BY THE TIME IT ARRIVES. A GFS fetch
+        // takes seconds at best and minutes on a cockpit hotspot, and `refreshConvectiveAlert` reads
+        // whatever field is in hand at the instant it runs. Without this edge the raised clearance would
+        // wait for the next bulletin (five minutes), radar frame (two) or two miles of travel — which is
+        // exactly the window in which a pilot who has just flown into range of a storm is deciding
+        // whether they are clear of it. Deferred to the next main-actor turn for the same reason the
+        // device-coord edge is: @Published fires in willSet, so a synchronous read here would still see
+        // the old field.
+        windFieldCancellable = windAloft.$fieldSet
+            .sink { [weak self] _ in Task { @MainActor in self?.refreshConvectiveAlert() } }
         observeGPSIntegrity()   // mirror the integrity verdict + stamp it onto the transcript log
         // Bring the traffic providers in line with the restored state: the Stratux link is decoupled
         // from Start (see `stratuxTrafficActive`), so an enabled link must connect at launch — nothing
@@ -1768,6 +2007,8 @@ final class AppModel: ObservableObject {
         syncTraffic()
         syncEONET()      // same launch edge for a restored hazards toggle
         syncTFRs()       // and a restored TFR toggle
+        syncConvective() // and the storm alert, which is ON unless the pilot turned it off
+        syncRadarCells()
         // ⚠️ The radar needs the SAME launch edge and was the one poller missing it: with the layer
         // persisted ON, nothing started RainViewer until the pilot toggled it off and on, so the map
         // sat on "Loading radar…" for the whole session. Same class as the traffic-pill lie — a
@@ -2082,7 +2323,7 @@ final class AppModel: ObservableObject {
         requestMicPermission { [weak self] granted in
             guard let self, self.calibrationStage == .measuringAmbient else { return }
             guard granted else {
-                self.calibrationStage = .failed("Microphone access is off. Enable it in Settings › CommSight › Microphone.")
+                self.calibrationStage = .failed("Microphone access is off. Enable it in Settings › Obelisk › Microphone.")
                 return
             }
             AudioSessionManager.activate(recording: true)
@@ -2330,7 +2571,7 @@ final class AppModel: ObservableObject {
         // drops the abandoned approach. Matched on the suggestion's own id so nothing else can trip it.
         if let m = pendingMissed, suggestion.id == "missed-\(m.airport)-\(m.ident)" {
             applyMissedApproach(m)
-            NSLog("CommSight: EFB accept kind=missedApproach before=[%@] after=[%@]",
+            NSLog("Obelisk: EFB accept kind=missedApproach before=[%@] after=[%@]",
                   Self.assignmentDigest(before), Self.assignmentDigest(flightPlan))
             Haptics.impact(.medium)
             efbSuggestion = nil
@@ -2354,7 +2595,7 @@ final class AppModel: ObservableObject {
         case .frequencyChange: setActiveFrequency(ins.target, facility: ins.modifier)
         }
         // Reversible audit trail: log kind/value/confidence/callsign and the before→after assigned block.
-        NSLog("CommSight: EFB accept kind=%@ target=%@ conf=%@ callsign=%@ before=[%@] after=[%@]",
+        NSLog("Obelisk: EFB accept kind=%@ target=%@ conf=%@ callsign=%@ before=[%@] after=[%@]",
               ins.kind.rawValue, ins.target, ins.confidence.rawValue, ins.callsign,
               Self.assignmentDigest(before), Self.assignmentDigest(flightPlan))
         // A SID/STAR/approach accept silently NO-OPS when the named procedure/runway is not published at
@@ -2388,7 +2629,7 @@ final class AppModel: ObservableObject {
     /// Discard the pending suggestion without acting (logged so rejected mis-parses are analyzable).
     func dismissEFBSuggestion() {
         if let ins = efbSuggestion?.instruction {
-            NSLog("CommSight: EFB dismiss kind=%@ target=%@ conf=%@", ins.kind.rawValue, ins.target, ins.confidence.rawValue)
+            NSLog("Obelisk: EFB dismiss kind=%@ target=%@ conf=%@", ins.kind.rawValue, ins.target, ins.confidence.rawValue)
         }
         efbSuggestion = nil
         pendingMissed = nil     // a declined go-around must not stay armed for the NEXT accept
@@ -2419,7 +2660,7 @@ final class AppModel: ObservableObject {
     func openInForeFlight() {
         guard let plan = flightPlan, !plan.isEmpty else { return }        // state check (rule 7)
         guard let url = ForeFlightExport.url(for: plan) else { return }
-        UIApplication.shared.open(url)                                    // backgrounds CommSight; capture
+        UIApplication.shared.open(url)                                    // backgrounds Obelisk; capture
     }                                                                     // pauses/resumes via handleScenePhase
 
     // MARK: - Clearance Test Bench (buried diagnostic)
@@ -2608,9 +2849,9 @@ final class AppModel: ObservableObject {
         let url: URL? = await Task.detached(priority: .utility) {
             _ = NavDatabase.count                                         // warm the nav DB off-main
             let legs = ProcedureRoute.resolve(sendable)
-            let xml = ForeFlightExport.fplXML(for: legs, routeName: name.isEmpty ? "CommSight Route" : name)
+            let xml = ForeFlightExport.fplXML(for: legs, routeName: name.isEmpty ? "Obelisk Route" : name)
             guard !xml.isEmpty else { return nil }                        // unresolvable plan → no file
-            let dest = FileManager.default.temporaryDirectory.appendingPathComponent("CommSight Route.fpl")
+            let dest = FileManager.default.temporaryDirectory.appendingPathComponent("Obelisk Route.fpl")
             do { try xml.write(to: dest, atomically: true, encoding: .utf8) } catch { return nil }
             return dest
         }.value
@@ -2663,7 +2904,7 @@ final class AppModel: ObservableObject {
                                         runway: pick.runway, entry: .vectors,
                                         missedFixes: proper.missedFixes,
                                         holds: ApproachHolds.applicable(proper.holds, joinIsVectors: true))
-        NSLog("CommSight: approach CLEARED-loaded %@ %@ missed=%d holds=%d", pick.airport, pick.ident,
+        NSLog("Obelisk: approach CLEARED-loaded %@ %@ missed=%d holds=%d", pick.airport, pick.ident,
               activeApproach?.missedFixes.count ?? 0, activeApproach?.holds.count ?? 0)
     }
 
@@ -2836,7 +3077,7 @@ final class AppModel: ObservableObject {
         ensureMinimaForActiveApproach()
         previewedProcedure = nil
         Haptics.impact(.medium)
-        NSLog("CommSight: approach ACTIVATED %@ %@ entry=%@ legs=%d missed=%d",
+        NSLog("Obelisk: approach ACTIVATED %@ %@ entry=%@ legs=%d missed=%d",
               proc.airport, proc.ident, entry.label, fixes.count, missedFixes.count)
     }
 
@@ -2892,7 +3133,7 @@ final class AppModel: ObservableObject {
             pendingMissed = rejoined            // same missed sequence, now carrying the new entry
             if let s = stagedSuggestion { efbSuggestion = s }
         }
-        NSLog("CommSight: approach ENTRY CHANGED %@ %@ %@ -> %@ (holds kept skipped=%d)",
+        NSLog("Obelisk: approach ENTRY CHANGED %@ %@ %@ -> %@ (holds kept skipped=%d)",
               current.airport, current.ident, current.entry.label, entry.label,
               rejoined.skippedHoldIDs.count)
     }
@@ -3265,7 +3506,7 @@ final class AppModel: ObservableObject {
         guard var appr = activeApproach else { return }
         appr.setHold(id, skipped: skipped)
         activeApproach = appr
-        NSLog("CommSight: hold %@ %@", id, skipped ? "SKIPPED" : "restored")
+        NSLog("Obelisk: hold %@ %@", id, skipped ? "SKIPPED" : "restored")
     }
 
     /// Cancel the active approach (does not unwind the route — the pilot may still be flying it).
@@ -3304,7 +3545,7 @@ final class AppModel: ObservableObject {
         editPlan { $0.flyMissedApproach(fixes: a.missedFixes, from: presentPosition) }
         activeApproach = nil
         pendingMissed = nil
-        NSLog("CommSight: missed approach APPLIED %@ %@ -> %@", a.airport, a.ident,
+        NSLog("Obelisk: missed approach APPLIED %@ %@ -> %@", a.airport, a.ident,
               a.missedFixes.joined(separator: " "))
     }
 
@@ -3329,7 +3570,7 @@ final class AppModel: ObservableObject {
                                       title: "Fly the missed approach — direct \(first)", source: raw)
         pendingMissed = a          // consumed by acceptEFBSuggestion (see applyMissedApproach)
         Haptics.impact(.medium)
-        NSLog("CommSight: missed approach ARMED %@ %@ direct=%@", a.airport, a.ident, first)
+        NSLog("Obelisk: missed approach ARMED %@ %@ direct=%@", a.airport, a.ident, first)
     }
 
     /// Remove a loaded procedure by kind ("SID"/"STAR"/"IAP", or "" for all).
@@ -3359,7 +3600,7 @@ final class AppModel: ObservableObject {
     /// is not willing to show.
     var presentPosition: Coord? {
         if let s = trustedStratuxOwnship { return s }
-        return gpsIntegrity.shouldSuppressOwnship ? nil : deviceLocation.coord
+        return gpsIntegrity.isPositionProbablyReal ? deviceLocation.coord : nil
     }
 
     // MARK: flight recording (REC control + GPS bar read these; the map bridges flightRecorder.$trail)
@@ -3512,13 +3753,51 @@ final class AppModel: ObservableObject {
     /// REC control action: start recording (ensuring the shared GPS feed is up — idempotent, no 2nd session),
     /// or stop and hand the finished flight to the save-to-logbook prompt.
     func toggleFlightRecording() {
+        // ⚠️ A RECOVERED RECORDING OWNS THIS BUTTON UNTIL THE PILOT ANSWERS ITS BANNER, and saying
+        // so is the point. Without this branch the tap fell through to `startRecording`, which
+        // refuses over `.recovered` and returns — so the button did NOTHING, with nothing on screen
+        // to explain it. That guard is what stopped the crash destroying the trail, and it created a
+        // second silence in the process: the fix for losing the flight looked, from the cockpit,
+        // like a dead REC button.
+        if flightRecorder.state == .recovered {
+            say("Finish the recovered flight first — resume it or save it.",
+                icon: "clock.arrow.circlepath", tone: .warn)
+            return
+        }
         if flightRecorder.isRecording {
-            pendingLoggedFlight = flightRecorder.stopRecording()
+            finishRecording(flightRecorder.stopRecording())
         } else {
             deviceLocation.start()
             flightRecorder.startRecording(aircraftCallsign: selectedAircraft?.callsign)
         }
     }
+
+    /// Hand a stopped recording to the save prompt — or say why there is no prompt.
+    ///
+    /// ⚠️ nil IS NOT AN ERROR AND IT IS NOT NOTHING. It means the recording captured no fix at
+    /// all, which happens for a real and ordinary reason: GPS never came up, or the whole recording
+    /// ran indoors. Setting `pendingLoggedFlight = nil` and returning left the pilot pressing REC
+    /// twice and getting silence, unable to tell a saved flight from an empty one — which reads
+    /// exactly like the logbook dropping flights, and is how it was reported.
+    private func finishRecording(_ flight: LoggedFlight?) {
+        pendingLoggedFlight = flight
+        guard flight == nil else { return }                 // the save sheet speaks for itself
+        say("Nothing to save — no GPS fix was recorded for that flight.",
+            icon: "location.slash", tone: .warn)
+    }
+    /// Carry on recording into a flight the app died in the middle of. The trail, the distance and the
+    /// stop list are already back in memory — this just restarts the sampler and lets it keep appending.
+    func resumeRecoveredRecording() {
+        deviceLocation.start()              // idempotent; the feed may not be up yet after a relaunch
+        flightRecorder.resumeRecovered()
+    }
+
+    /// Close off a recovered flight as it stands and hand it to the save prompt — the same prompt a
+    /// normally-stopped flight goes to, so there is one save path and not two.
+    func saveRecoveredRecording() {
+        finishRecording(flightRecorder.stopRecording())
+    }
+
     /// Direct-to originates at PRESENT POSITION (ForeFlight parity), falling back to the filed departure if
     /// there's no GPS fix. Both callers (map "Direct-To" + voice "cleared direct") route through here.
     func directTo(_ ident: String) { editPlan { $0.directTo(ident, from: presentPosition) } }
@@ -3786,7 +4065,7 @@ final class AppModel: ObservableObject {
         if airport.isEmpty, let dep = parsed.departure, !dep.isEmpty { airport = dep }
     }
 
-    /// Import a Garmin/ForeFlight `.fpl` file (share-sheet "Open in CommSight" or the strip's Import
+    /// Import a Garmin/ForeFlight `.fpl` file (share-sheet "Open in Obelisk" or the strip's Import
     /// button) — the route replaces the filed departure/enroute/destination; callsign/altitude/aircraft
     /// are untouched (an FPL carries no aircraft). Returns false when the file isn't a parseable plan.
     @discardableResult
@@ -3902,6 +4181,41 @@ final class AppModel: ObservableObject {
             return                                                        // hangar full → reject whole save
         }
         selectAircraft(profile)
+    }
+
+    /// Correct a saved aircraft WITHOUT filing it. The hangar editor (Settings → Aircraft, and the
+    /// strip's "Manage aircraft…") calls this; the flight-plan strip's own add/edit calls
+    /// `saveAircraft`, which also files it.
+    ///
+    /// ⚠️ WHY THESE ARE TWO METHODS AND NOT A FLAG ON ONE. `saveAircraft` ends in
+    /// `selectAircraft`, which overwrites the filed plan's callsign and aircraft type. That is right
+    /// when the pilot adds an aeroplane from the flight-plan strip — they added it to fly it — and
+    /// wrong when they correct a landing distance in a settings list, which would silently re-file
+    /// the plan for whichever aeroplane they happened to tap. Managing the hangar is not choosing
+    /// today's aeroplane, and a pilot mid-flight must be able to fix a typo without touching either.
+    ///
+    /// THE ONE CASE THE PLAN MUST STILL FOLLOW is a corrected tail number on the aeroplane that is
+    /// already filed. `selectedAircraft` matches the plan to a profile BY CALLSIGN, not by id, so
+    /// renaming "N8925T" to "N8925Q" would otherwise leave the plan pointing at a callsign no
+    /// profile has: the strip's checkmark would vanish and the trip stats would quietly drop back to
+    /// "–" with nothing to explain it. Same aeroplane, corrected tail, so the plan is corrected too.
+    func updateAircraft(_ profile: AircraftProfile) {
+        guard !profile.isEmpty else { return }                            // param check (rule 7)
+        guard let i = aircraftProfiles.firstIndex(where: { $0.id == profile.id }) else {
+            saveAircraft(profile)          // not in the hangar yet — that is an add, and an add files
+            return
+        }
+        // Read BEFORE the write, while the stored profile still carries the old callsign the plan
+        // was matched on.
+        let wasFiled = selectedAircraft?.id == profile.id
+        aircraftProfiles[i] = profile
+        if wasFiled {
+            selectAircraft(profile)        // carries a corrected tail onto the filed plan, + stats
+        } else {
+            // Cheap, and it covers the case where this edit changed WHICH profile the plan resolves
+            // to — a callsign edited to match the filed one hands the stats a different aeroplane.
+            refreshTripStats()
+        }
     }
 
     /// Remove a profile from the hangar (the filed plan's callsign is left as-is — the plan, not
@@ -4164,7 +4478,7 @@ final class AppModel: ObservableObject {
 
     // MARK: ADS-B live traffic
 
-    /// Whether airplanes.live (internet) ADS-B should be polling now. It's a standalone TRAFFIC LAYER: it
+    /// Whether adsb.lol (internet) ADS-B should be polling now. It's a standalone TRAFFIC LAYER: it
     /// runs whenever the layer is toggled on and the app is foregrounded (standby off) — independent of a
     /// transcription session (mirrors how the Stratux link streams). Suppressed while the Stratux link is
     /// streaming (that path provides traffic on-board, works offline); both publish into the same
@@ -4254,7 +4568,7 @@ final class AppModel: ObservableObject {
     /// change, link toggle, standby, scene phase).
     func syncTraffic() { syncADSB(); syncStratux() }
 
-    /// Reconcile the airplanes.live poller (single edge-triggered call). Polls only while online ADS-B
+    /// Reconcile the adsb.lol poller (single edge-triggered call). Polls only while online ADS-B
     /// is ON, the Stratux link is not streaming, a live session is running, and the app is foregrounded.
     func syncADSB() {
         // Center on the AIRCRAFT (present position) so traffic follows you in flight; else the typed
@@ -4297,7 +4611,28 @@ final class AppModel: ObservableObject {
     func syncRadar() { rainViewer.setEnabled(showWxRadar && scenePhaseActive && !thermalSerious) }
     /// Same three-condition reconcile as the radar. The wind fetch is event-driven rather than polled, but
     /// it still must not run in the background or while the device is hot.
-    func syncWind() { windAloft.setEnabled(showWindAloft && scenePhaseActive && !thermalSerious) }
+    ///
+    /// ⚠️ IT ALSO RUNS WITH THE WIND LAYER SWITCHED OFF, when a storm alert needs it. See
+    /// `stormAlertNeedsWind`: the overflight clearance rule is a wind rule, and `showWindAloft` defaults
+    /// OFF, so gating the fetch on the overlay alone left the rule switched off for every pilot who never
+    /// opened the layers menu. Fetching does NOT draw anything — the particle layer is gated separately on
+    /// `showWindAloft` in the map hosts — so this adds data, not clutter.
+    func syncWind() {
+        let wanted = showWindAloft || stormAlertNeedsWind
+        windAloft.setEnabled(wanted && scenePhaseActive && !thermalSerious)
+    }
+
+    /// Whether the storm alert needs a wind field of its own right now.
+    ///
+    /// Gated on a LIVE CELL as well as a live toggle, so a flight with no convection anywhere near it
+    /// never downloads a GFS field: the wind is fetched when there is a storm whose top the clearance rule
+    /// might have something to say about, and not otherwise. When the last cell leaves, the fetch stops
+    /// but the field is KEPT (`WindAloftService.setEnabled` retains it), so the next cell to appear is
+    /// judged against the wind already in hand rather than against the floor while a download runs.
+    private var stormAlertNeedsWind: Bool {
+        (convectiveAlertsEnabled && !convectiveCells.isEmpty)
+            || (radarStormCellsEnabled && !radarCells.isEmpty)
+    }
 
     /// Reconcile the Stratux link (traffic WebSocket + GPS poll). Streams whenever the link is
     /// enabled and the app is foregrounded (standby off) — no session or source selection required.
@@ -4335,6 +4670,226 @@ final class AppModel: ObservableObject {
         // Same as eonetActive — gate on opt-in + foreground, not the (now decoupled) background toggle.
         scenePhaseActive && !thermalSerious && showTFRs
     }
+    // MARK: Convective SIGMET storm-penetration alert
+
+    /// Foreground-only and paused under thermal pressure, like the other pollers — but gated on an
+    /// opt-in that is ON by default (see `convectiveAlertsEnabled`). The payload is ~4 KB for all of
+    /// CONUS, so the 5-minute cadence costs almost nothing next to the radar tiles.
+    private var convectiveActive: Bool {
+        scenePhaseActive && !thermalSerious && convectiveAlertsEnabled && !demoStormMode
+    }
+
+    func syncConvective() {
+        let active = convectiveActive
+        let service = convectiveService
+        Task { await service?.sync(enabled: active) }
+    }
+
+    /// Foreground-only and thermally gated like the rest. Unlike them it also needs a POSITION to do
+    /// anything at all — the service reports `.needsPosition` rather than looking broken.
+    private var radarCellsActive: Bool {
+        scenePhaseActive && !thermalSerious && radarStormCellsEnabled && !demoStormMode
+    }
+
+    func syncRadarCells() {
+        let active = radarCellsActive
+        let service = radarCellService
+        let here = active ? presentPosition : nil
+        Task {
+            await service?.setCenter(here)
+            await service?.sync(enabled: active)
+        }
+    }
+
+    /// Hand the MRMS poller the ownship position when the aircraft has moved enough to matter. The
+    /// service decides for itself whether that is far enough to re-window; this only keeps the main
+    /// actor from awaiting an actor hop on every GPS tick.
+    private func maybeRecentreRadarCells() {
+        guard radarCellsActive, let here = presentPosition else { return }
+        if let last = lastRadarCellCenter,
+           Geo.nmBetween(last, here) < Self.radarCellRecentreNm { return }
+        lastRadarCellCenter = here
+        let service = radarCellService
+        Task { await service?.setCenter(here) }
+    }
+
+    /// A new bulletin snapshot: mirror it and re-run the projection.
+    private func applyConvective(_ cells: [ConvectiveCell], snapshotAt: Date) {
+        convectiveCells = cells
+        convectiveUpdatedAt = snapshotAt == .distantPast ? nil : snapshotAt
+        // Bound the dismiss set against the live feed (rule 3 — no unbounded growth): once a bulletin
+        // has left the feed its dismissal is moot, and keyed on issue time these keys are never reused,
+        // so nothing would ever have removed them over a five-hour flight. Pruning also fails the safe
+        // way — a bulletin that drops out and returns alerts again rather than staying silently muted.
+        pruneConvectiveDismissals()
+        refreshConvectiveAlert()
+    }
+
+    /// A new radar frame: mirror it and re-run the projection.
+    private func applyRadarCells(_ cells: [ConvectiveCell], frameAt: Date) {
+        radarCells = cells
+        radarCellsUpdatedAt = frameAt == .distantPast ? nil : frameAt
+        pruneConvectiveDismissals()
+        refreshConvectiveAlert()
+    }
+
+    /// Bound the dismiss set against BOTH live sources (rule 3 — no unbounded growth).
+    ///
+    /// ⚠️ IT HAS TO SEE BOTH, OR IT DELETES THE OTHER ONE'S DISMISSALS. Pruning against the bulletin
+    /// snapshot alone would drop every radar-cell key on the next bulletin refresh, un-muting a storm
+    /// the pilot had just cleared — and vice versa. Pruning still fails the safe way: a cell that
+    /// leaves the feed and comes back alerts again rather than staying silently muted.
+    private func pruneConvectiveDismissals() {
+        guard !convectiveDismissedKeys.isEmpty else { return }
+        var live = Set(convectiveCells.map(\.dismissKey))
+        live.formUnion(radarCells.map(\.dismissKey))
+        convectiveDismissedKeys.formIntersection(live)
+    }
+
+    /// Recompute the storm-penetration banner OFF the main actor, epoch-guarded like
+    /// `refreshHazardAlert` so a superseded recompute landing late is dropped.
+    ///
+    /// Ownship comes from two different places on purpose: the POSITION is `presentPosition`, which is
+    /// integrity-gated and matches the symbol the map is willing to draw, so a spoofed or jumped fix
+    /// cannot invent an encounter. The altitude, track and ground speed come from the merged readout,
+    /// and any of them may be nil — `ConvectiveAlert` treats a missing altitude as "could be in it"
+    /// rather than as a clearance, and a missing track as "no projection, test where I am".
+    func refreshConvectiveAlert() {
+        convectiveEpoch += 1
+        let epoch = convectiveEpoch
+        // Both sources feed one banner. Either toggle alone is enough to produce an alert, so the gate
+        // is "is anything switched on and did it find anything", not "is the bulletin feed populated".
+        let bulletins = convectiveAlertsEnabled ? convectiveCells : []
+        let radar = radarStormCellsEnabled ? radarCells : []
+        // Reconcile the wind fetch from here rather than from each of the half-dozen callers: every path
+        // that changes the cell list, either toggle, the scene phase or the ownship position already lands
+        // in this function, so the field the clearance rule needs is asked for exactly when there is a
+        // storm to measure. `setEnabled` is a guarded no-op when nothing actually moved.
+        syncWind()
+        guard !bulletins.isEmpty || !radar.isEmpty, let own = convectiveOwnship() else {
+            convectiveThreats = []; convectiveDrawCells = []; return
+        }
+        let dismissed = convectiveDismissedKeys
+        let now = Date()
+        // Sendable snapshot, or nil. Read on the main actor BEFORE the hop, like every other input here;
+        // nil (no run, or one too far from now to describe this flight) means the clearance rule falls
+        // back to its floor, which is what this alert did before the rule existed.
+        let winds = windAloft.freshFieldSet
+        Task.detached(priority: .utility) { [weak self] in
+            // Merge INSIDE the detached task: the pairwise outline comparison is the expensive part of
+            // this whole path and has no business on the main actor. Dismissals are applied after the
+            // merge, because a merged cell's key is the surviving identity's — a pilot who dismissed
+            // "Convective SIGMET 7C" should not have it reappear because a radar cell joined it.
+            let merged = ConvectiveCellMerge.merge(bulletins + radar)
+            let live = merged.filter { !dismissed.contains($0.dismissKey) }
+            let threats = ConvectiveAlert.threats(cells: live, ownship: own, now: now) {
+                Self.topWindKt($0, winds: winds)
+            }
+            // `merged`, not `live`: the map keeps drawing a dismissed cell. See `convectiveDrawCells`.
+            Task { @MainActor in
+                self?.applyConvectiveThreats(threats, cells: merged, at: now, epoch: epoch)
+            }
+        }
+    }
+
+    /// One assignment for all three, on purpose: the banner, the outlines and the instant the outlines
+    /// are advanced to come out of a single pass and land together, so no render can catch the map
+    /// emphasising one storm while the banner names another.
+    private func applyConvectiveThreats(_ threats: [ConvectiveThreat], cells: [ConvectiveCell],
+                                        at: Date, epoch: Int) {
+        guard convectiveEpoch == epoch else { return }   // a newer recompute/clear won
+        convectiveThreats = threats
+        convectiveDrawCells = cells
+        convectiveDrawAt = at
+    }
+
+    /// The projection is a function of time as well as position, so it rides the ownship movement edge
+    /// the same way the hazard corridor does — just at a shorter interval.
+    private func maybeRefreshConvectiveForMovement() {
+        guard convectiveAlertsEnabled, let here = presentPosition else { return }
+        if let last = lastConvectiveCenter,
+           Geo.nmBetween(last, here) < Self.convectiveRecomputeNm { return }
+        lastConvectiveCenter = here
+        refreshConvectiveAlert()
+    }
+
+    /// X on the storm banner: silence exactly these bulletins, by id AND issue time, so the next
+    /// issuance of the same series number still alerts. Bumps the epoch so an in-flight recompute that
+    /// captured the pre-dismiss set cannot land and republish what was just cleared.
+    func dismissConvectiveAlert() {
+        guard !convectiveThreats.isEmpty else { return }
+        for t in convectiveThreats.prefix(ConvectiveAlert.maxThreats) {
+            convectiveDismissedKeys.insert(t.cell.dismissKey)
+        }
+        convectiveEpoch += 1
+        convectiveThreats = []
+    }
+
+    /// The ownship state the storm alert reasons from, or nil when there is no position to reason
+    /// about. Two different sources on purpose — `refreshConvectiveAlert` records why.
+    private func convectiveOwnship() -> ConvectiveOwnship? {
+        guard let here = presentPosition else { return nil }
+        let r = GPSReadout.merge(stratux: freshStratuxGPS, device: deviceLocation.fix)
+        return ConvectiveOwnship(position: here, altitudeFtMSL: r.altitudeFtMSL,
+                                 trackDeg: r.trackDeg, groundSpeedKt: r.groundSpeedKt)
+    }
+
+    /// The wind at one cell's own top, which is the only wind AIM 7-1-28's overflight rule asks about.
+    ///
+    /// Sampled at the centroid of the polygon as OBSERVED rather than as advanced: a wind field varies
+    /// over hundreds of miles and twenty minutes of storm drift is tens, so advancing it first would be
+    /// arithmetic without a difference. nil only ever means the floor.
+    ///
+    /// `nonisolated static` so the off-main recompute and the on-demand single-cell verdict below can
+    /// share one definition. Two copies of this would be two clearance rules.
+    nonisolated static func topWindKt(_ cell: ConvectiveCell, winds: WindFieldSet?) -> Double? {
+        guard let tops = cell.topsFtMSL, let winds else { return nil }
+        let c = cell.centroid
+        return winds.windAt(lat: c.lat, lon: c.lon, altitudeFtMSL: tops)?.kts
+    }
+
+    /// What the alert concludes about ONE cell — the verdict on the tapped-cell card.
+    ///
+    /// The banner's own list is consulted first, so a cell a pilot can see named up there gets the
+    /// identical record, down to the minute it quotes.
+    ///
+    /// ⚠️ THE FALLBACK IS NOT REDUNDANT. `ConvectiveAlert.threats` returns only the `maxThreats` most
+    /// urgent cells, because a banner cannot carry more; the map draws up to `maxCells`. In a squall
+    /// line the fifth threatening cell is therefore drawn with no record on the banner, and a card that
+    /// read "no warning raised" over a cell the projected track penetrates would be the worst sentence
+    /// in this app. So the alert is re-run for that cell alone — one polygon against one projected
+    /// track, the same geometry and the same wind rule, with no cap in the way.
+    ///
+    /// Returns nil when the alert genuinely raises nothing, and when there is no position to reason
+    /// from — which the card must say differently, and does.
+    func convectiveThreat(for cell: ConvectiveCell) -> ConvectiveThreat? {
+        if let t = convectiveThreats.first(where: { $0.cell.id == cell.id }) { return t }
+        guard let own = convectiveOwnship() else { return nil }
+        let winds = windAloft.freshFieldSet
+        return ConvectiveAlert.threat(cell: cell, ownship: own, now: Date(),
+                                      topWindKt: Self.topWindKt(cell, winds: winds))
+    }
+
+    /// True when the pilot has silenced the banner for this exact bulletin.
+    ///
+    /// The map keeps drawing a dismissed cell (see `convectiveDrawCells`), so the card has to be able
+    /// to tell the pilot which of the two silences they are looking at: a cell the alert raised nothing
+    /// about, or one it raised and they switched off.
+    func isConvectiveDismissed(_ cell: ConvectiveCell) -> Bool {
+        convectiveDismissedKeys.contains(cell.dismissKey)
+    }
+
+    /// Undo one dismissal, from the tapped-cell card.
+    ///
+    /// Dismissal was a one-way door before this: the keys are only ever pruned when the bulletin leaves
+    /// the feed, so an X hit by accident — on a storm, on a touchscreen, in turbulence — silenced that
+    /// issuance for the rest of the flight with nothing anywhere offering it back. The card is where it
+    /// can be offered, because the card is reached by tapping the outline the dismissal left behind.
+    func restoreConvectiveAlert(_ cell: ConvectiveCell) {
+        guard convectiveDismissedKeys.remove(cell.dismissKey) != nil else { return }
+        refreshConvectiveAlert()
+    }
+
     func syncTFRs() {
         let active = tfrActive
         let service = tfrService
@@ -4541,7 +5096,7 @@ final class AppModel: ObservableObject {
             if labels.count >= 40 { break }
         }
         guard !labels.isEmpty else { return ("", []) }
-        // Provider-neutral wording — the same block serves airplanes.live and the Stratux receiver.
+        // Provider-neutral wording — the same block serves adsb.lol and the Stratux receiver.
         return ("Traffic in range: " + labels.joined(separator: ", ") + ".", labels)
     }
 
@@ -4572,6 +5127,8 @@ final class AppModel: ObservableObject {
             syncTraffic()
             syncEONET()
             syncTFRs()
+            syncConvective()
+            syncRadarCells()
             prefetchChartsOnLaunch()        // top up charts around the (possibly moved) position
             if deviceGPSPausedForBackground { deviceGPSPausedForBackground = false; deviceLocation.start() }
             flightRecorder.setForegrounded(true)   // resume breadcrumb sampling
@@ -4616,6 +5173,8 @@ final class AppModel: ObservableObject {
             syncTraffic()
             syncEONET()
             syncTFRs()
+            syncConvective()
+            syncRadarCells()
         case .inactive:
             break                       // transient — don't tear down the feed
         @unknown default:
@@ -4730,7 +5289,7 @@ final class AppModel: ObservableObject {
                     guard let self else { return }
                     guard granted else {
                         self.status = .error
-                        self.detail = "Microphone access denied. Enable it in Settings › CommSight › Microphone."
+                        self.detail = "Microphone access denied. Enable it in Settings › Obelisk › Microphone."
                         return
                     }
                     // Abort SILENTLY if anything moved under the dialog — the user's later action

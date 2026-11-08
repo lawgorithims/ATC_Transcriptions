@@ -17,7 +17,7 @@ import sys, datetime as dt
 
 SVC = ("https://services6.arcgis.com/ssFJjBXIUyZDrSYZ/ArcGIS/rest/services/"
        "Special_Use_Airspace/FeatureServer/0/query")
-UA = {"User-Agent": "CommSight/1.0"}
+UA = {"User-Agent": "Obelisk/1.0"}
 SUA_CODES = {"R", "P", "W", "A", "MOA", "D", "TFR"}   # the codes we keep + render
 
 

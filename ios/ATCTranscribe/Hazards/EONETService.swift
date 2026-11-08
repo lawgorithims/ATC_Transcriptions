@@ -199,7 +199,7 @@ struct LiveEONETFetcher: EONETFetching {
                              URLQueryItem(name: "limit", value: String(limit))]
         guard let url = comps?.url else { throw URLError(.badURL) }
         var req = URLRequest(url: url)
-        req.setValue("CommSight/1.0 (on-device ATC transcription)", forHTTPHeaderField: "User-Agent")
+        req.setValue("Obelisk/1.0 (on-device ATC transcription)", forHTTPHeaderField: "User-Agent")
         let (data, response) = try await session.data(for: req)
         if let http = response as? HTTPURLResponse {
             guard (200..<300).contains(http.statusCode) else { throw URLError(.badServerResponse) }

@@ -24,6 +24,11 @@ actor CloudKitTransport: CloudSyncTransport {
 
     /// One custom zone, because the default zone does not support `fetchRecordZoneChanges` and so has
     /// no change tokens — without them every sync is a full download of every flight.
+    ///
+    /// ⚠️ NOT renamed when the app was — the old product name is still the zone id. A zone name is
+    /// CloudKit *schema*, not copy: changing it points the app at a different, empty zone and
+    /// orphans every record already in a pilot's private database, with no migration path short of
+    /// reading both. It is invisible to the pilot. Leave it.
     static let zoneName = "CommSight"
 
     private let container: CKContainer

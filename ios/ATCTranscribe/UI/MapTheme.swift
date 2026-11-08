@@ -40,6 +40,30 @@ struct MapTheme: Equatable {
     /// the route and the breadcrumb — and of TFR red, which must remain the most alarming mark.
     /// NOTE: alpha < 1 — apply via `NSExpression(forConstantValue:)`, never `hexString`.
     let glideGap: UIColor
+    /// Convective storm cells (`ConvectiveMapLayer`): the outline, the motion arrow and the tops block.
+    ///
+    /// ⚠️ IT IS NOT THE EONET STORM VIOLET, AND THE FIRST VERSION OF THIS LAYER WAS. Violet is what this
+    /// app already means by "storm" (`HazardAnnotation.tint(.severeStorms)`) and reusing it looked like
+    /// the obviously right answer — until the layer was put on a sectional and a 50 NM cell read as a
+    /// MOA. The EONET hue gets away with violet because that layer is mostly points and tracks; a big
+    /// filled polygon in MOA purple, on a map where MOAs are big filled polygons, is a safety mark
+    /// saying the wrong thing.
+    ///
+    /// So: teal, which the FAA airspace palette does not use at all (its nearest neighbour is the VOR
+    /// dot, a symbol, not an area), and which is outside the precipitation mosaic's own ramp — RainViewer
+    /// colour scheme 2 runs blue → green → yellow → red, and this layer is most often seen over it.
+    ///
+    /// ONE value for cockpit, day and the dark base, which is not the usual shape of this struct. A
+    /// deeper teal was drafted for the light themes before the layer was looked at: on the theory that
+    /// cockpit and day are "light" and `.smartDark` is "dark". They are not — the FAA raster is a light
+    /// chart under EVERY theme but `.smartDark`, which is the only one that replaces the base. Against
+    /// that mid-toned, busy chart the bright teal reads better than a deep one, which competes with the
+    /// dark blue airspace lines and the brown terrain, and it reads on the dark base as well.
+    ///
+    /// Night is the real exception, and leaves the hue entirely: cyan at night is a worse
+    /// dark-adaptation violation than the violet this replaced. A warm salmon instead, lighter and less
+    /// saturated than any of the airspace reds, so it still reads as weather rather than a restriction.
+    let convective: UIColor
     /// Route-waypoint ident text (the `.smartDark` route-fix labels). Night trims label EMISSION only —
     /// the base, terrain and route line are identical in every theme — so the mode keeps the app's
     /// "red-only emission where practical" dark-adaptation stance without changing its look by day.
@@ -152,7 +176,7 @@ struct MapTheme: Equatable {
             airway: airway, airwayLabelText: airwayLabelText, airwayLabelHalo: airwayLabelHalo,
             navLabelText: navLabelText, navLabelHalo: navLabelHalo,
             airspace: airspace, route: route, track: track, procedure: procedure,
-            hold: hold, glideGap: glideGap,
+            hold: hold, glideGap: glideGap, convective: convective,
             routeWptText: routeWptText, routeWptAlt: routeWptAlt, routeWptSpeed: routeWptSpeed,
             routeWptIAF: routeWptIAF, routeWptFAF: routeWptFAF, routeWptMAP: routeWptMAP,
             rasterBrightnessMax: rasterBrightnessMax * scale,
@@ -188,6 +212,7 @@ struct MapTheme: Equatable {
             hold: rgb(0xFF9F1C, 0.95),                  // part of the procedure → route's color family
             // The route is amber here, so the band goes cool: a slate that reads on near-black.
             glideGap: night ? rgb(0xC08A94, 0.45) : rgb(0x9FB0BE, 0.45),
+            convective: night ? rgb(0xE09070) : rgb(0x2BD4E0),
             routeWptText: night ? rgb(0xF2B0A0) : .white,
             routeWptAlt: night ? rgb(0xC08A94) : rgb(0x4FC3F7),
             routeWptSpeed: night ? rgb(0xC77FB0) : rgb(0xE040FB),
@@ -215,6 +240,7 @@ struct MapTheme: Equatable {
                 airspace: chartAirspace,
                 route: rgb(0xF23D9E), track: rgb(0xFF9E33, 0.85), procedure: rgb(0x29C7F0),
                 hold: legacyHold, glideGap: rgb(0xFFD60A, 0.42),     // caution yellow under the magenta
+                convective: rgb(0x2BD4E0),
                 routeWptText: .white, routeWptAlt: rgb(0x4FC3F7), routeWptSpeed: rgb(0xE040FB),
                 routeWptIAF: rgb(0x7FE0A0), routeWptFAF: rgb(0xFFC24B), routeWptMAP: rgb(0xFF6B6B),
                 rasterBrightnessMax: 0.95, rasterSaturation: 0, rasterContrast: 0,
@@ -232,6 +258,7 @@ struct MapTheme: Equatable {
                 airspace: chartAirspace,
                 route: rgb(0xF23D9E), track: rgb(0xFF9E33, 0.85), procedure: rgb(0x29C7F0),
                 hold: legacyHold, glideGap: rgb(0xFFD60A, 0.55),     // highlighter yellow, stronger on the light base
+                convective: rgb(0x2BD4E0),
                 routeWptText: rgb(0x17242E), routeWptAlt: rgb(0x0B6C93), routeWptSpeed: rgb(0x8E1FA0),
                 routeWptIAF: rgb(0x11703C), routeWptFAF: rgb(0x8A5200), routeWptMAP: rgb(0xB3261E),
                 rasterBrightnessMax: 1.0, rasterSaturation: 0, rasterContrast: 0,
@@ -251,6 +278,7 @@ struct MapTheme: Equatable {
                 airspace: nightAirspace,
                 route: rgb(0xFF5A3C), track: rgb(0xB0521E, 0.85), procedure: rgb(0xE07A5A),
                 hold: legacyHold, glideGap: rgb(0xF2B0A0, 0.35),     // the night label tint, dim: clear of the brown breadcrumb
+                convective: rgb(0xE09070),                           // warm salmon: lighter than every airspace red
                 routeWptText: rgb(0xF2B0A0), routeWptAlt: rgb(0xC08A94), routeWptSpeed: rgb(0xC77FB0),
                 routeWptIAF: rgb(0xD98A72), routeWptFAF: rgb(0xFF7040), routeWptMAP: rgb(0xFF3B24),
                 rasterBrightnessMax: 0.55, rasterSaturation: -0.65, rasterContrast: 0.10,

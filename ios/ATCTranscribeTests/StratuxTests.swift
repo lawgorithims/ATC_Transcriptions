@@ -1,7 +1,7 @@
 import XCTest
 @testable import ATCTranscribe
 
-/// Decoding the Stratux web API (`/traffic` WebSocket targets + `/getSituation` GPS) into CommSight's
+/// Decoding the Stratux web API (`/traffic` WebSocket targets + `/getSituation` GPS) into Obelisk's
 /// `Aircraft` / `StratuxGPS`. The live link is verified on the device; this pins the JSON contract.
 final class StratuxTests: XCTestCase {
 

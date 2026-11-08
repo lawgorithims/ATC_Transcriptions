@@ -24,13 +24,48 @@ final class DeviceLocation: NSObject, ObservableObject, CLLocationManagerDelegat
     /// Current integrity verdict — drives the accuracy ring, the ownship colour, the threat banner.
     @Published private(set) var integrity = GPSIntegrityAssessment()
 
-    /// Position to PLOT: nil whenever integrity says the fix can't be trusted. A position the pilot will
-    /// fly is worse than no position, so an unreliable / suspect state removes the symbol entirely.
-    var trustedCoord: Coord? { integrity.shouldSuppressOwnship ? nil : coord }
+    /// Position for the PRECISION consumers that kept the strict gate when the moving map gave it up —
+    /// today that is the georeferenced ownship on an approach plate, which `PlateViewer` calls the most
+    /// dangerous place in the app to draw a position, and it is right. A plate is flown at a few
+    /// hundred feet against obstacles surveyed to the metre; a fix that may be a hundred metres out
+    /// does not belong on one, even though it belongs perfectly well on the enroute map.
+    ///
+    /// The moving map deliberately does NOT use this — see `MapHostView.trustedDeviceCoord`.
+    var trustedCoord: Coord? { integrity.isTrustedForGuidance ? coord : nil }
 
     private let manager = CLLocationManager()
     private let monitor = GPSIntegrityMonitor()
     private var running = false
+
+    #if DEBUG
+    /// `--force-gps-integrity nominal|degraded|unreliable|suspect` — pin the verdict so the states a
+    /// real receiver reaches only on a bad day can be seen on demand. DEBUG only; see
+    /// `GPSIntegrityMonitor.forcedState`. An unrecognised value is ignored rather than guessed at.
+    private static var launchForcedIntegrity: GPSIntegrityState? {
+        let a = ProcessInfo.processInfo.arguments
+        guard let i = a.firstIndex(of: "--force-gps-integrity"), i + 1 < a.count else { return nil }
+        switch a[i + 1].lowercased() {
+        case "nominal":    return .nominal
+        case "degraded":   return .degraded
+        case "unreliable": return .unreliable
+        case "suspect":    return .suspect
+        default:           return nil
+        }
+    }
+    /// Parsed once — this is read on every published verdict.
+    private let forcedIntegrity = DeviceLocation.launchForcedIntegrity
+    #endif
+
+    /// Every verdict this type publishes goes through here, so the pin applies to the real monitor and
+    /// to the flight simulator's synthetic assessment alike. Identity in a release build.
+    private func forced(_ a: GPSIntegrityAssessment) -> GPSIntegrityAssessment {
+        #if DEBUG
+        guard let s = forcedIntegrity else { return a }
+        return GPSIntegrityMonitor.forcing(a, to: s)
+        #else
+        return a
+        #endif
+    }
     var isRunning: Bool { running }
     /// A fix that simply STOPS arriving has no callback, so the monitor is re-evaluated on this cadence.
     /// (The monitor gates staleness on motion — with `distanceFilter` a parked aircraft is legitimately
@@ -112,7 +147,7 @@ final class DeviceLocation: NSObject, ObservableObject, CLLocationManagerDelegat
         staleTimer?.invalidate()
         let t = Timer.scheduledTimer(withTimeInterval: Self.staleTickS, repeats: true) { [weak self] _ in
             guard let self, self.running else { return }
-            self.integrity = self.monitor.tick(now: Date())
+            self.integrity = self.forced(self.monitor.tick(now: Date()))
         }
         t.tolerance = 1                     // let the OS coalesce it — not a precision timer
         staleTimer = t
@@ -130,7 +165,7 @@ final class DeviceLocation: NSObject, ObservableObject, CLLocationManagerDelegat
         // limit, GPS course is noise and must not drive a heading-up rotation or a wind-correction angle.
         courseDeg = verdict.courseUsable ? f.courseDeg : nil
         fix = f
-        integrity = verdict
+        integrity = forced(verdict)
     }
 
     /// Widen a `CLLocation` into the app's fix record. Every CoreLocation invalid sentinel is resolved
@@ -310,6 +345,6 @@ extension DeviceLocation {
         coord = sample.coord
         courseDeg = a.courseUsable ? sample.courseDegTrue : nil
         fix = f
-        integrity = a
+        integrity = forced(a)
     }
 }

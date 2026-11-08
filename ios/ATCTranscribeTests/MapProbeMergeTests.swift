@@ -20,6 +20,26 @@ final class MapProbeMergeTests: XCTestCase {
     /// The regression build 93 shipped: it inserted standing airspace at index 0 AFTER appending live
     /// TFRs, so a live NOTAM — the only object carrying a reason and an expiry — sank below permanent
     /// chart furniture AND below every nearby VOR. MapObjectKind.priority already said the opposite.
+    /// Weather above law. A TFR is a boundary that must not be crossed; a thunderstorm is weather that
+    /// does not care whether it is crossed, and the two sit on top of each other constantly — a storm
+    /// over a stadium during a game produces exactly this tap. The storm has to open first.
+    func testAStormOutranksEveryRestrictionUnderTheSameFinger() {
+        let storm = IdentifiedObject(kind: .convective, ident: "WST-7C",
+                                     coord: Coord(lat: 33, lon: -107), onRoute: false)
+        let tfr = IdentifiedObject(kind: .tfr, ident: "VIP-1", coord: Coord(lat: 33, lon: -107), onRoute: false)
+        let out = MapProbe.merge(ranked: [fix("DUCAS")], storms: [storm], liveTFRs: [tfr],
+                                 airspaces: [airspace("R-5111C", "R"), airspace("BOSTON", "B")])
+        XCTAssertEqual(out.map(\.kind), [.convective, .tfr, .airspace, .fix, .airspace])
+    }
+
+    /// A thunderstorm is not a waypoint. The old `isRoutable` was a chain of six `!=`, so a new kind
+    /// defaulted to ROUTABLE — which here would have offered "Add to route" on severe convection.
+    func testAStormCannotBeFiledIntoTheRoute() {
+        XCTAssertFalse(MapObjectKind.convective.isRoutable)
+        XCTAssertTrue(MapObjectKind.airport.isRoutable)
+        XCTAssertTrue(MapObjectKind.userPoint.isRoutable)
+    }
+
     func testALiveTfrOutranksAStandingRestriction() {
         let tfr = IdentifiedObject(kind: .tfr, ident: "VIP-1", coord: Coord(lat: 33, lon: -107), onRoute: false)
         let out = MapProbe.merge(ranked: [fix("DUCAS")], liveTFRs: [tfr],

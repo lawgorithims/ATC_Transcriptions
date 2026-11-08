@@ -127,7 +127,7 @@ struct RemoteLLMCorrector: LLMCorrector {
         var request = URLRequest(url: endpoint, timeoutInterval: timeout)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("CommSight/1.0", forHTTPHeaderField: "User-Agent")
+        request.setValue("Obelisk/1.0", forHTTPHeaderField: "User-Agent")
         request.httpBody = payload
 
         let config = URLSessionConfiguration.ephemeral

@@ -88,7 +88,7 @@ actor TranscriptLogStore {
         } catch {
             broken = true
             buffer.removeAll(keepingCapacity: true)
-            NSLog("CommSight: transcript log write failed: %@", String(describing: error))
+            NSLog("Obelisk: transcript log write failed: %@", String(describing: error))
             return
         }
         assert(fileBytes >= 0, "file byte counter must stay non-negative")

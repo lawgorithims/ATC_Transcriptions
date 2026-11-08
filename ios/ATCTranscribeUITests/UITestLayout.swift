@@ -2,7 +2,7 @@ import XCTest
 
 /// WHERE THIS SUITE RUNS IS PART OF WHAT IT ASSERTS.
 ///
-/// CommSight is universal, but it is not the same app at both widths — and that is deliberate, not a
+/// Obelisk is universal, but it is not the same app at both widths — and that is deliberate, not a
 /// gap. `ConsoleView.homeArea` is `if hSize == .regular { FloatingCanvas } else { … }`, so floating
 /// widgets, the docked side panes and the NRST panel DO NOT EXIST on an iPhone; `TopBar` drops the
 /// bar clock at compact width after measurement showed it squeezed to 2.00pt at 375pt. A test that
@@ -28,6 +28,23 @@ enum UITestLayout {
     /// True when the app came up at regular width (an iPad, full screen).
     static func isRegularWidth(_ app: XCUIApplication) -> Bool {
         app.windows.firstMatch.frame.width >= regularWidthThreshold
+    }
+
+    /// The MIRROR of `requireRegularWidth`, for the handful of tests that only mean something on a
+    /// phone — chiefly "does this panel fit".
+    ///
+    /// ⚠️ THE SUITE NEEDED THIS AND DID NOT HAVE IT, which is how a 510pt panel shipped on a 402pt
+    /// phone. `MapControlsUITests`, `WindOverlayUITests` and five cases in `LZLayerUITests` all skip
+    /// at compact width, so the layers panel was exercised almost exclusively on an iPad, where it
+    /// fits. The ONE case without a guard — `AvoidLayerUITests` — was the only thing that ever ran
+    /// it on a phone, and its failure was written off as a known flake for weeks.
+    static func requireCompactWidth(_ app: XCUIApplication, _ what: String,
+                                    file: StaticString = #filePath, line: UInt = #line) throws {
+        guard isRegularWidth(app) else { return }
+        let w = app.windows.firstMatch.frame.width
+        throw XCTSkip("\(what) is a COMPACT-width (iPhone) question — this window is \(Int(w))pt "
+                      + "wide, where the layout has room and nothing can be proved. Run this on an "
+                      + "iPhone.", file: file, line: line)
     }
 
     /// Skip — with the reason and the remedy — unless this is a regular-width layout.

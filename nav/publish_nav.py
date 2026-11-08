@@ -158,7 +158,7 @@ def hosted_manifest():
     and `available()` returned [] for the honest-looking reason that the catalog listed nothing. One
     pre-download run would have taken the whole live delivery path down with it.
     """
-    req = urllib.request.Request(f"{BASE}/index.json", headers={"User-Agent": "commsight-publisher"})
+    req = urllib.request.Request(f"{BASE}/index.json", headers={"User-Agent": "obelisk-publisher"})
     with urllib.request.urlopen(req, timeout=60) as r:
         return json.loads(r.read().decode("utf-8"))
 

@@ -110,10 +110,18 @@ final class NetworkActivityTests: XCTestCase {
         XCTAssertFalse(q.isPaused(.charts))
     }
 
-    /// Asking for a job IS unpausing it — a "Get this now" button that silently does nothing because
-    /// the category is paused would be the most frustrating possible outcome.
+    /// Asking for a job admits THAT job past the pause — a "Get this now" button that silently does
+    /// nothing because the category is paused would be the most frustrating possible outcome.
+    ///
+    /// ⚠️ THIS TEST USED TO ASSERT THE OPPOSITE OF ITS SECOND LINE. `prioritise` cleared the whole
+    /// category, and the test asserted that ("prioritising must release the pause it is blocked by").
+    /// It is true that the row has to run; it was never true that every OTHER download of that kind
+    /// has to restart with it. A pilot who paused chart packs on a weak link and then asked for one
+    /// specific pack got the lot — which from the cockpit is indistinguishable from the pause button
+    /// not working, and is half of what was reported. So the pause stands and the row carries its own
+    /// exemption (`Job.overridesPause`).
     @MainActor
-    func testPrioritisingAJobInAPausedCategoryUnpausesThatCategory() async {
+    func testPrioritisingAJobAdmitsItWithoutLiftingTheCategoryPause() async {
         let q = NetworkActivity()
         q.setPaused(.charts, true)
         let done = expectation(description: "ran")
@@ -123,8 +131,9 @@ final class NetworkActivityTests: XCTestCase {
         XCTAssertEqual(job.state, .paused)
 
         q.prioritise(job.id)
-        XCTAssertFalse(q.isPaused(.charts), "prioritising must release the pause it is blocked by")
-        await fulfillment(of: [done], timeout: 5)
+        await fulfillment(of: [done], timeout: 5)      // the row the pilot asked for runs
+        XCTAssertTrue(q.isPaused(.charts),
+                      "and the pause they set is still in force for everything else")
     }
 
     /// ⚠️ STOPPING A QUEUED JOB MUST NOT RUN IT. `run` was `rethrows`, which made "cancelled" an

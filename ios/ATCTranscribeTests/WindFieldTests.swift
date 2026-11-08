@@ -95,6 +95,17 @@ final class WindFieldTests: XCTestCase {
                            accuracy: 5e-3, "\(b.name) kt")
             XCTAssertEqual(Double(try XCTUnwrap(field.directionFromDeg(lat: b.lat, lon: b.lon))), b.dirFrom,
                            accuracy: 0.05, "\(b.name) direction")
+
+            // The same real bytes through the altitude sampler the clearance rule reads. This fixture
+            // carries ONE level, so the column has nothing to interpolate between and every altitude
+            // must come back as that level's own wind — which is the check that the two paths cannot
+            // drift apart on units (m/s vs kt), on the surface-level exclusion, or on the vector mean.
+            for altitude in [4_781.0, 20_000, 45_000] {
+                let w = try XCTUnwrap(set.windAt(lat: b.lat, lon: b.lon, altitudeFtMSL: altitude),
+                                      "\(b.name) at \(altitude) ft")
+                XCTAssertEqual(w.kts, b.kt, accuracy: 5e-3, "\(b.name) kt at \(altitude) ft")
+                XCTAssertEqual(w.fromDeg, b.dirFrom, accuracy: 0.05, "\(b.name) dir at \(altitude) ft")
+            }
         }
     }
 
@@ -121,6 +132,63 @@ final class WindFieldTests: XCTestCase {
         XCTAssertEqual(WindLevel.surface.pressureLabel, "10 m AGL")
         XCTAssertEqual(WindLevel.mb200.pressureLabel, "200 hPa")
         XCTAssertNil(WindLevel.from(levelType: 100, levelValue: 12_345))
+    }
+
+    // MARK: The wind at one altitude — what the storm alert's overflight clearance rule reads
+
+    /// A two-level column with a known gradient: 700 hPa (9,882 ft) at 20 kt and 500 hPa (18,289 ft) at
+    /// 60 kt, both westerly, over one grid cell. Everything between those heights is checkable by hand.
+    private func column(_ fields: [WindField]? = nil) -> WindFieldSet {
+        let at = Date(timeIntervalSince1970: 1_793_721_600)
+        return WindFieldSet(fields: fields ?? [level(.mb700, kt: 20), level(.mb500, kt: 60)],
+                            bbox: WindBBox(minLat: 30, minLon: -100, maxLat: 31, maxLon: -99),
+                            cycle: at.addingTimeInterval(-6 * 3600), forecastHours: 6,
+                            validTime: at, fetchedAt: at)
+    }
+
+    /// One level, uniform over the cell, blowing eastward — so `u > 0` and the reported wind is a westerly.
+    private func level(_ l: WindLevel, kt: Double) -> WindField {
+        let mps = Float(kt) / WindField.mpsToKt
+        return WindField(level: l, minLat: 30, minLon: -100, dLat: 1, dLon: 1, ni: 2, nj: 2,
+                         u: [mps, mps, mps, mps], v: [0, 0, 0, 0])
+    }
+
+    func testTheWindAtAnAltitudeComesFromTheLevelsThatBracketIt() throws {
+        let set = column()
+        let low = try XCTUnwrap(set.windAt(lat: 30.5, lon: -99.5, altitudeFtMSL: 9_882))
+        XCTAssertEqual(low.kts, 20, accuracy: 0.05, "on a level, that level's wind")
+        XCTAssertEqual(low.fromDeg, 270, accuracy: 0.05, "eastward flow is a westerly")
+        let mid = try XCTUnwrap(set.windAt(lat: 30.5, lon: -99.5, altitudeFtMSL: (9_882 + 18_289) / 2))
+        XCTAssertEqual(mid.kts, 40, accuracy: 0.1, "halfway up the column, halfway along the gradient")
+    }
+
+    /// Outside the levels it clamps rather than extrapolating. A linear run-out from two levels would
+    /// reach 150 kt somewhere over FL450 on this column, and the clearance rule would then ask for 15,000
+    /// ft of air on the strength of arithmetic rather than data.
+    func testAboveAndBelowTheColumnTheWindIsClampedNotExtrapolated() throws {
+        let set = column()
+        XCTAssertEqual(try XCTUnwrap(set.windAt(lat: 30.5, lon: -99.5, altitudeFtMSL: 45_000)).kts,
+                       60, accuracy: 0.05)
+        XCTAssertEqual(try XCTUnwrap(set.windAt(lat: 30.5, lon: -99.5, altitudeFtMSL: 3_000)).kts,
+                       20, accuracy: 0.05)
+    }
+
+    /// ⚠️ OFF THE GRID IS nil, NEVER CALM. The clearance rule reads nil as "fall back to the 5,000 ft
+    /// floor" and a zero as "the top is in still air" — which is the same number today and a dangerously
+    /// different one the moment the floor is raised.
+    func testOffTheGridThereIsNoWindAtAll() {
+        XCTAssertNil(column().windAt(lat: 45, lon: -99.5, altitudeFtMSL: 20_000))
+        XCTAssertNil(column().windAt(lat: 30.5, lon: -140, altitudeFtMSL: 20_000))
+        XCTAssertNil(column().windAt(lat: 30.5, lon: -99.5, altitudeFtMSL: .nan))
+    }
+
+    /// The surface level is excluded from the column on purpose: it sits 10 m above a ground elevation
+    /// this sampler has no business knowing, and no convective top is within reach of it. A set holding
+    /// nothing else therefore has no answer, rather than answering with a 10 m wind.
+    func testTheSurfaceLevelIsNotPartOfTheColumn() {
+        XCTAssertNil(column([level(.surface, kt: 25)]).windAt(lat: 30.5, lon: -99.5,
+                                                              altitudeFtMSL: 20_000))
+        XCTAssertNil(column([]).windAt(lat: 30.5, lon: -99.5, altitudeFtMSL: 20_000))
     }
 
     func testBboxContainment() {

@@ -93,7 +93,7 @@ enum ClearanceScenarioCatalog {
     static let approachClearance = ClearanceScenario(
         id: "approach",
         title: "Approach clearance",
-        detail: "Cleared for an instrument approach into KBOS. Expect the ILS runway 4 right approach to load. Load approaches in ForeFlight's procedure advisor — CommSight only stages the clearance.",
+        detail: "Cleared for an instrument approach into KBOS. Expect the ILS runway 4 right approach to load. Load approaches in ForeFlight's procedure advisor — Obelisk only stages the clearance.",
         category: .approach, aircraft: ownship, airport: "KBOS",
         seed: PlanSeed(departure: "KJFK", destination: "KBOS", route: [],
                        alternate: "KPVD", cruiseAltitudeFt: 4000),

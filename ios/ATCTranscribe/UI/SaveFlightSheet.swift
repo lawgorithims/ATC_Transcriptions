@@ -81,9 +81,15 @@ struct SaveFlightSheet: View {
         model.flightRecorder.clearPendingSave()
         model.pendingLoggedFlight = nil
         Haptics.impact(.light)
+        // The sheet closing is not an answer. "Did my flight save?" was the reported doubt, and a
+        // dismissed sheet looks identical whether it saved or discarded — so it says which.
+        model.say("Flight saved to the logbook.", icon: "checkmark.circle", tone: .good)
     }
     private func discard() {
         model.flightRecorder.clearPendingSave()
         model.pendingLoggedFlight = nil
+        // Confirms the destructive choice took effect, for the same reason: the pilot who meant to
+        // save and hit the wrong one should find that out now and not at the next launch.
+        model.say("Flight discarded — not added to the logbook.", icon: "trash", tone: .neutral)
     }
 }

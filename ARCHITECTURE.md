@@ -1,6 +1,6 @@
-# CommSight — Architecture
+# Obelisk — Architecture
 
-> **What this document is.** A complete, human-readable map of how the CommSight
+> **What this document is.** A complete, human-readable map of how the Obelisk
 > codebase works, from the moment a radio transmission hits the microphone to the
 > corrected, speaker-labelled line on screen and the one-tap flight-plan amendment it
 > can trigger. It covers every subsystem, the offline data that powers them, the build
@@ -19,7 +19,7 @@
 
 ## Table of contents
 
-1. [What CommSight is](#1-what-commsight-is)
+1. [What Obelisk is](#1-what-obelisk-is)
 2. [Repository layout](#2-repository-layout)
 3. [The big picture](#3-the-big-picture)
 4. [End-to-end runtime data flow](#4-end-to-end-runtime-data-flow)
@@ -47,13 +47,13 @@
 
 ---
 
-## 1. What CommSight is
+## 1. What Obelisk is
 
-CommSight is a **native iOS/iPadOS Electronic Flight Bag (EFB) that transcribes live
+Obelisk is a **native iOS/iPadOS Electronic Flight Bag (EFB) that transcribes live
 air-traffic-control radio entirely on the device.** There is no server. From audio
 capture through speech recognition, correction, speaker labelling, and the moving-map
 cockpit display, every stage runs on the iPhone/iPad. It ships through TestFlight as
-**CommSight** (bundle id `com.flycommsight.atctranscribe`), universal binary, iPad-first
+**Obelisk** (bundle id `com.flycommsight.atctranscribe`), universal binary, iPad-first
 cockpit layout, deployment target **iOS 17**.
 
 It does two big things, tightly integrated:
@@ -119,7 +119,7 @@ atc-maplibre/                (git worktree of ATC_Transcriptions, branch experim
 | `Audio/` | 17 | 2,600 | Audio sources (mic/stream/Stratux/replay), the VHF DSP chain, VAD segmentation, diarization, speaker embedding, calibration. |
 | `Experimental/` | 3 | 1,485 | The MapLibre GPU renderer, its loopback MBTiles HTTP server, and the throwaway globe spike. |
 | `Engine/` | 5 | 1,358 | The live pipeline orchestrator (an actor), the transcription session (the `@MainActor` UI wrapper), the background LLM refiner, the resident-model registry, the speaker labeler. |
-| `Hazards/` | 5 | 1,024 | NASA EONET natural-hazard events, NASA GIBS satellite tiles, FAA TFRs. |
+| `Hazards/` | 22 | 5,577 | NASA EONET natural-hazard events, NASA GIBS satellite tiles, FAA TFRs, FAA NOTAMs, RainViewer precipitation radar, GRIB2 winds aloft, and the storm-penetration alert's four sources: AWC Convective SIGMETs, AWC Center Weather Advisories, NWS Severe Thunderstorm Warnings and NOAA MRMS echo tops (`MRMSEchoTopService` + `RadarCellFinder`, with `Gunzip` and `PNGGrayRows` as the decode primitives). |
 | `Aircraft/` | 6 | 828 | Two ADS-B traffic providers (internet + Stratux), the bundled nav/airport coordinate tables. |
 | `Diagnostics/` | 6 | 698 | Battery/MetricKit telemetry, a CPU sampler, the clearance test-bench data model + crash-safe snapshot. |
 | `Models/` | 8 | 683 | Value types: `FlightPlan`, `Correction`, `SpeechSegment`, `AircraftProfile`, `TripStats`, route/procedure resolvers, airport config. |
@@ -380,7 +380,7 @@ flowchart TB
 
 ## 5. Concurrency & application-state model
 
-CommSight has one big view-model and a handful of actors. Understanding this topology is
+Obelisk has one big view-model and a handful of actors. Understanding this topology is
 the key to understanding why the app never tears down its feed.
 
 ### `AppModel` — the hub (and the god-object)
@@ -419,9 +419,40 @@ restoring persisted state doesn't fire a storm of reconcilers.
 - **`LLMRefiner` (Engine/)** — the background LLM queue: serial (one generation at a time,
   the llama.cpp KV-cache invariant), bounded (`maxQueue = 8`, drops the oldest under load),
   with a 20 s report-only watchdog and an exactly-once delivery token.
-- **`ADSBService` / `StratuxService` / `EONETService` / `TFRService` (Aircraft/, Hazards/)**
-  — network services, each with a single edge-triggered `sync(...)` entry point (redundant
-  calls are no-ops) and server-anchored freshness.
+- **`ADSBService` / `StratuxService` / `EONETService` / `TFRService` /
+  `ConvectiveSigmetService` / `MRMSEchoTopService` (Aircraft/, Hazards/)** — network services, each
+  with a single edge-triggered `sync(...)` entry point (redundant calls are no-ops) and
+  server-anchored freshness. `MRMSEchoTopService` is the one exception to the shape: it is
+  **position-dependent** (one MRMS frame is a 7000 x 3500 grid, so the decode is windowed around the
+  aircraft via `setCenter`) and it keeps a *reference frame* to cross-correlate against, because a
+  radar grid states position and never velocity.
+- **`ConvectiveAlert` (Core/)** — the storm-penetration warning, and the one piece of alerting
+  logic whose *data source* was the design decision rather than the geometry. It projects the
+  aircraft's track and each cell's polygon forward together, gates on the cell's measured or
+  reported tops, and widens its avoidance radius by the data's age. It is **source-agnostic by
+  design**: it consumes `ConvectiveCell`s and four products supply them, because no one product
+  answers the whole question.
+
+  | source | polygon | tops | motion | a name the pilot can look up |
+  |---|---|---|---|---|
+  | Convective SIGMET (AWC) | area | stated | stated | yes |
+  | Center Weather Advisory (AWC) | smaller area | stated, **in the text only** | stated, in the text only | yes |
+  | NWS Severe Thunderstorm Warning | **one storm** | **none** | stated, recent | yes |
+  | MRMS echo tops (derived here) | one storm, measured | **measured** | derived, 20–25% slow | no |
+
+  `ConvectiveCellMerge` folds them into one list: identity goes to the highest-ranked source (the
+  name a controller would use), and every *number* takes the conservative value from whichever
+  source has it — tops the higher, bases the lower, severity the greater, validity the later,
+  outline the larger. `observedAt` is never merged, because the dismiss key and the motion-vector
+  ageing are both built on it.
+
+  The gap this closes is the one the banner used to have to admit: a Convective SIGMET needs ~40%
+  coverage, a line, or a severe cell, so **an isolated ordinary thunderstorm can be reported by
+  nobody**. MRMS finds it. Two measurements made that possible and are worth keeping: the CONUS
+  echo-top grid is **364 KB** gzipped (an earlier draft of this paragraph ruled MRMS out on size and
+  was wrong by an order of magnitude), and the only real blocker was GRIB2 data-representation
+  template **5.41** — a PNG payload, now implemented by `PNGGrayRows` as a *row-streaming* decoder
+  so a 49 MB bitmap never exists. See `ios/HANDOFF.md` §7 for what is still open.
 - **`PowerClimateStore` (Core/)** — the climatology fetch/cache actor.
 
 `TranscriptionSession` and `SpeakerLabeler` are `@MainActor` — records mutate and fuse on
@@ -499,7 +530,7 @@ flowchart LR
 root `@StateObject`s — `AppModel`, `ModelDownloadManager`, `NotesStore`, `MetarStore`,
 `ForecastStore`, `TafStore`, `BatteryDiagnostics` — and injects them into the environment.
 There is no `AppDelegate`. `.onOpenURL` imports a Garmin `.fpl` (ForeFlight's "Open in
-CommSight"). A `--maplibre` launch arg swaps in the standalone MapLibre debug harness.
+Obelisk"). A `--maplibre` launch arg swaps in the standalone MapLibre debug harness.
 
 **The 5-tab shell.** `enum RootTab { transcript, map, plates, airports, notes }`.
 `RootTabView` stacks all five tab views in one `ZStack` and switches between them purely
@@ -1286,7 +1317,7 @@ macOS CLI that cherry-picks the Foundation-only sources and runs the engine on t
 **real Neural Engine** over SSH (a plain executable, because macOS XCTest needs a GUI
 test-runner daemon that isn't available headless).
 
-**Info.plist highlights:** display name `CommSight`; usage strings for mic, local network
+**Info.plist highlights:** display name `Obelisk`; usage strings for mic, local network
 (Stratux) and location; `NSAllowsLocalNetworking` (cleartext to the Stratux AP);
 `LSApplicationQueriesSchemes: [foreflightmobile]` (outbound handoff); inbound Garmin `.fpl`
 document type; `UIBackgroundModes: [audio]`.
@@ -1469,7 +1500,7 @@ transmissions (canonWER + callsign-safety metrics); the standing numbers live in
 - **CIFP** — Coded Instrument Flight Procedures; the FAA's ARINC-424 dataset of approaches,
   SIDs, STARs, runways, and airways. Bundled as `cifp.sqlite`.
 - **d-TPP** — digital Terminal Procedures Publication; the FAA's approach-plate PDFs + index.
-- **EFB** — Electronic Flight Bag; the cockpit-app category CommSight belongs to.
+- **EFB** — Electronic Flight Bag; the cockpit-app category Obelisk belongs to.
 - **IAP / SID / STAR** — Instrument Approach Procedure / Standard Instrument Departure /
   Standard Terminal Arrival Route. The three coded procedure kinds.
 - **LiveATC** — a public network of internet ATC audio streams; one of the app's input sources.

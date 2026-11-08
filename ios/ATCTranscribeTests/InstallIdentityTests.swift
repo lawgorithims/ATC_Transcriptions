@@ -1,4 +1,5 @@
 import XCTest
+import Security
 @testable import ATCTranscribe
 
 /// The two facts that cannot be reconstructed after the paywall ships.
@@ -35,18 +36,52 @@ final class InstallIdentityTests: XCTestCase {
 
     /// Minted once and stable thereafter. If this ever returns a fresh UUID per call, every
     /// purchase binds to a different token and none of them can be matched to an account.
-    func testInstallIDIsStableAcrossReads() {
+    ///
+    /// Stable reads no longer prove the Keychain on their own, because a launch's stand-in is
+    /// stable too. So this also asserts the id was persisted, and finds it where it is stored.
+    func testInstallIDIsStableAcrossReads() throws {
+        try skipUnlessThisBuildCanUseTheKeychain()
         let first = InstallIdentity.installID
         XCTAssertEqual(first, InstallIdentity.installID)
         XCTAssertEqual(first, InstallIdentity.installID, "the id must come from the Keychain, not be re-minted")
         XCTAssertNotEqual(first, UUID(), "sanity: not the all-zero or a constant UUID")
+        XCTAssertTrue(InstallIdentity.resolveInstallID().persisted,
+                      "a build whose Keychain works must store the id, not hand out a launch's stand-in")
+        XCTAssertEqual(KeychainBox(service: "com.flycommsight.install").string("install_id"), first.uuidString,
+                       "the id lives at this service and account: moving it orphans every id already issued")
     }
 
-    func testInstallIDSurvivesAFirstSeenReset() {
+    func testInstallIDSurvivesAFirstSeenReset() throws {
+        try skipUnlessThisBuildCanUseTheKeychain()
         let id = InstallIdentity.installID
         UserDefaults.standard.removeObject(forKey: firstSeenKey)
         XCTAssertEqual(id, InstallIdentity.installID,
                        "the install id lives in the Keychain and must not be tied to a UserDefaults key")
+        XCTAssertTrue(InstallIdentity.resolveInstallID().persisted,
+                      "equal ids prove nothing on their own: a launch's stand-in is stable too")
+    }
+
+    /// Skips when this test host cannot use the Keychain at all, which means an unsigned build.
+    ///
+    /// Asked with raw Security calls on a service of its own, so no change to `KeychainBox` or
+    /// `InstallIdentity` can turn a failure of theirs into a skip; only the build can. Built with
+    /// `CODE_SIGNING_ALLOWED=NO` the app carries no entitlements, so no keychain access group, and
+    /// every call answers -34018: the install id cannot persist there by construction. What it
+    /// falls back to is tested in every build by `InstallIdentityFallbackTests`.
+    private func skipUnlessThisBuildCanUseTheKeychain() throws {
+        let probe: [CFString: Any] = [kSecClass: kSecClassGenericPassword,
+                                      kSecAttrService: "com.flycommsight.tests.keychain-probe",
+                                      kSecAttrAccount: "probe"]
+        var add = probe
+        add[kSecValueData] = Data("probe".utf8)
+        let status = SecItemAdd(add as CFDictionary, nil)
+        SecItemDelete(probe as CFDictionary)
+        try XCTSkipIf(status == errSecMissingEntitlement,
+                      "This build has no keychain access group (-34018): it was built with "
+                      + "CODE_SIGNING_ALLOWED=NO, so the install id cannot persist and there is nothing "
+                      + "here to test. Build signed for the simulator, as ios/RELEASING.md §3 does.")
+        XCTAssertTrue(status == errSecSuccess || status == errSecDuplicateItem,
+                      "the Keychain probe failed for a reason other than the build's signing: \(status)")
     }
 
     // MARK: First-seen build
@@ -111,6 +146,102 @@ final class InstallIdentityTests: XCTestCase {
         InstallIdentity.resetForTesting()
         UserDefaults.standard.set(paywall, forKey: appModelKey)
         XCTAssertFalse(InstallIdentity.isPrePaywallInstall, "an install on the paywall build is not legacy")
+    }
+}
+
+/// What the install id does when the Keychain will not keep it, run against a fake Keychain. The
+/// release gate's signed build never refuses, so this is the only place the fallback runs there.
+///
+/// The failure this replaced (2026-10-29): a simulator build made with `CODE_SIGNING_ALLOWED=NO` has
+/// no keychain access group, every Keychain call returned -34018, `KeychainBox.set` asserted on it,
+/// and the unit suite crashed twice.
+final class InstallIdentityFallbackTests: XCTestCase {
+
+    /// One account's worth of Keychain: what a read answers, whether a write lands, writes tried.
+    private final class FakeKeychain: KeychainStoring {
+        var answer: KeychainBox.Lookup
+        let acceptsWrites: Bool
+        private(set) var writes = 0
+
+        init(answer: KeychainBox.Lookup, acceptsWrites: Bool) {
+            self.answer = answer
+            self.acceptsWrites = acceptsWrites
+        }
+
+        func lookup(_ account: String) -> KeychainBox.Lookup { answer }
+
+        func set(_ account: String, string value: String) -> Bool {
+            writes += 1
+            guard acceptsWrites else { return false }
+            answer = .found(Data(value.utf8))
+            return true
+        }
+    }
+
+    private let candidate = UUID()
+
+    private func resolve(_ keychain: FakeKeychain) -> InstallIdentity.Resolution {
+        InstallIdentity.resolveInstallID(in: keychain, candidate: candidate)
+    }
+
+    /// THE REPORTED CRASH: every call refused with -34018. Nothing traps, and the launch gets one
+    /// stand-in that every read agrees on and that says it is not persisted.
+    func testAKeychainWithoutTheEntitlementGivesOneStandInPerLaunch() {
+        let keychain = FakeKeychain(answer: .unavailable(errSecMissingEntitlement), acceptsWrites: false)
+        let first = resolve(keychain)
+        XCTAssertEqual(first, InstallIdentity.Resolution(id: candidate, persisted: false))
+        XCTAssertEqual(resolve(keychain), first, "every read in one launch must hand out the same id")
+    }
+
+    /// A device not unlocked since boot answers -25308 to a read of an id that IS stored. Minting
+    /// over it would orphan any purchase bound to the real one, so a Keychain that could not be
+    /// read is never written to. (The code before this minted on any failed read.)
+    func testAKeychainThatCannotBeReadIsNeverWrittenTo() {
+        let keychain = FakeKeychain(answer: .unavailable(errSecInteractionNotAllowed), acceptsWrites: true)
+        XCTAssertFalse(resolve(keychain).persisted)
+        XCTAssertEqual(keychain.writes, 0, "a read the Keychain refused is not evidence that nothing is stored")
+    }
+
+    /// Nothing stored and the write refused: the stand-in, and the next read tries the write again.
+    func testARefusedWriteGivesTheStandInAndIsRetried() {
+        let keychain = FakeKeychain(answer: .absent, acceptsWrites: false)
+        XCTAssertEqual(resolve(keychain), InstallIdentity.Resolution(id: candidate, persisted: false))
+        XCTAssertEqual(resolve(keychain).id, candidate)
+        XCTAssertEqual(keychain.writes, 2, "a refused write is retried, never assumed to have landed")
+    }
+
+    /// A fresh install stores the candidate, then reads it back without writing again.
+    func testAFreshInstallStoresTheCandidateOnce() {
+        let keychain = FakeKeychain(answer: .absent, acceptsWrites: true)
+        let persisted = InstallIdentity.Resolution(id: candidate, persisted: true)
+        XCTAssertEqual(resolve(keychain), persisted)
+        XCTAssertEqual(resolve(keychain), persisted)
+        XCTAssertEqual(keychain.writes, 1, "an id already stored is read back, never re-minted")
+    }
+
+    /// An id already stored wins over this launch's candidate, and nothing is written.
+    func testAStoredIDWinsOverTheCandidate() {
+        let stored = UUID()
+        let keychain = FakeKeychain(answer: .found(Data(stored.uuidString.utf8)), acceptsWrites: true)
+        XCTAssertEqual(resolve(keychain), InstallIdentity.Resolution(id: stored, persisted: true))
+        XCTAssertEqual(keychain.writes, 0)
+    }
+
+    /// A stand-in handed out while the Keychain could not be read is the id it stores once it
+    /// answers "nothing here", so one launch never hands out two different ids.
+    func testTheStandInIsTheIDStoredWhenTheKeychainRecovers() {
+        let keychain = FakeKeychain(answer: .unavailable(errSecInteractionNotAllowed), acceptsWrites: true)
+        let before = resolve(keychain)
+        XCTAssertFalse(before.persisted)
+        keychain.answer = .absent                                       // unlocked: a fresh install after all
+        XCTAssertEqual(resolve(keychain), InstallIdentity.Resolution(id: before.id, persisted: true))
+    }
+
+    /// A stored value that is not a UUID was never issued by this type, so replacing it orphans nothing.
+    func testAStoredValueThatIsNotAUUIDIsReplaced() {
+        let keychain = FakeKeychain(answer: .found(Data("not-a-uuid".utf8)), acceptsWrites: true)
+        XCTAssertEqual(resolve(keychain), InstallIdentity.Resolution(id: candidate, persisted: true))
+        XCTAssertEqual(keychain.writes, 1)
     }
 }
 

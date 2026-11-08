@@ -131,7 +131,7 @@ struct BatteryTelemetry: Decodable, Sendable, Equatable {
     var isLow: Bool { (clampedPercent ?? 100) < 20 && !(charging ?? false) }
 }
 
-/// Whether the Obelisk's noise filter is engaged, and what CommSight is being fed.
+/// Whether the Obelisk's noise filter is engaged, and what Obelisk is being fed.
 ///
 /// The distinction matters for transcription accuracy: noise reduction tuned to help a human
 /// listener can chew up consonants and *hurt* ASR. This reports the truth so the two can be

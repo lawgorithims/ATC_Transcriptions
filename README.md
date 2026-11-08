@@ -8,7 +8,7 @@ model. The repo holds **two implementations** of the same pipeline:
 | [`python-legacy/`](python-legacy/) | The original **Python** implementation: model fine-tuning/training tooling, the airport-context engine, the live ATC pipeline, and a server + browser console (a thin client that talks to a Python host running the model). | [`python-legacy/README.md`](python-legacy/README.md) |
 | [`ios/`](ios/) | A native **iOS / iPadOS** port that runs the **entire pipeline on-device** (capture → VAD → preprocessing → airport-context prompt → Whisper via CoreML/WhisperKit → speaker labelling → two-tier on-device correction), with no server. Universal iPhone + iPad. | [`ios/README.md`](ios/README.md) |
 
-> **Status.** The iOS app (product name **CommSight**, bundle `com.flycommsight.atctranscribe`) is the
+> **Status.** The iOS app (product name **Obelisk**, bundle `com.flycommsight.atctranscribe`) is the
 > actively shipping implementation — currently **TestFlight build 41** (offline ForeFlight hand-off),
 > layered on build 40's coded CIFP procedures + voice clearance loader and a fully-remediated
 > **23-finding reliability/safety audit** ([`ios/REMEDIATION.md`](ios/REMEDIATION.md)). The full
@@ -77,7 +77,7 @@ The current architecture, feature set, and the audit remediation are documented 
 ## Repository layout
 
 ```
-ATC_Transcribe/                  # repository root (product name: CommSight)
+ATC_Transcribe/                  # repository root (product name: Obelisk)
 ├── ios/             # native on-device iOS/iPadOS app (Swift, WhisperKit/CoreML) — the shipping product
 │   ├── README.md            # iOS build/architecture guide
 │   ├── ATCTranscribe/       # app sources: Audio, Core, Engine, Aircraft, Hazards, Download, UI, Models, Resources

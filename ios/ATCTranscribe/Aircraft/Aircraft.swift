@@ -8,7 +8,7 @@ struct Coord: Sendable, Equatable, Hashable, Codable {
     var lon: Double
 }
 
-/// One ADS-B contact from airplanes.live, normalized for the UI + corrector.
+/// One ADS-B contact from the online feed, normalized for the UI + corrector.
 ///
 /// Freshness is anchored to **when the snapshot bytes arrived** (`fetchedAt`) minus the
 /// server-relative age (`seenPosSec ?? seenSec`), NOT to poll time — so a parked-but-transmitting
@@ -50,14 +50,14 @@ struct Aircraft: Identifiable, Equatable, Sendable {
     /// Best spoken label: callsign preferred, else registration.
     var label: String? { callsign ?? registration }
 
-    // MARK: - Decoding (airplanes.live /v2/point)
+    // MARK: - Decoding (readsb/tar1090 `/v2/point` — adsb.lol today; see LiveAircraftFetcher)
 
     /// Decode a `/v2/point` response into normalized contacts plus the server clock (for a skew
     /// sanity check at the call site). Tolerant: a malformed `ac` element is skipped (never fatal),
     /// and an unknown `alt_baro` is treated as on-ground rather than throwing.
     static func decode(_ data: Data, fetchedAt: Date) throws -> (aircraft: [Aircraft], serverNow: Date?) {
         let resp = try JSONDecoder().decode(ADSBResponse.self, from: data)
-        // `now` is a unix timestamp; airplanes.live emits milliseconds — normalize to seconds.
+        // `now` is a unix timestamp; these feeds emit milliseconds — normalize to seconds.
         let serverNow = resp.now.map { Date(timeIntervalSince1970: $0 > 1_000_000_000_000 ? $0 / 1000 : $0) }
         let list = (resp.ac ?? []).compactMap { $0.aircraft(fetchedAt: fetchedAt) }
         return (list, serverNow)

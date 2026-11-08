@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CommSight cockpit-audio Pi self-test.
+# Obelisk cockpit-audio Pi self-test.
 #
 # Runs ON the Raspberry Pi (the Stratux box). This file may live on the FAT32
 # boot partition (/boot/firmware/stratux-pi/...), where the exec bit cannot be
@@ -24,7 +24,7 @@ fail() { printf 'FAIL  %s\n' "$1"; FAIL_COUNT=$((FAIL_COUNT + 1)); }
 warn() { printf 'WARN  %s\n' "$1"; WARN_COUNT=$((WARN_COUNT + 1)); }
 note() { printf 'NOTE  %s\n' "$1"; }
 
-echo "== CommSight cockpit-audio Pi self-test =="
+echo "== Obelisk cockpit-audio Pi self-test =="
 echo
 
 # ---- port: env AUDIO_PORT wins, then /etc/default/cockpit-audio, then 8090

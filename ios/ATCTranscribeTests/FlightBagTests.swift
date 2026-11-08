@@ -22,7 +22,19 @@ final class FlightBagTests: XCTestCase {
         let exp = try XCTUnwrap(Procedures.expiryDate)
         XCTAssertLessThan(eff, exp, "effective date precedes expiry")
         // FAA d-TPP cycles are 28 days.
-        let days = Calendar.current.dateComponents([.day], from: eff, to: exp).day ?? 0
+        //
+        // Counted in UTC, NOT `Calendar.current` — the same rule `Procedures.daysUntilExpiry`
+        // states for itself ("counted in UTC so it doesn't drift with the device timezone"),
+        // because both dates are 0901Z instants.
+        //
+        // This is not pedantry. Measured with a local calendar, any cycle that straddles a DST
+        // transition comes up a day short: cycle 2611 runs 2026-10-29 to 2026-11-26, US DST ends
+        // on 2026-11-01, and in America/Denver those two instants are 27 days 23 hours apart —
+        // so this assertion failed on correct data, for a reason that had nothing to do with the
+        // FAA. It would have recurred every autumn.
+        var utc = Calendar(identifier: .gregorian)
+        utc.timeZone = try XCTUnwrap(TimeZone(identifier: "UTC"))
+        let days = utc.dateComponents([.day], from: eff, to: exp).day ?? 0
         XCTAssertEqual(days, 28, "a d-TPP cycle is 28 days")
     }
 

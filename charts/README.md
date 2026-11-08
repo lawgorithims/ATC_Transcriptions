@@ -1,7 +1,7 @@
 # Self-hosted FAA chart tiles
 
 A pipeline + tile server that turns official FAA raster aeronautical charts (VFR **sectionals** and
-IFR **enroute low**) into a seamless Web-Mercator tile set (MBTiles + XYZ) that CommSight renders as a
+IFR **enroute low**) into a seamless Web-Mercator tile set (MBTiles + XYZ) that Obelisk renders as a
 real chart base layer — the same charts a pilot uses, working fully offline in the cockpit.
 
 ## Why self-hosted
