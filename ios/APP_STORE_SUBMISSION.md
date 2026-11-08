@@ -22,7 +22,7 @@ is already done:
 | Rename the ASC record | ✅ already **`Obelisk EFB`** — the name `Obelisk` was evidently taken |
 | Enable Sign In with Apple on the App ID | ✅ already on — `APPLE_ID_AUTH` is in the App ID's capabilities |
 | The agreement 403 | ✅ cleared — the API returns 200 |
-| Build number | ⚠️ **112**, not 111 — see §2.3 |
+| Build number | ✅ **116** — uploaded 2026-11-08, `VALID`, read back from ASC. See §2.3 |
 | The website | ✅ live, **including the new native auth routes** — see §2.4 |
 
 **Nothing on this list is blocking any more.** The build is on TestFlight and the listing can be
@@ -36,9 +36,18 @@ answers, the subtitle, and the review notes. Every asset that work needs is now 
 `docs/appstore/promo/` (five promotional images at the sizes App Store Connect offers), and the
 two screenshot sets.
 
-### Submit build 114
+### Submit build 116
 
-**Build 114 is the one to submit.** Uploaded 2026-11-02 from `3bbbe44` on a clean tree, and Apple
+**Build 116 is the one to submit** — uploaded 2026-11-08 from `3674e3b` on a clean
+tree, `VALID` in App Store Connect about five minutes later, read back from `GET /v1/builds` and not
+inferred from the uploader. It is 114 plus the smaller avoid map, the logbook crash fixes, NRST in the
+top bar, the aircraft editor, chevron traffic, the iPhone panel fits, and build 116's release note.
+Its bundled nav cycle is still 2611, effective 2026-10-29 and expiring **2026-11-26** — current now,
+but see the warning at the end of this section if review runs long.
+
+The rest of this section is the 114 pass, kept because its reasoning still applies:
+
+**Build 114 was the one to submit.** Uploaded 2026-11-02 from `3bbbe44` on a clean tree, and Apple
 reports `VALID` — read back from `GET /v1/builds`, three minutes after upload, not inferred from
 the uploader saying "Upload succeeded".
 
@@ -54,6 +63,13 @@ TestFlight and still `VALID`; it is simply older than the code. What it is missi
 
 The build number came from App Store Connect (`GET /v1/builds?filter[app]={id}&sort=-version`
 reported 113 as the highest), never from the local `build/` directory. §2.3 has the trap.
+
+⚠️ **THE BUNDLED NAV CYCLE EXPIRES 2026-11-26.** `RELEASING.md` §1's rule is to refresh the bundle
+when you submit, and cycle 2611 satisfies that today. The bundle is only the floor — `NavDataLibrary`
+updates procedures, airports and the plate index over the air — so a connected device is never stuck
+with it. But a first launch with NO signal after 26 November opens on an expired-data banner, which is
+exactly the state §1 describes finding on 2026-10-20. If review runs past that date, re-bundle and
+upload a replacement build rather than letting it go live that way.
 
 ⚠️ **114 is a build whose BUNDLED DATA moved, not only its code.** `nav/plate_georef.json` gained
 890 airport diagrams and had 9,898 approach rotations corrected, so it is `RELEASING.md` §1 that
@@ -310,7 +326,8 @@ at runtime with error 1000, which reads like a network fault and is not one.
   evidently taken, and the name is a free-text field in any case; the bundle id never changes.
 - **Privacy Policy URL:** `https://obeliskaerospace.com/legal/privacy`
 - Fill in **App Privacy** to match `PrivacyInfo.xcprivacy` (§1).
-- **Select build 114** — uploaded 2026-11-02, `VALID`.
+- **Select build 116** — uploaded 2026-11-08, `VALID`. (The version record still has **112**
+  attached from an earlier pass, so this has to be changed, not just confirmed.)
 
   The trap `RELEASING.md` §4 warns about has now caught this project twice, so it is worth the
   space. Local archives stopped at `ATCTranscribe_109.xcarchive`, which suggests 110 — but App
