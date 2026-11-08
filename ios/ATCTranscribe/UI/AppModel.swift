@@ -906,9 +906,9 @@ final class AppModel: ObservableObject {
     @Published var showAvoidMap = (UserDefaults.standard.object(forKey: "atc.map.avoid") as? Bool) ?? true {
         didSet { UserDefaults.standard.set(showAvoidMap, forKey: "atc.map.avoid") }
     }
-    /// Include the broad ground cover (trees, water, built-up, steep) or only the hidden hazards (wires,
-    /// obstacles, solar farms, orchards). In wooded country the cover paints most of the map, and a pilot
-    /// may want the hazards alone.
+    /// Include the land cover (trees, water, built-up areas) or only the hidden hazards (wires, obstacles,
+    /// solar farms, orchards) and steep ground, which is always drawn. In wooded country the cover paints
+    /// most of the map, and a pilot may want the hazards alone.
     @Published var showAvoidCover = (UserDefaults.standard.object(forKey: "atc.map.avoidCover") as? Bool) ?? false {
         didSet { UserDefaults.standard.set(showAvoidCover, forKey: "atc.map.avoidCover") }
     }

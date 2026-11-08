@@ -15,6 +15,11 @@ Overviews: the hidden hazards (wires, obstacles, solar, orchards) survive any zo
 2x2 below), because a pilot zoomed out still needs to see a line of wires. The broad cover reasons
 (water, developed, trees, steep) need a majority of the 2x2, so they do not swell up the pyramid —
 plain OR took the old layer's slope-excluded share from 16% to 73% between z13 and z8.
+
+Land cover stops at z11 (schema 2). z11 is built from z12 with every reason in it, and only THEN is
+land cover (water, developed, trees) cleared from z12, whose tiles keep the hazards and steep ground.
+The app draws a z12 tile's land cover from its z11 parent. It is off by default there, and it was 54%
+of z12's bytes (z12 was 937 MB of the 1.37 GB map, 2026-10-29).
 """
 import argparse
 import glob
@@ -186,6 +191,39 @@ def write_level(db, z, clearer):
     return n
 
 
+STRIP_CHUNK = 4096
+
+
+def strip_land_cover(db):
+    """Clear LAND_COVER from every z12 tile; a tile left with nothing in it is deleted (a missing tile
+    is clear). Only once z11 exists: z11 is where the app reads that land cover from, so it must have
+    been built from the full masks. Returns (z12 tiles kept, z12 tiles deleted)."""
+    total = db.execute("SELECT COUNT(*) FROM tiles WHERE zoom_level=?", (C.ZOOM,)).fetchone()[0]
+    parents = db.execute("SELECT COUNT(*) FROM tiles WHERE zoom_level=?", (C.LAND_COVER_ZOOM,)).fetchone()[0]
+    assert total == 0 or parents > 0, "strip_land_cover before z11 is built: the land cover would be lost"
+    keep = np.uint8(0xFF & ~C.LAND_COVER)
+    last, kept, dropped = 0, 0, 0
+    for _ in range(total // STRIP_CHUNK + 1):                        # bounded by the z12 tiles
+        rows = db.execute("SELECT rowid, tile_data FROM tiles WHERE zoom_level=? AND rowid>? ORDER BY rowid "
+                          "LIMIT ?", (C.ZOOM, last, STRIP_CHUNK)).fetchall()
+        if not rows:
+            break
+        for rowid, blob in rows:                                     # bounded: one chunk
+            arr = C.unpack_tile(blob)
+            assert arr is not None, f"undecodable z12 tile (rowid {rowid}) in the output"
+            if not (arr & keep).any():
+                db.execute("DELETE FROM tiles WHERE rowid=?", (rowid,))
+                dropped += 1
+                continue
+            if (arr & C.LAND_COVER).any():
+                db.execute("UPDATE tiles SET tile_data=? WHERE rowid=?", (C.pack_tile(arr & keep), rowid))
+            kept += 1
+        last = rows[-1][0]
+        db.commit()
+    assert kept + dropped == total, f"strip_land_cover visited {kept + dropped} of {total} z12 tiles"
+    return kept, dropped
+
+
 def sha256(path):
     h = hashlib.sha256()
     with open(path, "rb") as f:
@@ -219,15 +257,24 @@ def main():
     clearer = RunwayClearer()
     counts = {C.ZOOM: write_z12(st, db, a.slope_deg, clearer)}
     print(f"z{C.ZOOM}: {counts[C.ZOOM]} tiles {time.time() - t0:.0f}s", flush=True)
+    stripped = None
     for z in range(C.ZOOM - 1, C.MIN_ZOOM - 1, -1):                  # bounded: z11..z8
         counts[z] = write_level(db, z, clearer)
         print(f"z{z}: {counts[z]} tiles {time.time() - t0:.0f}s", flush=True)
+        if z == C.LAND_COVER_ZOOM:                                   # built from the FULL z12: strip it now
+            counts[C.ZOOM], dropped = strip_land_cover(db)
+            stripped = {"z12_tiles_before": counts[C.ZOOM] + dropped, "z12_tiles_emptied": dropped}
+            print(f"z{C.ZOOM}: land cover stripped, {dropped} tiles had nothing else, {counts[C.ZOOM]} kept "
+                  f"{time.time() - t0:.0f}s", flush=True)
+    assert stripped is not None, "z12 still carries land cover"
+    tile_bytes = dict(db.execute("SELECT zoom_level, SUM(LENGTH(tile_data)) FROM tiles GROUP BY zoom_level"))
     db.execute("VACUUM")
     db.close()
     os.replace(tmp, a.out)
     size = os.path.getsize(a.out)
     digest = sha256(a.out)
     report = {"path": a.out, "bytes": size, "sha256": digest, "tiles_per_zoom": counts,
+              "tile_bytes_per_zoom": tile_bytes, "land_cover_strip": stripped,
               "cells": len(cells), "slope_deg": a.slope_deg, "seconds": round(time.time() - t0)}
     with open(a.out + ".json", "w") as f:
         json.dump(report, f, indent=1)
@@ -236,13 +283,14 @@ def main():
 
 def build_meta(cells, slope_deg, inputs):
     return {
-        "name": "CommSight where-not-to-go map (CONUS)",
+        "name": "Obelisk where-not-to-go map (CONUS)",
         "format": "avoid1",
-        "avoid_schema": "1",
+        "avoid_schema": C.MAP_SCHEMA,
         "minzoom": str(C.MIN_ZOOM), "maxzoom": str(C.ZOOM),
         "bounds": ",".join(str(v) for v in C.CONUS_BBOX),
         "bits": {name: bit for bit, name in C.BIT_NAMES.items()},
         "cover_bits": str(C.COVER), "hazard_bits": str(C.HAZARD),
+        "land_cover_bits": str(C.LAND_COVER), "land_cover_maxzoom": str(C.LAND_COVER_ZOOM),
         "slope_threshold_deg": str(slope_deg),
         "cells": cells,
         "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),

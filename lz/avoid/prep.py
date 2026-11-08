@@ -9,6 +9,7 @@ Writes into $AVOID_WORK/shared:
   points.npz          DOF obstacles + USWTDB turbines + airport discs: x, y, radius (Mercator m), bit
   dem_1as.vrt         the 3DEP 1 arc-second seamless VRT (its sources stay remote /vsicurl COGs)
   inputs.json         paths, vintages, counts: the provenance written into the map's metadata
+and $AVOID_WORK/cells.txt, the cells run.py builds (`prep.py --cells` writes only that).
 """
 import csv
 import glob
@@ -320,9 +321,39 @@ def _rect_feature(lyr, la1, lo1, la2, lo2, width_ft):
     return f
 
 
+DEM_LIST_URL = ("https://prd-tnm.s3.amazonaws.com/?list-type=2&delimiter=/"
+                "&prefix=StagedProducts/Elevation/1/TIFF/current/")
+
+
+def prep_cells():
+    """Every 3DEP 1 arc-second tile whose NW corner is in the CONUS box, from the bucket's own listing:
+    a tile 3DEP does not have would fail its cell, so it is never queued. Writes cells.txt for run.py
+    (1,168 cells on 2026-10-29; 213 of them are sea or Canada and build as "empty")."""
+    import html
+    import re
+    import urllib.parse
+    names, token = [], None
+    for _ in range(20):                                             # bounded: pages of 1,000 tiles
+        url = DEM_LIST_URL + (f"&continuation-token={urllib.parse.quote(token, safe='')}" if token else "")
+        req = urllib.request.Request(url, headers={"User-Agent": "Obelisk-avoid-build/1.0"})
+        text = urllib.request.urlopen(req, timeout=120).read().decode()
+        names += re.findall(r"<Prefix>StagedProducts/Elevation/1/TIFF/current/([a-z0-9]+)/</Prefix>", text)
+        nxt = re.search(r"<NextContinuationToken>([^<]+)</NextContinuationToken>", text)
+        if nxt is None:
+            break
+        token = html.unescape(nxt.group(1))
+    w, s, e, n = C.CONUS_BBOX
+    cells = sorted(c for c in set(names) if re.fullmatch(r"n\d\dw\d{3}", c)
+                   and s + 1 <= int(c[1:3]) <= n and w <= -int(c[4:7]) <= e)
+    assert len(names) > 3000 and 500 < len(cells) < 2000, f"prep_cells: {len(names)} tiles, {len(cells)} cells"
+    with open(os.path.join(C.WORK, "cells.txt"), "w") as f:
+        f.write("\n".join(cells) + "\n")
+    return {"dem_tiles": len(names), "cells": len(cells)}
+
+
 def prep_dem_vrt():
     path = os.path.join(C.SHARED, "dem_1as.vrt")
-    req = urllib.request.Request(DEM_VRT_URL, headers={"User-Agent": "CommSight-avoid-build/1.0"})
+    req = urllib.request.Request(DEM_VRT_URL, headers={"User-Agent": "Obelisk-avoid-build/1.0"})
     data = urllib.request.urlopen(req, timeout=120).read()
     assert data.lstrip().startswith(b"<VRTDataset") and len(data) > 100000, "dem VRT is not a VRT"
     with open(path, "wb") as f:
@@ -334,6 +365,9 @@ def prep_dem_vrt():
 
 def main():
     os.makedirs(C.SHARED, exist_ok=True)
+    if sys.argv[1:] == ["--cells"]:
+        print(json.dumps(prep_cells()))
+        return
     if sys.argv[1:] == ["--runways-approx"]:                       # added after the cells were built
         with open(os.path.join(C.SHARED, "inputs.json")) as f:
             info = json.load(f)
@@ -366,6 +400,7 @@ def main():
     info["built_from"]["points"] = counts
     info["built_from"]["runways"] = rcounts
     info["built_from"]["dem"] = prep_dem_vrt()
+    info["built_from"]["cells"] = prep_cells()
     info["vintages"] = {"nlcd": "Annual NLCD C1.2 2025", "cdl": "USDA CDL 2025 30 m",
                         "lines": "HIFLD/ORNL transmission lines, data to 2024-09-26 (HIFLD Next v1.0.0)",
                         "solar": "USPVDB v4.0 2026-04-14", "turbines": "USWTDB v9.1 2026-09-28",

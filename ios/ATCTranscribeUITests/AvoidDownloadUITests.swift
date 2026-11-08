@@ -4,7 +4,7 @@ import XCTest
 /// Downloads › Where not to go, every band fetched, verified and installed, and the map then saying it
 /// covers the contiguous US.
 ///
-/// OPT-IN: it moves about 1.5 GB, so it skips unless the runner's environment has AVOID_DOWNLOAD_E2E=1
+/// OPT-IN: it moves about 1 GB, so it skips unless the runner's environment has AVOID_DOWNLOAD_E2E=1
 /// (`TEST_RUNNER_AVOID_DOWNLOAD_E2E=1 xcodebuild test-without-building …`). Run it after every publish:
 /// `lz/avoid/publish.py --verify` proves the files answer; this proves the APP can use them.
 final class AvoidDownloadUITests: XCTestCase {
@@ -12,7 +12,7 @@ final class AvoidDownloadUITests: XCTestCase {
     override func setUpWithError() throws {
         continueAfterFailure = false
         try XCTSkipUnless(ProcessInfo.processInfo.environment["AVOID_DOWNLOAD_E2E"] == "1",
-                          "opt-in: TEST_RUNNER_AVOID_DOWNLOAD_E2E=1 downloads the national map (~1.5 GB)")
+                          "opt-in: TEST_RUNNER_AVOID_DOWNLOAD_E2E=1 downloads the national map (~1 GB)")
     }
 
     func testTheHostedMapDownloadsAndInstallsEveryBand() throws {
@@ -39,7 +39,9 @@ final class AvoidDownloadUITests: XCTestCase {
         let installed = el("downloads-avoid-installed")
         let done = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label BEGINSWITH 'Installed · built'"),
                                              object: installed)
-        let result = XCTWaiter().wait(for: [done], timeout: 1_800)
+        // An hour: ~1 GB needs 0.3 MB/s to make it. Measured 0.37 MB/s from this Mac on 2026-11-07, when
+        // 30 minutes could not have been enough.
+        let result = XCTWaiter().wait(for: [done], timeout: 3_600)
         XCTAssertEqual(result, .completed, "the map never finished installing; it says \"\(installed.label)\"")
         XCTAssertFalse(el("downloads-avoid-update").exists, "every band installed, yet it offers more to fetch")
     }
