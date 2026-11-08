@@ -88,6 +88,14 @@ final class LZRiskController: ObservableObject {
         // it also means the shading is WEAKER without the avoid map than with it, and the layer
         // currently gives the pilot no way to tell which they are looking at. Say so in the UI
         // before this is ever ungated (`AppModel.offFieldLayerAvailable`).
+        //
+        // ⚠️ `mask`, NOT `maskWithLandCover`, AND THAT IS DELIBERATE. Under avoid schema 2 a z12
+        // tile holds the hazards and steep ground only; `maskWithLandCover` fetches the z11 parent
+        // to add water, developed and trees back. This veto does not want them — the pack judges
+        // land cover itself, and vetoing it twice is what makes the OTHER half of the eval worse.
+        // `LZTileCompositor.avoidVetoMask` is a subset of what survives at z12, so this is already
+        // a complete answer for every bit it reads, and it skips a second tile fetch per tile.
+        // `LZAvoidVetoTests.testEveryBitTheVetoReadsSurvivesAtTheFinestZoom` pins that.
         c.avoidMask = { z, x, y in AvoidMapStore.shared.mask(z: z, x: x, y: y) }
         compositor = c
         compositorForSampling = c

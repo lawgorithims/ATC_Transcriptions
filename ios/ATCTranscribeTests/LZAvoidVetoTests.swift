@@ -27,6 +27,21 @@ final class LZAvoidVetoTests: XCTestCase {
         }
     }
 
+    /// ⚠️ THE VETO READS `mask`, NOT `maskWithLandCover`, so every bit in its mask must be one a
+    /// z12 tile actually STORES. Avoid schema 2 keeps the hazards and steep ground at z12 and
+    /// pushes `AvoidMap.landCover` up to z11, where this veto never looks. Move a bit the veto
+    /// reads into `landCover` and `mask` starts answering 0 for it: the veto quietly stops vetoing
+    /// it, every test above still passes, and the eval cannot see it either because its sampler
+    /// does not read the avoid bands. That is a silent regression with no other alarm on it.
+    func testEveryBitTheVetoReadsSurvivesAtTheFinestZoom() {
+        XCTAssertEqual(LZTileCompositor.avoidVetoMask & AvoidMap.landCover, 0,
+                       "a bit this veto reads is only stored at z\(AvoidMap.landCoverZoom), but the "
+                       + "veto reads z\(AvoidMap.maxZoom) via mask(): it would read as clear")
+        XCTAssertEqual(AvoidMap.landCoverZoom + 1, AvoidMap.maxZoom,
+                       "land cover is no longer exactly one level above the finest zoom — recheck "
+                       + "that mask() at maxZoom is still a complete answer for the veto's bits")
+    }
+
     /// ⚠️ NIL IS NOT ZERO. The avoid map is an optional ~1 GB download; a pilot without it must get
     /// exactly the scores they got before this veto existed, not a blank map.
     func testWithoutTheAvoidMapEveryScoreIsUnchanged() throws {
