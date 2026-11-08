@@ -117,17 +117,23 @@ again. The release note has to say so (step 7).
      map, so `LZTileCompositor.avoidMask` returns nil throughout and the veto is inert by design. A green
      gate says this release does not break anything; it does not say the veto works. Step 6 is the first
      thing that touches it, and the ground-truth eval is the only thing that measures it.
-6. **Prove the app can use the hosted map.** This is opt-in and moves about 1 GB:
-   ```bash
-   TEST_RUNNER_AVOID_DOWNLOAD_E2E=1 xcodebuild test-without-building -project ATCTranscribe.xcodeproj -scheme ATCTranscribe -destination 'id=<sim udid>' -derivedDataPath <dd> -only-testing:ATCTranscribeUITests/AvoidDownloadUITests -parallel-testing-enabled YES -parallel-testing-worker-count 1
-   ```
-   - The parallel-testing clone survives other sessions' `simctl shutdown all`, which killed three runs.
-   - The link measured 0.37 MB/s on 2026-11-07, so budget up to an hour.
-   - Also walk the **upgrade path** once: build 115 with the old map installed, then this build.
-     Expect the old bands deleted at launch, Downloads offering about 1 GB, and the legend saying
-     "Not downloaded yet".
-   - Then run `~/chartenv/bin/python -I lz/avoid/publish.py --verify`. Do not run `--publish`; the
-     data is already up.
+6. ~~**Prove the app can use the hosted map.**~~ — **DONE 2026-11-08**, including the upgrade path.
+   - **Fresh install:** `AvoidDownloadUITests` passed in 60–77 s. All **11 bands installed, and every
+     one is a byte-for-byte match for the catalog**: 1,017,241,600 bytes on disk == 1,017,241,600 in
+     `index-v3.json`, and the smallest band's sha256 matches. Checked independently of the test, by
+     reading the simulator's container after the run — a green XCUITest only proves a label changed.
+   - **Upgrade path: done WITHOUT building 115.** You do not need the old binary; you need the old map.
+     Fetch the smallest band from the still-published catalog 2 (`index.json`, 17 bands, map schema 1),
+     drop it in `<container>/Library/Application Support/avoid/` as `avoid_<id>-OLD00001.mbtiles`, and
+     launch THIS build once. Result: the schema-1 band (55,799,808 bytes) was **gone after one launch**,
+     which is exactly what the release note promises a pilot. Then the download ran again and reinstalled
+     all 11 bands with the same exact byte match — so the removal marker does NOT suppress the refetch,
+     which is the hazard `testARemovedBandStaysRemovedWhenOnlySomeAreDownloadedAgain` exists to catch.
+   - **`publish.py --verify`:** green, twice. Also confirms catalog 2 is still served with its 17 bands,
+     which is what keeps builds ≤115 working.
+   - ⚠️ **THE LINK IS NOT 0.37 MB/s ANY MORE.** It moved 1.017 GB in about 70 seconds (≈15 MB/s) on
+     2026-11-08. Budget minutes, not an hour. The test's own 3,600 s timeout is a safety margin and
+     should stay as it is.
 7. ~~**Release note.**~~ — **DONE**, as build **116** in `WhatsNew.releaseNotes`, with all three
    `WhatsNewTests` pins moved (the build list, `releaseNotes.first?.build`, and the visible list, now
    `[116, 111, 110]`). Unit suite 2,490 / 0 failures, all 17 `WhatsNewTests` green.
@@ -208,6 +214,19 @@ These come from that build's gate report (2026-10-31); the work directory was de
   A gate script grepping for the plain one reports a passing build as a silent failure.
 - **`simctl get_app_container` needs a BOOTED device.** On a shut-down one it exits 149 with
   "Unable to lookup in current state: Shutdown", which looks like a sandbox denial and is not one.
+- **`-parallel-testing-enabled YES` leaves you nothing to inspect.** The run happens on "Clone 1 of
+  <device>", and the clone is deleted with its data when the run ends — so the downloaded bands go with
+  it and you cannot check what actually landed. Use the clone only when another session's
+  `simctl shutdown all` is the bigger risk; otherwise run on the base device and measure the container.
+- **Parallel testing also prints no "Executed N tests" line.** It prints `Test case '…' passed on
+  'Clone 1 of …'` instead. Grepping for "Executed" finds nothing and reads exactly like a run that
+  executed no tests — which is a trap this repo has fallen into twice. Grep for "Test case" too.
+- **Installed band files carry a content stamp the catalog does not.** On disk they are
+  `avoid_<id>-<8 hex>.mbtiles`, e.g. `avoid_w100-w94-59ED06FC.mbtiles`, while the catalog lists
+  `map/avoid_w100-w94.mbtiles`. Match on the band `id`, never the filename, or all 11 look missing and
+  all 11 look unexpected at the same time.
+- **`du -m` overstates the map by about 10%.** It reported 1,069 MB for a map whose logical size is
+  1,017,241,600 bytes (0.947 GiB). Use `os.path.getsize`/`stat` when comparing against a catalog.
 - **Getting the next build number: `altool --list-builds` does not exist.** This Xcode's altool has
   `--list-apps`, `--list-providers` and `--build-status`, none of which lists builds. The ASC REST API
   does: `GET /v1/apps?filter[bundleId]=…` then `GET /v1/builds?filter[app]=…&sort=-version`, with an
