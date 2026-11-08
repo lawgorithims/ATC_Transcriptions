@@ -331,6 +331,32 @@ is in the `commsight-ux-decisions` memory note.
   different from traffic rather than as a bigger version of it. Verified over Philadelphia with live
   ADS-B: chevrons fanning out on their individual tracks.
 
+**⚠️ THE SUITE RUNS MOSTLY ON AN iPAD, SO ASK "DOES IT FIT" DELIBERATELY.**
+
+`MapControlsUITests`, `WindOverlayUITests` and five cases in `LZLayerUITests` all `XCTSkip` at
+compact width (`UITestLayout.requireRegularWidth`), and rightly so — floating widgets, docked panes
+and the NRST panel do not exist on a phone. The side effect is that iPhone layout is barely
+exercised, which is how a 510pt layers panel shipped on a 402pt phone and survived for weeks: the
+only case that ever opened it on a phone, `AvoidLayerUITests`, failed with "the switch is not bound
+to anything" and was carried as a known flake because that sentence is product-shaped.
+
+`PanelFitUITests` is the counterweight, and `UITestLayout.requireCompactWidth` is its guard (the
+mirror of the existing one). It asserts GEOMETRY, not behaviour — that a control a pilot must touch
+is actually on the screen — because a dropped tap and a dead binding are indistinguishable from
+outside. Horizontal only, deliberately: a too-tall panel scrolls, while a popover does not scroll
+sideways and gives no hint anything is missing.
+
+⚠️ IT WAS VERIFIED AGAINST THE BROKEN PANEL, not just against the fixed one. Checking out
+`d073d37:ios/ATCTranscribe/UI/MapLayersMenu.swift` and running it fails with "a control runs 35pt
+past the RIGHT edge". Do the same to any future guard here — a regression test that has never been
+seen to fail is decoration.
+
+⚠️ ONE TEST-WRITING TRAP, hit while writing it: `app.buttons.allElementsBoundByIndex` filtered in
+Swift races, because the snapshot is taken once and elements behind a popover go stale — reading
+`.frame` then throws "Failed to get matching snapshot: No matches found for Element at index 34".
+That is a TEST bug that reads like a missing control. Match inside the query
+(`app.buttons.matching(NSPredicate(...))`), where XCUITest keeps it live.
+
 **⚠️ RUNNING XCUITEST ON A SHARED MAC — read this before trusting a UI-suite result.**
 
 Two sessions lost hours to this on 2026-11-07. Concurrent XCUITest runs on one Mac can kill each
