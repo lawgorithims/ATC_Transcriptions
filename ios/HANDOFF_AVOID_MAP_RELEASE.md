@@ -91,11 +91,32 @@ again. The release note has to say so (step 7).
 4. **Fix one stale claim.** `AvoidMapLibrary.catalogPath`'s comment and `publish.py`'s docstring say
    catalog 2 serves builds "up to 114". It is **every build before the one that carries this change**:
    115 reads it too, and so would any build shipped from `main` before this lands.
-5. **Gate it,** per `RELEASING.md` §3:
-   - Use a **signed** simulator build. An unsigned one skips two Keychain tests.
-   - Run the UI suite on an iPad: `SIM="<your iPad sim>" bash Tools/uitests.sh`.
-   - Use your own dedicated simulator and your own `DD=`, and delete the simulator when you finish.
-   - Add the Release build from §3.
+5. ~~**Gate it,** per `RELEASING.md` §3.~~ — **DONE 2026-11-08** on `0e6f18b` (this branch merged to
+   `main`, plus the veto's disjointness guard). Signed Debug build ("Sign to Run Locally"), own
+   simulators, both deleted afterwards. **Do not re-run it to see the same numbers; it is 45 minutes.**
+   - **Unit:** 2,490 executed / **9** skipped / 0 failures.
+     ⚠️ **SIGNED IS WHY IT IS 9.** The same suite on an unsigned build reports **11**: the two Keychain
+     tests in `InstallIdentityTests` skip, exactly as `RELEASING.md` §3 warns. If you see 11, you built
+     with `CODE_SIGNING_ALLOWED=NO` — it is not a regression. (That is how it was first misread here.)
+   - **UI, iPad Pro 13-inch (M5):** 71 executed / 13 skipped / 0 failures, 42 min, zero runner restarts.
+     The 13, read: 6 `ConsoleUITests` (EFB-only build, correct), 3 opt-in (both screenshot jobs and the
+     ~1 GB download of step 6), 3 `PanelFitUITests` (see below), 1 `LZLayerUITests` tap that landed on
+     nothing scored.
+   - ⚠️ **AN iPAD RUN ALONE LEAVES THE PHONE UNMEASURED.** `PanelFitUITests` is `requireCompactWidth`
+     and skips at 1032pt — and those three tests are the whole iPhone-fit guard (top bar, layers panel,
+     data-activity panel). Run them separately: on an iPhone 17 Pro, 3 executed / 0 skipped / 0 failures.
+     `Tools/uitests.sh` is iPad-only by design and will not tell you this.
+   - **Seed a pack before the UI run.** A fresh simulator has none, so `LZLayerUITests`'s pack-dependent
+     cases skip with "no .lzpack installed" — on an LZ release that is the half most worth measuring.
+     Copy one into `<app data container>/Library/Application Support/lz/`; `n33w107.lzpack` is the Las
+     Cruces cell those tests fly at (KLRU, 32.2894/-106.9219). The device must be **booted** for
+     `simctl get_app_container`, and shut it down again so the UI run boots clean.
+   - **Release build:** `** BUILD SUCCEEDED **`, 0 errors. 7 warning kinds, every one pre-existing and
+     none in `Avoid/` or in any file this release changes (checked against the commits' own hunks).
+   - ⚠️ **THE VETO ITSELF IS STILL UNEXERCISED BY ALL OF THIS.** Nothing in the suite installs the avoid
+     map, so `LZTileCompositor.avoidMask` returns nil throughout and the veto is inert by design. A green
+     gate says this release does not break anything; it does not say the veto works. Step 6 is the first
+     thing that touches it, and the ground-truth eval is the only thing that measures it.
 6. **Prove the app can use the hosted map.** This is opt-in and moves about 1 GB:
    ```bash
    TEST_RUNNER_AVOID_DOWNLOAD_E2E=1 xcodebuild test-without-building -project ATCTranscribe.xcodeproj -scheme ATCTranscribe -destination 'id=<sim udid>' -derivedDataPath <dd> -only-testing:ATCTranscribeUITests/AvoidDownloadUITests -parallel-testing-enabled YES -parallel-testing-worker-count 1
@@ -171,3 +192,8 @@ These come from that build's gate report (2026-10-31); the work directory was de
   command line, so the loop never ends. Wait on a PID.
 - **Other sessions' `simctl shutdown all` kills your runs.** Use the parallel-testing clone (step 6).
 - **Uploads ran at about 1 MB/s.** The 11 bands took 18 minutes.
+- **xcodebuild's success line is not `** BUILD SUCCEEDED **` for test actions.** `build-for-testing`
+  prints `** TEST BUILD SUCCEEDED **` and `test-without-building` prints `** TEST EXECUTE SUCCEEDED **`.
+  A gate script grepping for the plain one reports a passing build as a silent failure.
+- **`simctl get_app_container` needs a BOOTED device.** On a shut-down one it exits 149 with
+  "Unable to lookup in current state: Shutdown", which looks like a sandbox denial and is not one.
