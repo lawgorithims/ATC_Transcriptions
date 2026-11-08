@@ -23,7 +23,7 @@ the old catalog stays published untouched.
 | Old map (catalog 2) | HF dataset `SingularityUS/commsight-avoid`, `index.json` | Built 2026-10-30, 17 bands, 1.52 GB. Read by builds 111–115. **Keep.** |
 | New map (catalog 3) | same dataset, `index-v3.json` | Built 2026-10-31, 11 bands, **1.02 GB (−33%)**. Read only by the uncommitted app code. |
 | Band files | same dataset, `map/` | All 28 (17 + 11) answer an anonymous ranged GET as SQLite. |
-| Shipped builds | App Store Connect | Latest is 115 (2026-11-04); **expect 116 next, but query ASC first**. |
+| Shipped builds | App Store Connect | **115 is the highest, VERIFIED against ASC 2026-11-08** (uploaded 2026-11-04, VALID). Next unused is **116**. 112, 113, 114 and 115 all shipped. |
 | App Store | version 1.0 | `PREPARE_FOR_SUBMISSION`, **build 112 attached**. `main`'s notes name 114 as the one to submit. |
 
 ⚠️ **On 2026-11-07 the session that wrote this change was still running `AvoidDownloadUITests` in this
@@ -128,14 +128,25 @@ again. The release note has to say so (step 7).
      "Not downloaded yet".
    - Then run `~/chartenv/bin/python -I lz/avoid/publish.py --verify`. Do not run `--publish`; the
      data is already up.
-7. **Release note.** `main`'s newest note is build 111; builds 112–115 shipped without notes. Add the
-   new build to `WhatsNew.releaseNotes`, then update the `WhatsNewTests` pins: the build list,
-   `releaseNotes.first?.build`, and the visible list. Draft:
-   > **A smaller where-not-to-go map.** It now downloads at about 1 GB instead of 1.5 GB. Trees, water
-   > and built-up areas are stored at about 60 m instead of 30 m, which is where the saving comes from.
-   > Power lines, obstacles, solar farms, orchards and steep ground keep their full detail. **If you
-   > downloaded the map before, download it again** (Settings › Downloads › Where not to go): this
-   > build cannot read the old one and removes it.
+7. ~~**Release note.**~~ — **DONE**, as build **116** in `WhatsNew.releaseNotes`, with all three
+   `WhatsNewTests` pins moved (the build list, `releaseNotes.first?.build`, and the visible list, now
+   `[116, 111, 110]`). Unit suite 2,490 / 0 failures, all 17 `WhatsNewTests` green.
+   - **116 is from ASC, not from the repo.** `ios/APP_STORE_SUBMISSION.md` saying 114 is simply stale;
+     ASC has 115 as the newest, uploaded 2026-11-04 and VALID. That settles the 114-vs-115 question the
+     website handoff recorded as unresolvable from the repo. **113 also shipped**, which neither handoff
+     mentioned.
+   - ⚠️ **BUILDS 112–115 STILL HAVE NO NOTES, AND 116'S ENTRY DOES NOT COVER THEM.** That is
+     deliberate: a tester on 115 already has that work, so announcing it as new in 116 would be false.
+     But it means the gate never announces it to anyone, and a tester who was on 111 will skip straight
+     to 116's entry. The user-visible work in that gap — the Obelisk rename and icon, optional
+     accounts with logbook/notes sync, the convective-weather work, ownship on airport diagrams — is
+     unannounced. Either add back-dated entries for 112–115 (the array allows gaps and
+     non-contiguous builds) or decide in writing that it stays unannounced.
+   - 116's entry covers only what is new since 115: the smaller map (with the re-download
+     instruction, which is the one operational item in it), the logbook crash fixes, NRST in the top
+     bar, the aircraft editor, chevron traffic, the iPhone panel fits, and the ruler/airway-label fixes.
+   - The LZ hazard veto is deliberately NOT in the note: it is behind `diagnosticsEnabled`, so no
+     pilot can see it, and announcing a gated feature would be a lie.
 8. **Ship** with `Tools/ship_testflight.sh` from a clean tree. Credentials and the recipe are in
    `ios/RECOVERY.md` and `RELEASING.md` §4. Query App Store Connect for the next build number first.
    - **If this build is the App Store submission,** bundle the nav cycle in force (`RELEASING.md` §1–2).
@@ -197,3 +208,12 @@ These come from that build's gate report (2026-10-31); the work directory was de
   A gate script grepping for the plain one reports a passing build as a silent failure.
 - **`simctl get_app_container` needs a BOOTED device.** On a shut-down one it exits 149 with
   "Unable to lookup in current state: Shutdown", which looks like a sandbox denial and is not one.
+- **Getting the next build number: `altool --list-builds` does not exist.** This Xcode's altool has
+  `--list-apps`, `--list-providers` and `--build-status`, none of which lists builds. The ASC REST API
+  does: `GET /v1/apps?filter[bundleId]=…` then `GET /v1/builds?filter[app]=…&sort=-version`, with an
+  ES256 JWT. No `jwt` or `cryptography` module is installed, so sign with `openssl dgst -sha256 -sign`
+  and convert the DER signature to raw r||s yourself.
+- **`atc-ship-m1.sh`'s `AUTH` array is read with ZSH indices, which start at 1.** `AUTH[1]` is the
+  literal string `-apiKey`, not the key id — the id and issuer are `AUTH[2]` and `AUTH[4]`. Passing the
+  off-by-one values gets a 401 NOT_AUTHORIZED that reads exactly like a revoked key. Also: source only
+  the assignment lines, never the whole file, because line 39 onward does `rm -rf`.

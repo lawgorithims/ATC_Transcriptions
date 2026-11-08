@@ -36,6 +36,38 @@ enum WhatsNew {
     /// need not be contiguous" is for.
     static let releaseNotes: [ReleaseNote] = [
         ReleaseNote(
+            build: 116, version: "1.0", headline: "A smaller map, a logbook that survives a crash, and the fixes from the air",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "nosign",
+                    title: "A smaller where-not-to-go map",
+                    detail: "It now downloads at about 1 GB instead of 1.5 GB. Trees, water and built-up areas are stored at about 60 m rather than 30 m, which is where the saving comes from; power lines, towers and other obstacles, solar farms, orchards and steep ground keep their full detail. If you downloaded the map before, download it again \u{2014} Settings \u{203A} Downloads \u{203A} Where not to go. This build cannot read the old one, and removes it. Nothing else about what the layer shows has changed, and it still never shows where to land: unshaded ground is not safe ground."),
+                WhatsNewHighlight(
+                    icon: "book.closed",
+                    title: "The logbook keeps the flight, even if the app dies",
+                    detail: "A recording now survives the app being killed or crashing mid-flight. There were two ways to lose one: the in-progress file was deleted a moment before the recovered copy was written, so a crash in that gap took the flight with it, and when both files existed the app could not tell which was newer. Both are fixed. The app also says out loud when a flight is saved, when it is discarded, and when there was nothing to save \u{2014} saving and silently failing to save used to look identical. Starting a new recording over a recovered one no longer throws the recovered flight away without asking."),
+                WhatsNewHighlight(
+                    icon: "mappin.and.ellipse",
+                    title: "Nearest airports, from the top bar",
+                    detail: "NRST has moved into the top bar, next to the clock, instead of floating over the chart where it could sit under a widget or off the side. It opens the same nearest-airport list. On an iPhone, where the floating panels do not exist at all, this is now the way in."),
+                WhatsNewHighlight(
+                    icon: "airplane",
+                    title: "Edit a saved aircraft without touching your flight plan",
+                    detail: "Settings \u{203A} Aircraft now lists every aircraft you have saved, and lets you edit or remove one. Correcting a tail number, a weight or a turn-back altitude used to mean re-filing that aircraft into the active flight plan, which changed the plan you were flying. Editing an aircraft that is not filed now leaves the flight plan alone. Helicopters are not asked for a landing distance or a turn-back altitude, because neither applies."),
+                WhatsNewHighlight(
+                    icon: "location.north.fill",
+                    title: "Other traffic points where it is going",
+                    detail: "Other aircraft draw as a small orange chevron turned to their track, instead of a large orange disc. A disc tells you where an aeroplane is; a chevron tells you where it is going, which is the part you need when deciding whether it is a factor. They are smaller too, so traffic in the circuit no longer hides the chart underneath it."),
+                WhatsNewHighlight(
+                    icon: "iphone",
+                    title: "The panels fit on an iPhone",
+                    detail: "Obelisk is built for an iPad, but it installs on an iPhone, and there the layers panel was 510 pt wide inside a 402 pt screen: the right-hand column of switches ran off the edge with nothing to say so. The layers panel, the top bar and the data-activity panel now fit at phone width. The floating widgets and the docked side panes are still iPad-only by design."),
+                WhatsNewHighlight(
+                    icon: "ruler",
+                    title: "The chart ruler waits for you, and airway labels hold still",
+                    detail: "Measuring between two fingers now needs a short press and hold rather than a quick tap, so panning or zooming with two fingers no longer leaves a stray ruler behind; there is a small haptic when one is created. The ruler draws graduated ticks with the distance read off the middle. Airway labels no longer repeat along a route \u{2014} they were being placed once per map tile, so one airway could print its name several times over."),
+            ]),
+        ReleaseNote(
             build: 111, version: "1.0", headline: "Where not to go, and the turn you brief on the ground",
             highlights: [
                 WhatsNewHighlight(
