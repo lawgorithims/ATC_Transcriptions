@@ -66,8 +66,23 @@ final class PromoArtCaptureTests: XCTestCase {
         // The framing comes from the aeroplane instead: `Tools/promo_capture.sh` flies a track with
         // `simctl location`, the map follows the fix, and that is what put the good portrait shots
         // over New York at a sensible enroute zoom.
+        // The FEATURES are the picture. A bare chart is a chart; what sells an EFB is the chart with
+        // the flying on it — the filed route, weather it has to get through, and an aeroplane on a
+        // track. These stage all of that offline, so the frame is identical every run:
+        //   --demo-flightplan  KBOS→KORD via ALB SYR BUF ERI DJB OBK — the route line
+        //   --demo-storms      radar cells + convective, live pollers suppressed so they survive
+        //   --demo-hazards     EONET events on the same corridor
+        //   --hold-ownship     position, altitude, track and speed with no GPS at all, which is the
+        //                      blocker that stopped the last attempt. 42.5/-77.0 is the position
+        //                      --demo-storms' own documentation suggests, on the demo corridor.
+        //
+        // ⚠️ NO ADS-B TRAFFIC HERE, AND IT IS NOT AN OVERSIGHT. There is no demo hook for it: every
+        // other layer can be seeded offline and traffic cannot, so it needs a live feed or a new
+        // seam in the app. The artwork is missing it until one exists.
         let app = XCUIApplication()
-        app.launchArguments += ["-atc.onboardingDismissed", "YES", "--reset-widgets"]
+        app.launchArguments += ["-atc.onboardingDismissed", "YES", "--reset-widgets",
+                                "--demo-flightplan", "--demo-storms", "--demo-hazards",
+                                "--hold-ownship", "42.5", "-77.0", "39000", "270", "300"]
 
         // ⚠️ ROTATE BEFORE LAUNCH. Rotating after it was up letterboxed the app: the framebuffer
         // turned landscape while the window stayed portrait and sat in the middle of it with black

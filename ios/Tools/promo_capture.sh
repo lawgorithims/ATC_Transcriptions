@@ -130,13 +130,15 @@ import sys
 from PIL import Image
 p = sys.argv[1]
 im = Image.open(p)
-if im.width < im.height:
-    im = im.transpose(Image.ROTATE_90)          # landscapeLeft: counter-clockwise puts it upright
-    im.save(p)
-    print(f"rotated to {im.width}x{im.height}")
-else:
-    print(f"already landscape at {im.width}x{im.height}")
-assert im.width > im.height, f"frame is {im.width}x{im.height} after rotation — still not landscape"
+# ⚠️ ROTATE ON CONTENT, NOT ON DIMENSIONS. The framebuffer is 2752x2064 — landscape — so a
+# width-vs-height test says "already landscape" and passes a frame whose CONTENT is on its side,
+# tab bar running up the left edge. That shipped once. The app lays out PORTRAIT whatever the
+# device does (rotating before launch did not change it), so the content is always a quarter turn
+# off and always needs turning back.
+im = im.transpose(Image.ROTATE_90)              # top bar sits on the RIGHT; CCW puts it on top
+im.save(p)
+print(f"turned upright: {im.width}x{im.height}")
+assert im.height > im.width, f"frame is {im.width}x{im.height} — the app layout is portrait"
 PY
 
 printf "== frame: "; sips -g pixelWidth -g pixelHeight "$FRAME" | awk '/pixel/{printf "%s ", $2} END{print ""}'

@@ -61,25 +61,28 @@ OUT_DIR = os.path.join(IOS, "docs/appstore/promo")
 # The day enroute shot. The night plate-on-map frame was tried first and is worse for this:
 # the plate is a near-white slab that lands dead centre, which is the one place Apple's white
 # title text goes. This frame's interest is spread across it and darkens evenly.
-SOURCE = os.path.join(IOS, "docs/appstore/iPad-Pro-13-inch-M5/01-map.png")
-SOURCE_SIZE = (2064, 2752)          # asserted: a re-shot screenshot of another size would
-                                    # silently move every crop boundary below
+SOURCE = os.path.join(IOS, "docs/appstore/promo-src/promo-chart-landscape.png")
+SOURCE_SIZE = (2064, 2752)          # asserted: a re-shot frame of another size would silently
+                                    # move every crop boundary below
 
 # The chrome-free rectangle of that capture, as (left, top, right, bottom).
 #
 # Every edge is a piece of interface, and each one is why that number is what it is:
-#   left   0     nothing intrudes from the left below the GPS panel
-#   top    1160  the GPS panel ends at y=1156; above this line it is in frame
-#   right  1680  the NRST button and zoom stack live at x>=1954, but the crop stops well
-#                short of them to leave the chart-boundary wedge mostly outside
-#   bottom 2420  the GS/ALT data bar starts at y=2477, the tab bar below it
-CROP = (0, 1160, 1680, 2420)
+#   left   540   the GPS card occupies x<530 down to y=1844; starting right of it keeps the
+#                whole vertical range usable instead of only the strip below it
+#   top    1300  the top bar, the convective and hazard banners and the SIMULATED GPS strip all
+#                sit above y=1100; 1300 also drops the letterboxed black band
+#   right  2064  the full width — the map controls are off this frame's right edge
+#   bottom 2300  the GS/ALT data bar starts at y=2491, the tab bar below it
+CROP = (540, 1300, 2064, 2300)
 
-# Day charts are near-white, and this asset is a backdrop for someone else's white text.
-# Darkening is what makes it a backdrop; the slight desaturation stops the airspace magenta
-# from glowing once the luminance comes down.
-BRIGHTNESS = 0.58
-SATURATION = 0.82
+# ⚠️ DO NOT DARKEN THIS INTO A BACKDROP. The first version pulled brightness to 0.58 and
+# desaturation to 0.82 "so Apple's white text stays legible", and the result was grey mush that
+# caught nobody's eye — which is the entire job of a featuring image. Apple's own overlay carries
+# its own scrim; this asset's job is to be worth looking at. Keep the chart's colour: the magenta
+# airspace, the blue airways, the radar.
+BRIGHTNESS = 0.94
+SATURATION = 1.14
 
 # (filename, width, height, horizontal anchor, vertical anchor)
 #
@@ -126,6 +129,10 @@ def settle(im: Image.Image, w: int, h: int) -> Image.Image:
     frame has to fall away rather than end on something that looks cut; and it lays its
     own white title text over the result, which a bright chart corner would swallow.
     """
+    # ⚠️ A HINT, NOT A GRADIENT. The first version started darkening at 0.34 of the radius and
+    # reached full black, which put a crazy black ring around the chart and left the corners dead.
+    # It now does nothing at all until 0.82 of the way out and never exceeds 40%: enough to stop a
+    # crop landing on a hard edge, not enough to be visible as an effect.
     small = 128
     g = Image.new("L", (small, small), 0)
     px = g.load()
@@ -133,7 +140,7 @@ def settle(im: Image.Image, w: int, h: int) -> Image.Image:
     for y in range(small):                                # bounded: 128 rows
         for x in range(small):                            # bounded: 128 columns
             d = math.hypot((x - mx) / mx, (y - my) / my) / math.sqrt(2)
-            px[x, y] = round(255 * min(1.0, max(0.0, (d - 0.34) / 0.66)) ** 1.25)
+            px[x, y] = round(102 * min(1.0, max(0.0, (d - 0.82) / 0.18)) ** 1.2)
     mask = g.resize((w, h), Image.BICUBIC).filter(ImageFilter.GaussianBlur(w / 220))
 
     out = im.copy()
@@ -143,9 +150,9 @@ def settle(im: Image.Image, w: int, h: int) -> Image.Image:
     # at the frame and make the artwork look like a screenshot someone trimmed.
     edge = Image.new("L", (w, h), 0)
     ed = ImageDraw.Draw(edge)
-    band = round(min(w, h) * 0.045)
+    band = round(min(w, h) * 0.012)                       # a thin seal, not a frame
     for i in range(band):                                 # bounded by the band width
-        v = round(255 * (1 - i / band) ** 1.4)
+        v = round(210 * (1 - i / band) ** 1.6)
         ed.rectangle([i, i, w - 1 - i, h - 1 - i], outline=v)
     out.paste(Image.new("RGB", (w, h), (0, 0, 0)), (0, 0), edge)
     return out
