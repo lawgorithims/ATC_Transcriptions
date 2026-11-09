@@ -70,11 +70,12 @@ SOURCE_SIZE = (2064, 2752)          # asserted: a re-shot frame of another size 
 # Every edge is a piece of interface, and each one is why that number is what it is:
 #   left   540   the GPS card occupies x<530 down to y=1844; starting right of it keeps the
 #                whole vertical range usable instead of only the strip below it
-#   top    1300  the top bar, the convective and hazard banners and the SIMULATED GPS strip all
-#                sit above y=1100; 1300 also drops the letterboxed black band
+#   top    1150  the banners and the SIMULATED GPS strip end by y=1100. ⚠️ DO NOT RAISE THIS TO
+#                1300 "to be safe": the filed route runs across y≈1240-1380, and starting below it
+#                cut the single strongest line in the picture out of the frame.
 #   right  2064  the full width — the map controls are off this frame's right edge
-#   bottom 2300  the GS/ALT data bar starts at y=2491, the tab bar below it
-CROP = (540, 1300, 2064, 2300)
+#   bottom 2400  the GS/ALT data bar starts at y=2491, the tab bar below it
+CROP = (540, 1150, 2064, 2400)
 
 # ⚠️ DO NOT DARKEN THIS INTO A BACKDROP. The first version pulled brightness to 0.58 and
 # desaturation to 0.82 "so Apple's white text stays legible", and the result was grey mush that
@@ -91,7 +92,7 @@ SATURATION = 1.14
 # crop; horizontal leans left because the chart boundary is on the right.
 TARGETS = [
     ("header-5244x2950.png", 5244, 2950, 0.38, 0.20),
-    ("header-3840x1646.png", 3840, 1646, 0.38, 0.16),
+    ("header-3840x1646.png", 3840, 1646, 0.38, 0.10),
     ("search-5244x2950.png", 5244, 2950, 0.38, 0.20),
     ("search-3840x2560.png", 3840, 2560, 0.40, 0.22),
     ("search-1920x1280.png", 1920, 1280, 0.40, 0.22),

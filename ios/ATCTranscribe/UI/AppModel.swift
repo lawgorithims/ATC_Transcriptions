@@ -1335,6 +1335,9 @@ final class AppModel: ObservableObject {
     private var demoHazardsMode = false
     /// `--demo-storms`: hold the seeded cells and keep both live pollers off them.
     private var demoStormMode = false
+    /// `--demo-traffic`: seeded ADS-B contacts, with both live feeds held off (see `applyTraffic`
+    /// and `adsbActive`) so a real poll cannot land on top of them mid-screenshot.
+    private var demoTrafficMode = false
     /// Ownship position of the last alert recompute — the movement dedup anchor.
     private var lastHazardAlertCenter: Coord?
     private static let hazardRecomputeNm: Double = 5
@@ -1849,6 +1852,16 @@ final class AppModel: ObservableObject {
             convectiveUpdatedAt = Date()
             radarCellsUpdatedAt = Date()
             refreshConvectiveAlert()   // observers are inert during init — compute the banner explicitly
+        }
+        // screenshot/demo: seed ADS-B contacts around the demo corridor and hold BOTH live feeds
+        // off (`demoTrafficMode`, read by `applyTraffic` and `adsbActive`). Traffic was the one
+        // layer with no offline seam, so every staged frame had an empty sky in it — and an empty
+        // sky is indistinguishable from a dead feed, which is the distinction this app works
+        // hardest to make. Pair with `--hold-ownship 42.5 -77.0 …`; the contacts sit around there.
+        if args.contains("--demo-traffic") {
+            demoTrafficMode = true
+            aircraft = Aircraft.demoTargets()
+            aircraftUpdatedAt = Date()
         }
         // UI-test/demo: present a seeded TFR's detail card (verifies the tap→card path off-network).
         if args.contains("--demo-tfr") {
@@ -4483,7 +4496,10 @@ final class AppModel: ObservableObject {
     /// transcription session (mirrors how the Stratux link streams). Suppressed while the Stratux link is
     /// streaming (that path provides traffic on-board, works offline); both publish into the same
     /// `applyTraffic`, so at most one runs.
-    private var adsbActive: Bool { adsbStreamingEnabled && !stratuxTrafficSupplying && scenePhaseActive && !standby }
+    private var adsbActive: Bool {
+        adsbStreamingEnabled && !stratuxTrafficSupplying && scenePhaseActive && !standby
+            && !demoTrafficMode
+    }
 
     /// Whether the Stratux is ACTUALLY SUPPLYING TRAFFIC right now — the gate the internet poller must
     /// stand down for.
@@ -5057,6 +5073,10 @@ final class AppModel: ObservableObject {
         // two feeds have different identity conventions and different snapshot cadences, and merging
         // them would double-render the same aircraft. Dropping is also what makes the hand-over clean —
         // the moment a Stratux starts supplying, its first snapshot takes the feed.
+        // ⚠️ A SEEDED SKY IS NOT OVERWRITTEN. Under `--demo-traffic` this is the one place both
+        // feeds converge, so refusing here is enough — and it must refuse rather than fall through,
+        // because a publish from a stopping poller carries an EMPTY list and would clear the seed.
+        guard !demoTrafficMode else { return }
         guard source == trafficOwner else { return }
         let active = trafficActive
         let shown = active ? list : []

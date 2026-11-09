@@ -76,12 +76,27 @@ final class PromoArtCaptureTests: XCTestCase {
         //                      blocker that stopped the last attempt. 42.5/-77.0 is the position
         //                      --demo-storms' own documentation suggests, on the demo corridor.
         //
-        // ⚠️ NO ADS-B TRAFFIC HERE, AND IT IS NOT AN OVERSIGHT. There is no demo hook for it: every
-        // other layer can be seeded offline and traffic cannot, so it needs a live feed or a new
-        // seam in the app. The artwork is missing it until one exists.
+        //   --demo-traffic     seeded ADS-B contacts, both live feeds held off. This seam did not
+        //                      exist until this artwork needed it: traffic was the only layer that
+        //                      could not be staged offline, so every staged frame had an empty sky.
         let app = XCUIApplication()
         app.launchArguments += ["-atc.onboardingDismissed", "YES", "--reset-widgets",
                                 "--demo-flightplan", "--demo-storms", "--demo-hazards",
+                                "--demo-traffic",
+                                // The glide footprint. ⚠️ `showLZEnergy` is explicitly NOT
+                                // developer-gated — its own declaration says so, because the
+                                // emergency button arms it for every pilot — so unlike the
+                                // off-field SHADING (`offFieldLayerAvailable`, diagnostics-only)
+                                // this is a feature a buyer actually gets. Advertising the shading
+                                // would be advertising something nobody can see.
+                                "-atc.map.lzEnergy", "YES",
+                                // ⚠️ FL390, AND THE REASON IS THE OPPOSITE OF THE OBVIOUS ONE.
+                                // 16,000 ft was tried first, on the theory that a flight-level
+                                // footprint would be wider than the frame. It is not: the map sits
+                                // at a few hundred miles across, so 14,500 ft of height drew a ring
+                                // barely larger than the ownship symbol — present, and unreadable.
+                                // Reach scales with height, so the flight levels are what make it
+                                // big enough to see.
                                 "--hold-ownship", "42.5", "-77.0", "39000", "270", "300"]
 
         // ⚠️ ROTATE BEFORE LAUNCH. Rotating after it was up letterboxed the app: the framebuffer
@@ -142,10 +157,12 @@ final class PromoArtCaptureTests: XCTestCase {
             Thread.sleep(forTimeInterval: 0.4)
         }
 
-        // A half-drawn chart is the one defect that is invisible while the test passes and obvious
-        // on a store page. Generous because a FRESH simulator has no chart cache at all and every
-        // tile in frame is fetched over the network during this wait.
-        Thread.sleep(forTimeInterval: 30)
+        // ⚠️ A HALF-DRAWN CHART IS THE DEFECT THAT PASSES. The test's own "is there a chart"
+        // check goes green as soon as ANY tile lands, and a frame shot then has a crisp left half
+        // and a blurry right one — lower-zoom tiles still standing in for the detail that has not
+        // arrived. That shipped once. A fresh simulator has no chart cache at all, so every tile in
+        // frame comes over the network during this wait; it is long on purpose.
+        Thread.sleep(forTimeInterval: 75)
 
         // ⚠️ THE ATTACHMENT COMES OUT PORTRAIT EVEN THOUGH THE APP IS LANDSCAPE, and that is not a
         // bug to fix here. `app.frame` is landscape by now — the loop above will not leave until it
@@ -155,6 +172,22 @@ final class PromoArtCaptureTests: XCTestCase {
         // surface; it failed here twice saying "the rotation did not take" when it had.
         //
         // `Tools/promo_capture.sh` turns the exported PNG the right way up and checks the result.
+        // The glide footprint is the feature most worth showing and the one most likely to decline
+        // silently — it refuses on an untrusted position, a missing altitude, a terrain grid it
+        // cannot read, or a height below the arrival reserve, and the artwork looks the same for
+        // all four. The layer states its reason; read it out rather than guessing from the picture.
+        if app.buttons["map-layers-menu"].waitForExistence(timeout: 20) {
+            app.buttons["map-layers-menu"].tap()
+            let status = app.staticTexts["layers-lz-energy-status"]
+            if status.waitForExistence(timeout: 20) {
+                print("PROMO-GLIDE-STATUS: \(status.label)")
+            } else {
+                print("PROMO-GLIDE-STATUS: <no status line — the layer reported nothing>")
+            }
+            app.buttons["map-layers-menu"].tap()        // close it again before the shutter
+            Thread.sleep(forTimeInterval: 3)
+        }
+
         let shot = app.screenshot()
         XCTAssertGreaterThan(app.frame.width, app.frame.height,
                              "the app is \(app.frame.size) at the shutter — not landscape")

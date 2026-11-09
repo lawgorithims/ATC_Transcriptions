@@ -50,6 +50,38 @@ struct Aircraft: Identifiable, Equatable, Sendable {
     /// Best spoken label: callsign preferred, else registration.
     var label: String? { callsign ?? registration }
 
+    /// Screenshot/demo contacts for `--demo-traffic`, on the western-New-York corridor the other
+    /// demo layers use (`ConvectiveCell.demoCells`, `--demo-flightplan`'s KBOS→KORD routing).
+    ///
+    /// This exists because traffic was the ONE layer that could not be staged offline. Storms,
+    /// hazards, TFRs and the flight plan all have a `--demo-` seam; ADS-B had none, so any frame
+    /// showing the app in use had an empty sky in it — and an empty sky is exactly what a broken
+    /// feed looks like, which is the thing `ADSBService` works hardest to tell you apart from.
+    ///
+    /// Positions are FIXED, not relative to the aeroplane, for the same reason `demoCells` fixes
+    /// its own: a demo that moves with the ownship cannot be screenshotted twice the same way.
+    /// Tracks and levels are spread on purpose — the chevron carries heading, so six targets all
+    /// pointing one way would show off nothing and read as a rendering fault.
+    static func demoTargets(now: Date = Date()) -> [Aircraft] {
+        func one(_ hex: String, _ callsign: String, _ type: String, _ lat: Double, _ lon: Double,
+                 _ altFt: Int, _ track: Double, _ gs: Double, _ seen: Double) -> Aircraft {
+            Aircraft(hex: hex, callsign: callsign, registration: nil, typeCode: type,
+                     lat: lat, lon: lon, altBaroFt: altFt, onGround: false, gsKt: gs,
+                     trackDeg: track, squawk: nil, distanceNm: nil, fetchedAt: now,
+                     seenSec: seen, seenPosSec: seen)
+        }
+        return [
+            one("a1b2c3", "UAL1187", "B739", 42.78, -77.38, 35_000, 262, 471, 3),
+            one("a2c4e6", "DAL455",  "A321", 42.26, -76.58, 31_000,  88, 442, 5),
+            one("a3d5f7", "JBU1402", "A320", 42.17, -77.52, 39_000, 301, 489, 2),
+            one("a4e6a8", "FDX1572", "B763", 42.97, -76.92, 33_000,  74, 455, 7),
+            one("a5f7b9", "SWA2210", "B738", 42.47, -77.86, 37_000, 248, 463, 4),
+            // Low and slow, well below the jets: the chevron has to read at GA altitudes too, and a
+            // sky of nothing but airliners is not the sky most of this app's pilots fly in.
+            one("a6a8c1", "N772SP",  "C172", 42.61, -76.47,  8_500, 176,  109, 6),
+        ]
+    }
+
     // MARK: - Decoding (readsb/tar1090 `/v2/point` — adsb.lol today; see LiveAircraftFetcher)
 
     /// Decode a `/v2/point` response into normalized contacts plus the server clock (for a skew
