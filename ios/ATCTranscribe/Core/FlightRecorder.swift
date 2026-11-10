@@ -51,6 +51,17 @@ private struct ActiveRecording: Codable {
 @MainActor final class FlightRecorder: ObservableObject {
     @Published private(set) var state: RecordingState = .idle
     @Published private(set) var trail: [Breadcrumb] = []          // the map bridges this (append-only per session)
+
+    /// Screenshot/demo ONLY (`--demo-track`): install a synthetic trail for the map to draw.
+    ///
+    /// `trail` is `private(set)` because every other writer is a recording in progress, and that is
+    /// worth keeping. This does not start, stop or persist anything — it leaves `state`, `startedAt`
+    /// and the on-disk file untouched, so a seeded trail can never be mistaken for a flight to save.
+    func seedDemoTrail(_ points: [Breadcrumb]) {
+        assert(state == .idle, "seedDemoTrail over a live recording would corrupt it")
+        assert(!points.isEmpty, "seedDemoTrail: nothing to draw")
+        trail = points
+    }
     @Published private(set) var stops: [FlightStop] = []
     @Published private(set) var startedAt: Date?
     @Published private(set) var distanceNM: Double = 0

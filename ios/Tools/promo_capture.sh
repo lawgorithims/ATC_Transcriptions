@@ -118,30 +118,26 @@ if n == 0:
     raise SystemExit("no attachment came back — did the test skip? it needs TEST_RUNNER_PROMO_ART=1")
 PY
 
-FRAME="$OUT/promo-chart-landscape.png"
-
-# ⚠️ THE EXPORTED FRAME IS PORTRAIT EVEN THOUGH THE APP WAS LANDSCAPE. `app.screenshot()` captures
-# the device framebuffer, which stays in the device's physical orientation, so the landscape
-# content arrives turned a quarter turn. Turn it back here, and refuse to carry on if the result is
-# not landscape — a portrait frame is the thing this whole capture exists to stop producing.
-echo "== square the frame up =="
-"$PY" - "$FRAME" <<'PY'
-import sys
+# ⚠️ THE EXPORTED FRAMES ARE SIDEWAYS. `app.screenshot()` captures the device framebuffer, which
+# stays in the device's physical orientation, so the landscape content arrives a quarter turn off.
+# ROTATE ON CONTENT, NOT ON DIMENSIONS: the framebuffer is 2752x2064 — landscape — so a
+# width-vs-height test says "already landscape" and happily passes a frame lying on its side. That
+# shipped once. The app lays out PORTRAIT whatever the device does, so every frame needs the turn.
+echo "== turn the frames upright =="
+"$PY" - "$OUT" <<'ROT'
+import glob, os, sys
 from PIL import Image
-p = sys.argv[1]
-im = Image.open(p)
-# ⚠️ ROTATE ON CONTENT, NOT ON DIMENSIONS. The framebuffer is 2752x2064 — landscape — so a
-# width-vs-height test says "already landscape" and passes a frame whose CONTENT is on its side,
-# tab bar running up the left edge. That shipped once. The app lays out PORTRAIT whatever the
-# device does (rotating before launch did not change it), so the content is always a quarter turn
-# off and always needs turning back.
-im = im.transpose(Image.ROTATE_90)              # top bar sits on the RIGHT; CCW puts it on top
-im.save(p)
-print(f"turned upright: {im.width}x{im.height}")
-assert im.height > im.width, f"frame is {im.width}x{im.height} — the app layout is portrait"
-PY
-
-printf "== frame: "; sips -g pixelWidth -g pixelHeight "$FRAME" | awk '/pixel/{printf "%s ", $2} END{print ""}'
+out = sys.argv[1]
+frames = sorted(glob.glob(os.path.join(out, "promo-*.png")))
+assert frames, f"no frames in {out} - did the capture skip? it needs TEST_RUNNER_PROMO_ART=1"
+for p in frames:                                    # bounded by the scenarios
+    im = Image.open(p)
+    if im.width > im.height:
+        im = im.transpose(Image.ROTATE_90)          # top bar sits on the RIGHT; CCW puts it upright
+        im.save(p)
+    print(f"  {os.path.basename(p):<34} {im.width}x{im.height}")
+    assert im.height > im.width, f"{p} is {im.size} - the app layout is portrait"
+ROT
 
 echo "== rebuild the artwork from it =="
 "$PY" Tools/make_promo_art.py

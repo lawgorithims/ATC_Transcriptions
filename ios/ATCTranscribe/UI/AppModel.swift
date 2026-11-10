@@ -1863,6 +1863,25 @@ final class AppModel: ObservableObject {
             aircraft = Aircraft.demoTargets()
             aircraftUpdatedAt = Date()
         }
+        // screenshot/demo: the flown track behind the aeroplane (`--demo-track`). Laid back along
+        // the reciprocal of `--hold-ownship`'s track, because a held position has no history of its
+        // own — see `Breadcrumb.demoTrail`. Without hold-ownship there is nothing to anchor it to,
+        // so it does nothing rather than inventing a position.
+        if args.contains("--demo-track"), let i = args.firstIndex(of: "--hold-ownship"),
+           i + 3 < args.count, let lat = Double(args[i + 1]), let lon = Double(args[i + 2]) {
+            let trk = (i + 4 < args.count) ? (Double(args[i + 4]) ?? 90) : 90
+            flightRecorder.seedDemoTrail(
+                Breadcrumb.demoTrail(to: Coord(lat: lat, lon: lon), trackDeg: trk))
+        }
+        // screenshot/demo: file the ILS 08L approach into KATL as the active plan (`--demo-approach`),
+        // so the route drawn on the chart is the approach being flown rather than an enroute leg.
+        // Pair with `--preview-plate KATL 00026IL8L.PDF`, which puts the plate itself on the map, and
+        // with `--hold-ownship 33.649 -84.60 3000 95 150` to sit the aeroplane on final between BAZAR
+        // and SCHEL. The four fixes are the published ones, west to east down the 095 course.
+        if args.contains("--demo-approach") {
+            flightPlan = FlightPlan(departure: "KCLT", destination: "KATL",
+                                    route: ["LARII", "JAAJJ", "BAZAR", "SCHEL"])
+        }
         // UI-test/demo: present a seeded TFR's detail card (verifies the tap→card path off-network).
         if args.contains("--demo-tfr") {
             let poly = [Coord(lat: 41.3, lon: -71.5), Coord(lat: 41.3, lon: -71.0),

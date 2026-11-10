@@ -12,6 +12,38 @@ struct Breadcrumb: Codable, Equatable {
     var clCoord: CLLocationCoordinate2D { CLLocationCoordinate2D(latitude: lat, longitude: lon) }
 }
 
+extension Breadcrumb {
+    /// Screenshot/demo: a flown track ending at `coord`, laid back along the reciprocal of `trackDeg`.
+    ///
+    /// The trail is the one thing on the map that says an aeroplane has BEEN somewhere rather than
+    /// merely being somewhere, and `--hold-ownship` holds a position by definition, so there is no
+    /// movement to leave one. This draws the history that a held position cannot have.
+    ///
+    /// ⚠️ IT WANDERS ON PURPOSE. A trail laid down as a straight line reads as a route — which is
+    /// already on the map, in magenta, meaning something else entirely. Real GPS wanders, so this
+    /// does too, by a few hundred metres either side of course.
+    static func demoTrail(to coord: Coord, trackDeg: Double, lengthNm: Double = 38,
+                          points: Int = 90, now: Date = Date()) -> [Breadcrumb] {
+        precondition(points > 1 && lengthNm > 0, "demoTrail: nothing to draw")
+        let back = (trackDeg + 180).truncatingRemainder(dividingBy: 360) * .pi / 180
+        var out = [Breadcrumb]()
+        for i in 0..<points {                                   // bounded by `points`
+            let f = Double(points - 1 - i) / Double(points - 1)  // 1 at the tail, 0 at the aeroplane
+            let d = lengthNm * f
+            // A slow lateral weave plus a shorter one, so it reads as flown rather than ruled.
+            let off = (Foundation.sin(f * 7.1) * 0.35 + Foundation.sin(f * 19.3) * 0.12) / 60.04
+            let dLat = (d * Foundation.cos(back)) / 60.04
+            let dLon = (d * Foundation.sin(back)) / (60.04 * Foundation.cos(coord.lat * .pi / 180))
+            out.append(Breadcrumb(
+                t: now.addingTimeInterval(-Double(points - 1 - i) * 12),
+                lat: coord.lat + dLat + off,
+                lon: coord.lon + dLon,
+                altFt: nil, speedKt: nil, track: trackDeg))
+        }
+        return out
+    }
+}
+
 /// A place the aircraft sat still long enough to count as a stop (a leg boundary). `airport` is filled in
 /// off-main from the nearest FAA airport when one is within a few NM.
 struct FlightStop: Codable, Equatable, Identifiable {

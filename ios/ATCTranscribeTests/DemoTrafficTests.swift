@@ -57,3 +57,49 @@ final class DemoTrafficTests: XCTestCase {
         XCTAssertEqual(a.compactMap(\.lon), b.compactMap(\.lon), "positions must not drift")
     }
 }
+
+/// `Breadcrumb.demoTrail` — the flown-track seam behind `--demo-track`.
+///
+/// The trail is the one thing on the map that says an aeroplane has BEEN somewhere rather than
+/// merely being somewhere, and `--hold-ownship` holds a position by definition, so there is no
+/// movement to leave one. This draws the history a held position cannot have.
+final class DemoTrailTests: XCTestCase {
+
+    private let here = Coord(lat: 42.5, lon: -77.0)
+
+    /// The newest point is the aeroplane. A trail that ends anywhere else is a trail behind
+    /// somebody else, and it reads as a second aircraft rather than as where this one has been.
+    func testTheTrailEndsAtTheAeroplane() {
+        let trail = Breadcrumb.demoTrail(to: here, trackDeg: 270)
+        let last = try! XCTUnwrap(trail.last)
+        XCTAssertEqual(last.lat, here.lat, accuracy: 0.02, "the trail does not end at the aeroplane")
+        XCTAssertEqual(last.lon, here.lon, accuracy: 0.02, "the trail does not end at the aeroplane")
+    }
+
+    /// Laid back along the RECIPROCAL: flying west, the history is to the east.
+    func testTheTrailLiesBehindNotAhead() {
+        let west = Breadcrumb.demoTrail(to: here, trackDeg: 270)
+        let tail = try! XCTUnwrap(west.first)
+        XCTAssertGreaterThan(tail.lon, here.lon, "flying west, the trail must be to the EAST")
+
+        let east = Breadcrumb.demoTrail(to: here, trackDeg: 90)
+        XCTAssertLessThan(try! XCTUnwrap(east.first).lon, here.lon,
+                          "flying east, the trail must be to the WEST")
+    }
+
+    /// Oldest first, so the map draws it in the order it was flown.
+    func testTheTrailIsInTimeOrder() {
+        let trail = Breadcrumb.demoTrail(to: here, trackDeg: 270)
+        XCTAssertEqual(trail.map(\.t), trail.map(\.t).sorted(), "the trail is not oldest-first")
+        XCTAssertGreaterThan(trail.count, 10, "too few points to draw as a track")
+    }
+
+    /// ⚠️ IT MUST WANDER. A trail laid down as a straight line reads as a ROUTE — which is already
+    /// on the map, in magenta, meaning something else entirely. Real GPS wanders, so this does too.
+    func testTheTrailIsFlownNotRuled() {
+        let trail = Breadcrumb.demoTrail(to: Coord(lat: 0, lon: 0), trackDeg: 270)
+        let lats = trail.map(\.lat)
+        XCTAssertGreaterThan((lats.max() ?? 0) - (lats.min() ?? 0), 0.001,
+                             "the trail is perfectly straight — it will read as a route, not a track")
+    }
+}

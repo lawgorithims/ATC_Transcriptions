@@ -58,55 +58,72 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 IOS = os.path.dirname(HERE)
 OUT_DIR = os.path.join(IOS, "docs/appstore/promo")
 
-# The day enroute shot. The night plate-on-map frame was tried first and is worse for this:
-# the plate is a near-white slab that lands dead centre, which is the one place Apple's white
-# title text goes. This frame's interest is spread across it and darkens evenly.
-SOURCE = os.path.join(IOS, "docs/appstore/promo-src/promo-chart-landscape.png")
-SOURCE_SIZE = (2064, 2752)          # asserted: a re-shot frame of another size would silently
-                                    # move every crop boundary below
-
-# The chrome-free rectangle of that capture, as (left, top, right, bottom).
+# TWO SCENARIOS, because they sell different things.
 #
-# Every edge is a piece of interface, and each one is why that number is what it is:
-#   left   540   the GPS card occupies x<530 down to y=1844; starting right of it keeps the
-#                whole vertical range usable instead of only the strip below it
-#   top    1150  the banners and the SIMULATED GPS strip end by y=1100. ⚠️ DO NOT RAISE THIS TO
-#                1300 "to be safe": the filed route runs across y≈1240-1380, and starting below it
-#                cut the single strongest line in the picture out of the frame.
-#   right  2064  the full width — the map controls are off this frame's right edge
-#   bottom 2400  the GS/ALT data bar starts at y=2491, the tab bar below it
-CROP = (540, 1150, 2064, 2400)
-
+# "enroute" is the whole panel working at once: the filed route, radar cells across it, ADS-B
+# traffic, the flown track and the glide footprint. "approach" is the capability a pilot recognises
+# instantly — the approach plate georeferenced onto the moving map, with its published fixes flown
+# as the active route.
+#
+# Each carries its own crop, because the chrome does not sit in the same places: the approach frame
+# has a second banner under the top bar naming the plate, and its map starts lower as a result.
+#
+# Every crop is in pixel coordinates of a 2064x2752 upright frame from `Tools/promo_capture.sh`.
+# The boundaries are interface, and each number is why:
+#   left   540   the GPS card occupies x<530; starting right of it keeps the full vertical range
+#   right  2064  the full width — the map controls are off these frames' right edge
+#   top          below the banners and the SIMULATED GPS strip. ⚠️ DO NOT LOWER IT "to be safe":
+#                on the enroute frame the filed route runs across y≈1240-1380, and starting under
+#                it cut the strongest line in the picture out of frame.
+#   bottom       above the GS/ALT data bar, which starts at y=2491
 # ⚠️ DO NOT DARKEN THIS INTO A BACKDROP. The first version pulled brightness to 0.58 and
 # desaturation to 0.82 "so Apple's white text stays legible", and the result was grey mush that
 # caught nobody's eye — which is the entire job of a featuring image. Apple's own overlay carries
 # its own scrim; this asset's job is to be worth looking at. Keep the chart's colour: the magenta
-# airspace, the blue airways, the radar.
+# airspace, the blue airways, the radar, the orange traffic.
 BRIGHTNESS = 0.94
 SATURATION = 1.14
 
+SOURCE_SIZE = (2064, 2752)          # asserted: a re-shot frame of another size would silently
+                                    # move every crop boundary below
+
+SCENARIOS = [
+    ("enroute",  "promo-chart-landscape.png",    (540, 1150, 2064, 2400), "promo"),
+    # ⚠️ The approach crop starts BELOW the plate's header. Taking the plate whole puts its
+    # comms strip and minimums tables — a wall of small type, and a large "ILS or LOC RWY 8L"
+    # title — across the top third, which competes with the editorial text Apple lays over this and
+    # edges toward the no-text rule. The plan view is the part that reads as flying. The right edge
+    # stops short of 2064 because the last few hundred pixels are still lower-zoom tiles.
+    ("approach", "promo-approach-landscape.png", (540, 1380, 1950, 2320), "promo-approach"),
+]
+
+SRC_DIR = os.path.join(IOS, "docs/appstore/promo-src")
+
 # (filename, width, height, horizontal anchor, vertical anchor)
 #
-# Anchors are the fraction of the overspill taken off the top/left, so 0.0 keeps the top or
-# left edge. Vertical leans high because the Class B shelves sit in the upper third of the
-# crop; horizontal leans left because the chart boundary is on the right.
+# Anchors are the fraction of the overspill taken off the top/left, so 0.0 keeps the top or left
+# edge. Vertical leans high because the interest sits in the upper half of both crops; horizontal
+# leans left. In practice every target here is wider than the source ratio, so the full width is
+# always kept and the horizontal anchor only matters if a narrower placement is ever added.
+# ⚠️ ONE 5244x2950, NOT TWO. App Store Connect accepts that size for BOTH the header and the
+# search placement, and this generator gives them identical anchors — so emitting it twice under two
+# names wrote the same 14 MB file to disk twice and committed both. Upload the one file to either.
 TARGETS = [
-    ("header-5244x2950.png", 5244, 2950, 0.38, 0.20),
+    ("promo-5244x2950.png", 5244, 2950, 0.38, 0.20),
     ("header-3840x1646.png", 3840, 1646, 0.38, 0.10),
-    ("search-5244x2950.png", 5244, 2950, 0.38, 0.20),
     ("search-3840x2560.png", 3840, 2560, 0.40, 0.22),
     ("search-1920x1280.png", 1920, 1280, 0.40, 0.22),
 ]
 
-
-def source() -> Image.Image:
-    if not os.path.exists(SOURCE):
-        sys.exit(f"source not found: {SOURCE}\nRegenerate it with Tools/appstore_screenshots.sh")
-    im = Image.open(SOURCE)
+def source(filename: str, crop) -> Image.Image:
+    path = os.path.join(SRC_DIR, filename)
+    if not os.path.exists(path):
+        sys.exit(f"source not found: {path}\nRegenerate it with Tools/promo_capture.sh")
+    im = Image.open(path)
     assert im.size == SOURCE_SIZE, (
-        f"source is {im.size}, expected {SOURCE_SIZE} — the CROP numbers are pixel "
+        f"{filename} is {im.size}, expected {SOURCE_SIZE} — the crop numbers are pixel "
         f"coordinates in that capture and mean nothing in another")
-    return im.convert("RGB").crop(CROP)
+    return im.convert("RGB").crop(crop)
 
 
 def cover(im: Image.Image, w: int, h: int, hx: float, vy: float) -> Image.Image:
@@ -160,19 +177,21 @@ def settle(im: Image.Image, w: int, h: int) -> Image.Image:
 
 
 def main() -> None:
-    os.makedirs(OUT_DIR, exist_ok=True)
-    src = source()
-    src = ImageEnhance.Color(ImageEnhance.Brightness(src).enhance(BRIGHTNESS)).enhance(SATURATION)
-    print(f"source chart region {src.width}x{src.height} from {os.path.basename(SOURCE)}")
+    for name, filename, crop, out_name in SCENARIOS:          # bounded by the scenarios
+        out_dir = os.path.join(IOS, "docs/appstore", out_name)
+        os.makedirs(out_dir, exist_ok=True)
+        src = source(filename, crop)
+        src = ImageEnhance.Color(ImageEnhance.Brightness(src).enhance(BRIGHTNESS)).enhance(SATURATION)
+        print(f"{name}: {src.width}x{src.height} from {filename} -> docs/appstore/{out_name}")
 
-    for name, w, h, hx, vy in TARGETS:
-        img = settle(cover(src, w, h, hx, vy), w, h)
-        assert img.size == (w, h), f"{name}: composed {img.size}, wanted {(w, h)}"
-        assert img.mode == "RGB", f"{name}: mode {img.mode}, wanted RGB (no alpha)"
-        path = os.path.join(OUT_DIR, name)
-        img.save(path, "PNG", optimize=True)
-        print(f"  {name:<24} {w}x{h}  anchor {hx:.2f}/{vy:.2f}  "
-              f"upscale {w / src.width:.1f}x  {os.path.getsize(path) / 1024:,.0f} KB")
+        for target, w, h, hx, vy in TARGETS:                  # bounded by the placements
+            img = settle(cover(src, w, h, hx, vy), w, h)
+            assert img.size == (w, h), f"{target}: composed {img.size}, wanted {(w, h)}"
+            assert img.mode == "RGB", f"{target}: mode {img.mode}, wanted RGB (no alpha)"
+            path = os.path.join(out_dir, target)
+            img.save(path, "PNG", optimize=True)
+            print(f"  {target:<24} {w}x{h}  upscale {w / src.width:.1f}x  "
+                  f"{os.path.getsize(path) / 1024:,.0f} KB")
 
 
 if __name__ == "__main__":

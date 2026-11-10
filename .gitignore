@@ -146,3 +146,10 @@ lz/out/*.verified.json
 # dirty and invited an unrelated `git add -A` to commit a manifest nobody meant to publish. The
 # authoritative copy is the one on HuggingFace; this is scratch.
 nav/index.json
+
+# App Store promotional artwork, GENERATED. `ios/Tools/make_promo_art.py` rebuilds both sets in
+# seconds from the capture frames in `ios/docs/appstore/promo-src/`, which ARE committed because
+# they need a simulator and a network to reproduce. 64 MB of regenerable PNGs do not belong in a
+# git history; the frames they come from (9 MB) do.
+ios/docs/appstore/promo/
+ios/docs/appstore/promo-approach/
