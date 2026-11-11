@@ -78,6 +78,34 @@ final class AppStoreScreenshotTests: XCTestCase {
         else if menu.exists { menu.tap() }          // could not find it — close the menu again
     }
 
+    /// Put the camera on the aeroplane, at a scale where the chart actually draws.
+    ///
+    /// ⚠️ DO NOT ASSUME THE DEVICE OPENS ZOOMED IN. It does not. The first set of these shots was
+    /// taken on a simulator that had been driven by hand for weeks, so it had a saved camera over
+    /// New York and the map came up framed. On a fresh or erased device the app opens at
+    /// CONTINENTAL zoom with "Zoom in to load the chart here" across it, and the whole set came out
+    /// as a picture of the United States with a dot on it — which is what shipped the first time
+    /// this ran clean.
+    ///
+    /// So recentre explicitly, then zoom in until the map stops saying it has no chart. Bounded,
+    /// and it stops as soon as the chart appears rather than zooming a fixed number of times, which
+    /// would be wrong at a different starting camera.
+    private func frameOnAircraft(_ app: XCUIApplication) {
+        let recenter = app.buttons["map-center-ownship"]
+        if recenter.waitForExistence(timeout: 10), recenter.isHittable { recenter.tap(); settle(2) }
+
+        let noChart = NSPredicate(format: "label BEGINSWITH 'Zoom in to load' OR "
+                                  + "label BEGINSWITH 'Pan and zoom in to load'")
+        let zoomIn = app.buttons["map-zoom-in"]
+        for _ in 0..<9 {                                    // bounded: continental to a usable scale
+            if app.staticTexts.matching(noChart).count == 0 { break }
+            guard zoomIn.exists, zoomIn.isHittable else { break }
+            zoomIn.tap()
+            settle(1.5)
+        }
+        settle(10)                                          // the tiles for THIS frame, over the network
+    }
+
     func testCaptureAppStoreScreenshots() throws {
         try XCTSkipUnless(enabled, "Set APPSTORE_SHOTS=1 to regenerate the App Store screenshots.")
 
@@ -100,6 +128,8 @@ final class AppStoreScreenshotTests: XCTestCase {
         // Leave no panel open from a previous run: NRST persists across launches, and it parks a
         // panel over a third of the screen.
         if app.buttons["nrst-end"].exists { app.buttons["nrst-end"].tap(); settle(1) }
+
+        frameOnAircraft(app)
 
         // 1. The moving map. The one shot most people will ever look at.
         snap(app, "01-map")

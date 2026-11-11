@@ -29,6 +29,7 @@
 # changing it:
 #   ls "$(xcrun simctl get_app_container <sim> com.flycommsight.atctranscribe data)/Library/Application Support/charts"
 set -euo pipefail
+die() { printf '\033[1;31mERROR: %s\033[0m\n' "$*" >&2; exit 1; }
 cd "$(dirname "$0")/.."            # → ios/
 export PATH=/opt/homebrew/bin:$PATH
 
@@ -69,6 +70,44 @@ xcodebuild build-for-testing -project ATCTranscribe.xcodeproj -scheme ATCTranscr
 # build-for-testing is what installs the app, so re-grant now that the bundle id exists on
 # this device — the first grant is a no-op on a simulator that has never seen the app.
 xcrun simctl privacy "$SIM" grant location-always com.flycommsight.atctranscribe 2>/dev/null || true
+
+# ⚠️ INSTALL REAL CHART PACKS, OR EVERY SHOT IS BLURRY.
+#
+# The bundled VFR base (`Resources/basemap/vfr_base.mbtiles`) is 9 MB and stops at ZOOM 7 —
+# deliberately: it is the floor a first launch with no signal works from, not the chart. The detail
+# lives in downloaded packs, and `syncFAASource` raises the source maxzoom to the packs' true max
+# once they mount. With none mounted, MapLibre magnifies z7 two to eight times at the zoom these
+# shots sit at, and the app says so on screen ("Zoom in to load the chart here").
+#
+# This script used to rely on whatever the SHARED simulator happened to have cached, which is why
+# its header told you to go and look. That is not reproducible: on any fresh or erased device the
+# whole set came out soft. The promotional artwork shipped that way once before this was understood.
+#
+# These four cover the New York track flown above: the sectional, both IFR low sheets and the high.
+PACKS_DIR="${PACKS_DIR:-$HOME/CommSight/charts-build/packs}"
+CHART_CYCLE="${CHART_CYCLE:-09-03-2026}"
+CHART_PACKS=(New_York_SEC ENR_L33 ENR_L34 ENR_H12)
+
+echo "== install chart packs =="
+# ⚠️ INSTALL THE APP FIRST. `build-for-testing` BUILDS; it does not reliably install, so the data
+# container does not exist yet and `get_app_container` fails with a bare "No such file or
+# directory". The test run would install it later — too late for charts, which must be on disk
+# before the app launches and mounts them.
+APP="$DD/Build/Products/Debug-iphonesimulator/ATCTranscribe.app"
+[ -d "$APP" ] || die "no built app at $APP"
+xcrun simctl install "$SIM" "$APP" || die "could not install the app on $SIM"
+CONTAINER="$(xcrun simctl get_app_container "$SIM" com.flycommsight.atctranscribe data)" \
+  || die "no app container even after installing"
+CHART_DIR="$CONTAINER/Library/Application Support/charts"
+mkdir -p "$CHART_DIR"
+for pack in "${CHART_PACKS[@]}"; do             # bounded by the list above
+  src="$PACKS_DIR/$pack.mbtiles"
+  [ -f "$src" ] || die "chart pack missing: $src
+Every screenshot would fall back to the 9 MB bundled base, which stops at zoom 7, and the whole set
+would come out blurry. Point PACKS_DIR at a directory holding $pack.mbtiles, or rebuild the packs."
+  cp "$src" "$CHART_DIR/$pack-$CHART_CYCLE.mbtiles"
+  printf "  %-20s %s MB\n" "$pack" "$(( $(stat -f%z "$src") / 1000000 ))"
+done
 
 echo "== run AppStoreScreenshotTests =="
 rm -rf "$RESULT"
