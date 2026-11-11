@@ -27,8 +27,23 @@ is already done:
 
 **Nothing on this list is blocking any more.** The build is on TestFlight and the listing can be
 filled in. Screenshots are generated too, at exact device sizes, five each for both required
-classes — `docs/appstore/iPhone-17-Pro-Max/` (1320×2868) and `docs/appstore/iPad-Pro-13-inch-M5/`
-(2064×2752), reproducible with `Tools/appstore_screenshots.sh`.
+classes — `docs/appstore/iPhone-17-Pro-Max/` (1320×2868, the 6.9" / Dynamic Island family) and
+`docs/appstore/iPad-Pro-13-inch-M5/` (2064×2752), reproducible with `Tools/appstore_screenshots.sh`.
+**Re-shot 2026-11-11 from build 116's code**; the previous set was from 30 October and predated
+NRST moving into the top bar, chevron traffic, the aircraft editor and the iPhone layers-panel fix.
+
+⚠️ **THE FOLDABLE ("iPhone Duo") SET CANNOT BE SHOT ON THIS MACHINE.** Xcode 26.6 with the iOS
+26.5 runtime knows no foldable, dual-screen or flip device type at all — its newest iPhone is the
+17 Pro Max. So there is no simulator to capture one on. Three honest ways forward, in order:
+1. **Check whether App Store Connect actually requires it.** Apple needs one iPhone size and one
+   iPad size; a family showing "0 of 10" is not necessarily blocking. If it is optional, submit.
+2. **A newer Xcode plus its runtime**, if the device type ships in one. Then
+   `SIM="<the device>" bash Tools/appstore_screenshots.sh` produces the set like any other.
+3. **A physical device.**
+
+⚠️ **DO NOT RESIZE THE 6.9" SET TO FIT.** Apple rejects off-spec dimensions, and a foldable's
+aspect ratio is not the 6.9"'s — upscaling would letterbox or distort, and it would be a picture of
+a layout the app never renders on that device.
 
 What is left is the ordinary submission work in §3–§7 of `APP_STORE_LISTING.md`: the **App Privacy**
 answers, the subtitle, and the review notes. Every asset that work needs is now generated:
