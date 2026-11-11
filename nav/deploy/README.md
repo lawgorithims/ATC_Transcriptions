@@ -11,29 +11,32 @@ A dropped cycle is silent by construction: the app falls back to its bundled flo
 install looks perfect, and the only pilots affected are the ones who took an over-the-air update
 and are now flying expired procedures.
 
-## Install
+## Install — two commands, on the box
 
 ```bash
-sudo mkdir -p /opt/obelisk/nav /etc/obelisk
-sudo rsync -a nav/cycle_watch.py nav/deploy/alert_on_stale.sh /opt/obelisk/nav/
-sudo install -m 600 /dev/null /etc/obelisk/nav-watch.env     # then fill it in, see below
-sudo cp nav/deploy/nav-cycle-watch.{service,timer} /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now nav-cycle-watch.timer
-systemctl list-timers nav-cycle-watch.timer                  # confirm the next run
-sudo systemctl start nav-cycle-watch.service                 # run it once now
-journalctl -u nav-cycle-watch.service -n 40
+scp -r nav/cycle_watch.py nav/deploy <you>@<box>:/tmp/navwatch/
 ```
 
-`/etc/obelisk/nav-watch.env`, chmod 600 — ⚠️ **never in the repo, which is public**:
-
-```
-RESEND_API_KEY=...        # the same key the website uses for transactional mail
-ALERT_TO=you@example.com
-ALERT_FROM=alerts@obeliskaerospace.com
+```bash
+ssh <you>@<box> 'sudo ALERT_TO=you@example.com bash /tmp/navwatch/deploy/install.sh'
 ```
 
-and add `EnvironmentFile=/etc/obelisk/nav-watch.env` to the `[Service]` section.
+`install.sh` is idempotent — run it again to upgrade. It checks python3, installs to
+`/opt/obelisk/nav`, writes the units, enables the daily timer, and **runs once immediately** so a
+broken install fails in front of you rather than silently in a month.
+
+If the site's env is not at `/opt/obelisk-web/.env`, pass `SITE_ENV=`. If the service user is not
+`obelisk`, pass `RUN_USER=`.
+
+⚠️ **IT ADDS NO NEW SECRET.** Alerting reuses the SMTP credentials the website already has for
+password-reset mail — `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `MAIL_FROM`. The unit
+SOURCES the site's env file at run time rather than copying it, so there is one copy to rotate and
+one place for it to leak from. `/etc/obelisk/nav-watch.env` holds only `ALERT_TO` and the path to
+that file. Nothing secret is in this repo, which is public.
+
+⚠️ **`ProtectHome` is deliberately NOT set** in the unit. Site env files often live under a home
+directory, and turning it on hides the file in a way that surfaces as "cannot send mail" long after
+the install looked fine.
 
 ## What it does
 

@@ -6,18 +6,22 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-# The watchdog needs NO credentials: it reads the public dataset over plain HTTPS, exactly as the
-# app does. That is deliberate — a watchdog that needs a token stops running when the token
-# expires, which is precisely when dropped cycles stop being noticed.
-ExecStart=/opt/obelisk/nav/alert_on_stale.sh
 User=obelisk
 Group=obelisk
-# Read-only except for the state file the wrapper uses to avoid repeating itself.
+EnvironmentFile=/etc/obelisk/nav-watch.env
+
+# ⚠️ THE SITE'S ENV IS SOURCED AT RUN TIME, not copied. systemd's EnvironmentFile cannot include
+# another file, and duplicating SMTP credentials into a second place means two things to rotate and
+# two things to leak. `set -a` exports what the site file defines so the alerter inherits it.
+ExecStart=/bin/bash -c 'set -a; . "$SITE_ENV"; set +a; exec /opt/obelisk/nav/alert_on_stale.sh'
+
+# The check itself needs no credentials and writes nothing but its own state file.
 ProtectSystem=strict
-ProtectHome=true
 PrivateTmp=true
 NoNewPrivileges=true
 StateDirectory=obelisk-nav-watch
+# ⚠️ ProtectHome is NOT set: the site's env file often lives under a home directory, and turning
+# this on silently hides it, which surfaces as "cannot send mail" long after the install looked fine.
 
 [Install]
 WantedBy=multi-user.target
