@@ -165,31 +165,64 @@ checked 2026-10-30. A reviewer will be able to open it.
 
 ## 4. App Privacy answers
 
-These must agree with `ATCTranscribe/PrivacyInfo.xcprivacy` — Apple compares them.
+These must agree with `ATCTranscribe/PrivacyInfo.xcprivacy` — Apple compares them, and a mismatch
+is a rejection. Audited against the shipping code on 2026-11-11; what was checked is at the end.
 
-**"Do you or your third-party partners collect data from this app?" → Yes.**
+### The click path in App Store Connect
 
-| Data type | Linked to identity | Used for tracking | Purpose |
+**App Store Connect → Obelisk EFB → App Privacy → Get Started.**
+
+1. **"Do you or your third-party partners collect data from this app?" → Yes.**
+2. Tick exactly these four data types and nothing else:
+   - Contact Info → **Email Address**
+   - Contact Info → **Name**
+   - Identifiers → **User ID**
+   - Location → **Precise Location**
+3. Then answer three questions for each. ASC asks them per data type, not once:
+
+| Data type | Used for | Linked to identity | Used for tracking |
 |---|---|---|---|
-| Contact Info → **Email Address** | Yes | No | App Functionality |
-| Contact Info → **Name** | Yes | No | App Functionality |
-| Identifiers → **User ID** | Yes | No | App Functionality |
-| Location → **Precise Location** | **No** | No | App Functionality |
+| Email Address | App Functionality | **Yes** | No |
+| Name | App Functionality | **Yes** | No |
+| User ID | App Functionality | **Yes** | No |
+| Precise Location | App Functionality | **No** | No |
 
-Answer **No** to tracking across apps and websites, and leave the tracking-domains list empty.
+4. Leave the tracking-domains list **empty**, and answer **No** to tracking across apps and
+   websites. The app has no advertising identifier, no analytics SDK and no tracking of any kind.
+5. **Publish.** ⚠️ The answers do not go live until you press Publish, and a version cannot be
+   submitted while they are incomplete — this is the hard gate before submission.
 
-Everything else is **not** collected: no usage data, no diagnostics, no contacts, no photos, no
-purchase history, no search history, no identifiers beyond the account's own user id.
+### Why each answer is what it is
 
-Two answers that deserve a sentence of reasoning, in case a reviewer asks:
+- **Email, name and user id are collected ONLY if the pilot signs in.** An account is optional and
+  the app is fully usable without one; an app that is never signed into makes no request to our
+  servers at all. Linked by definition — recognising the pilot next time is the point.
+- **Precise location is collected but NOT linked.** With the online traffic layer switched on, the
+  app asks `api.adsb.lol` for traffic around a point, and that point is ownship's position:
+  `https://api.adsb.lol/v2/point/{lat}/{lon}/{radius}`. A third-party request, so it is declared.
+  Unlinked because it is an unauthenticated GET carrying no account, no device id and no cookie,
+  so neither we nor they can tie it to a person.
+  ⚠️ **The host changed.** This said `api.airplanes.live` until that provider started refusing
+  the app's requests. Same answer, different host — but if a reviewer asks, name the right one.
 
-- **Email, name and user id are collected only if the pilot signs in.** The account is optional;
-  an app that is never signed into makes no request to our servers at all.
-- **Precise location is "collected" but NOT linked.** With the online traffic layer switched on,
-  the app asks `api.airplanes.live` for traffic around a point, and that point is ownship's
-  position. It is a third-party request, so it is declared. It is unlinked because that request
-  carries no account, no device id and no cookie. Nothing else sends position anywhere — the map,
-  plates, glide rings and logbook are all computed on-device.
+### Everything else is NOT collected, and this was checked rather than assumed
+
+- **No analytics or crash SDK.** No Firebase, Crashlytics, Sentry, Amplitude, Mixpanel, Segment,
+  AppsFlyer, Adjust, Bugsnag or Datadog anywhere in the target.
+- **The install id never leaves the device.** `InstallIdentity` writes to the Keychain and is read
+  locally; no request carries it.
+- **Nothing else sends position.** Every other network call is either a nationwide feed with no
+  coordinates in it (`aviationweather.gov` airsigmet/cwa, `api.weather.gov` alerts, `tfr.faa.gov`)
+  or is keyed to an AIRPORT's published coordinate rather than the pilot's — `power.larc.nasa.gov`
+  takes a lat/lon, and it is the airport's, from `PowerClimateStore.stats(ident:coord:)`.
+- **No audio.** Transcription is compiled out of this build (`Core/Features.swift`), so nothing is
+  captured. If that gate is ever flipped, this section and the manifest both change.
+- **No CloudKit in build 116.** Logbook and notes sync is behind `COMMSIGHT_CLOUDSYNC`, which is
+  commented out in `project.yml` and ships without the entitlement, so no `CKContainer` is ever
+  instantiated. If it is enabled later it writes to the pilot's OWN private database, which Apple
+  does not treat as developer-collected — but re-read this section in the same change.
+- **No purchases.** Billing is deferred and lives on the website; the app processes no payment.
+- **Charts, plates, procedures, routes, the logbook and notes never leave the device.**
 
 ---
 
@@ -221,7 +254,7 @@ purchase mechanism. Every feature is available to every user.
 DATA SOURCES AND ATTRIBUTION
 Aeronautical data is United States FAA public-domain data (CIFP, NASR, d-TPP, TFRs). Weather is
 NOAA/NWS. Hazard and climate layers use NASA EONET and NASA POWER; NASA does not endorse Obelisk.
-Live traffic is from airplanes.live. Each source is attributed in the app where it is displayed.
+Live traffic is from adsb.lol. Each source is attributed in the app where it is displayed.
 
 SAFETY POSITIONING
 Obelisk is an aid to situational awareness and is not certified for navigation. The app states

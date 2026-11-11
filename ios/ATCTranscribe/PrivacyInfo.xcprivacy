@@ -73,8 +73,14 @@
 
         <!--
           Position, and only while the online traffic layer is switched on.
-          `Aircraft/ADSBService.swift` asks api.airplanes.live for traffic around a point, and that
-          point is ownship's present position when there is a GPS fix. It is sent to a third party,
+          `Aircraft/ADSBService.swift` asks api.adsb.lol for traffic around a point, and that
+          point is ownship's present position when there is a GPS fix.
+
+          THE HOST CHANGED, SO THIS LINE DID. It said api.airplanes.live until that provider began
+          refusing the app's requests; `LiveAircraftFetcher` now calls
+          `https://api.adsb.lol/v2/point/{lat}/{lon}/{radius}`. The DECLARATION below is unaffected
+          — same data, same purpose, same third party in kind — but the named host is the reason a
+          reviewer is given, so it has to be the host the app actually contacts. It is sent to a third party,
           so it is declared, even though nothing identifying goes with it.
 
           NOT linked: that request carries no account, no device id and no cookie — it is an
