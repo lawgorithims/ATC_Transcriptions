@@ -9,6 +9,23 @@ and (later) open the plate at `https://aeronav.faa.gov/d-tpp/<cycle>/<pdf>`.
 Source: FAA **d-TPP** metafile (public domain), the electronic Terminal Procedures index. The "current"
 metafile always points at the effective 28-day cycle:
     https://nfdc.faa.gov/webContent/dtpp/current.xml
+
+⚠️ THE DEFAULT URL CAN NEVER BUILD A FUTURE CYCLE, which makes `publish_nav.py --stage-next`
+impossible with it. "current" means in force: on 2026-11-11 it served 2611 while 2612 was already
+published elsewhere. nfdc has no next-cycle file at all — next.xml, dtpp2612.xml and the rest are
+404 — but **aeronav serves each cycle at its own address**, available weeks ahead:
+
+    https://aeronav.faa.gov/d-tpp/<cycle>/xml_data/d-TPP_Metafile.xml
+
+Checked 2026-11-11: the 2612 file was up, declaring cycle="2612", from_edate="0901Z 11/26/26". So to
+stage the next cycle, pass it explicitly:
+
+    python3 build_procedures.py --metafile https://aeronav.faa.gov/d-tpp/2612/xml_data/d-TPP_Metafile.xml
+
+⚠️ AND STAGE ALL THREE DATASETS TOGETHER. This file's cycle is interpolated into the plate URL by
+`Procedures.plateURL`, and the FAA ages old cycles off, so a cycle where cifp and apt roll to 2612
+while procedures stays on 2611 404s every plate in the app. That outage has happened, and it lasted
+74 days.
 Schema: digital_tpp[cycle] → state_code → city_name → airport_name[icao_ident, apt_ident] →
         record(chart_code, chart_name, pdf_name). chart_code: IAP=approach, DP=SID, ODP=obstacle
         departure, STAR=arrival, APD=airport diagram, MIN/LAH/HOT/DAU=other (skipped).
