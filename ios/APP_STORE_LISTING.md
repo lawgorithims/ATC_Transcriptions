@@ -205,6 +205,34 @@ is a rejection. Audited against the shipping code on 2026-11-11; what was checke
   ⚠️ **The host changed.** This said `api.airplanes.live` until that provider started refusing
   the app's requests. Same answer, different host — but if a reviewer asks, name the right one.
 
+### "Collect" has a narrow definition, and location sits near its edge
+
+Apple's wording on the first screen: *transmitting data off the device in a way that allows you
+and/or your third-party partners to access it **for a period longer than necessary to service the
+transmitted request in real time***. Partners are defined as vendors *whose code you have added to
+the app*.
+
+Read strictly, the ADS-B position arguably falls OUTSIDE that: it is an unauthenticated GET whose
+answer comes back immediately, nothing is retained by us, it never touches our servers, and
+adsb.lol's code is not in the app — it is an HTTP endpoint we call, not an embedded SDK.
+
+**Declare it anyway.** Three reasons, in order:
+1. `PrivacyInfo.xcprivacy` declares `NSPrivacyCollectedDataTypePreciseLocation`, and **Apple
+   compares the manifest against these answers**. Saying "not collected" here while the manifest
+   says otherwise is a mismatch, which is a rejection — and the mismatch is the risk, whichever of
+   the two is "more correct" in the abstract.
+2. **We cannot verify what adsb.lol retains.** The carve-out turns on the recipient not keeping the
+   data, and that is their log policy, not ours to assert.
+3. It costs almost nothing. It shows on the product page as *Location — not linked to you*, which
+   is both accurate and unremarkable.
+
+⚠️ If anyone later decides to drop it, **change the manifest in the same edit**, and write down
+what made adsb.lol's retention knowable. Changing one of the two alone is the failure mode.
+
+The ACCOUNT data decides the first question regardless: email, name and user id are sent to our own
+servers and kept there, so "Yes, we collect data from this app" is unambiguous even if location
+were removed.
+
 ### Everything else is NOT collected, and this was checked rather than assumed
 
 - **No analytics or crash SDK.** No Firebase, Crashlytics, Sentry, Amplitude, Mixpanel, Segment,
