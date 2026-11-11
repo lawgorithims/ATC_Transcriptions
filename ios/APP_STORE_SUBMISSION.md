@@ -64,6 +64,34 @@ answers, the subtitle, and the review notes. Every asset that work needs is now 
 `docs/appstore/PRODUCT_PAGE.txt` (every field, unwrapped and measured), the two screenshot sets,
 and the promotional artwork — see below, because which set to upload is now a decision, not a path.
 
+### The other App Store Connect sections: what is NOT needed, and why
+
+Three things that look like blockers and mostly are not. Checked 2026-11-11.
+
+**Digital Services Act → YOU DO NEED THIS, if you sell in the EU.** Account-level, not per-app, and
+nothing to do with the code. Apple needs a declared trader status and verified contact details, and
+without them your apps are removed from sale in the EU and payments can be held. It needs the real
+registered details of Obelisk Aerospace LLC, so it is yours to fill in, not something this repo can
+answer. ⚠️ For a trader, Apple PUBLISHES that contact information on the EU product page — use an
+address and phone you are content to have shown publicly.
+
+**Regulated Medical Device → not applicable.** The declaration is triggered by the Medical or
+Health & Fitness categories, or by answering "frequent" to *Medical or Treatment Information* in the
+age questionnaire. Obelisk is **Navigation** primary, **Weather** secondary, and the questionnaire
+answer is **None** (§ above). Aviation weather and safety-of-flight advice are not medical
+information. Nothing to declare — but note this is downstream of the category and the rating, so if
+either ever changes, re-read this.
+
+**App Store Server Notifications and the App-Specific Shared Secret → not needed.** Both exist to
+carry in-app purchase and auto-renewable subscription events, and **this build has no in-app
+purchases at all**: there is no `import StoreKit` anywhere in the target, StoreKit is not linked in
+`project.yml`, and every mention of it in the source is a COMMENT about a rail that has not landed
+("When the StoreKit rail lands (M3)…"). Billing is on the website through Stripe. Both become
+relevant the moment that rail ships — and `InstallIdentity` already records the reason the
+`appAccountToken` has to be set at purchase time rather than backfilled.
+
+---
+
 ### "Unable to Add for Review" — the five blockers, answered
 
 Hit on 2026-11-11 with the screenshots and artwork already uploaded. All five are App Store Connect
