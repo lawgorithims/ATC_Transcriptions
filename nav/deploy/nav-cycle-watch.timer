@@ -1,0 +1,15 @@
+[Unit]
+Description=Run the Obelisk nav cycle watchdog daily
+Documentation=file:///opt/obelisk/nav/cycle_watch.py
+
+[Timer]
+# Daily at 10:00Z. The app activates a staged cycle at 0901Z on its effective date, so a 1000Z run
+# sees the world as a pilot does on roll day rather than the night before.
+OnCalendar=*-*-* 10:00:00 UTC
+# ⚠️ Persistent, because a box that was down at 1000Z must still check when it comes back. A missed
+# run is how a missed cycle starts.
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

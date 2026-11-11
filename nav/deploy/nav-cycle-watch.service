@@ -1,0 +1,23 @@
+[Unit]
+Description=Obelisk nav cycle watchdog — alarms when the published AIRAC cycle goes stale
+Documentation=file:///opt/obelisk/nav/cycle_watch.py
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# The watchdog needs NO credentials: it reads the public dataset over plain HTTPS, exactly as the
+# app does. That is deliberate — a watchdog that needs a token stops running when the token
+# expires, which is precisely when dropped cycles stop being noticed.
+ExecStart=/opt/obelisk/nav/alert_on_stale.sh
+User=obelisk
+Group=obelisk
+# Read-only except for the state file the wrapper uses to avoid repeating itself.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+StateDirectory=obelisk-nav-watch
+
+[Install]
+WantedBy=multi-user.target
