@@ -32,9 +32,37 @@ classes — `docs/appstore/iPhone-17-Pro-Max/` (1320×2868) and `docs/appstore/i
 
 What is left is the ordinary submission work in §3–§7 of `APP_STORE_LISTING.md`: the **App Privacy**
 answers, the subtitle, and the review notes. Every asset that work needs is now generated:
-`docs/appstore/PRODUCT_PAGE.txt` (every field, unwrapped and measured),
-`docs/appstore/promo/` (five promotional images at the sizes App Store Connect offers), and the
-two screenshot sets.
+`docs/appstore/PRODUCT_PAGE.txt` (every field, unwrapped and measured), the two screenshot sets,
+and the promotional artwork — see below, because which set to upload is now a decision, not a path.
+
+### Promotional artwork: upload the APPROACH set
+
+**`docs/appstore/promo-approach/`**, chosen 2026-11-11 over the enroute alternative in
+`docs/appstore/promo/`. It shows KATL's ILS 08L plate georeferenced on the moving map with
+LARII/JAAJJ/BAZAR/SCHEL flown as the active route and the aeroplane on the 095 course — the one
+capability a pilot recognises at a glance. The enroute set stays built as the alternative.
+
+**Four files, not five.** App Store Connect accepts 5244x2950 for BOTH the header and the search
+placement, so it is emitted once as `promo-5244x2950.png`; upload that same file to either.
+
+| File | Placement |
+| --- | --- |
+| `promo-5244x2950.png` | header or search — the size ASC takes for both |
+| `header-3840x1646.png` | header |
+| `search-3840x2560.png` | search |
+| `search-1920x1280.png` | search |
+
+⚠️ **THESE ARE NOT IN GIT.** 64 MB of regenerable PNGs do not belong in a history, so both sets
+are gitignored and the capture frames they are built from are committed instead. If the directory
+is empty, rebuild it:
+`~/CommSight/plate-georef-venv/bin/python3 ios/Tools/make_promo_art.py` — seconds, no simulator.
+Re-shooting the frames themselves needs one: `SIM="<your iPad sim>" bash ios/Tools/promo_capture.sh`.
+
+⚠️ **NO LOGO, NO TEXT, NO DEVICE FRAME, and that is not a style choice.** Apple prohibits all
+three in featuring artwork; the first version of this asset was the Obelisk mark on black, which is
+the prohibited element in the middle of the frame. `ios/Tools/make_promo_art.py` has the full rule.
+⚠️ The prohibition list came from third-party ASO sources, not Apple's own page, which is
+JavaScript-gated — check the live page in App Store Connect before uploading.
 
 ### Submit build 116
 
