@@ -11,6 +11,39 @@ as `313317e`, so build 112's source is on GitHub.
 
 ---
 
+## SUBMITTED — 2026-11-11
+
+**Version 1.0 is `WAITING_FOR_REVIEW` with build 116 attached.** Read back from the App Store
+Connect API, not taken from the submission screen: `appStoreState: WAITING_FOR_REVIEW`, attached
+build `116`, submission record present. Everything below this line is the pass that got it there and
+is kept for the next release rather than for this one.
+
+### What to watch while it is in review
+
+1. ⚠️ **THE BUNDLED NAV CYCLE EXPIRES 2026-11-26.** Cycle 2611 was current at submission. The
+   bundle is only the floor — `NavDataLibrary` updates procedures, airports and the plate index
+   over the air — so a connected device is never stuck with it. But a first launch with NO signal
+   after 26 November opens on an expired-data banner. **If review runs past that date, re-bundle
+   (§1–§2) and upload a replacement build** rather than letting it go live that way.
+2. **Digital Services Act trader status.** Account-level and still unset at submission. Without it
+   the app can be withheld from sale in the EU regardless of how review goes. Note that Apple
+   publishes a trader's contact details on the EU product page.
+
+### Known gaps, deliberately shipped
+
+- **Builds 112–115 have no release notes.** Build 116's entry covers only what is new since 115,
+  because a tester on 115 already has that work. The gap means the Obelisk rename and icon, optional
+  accounts with sync, the convective-weather work and ownship on airport diagrams were never
+  announced to anyone. Either back-date entries (the array allows gaps) or decide in writing that it
+  stays unannounced.
+- **The LZ hazard veto is gated and unmeasured.** Behind `diagnosticsEnabled`, so no pilot sees it.
+  It ships inert. Only `lz/eval_groundtruth.py --gate` against real OSM ground can vouch for it, and
+  that has never been run against the change.
+- **No foldable screenshot set.** Xcode 26.6 and the iOS 26.5 runtime have no foldable device type,
+  so there is nothing to capture one on. See the screenshot section.
+
+---
+
 ## 0. The short version
 
 The app **builds, passes its suite, and is structurally ready**. The nav data is current again
