@@ -64,6 +64,46 @@ answers, the subtitle, and the review notes. Every asset that work needs is now 
 `docs/appstore/PRODUCT_PAGE.txt` (every field, unwrapped and measured), the two screenshot sets,
 and the promotional artwork — see below, because which set to upload is now a decision, not a path.
 
+### "Unable to Add for Review" — the five blockers, answered
+
+Hit on 2026-11-11 with the screenshots and artwork already uploaded. All five are App Store Connect
+fields; none is a code change. In the order the error lists them:
+
+**1. Content Rights Information** — App Information → Content Rights.
+"Does your app contain, show, or access third-party content?" → **Yes**, then confirm you hold the
+necessary rights. The basis, if anyone asks:
+- FAA data (CIFP, NASR, d-TPP, TFRs) and NOAA/NWS weather are **US Government public-domain works**.
+- NASA EONET and NASA POWER likewise; the app already shows the acknowledgement NASA asks for, and
+  states that NASA does not endorse Obelisk.
+- Live traffic is **adsb.lol**, attributed in-app (`ADSBService.attribution`).
+- The avoid map's transmission-line layer is **OpenStreetMap-derived and carries ODbL attribution**.
+
+**2. Privacy Policy URL** — App Privacy.
+`https://obeliskaerospace.com/legal/privacy` — **verified 200 on 2026-11-11**, as is the root used
+for Support and Marketing URLs.
+
+**3. Age ratings** — App Information.
+Answer **None** to every content item; the result is **4+**. Two that are worth getting right
+rather than guessing:
+- **Unrestricted web access → No.** There is NO in-app browser: no `WKWebView`, no
+  `SFSafariViewController` anywhere in the target. The only outbound links — a TFR detail page, the
+  privacy policy, the terms — go through `UIApplication.shared.open` / `openURL`, which backgrounds
+  Obelisk into Safari. Answering Yes here would raise the rating for a browser the app does not have.
+- **User-generated content → No.** Notes and the logbook are local to the device and are never
+  shared between users. (Cloud sync is disabled in this build, and would go to the pilot's own
+  private database in any case — see §4.)
+
+**4. Primary category** — App Information.
+Primary **Navigation**, secondary **Weather**. Copyright `2026 Obelisk Aerospace LLC`.
+
+**5. App Privacy practices — "an Admin must provide" this.**
+The answers are in `APP_STORE_LISTING.md` §4, with the click path. ⚠️ READ THE ROLE REQUIREMENT IN
+THAT ERROR: App Privacy can only be completed by an **Admin** (or Account Holder) on the team. A
+Developer or App Manager cannot, and the submission stays blocked no matter how correct the answers
+are. If you are not Admin, this is the one item that has to be done by someone who is.
+
+---
+
 ### Promotional artwork: upload the APPROACH set
 
 **`docs/appstore/promo-approach/`**, chosen 2026-11-11 over the enroute alternative in
