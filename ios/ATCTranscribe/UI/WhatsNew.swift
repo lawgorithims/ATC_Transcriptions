@@ -68,6 +68,66 @@ enum WhatsNew {
                     detail: "Measuring between two fingers now needs a short press and hold rather than a quick tap, so panning or zooming with two fingers no longer leaves a stray ruler behind; there is a small haptic when one is created. The ruler draws graduated ticks with the distance read off the middle. Airway labels no longer repeat along a route \u{2014} they were being placed once per map tile, so one airway could print its name several times over."),
             ]),
         ReleaseNote(
+            build: 115, version: "1.0", headline: "The storm nobody reported, and a clearer way in",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "cloud.bolt.rain",
+                    title: "Three more sources behind the storm alert",
+                    detail: "The alert read Convective SIGMETs and nothing else. A Convective SIGMET needs roughly 40% area coverage, a line, or a cell that is already severe \u{2014} so an isolated ordinary thunderstorm over open country is reported by nobody, and the banner stayed silent on exactly the cell that matters. Three more sources now feed the same alert. Center Weather Advisories are issued BELOW SIGMET criteria. National Weather Service severe thunderstorm warnings are drawn around a single storm and carry its measured motion. MRMS echo tops are measured by radar with no human in the loop. Advisory only, and never a substitute for a briefing."),
+                WhatsNewHighlight(
+                    icon: "person.crop.circle.badge.plus",
+                    title: "The account screen opens where you actually are",
+                    detail: "It defaulted to Sign in for everyone, so a pilot creating an account typed an email and password they had just invented and were told \u{201c}Incorrect email or password\u{201d} \u{2014} which reads as though you have an account and have got it wrong. It now opens on Create account unless this device has signed in before."),
+            ]),
+        ReleaseNote(
+            build: 114, version: "1.0", headline: "Ownship on the airport diagram, and a ruler on the chart",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "map",
+                    title: "Airport diagrams know where they are",
+                    detail: "Every airport diagram was a georeference miss, which hid ownship, ADS-B traffic and \u{201c}Overlay on map\u{201d} on the one chart you read while the aeroplane is moving on the ground. 890 of 925 diagrams now carry a georeference, so the taxi chart shows where you actually are."),
+                WhatsNewHighlight(
+                    icon: "arrow.triangle.turn.up.right.diamond",
+                    title: "Approach plates sit straight",
+                    detail: "The rotation convention had been backwards since the first version. On an approach plate that is small \u{2014} the largest correction in the table is 1.41\u{00B0} \u{2014} but it is catastrophic on an airport diagram, which is routinely turned a quarter turn to fit a runway on a portrait page. All 9,898 approach rows are corrected."),
+                WhatsNewHighlight(
+                    icon: "ruler",
+                    title: "Measure between two fingers",
+                    detail: "Put two fingers on the chart and it gives you the distance and bearing between them, and the time at your current groundspeed."),
+                WhatsNewHighlight(
+                    icon: "pause.circle",
+                    title: "Pausing a download now stops it",
+                    detail: "Pausing a category in Data activity looked like it did nothing, and from the cockpit that reading was correct. A paused request was parked rather than refused, and the map asks for a chart again on every pan \u{2014} so the paused row vanished and an identical one appeared a frame later. A paused category is now refused at the door, and there is a way to stop a single row."),
+            ]),
+        ReleaseNote(
+            build: 113, version: "1.0", headline: "The app is called Obelisk, and an account is yours to choose",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "app.badge",
+                    title: "Obelisk",
+                    detail: "New name and a new icon \u{2014} the obelisk mark, white on black. The app had outgrown a name that described transcribing radio calls some time ago; it is an electronic flight bag."),
+                WhatsNewHighlight(
+                    icon: "person.crop.circle",
+                    title: "An optional account",
+                    detail: "You can sign in with an email address or with Apple, and your logbook and notes stay yours. Nothing in the app requires it: every feature works signed out, and an app that is never signed into makes no request to our servers at all."),
+                WhatsNewHighlight(
+                    icon: "lock.rotation",
+                    title: "You are not signed out in the air",
+                    detail: "Backgrounding the app at altitude and coming back could find the account gone: a refused refresh cleared the stored credential wherever the aeroplane happened to be. The server\u{2019}s verdict is now applied only once the aircraft is stopped, so a signed-in pilot stays signed in until the wheels stop \u{2014} and it still lands on the first refresh after that, with or without a connection."),
+            ]),
+        ReleaseNote(
+            build: 112, version: "1.0", headline: "The where-not-to-go map arrives in pieces",
+            highlights: [
+                WhatsNewHighlight(
+                    icon: "square.grid.3x3",
+                    title: "A download a dropped connection cannot ruin",
+                    detail: "The national map is about 1.5 GB and the downloader cannot resume, so losing the connection near the end meant starting again. It now comes as 17 longitude bands, each a whole set of map columns. A dropped connection costs one band rather than the lot, only bands that are missing or out of date are fetched, and the list is remembered so Downloads can answer offline."),
+                WhatsNewHighlight(
+                    icon: "airplane.departure",
+                    title: "Small strips are no longer shaded as hazards",
+                    detail: "Runways at FAA-listed fields are left clear, but the data behind that lists many single-runway strips without surveyed ends, so they were being shaded as ground not to land on \u{2014} including, for some pilots, their home field. Those now get an estimated runway rectangle from the reference point and designator, and are cleared like any other."),
+            ]),
+        ReleaseNote(
             build: 111, version: "1.0", headline: "Where not to go, and the turn you brief on the ground",
             highlights: [
                 WhatsNewHighlight(
