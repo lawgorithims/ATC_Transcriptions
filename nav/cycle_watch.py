@@ -95,7 +95,11 @@ def assess(index: dict, today: datetime.date, warn_days: int) -> dict:
 
     # The next cycle starts the day the current one expires — that is what "expires" means here.
     next_effective = min(datetime.date.fromisoformat(r["expires"]) for r in rows)
-    staged = sorted((index.get("staged") or {}).keys())
+    # ⚠️ THE KEY IS "next", NOT "staged". Written as "staged" first, from the word the docs use for
+    # the ACTION (`--stage-next`) rather than from the manifest. It is not a crash — `.get` returns
+    # nothing — so it reported "NOTHING STAGED" against a manifest that had all three staged, which
+    # is a false all-clear on the one fact this field exists to carry.
+    staged = sorted((index.get("next") or {}).keys())
 
     # ⚠️ `<= 0`, NOT `< 0`. A cycle's expiry date IS its successor's effective date — 2610 expires
     # 2026-10-29 and 2611 becomes effective that same day — so "expires today" already means the

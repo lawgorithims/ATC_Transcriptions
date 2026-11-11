@@ -22,7 +22,7 @@ import cycle_watch as W
 def idx(expires, cycle="2610", effective="2026-10-01", staged=None, datasets=("cifp", "apt", "procedures")):
     return {"datasets": {d: {"cycle": cycle, "effective": effective, "expires": expires}
                          for d in datasets},
-            "staged": staged or {}}
+            "next": staged or {}}      # the manifest's own name for it
 
 
 class AssessTests(unittest.TestCase):
@@ -72,9 +72,13 @@ class AssessTests(unittest.TestCase):
         r = W.assess(idx("2026-11-26"), datetime.date(2026, 11, 1), warn_days=0)
         self.assertEqual(r["next_effective"], "2026-11-26")
 
-    def test_staged_is_reported(self):
-        r = W.assess(idx("2026-11-26", staged={"cifp": {}}), datetime.date(2026, 11, 1), warn_days=0)
-        self.assertEqual(r["staged"], ["cifp"])
+    def test_staged_is_read_from_the_next_key(self):
+        """⚠️ THE MANIFEST CALLS IT "next". The action is `--stage-next`, and reading the field by
+        the action's name instead of the manifest's reported NOTHING STAGED against a manifest with
+        all three staged — a false all-clear, found only by staging a cycle and looking."""
+        r = W.assess(idx("2026-11-26", staged={"cifp": {}, "apt": {}}),
+                     datetime.date(2026, 11, 1), warn_days=0)
+        self.assertEqual(r["staged"], ["apt", "cifp"])
 
     def test_an_empty_manifest_raises_rather_than_passing(self):
         """⚠️ NEVER READ 'no datasets' AS 'nothing wrong'. An empty or malformed manifest is the
