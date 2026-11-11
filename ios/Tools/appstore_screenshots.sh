@@ -8,7 +8,11 @@
 # Apple needs one set per device class the app supports. This app is universal, so BOTH:
 #
 #   iPad 13"     2064 x 2752   iPad Pro 13-inch (M5)
-#   iPhone 6.9"  1320 x 2868   iPhone 17 Pro Max
+#   iPhone 6.3"  1206 x 2622   iPhone 17 Pro          <-- the slot ASC asks for
+#
+# ⚠️ SHOOT THE PLAIN PRO, NOT THE PRO MAX. The iPhone slot is 6.1"/6.3": App Store Connect takes
+# 1179x2556 or 1206x2622 and nothing else. The Pro Max is 6.9" at 1320x2868, which is not on that
+# list and is refused at upload. One word in the device name, and a whole set that cannot be used.
 #
 # Output lands in docs/appstore/<slug>/, named so it sorts into listing order.
 #
