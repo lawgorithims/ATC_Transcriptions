@@ -237,6 +237,16 @@ were removed.
 
 - **No analytics or crash SDK.** No Firebase, Crashlytics, Sentry, Amplitude, Mixpanel, Segment,
   AppsFlyer, Adjust, Bugsnag or Datadog anywhere in the target.
+- **Crash Data and Performance Data → do NOT tick them**, even though the app shows MetricKit data.
+  `BatteryDiagnosticsView` displays the latest MetricKit daily payload — crash and energy
+  diagnostics — in an opt-in screen with a Copy button. The app NEVER TRANSMITS IT: the user copies
+  it and sends it themselves. Apple's test is *transmitting data off the device in a way that allows
+  you to access it*, and a clipboard copy the pilot chooses to make is the user acting, not the app
+  collecting. The only endpoints the app posts to are the seven `/api/auth/native/*` routes; there
+  is no diagnostics endpoint. Apple's own TestFlight and Xcode crash reporting is Apple's
+  collection, not ours, and is never declared here.
+  ⚠️ This flips the day anything POSTs that payload automatically. If a "send diagnostics" button
+  is ever wired to a server, Crash Data and Performance Data become required.
 - **The install id never leaves the device.** `InstallIdentity` writes to the Keychain and is read
   locally; no request carries it.
 - **Nothing else sends position.** Every other network call is either a nationwide feed with no
