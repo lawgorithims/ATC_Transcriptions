@@ -32,6 +32,9 @@ classes — `docs/appstore/iPhone-17-Pro-Max/` (1320×2868, the 6.9" / Dynamic I
 **Re-shot 2026-11-11 from build 116's code**; the previous set was from 30 October and predated
 NRST moving into the top bar, chevron traffic, the aircraft editor and the iPhone layers-panel fix.
 
+**DECIDED 2026-11-11: ship without the foldable set.** The two required families are done and
+the foldable is not being chased for 1.0. Why it cannot be done here, for whoever revisits it:
+
 ⚠️ **THE FOLDABLE ("iPhone Duo") SET CANNOT BE SHOT ON THIS MACHINE.** Xcode 26.6 with the iOS
 26.5 runtime knows no foldable, dual-screen or flip device type at all — its newest iPhone is the
 17 Pro Max. So there is no simulator to capture one on. Three honest ways forward, in order:
