@@ -31,6 +31,7 @@
 # enough to draw. The frame itself is set by --chart-center/--chart-span in the test, NOT by where
 # the aeroplane is: the aeroplane only has to be somewhere in it.
 set -euo pipefail
+die() { printf '\033[1;31mERROR: %s\033[0m\n' "$*" >&2; exit 1; }
 cd "$(dirname "$0")/.."            # → ios/
 export PATH=/opt/homebrew/bin:$PATH
 
@@ -64,6 +65,48 @@ xcodebuild build-for-testing -project ATCTranscribe.xcodeproj -scheme ATCTranscr
   -skipMacroValidation -skipPackagePluginValidation CODE_SIGNING_ALLOWED=NO -quiet
 
 xcrun simctl privacy "$SIM" grant location-always com.flycommsight.atctranscribe 2>/dev/null || true
+
+# ⚠️ INSTALL REAL CHART PACKS, OR THE ARTWORK SHIPS BLURRY.
+#
+# This is the single most important step in the script and it was missing, which cost a round of
+# artwork. The app's bundled VFR base (`Resources/basemap/vfr_base.mbtiles`) is 9 MB and stops at
+# ZOOM 7, deliberately — it is the floor a first launch with no signal works from, not the chart.
+# The real detail lives in downloaded packs, and `syncFAASource` raises the source's maxzoom to the
+# packs' true max once they mount. With no packs mounted the map falls back to z7 and MapLibre
+# magnifies it 2-8x at the zooms these frames sit at. That is the blur, and it is the app behaving
+# correctly: it even says so on screen ("Zoom in to load the chart here").
+#
+# A fresh simulator has no packs, so one must be installed per scenario, named the way the app's
+# downloader names them: <Pack>-<MM-DD-YYYY>.mbtiles.
+#   Detroit_SEC  (maxzoom 11) covers the enroute position 42.5N 77.0W
+#   Atlanta_SEC  (maxzoom 12) covers the approach position 33.6N 84.6W
+# The other two widen the enroute frame, which is several hundred miles across.
+PACKS_DIR="${PACKS_DIR:-$HOME/CommSight/charts-build/packs}"
+CHART_CYCLE="${CHART_CYCLE:-09-03-2026}"
+CHART_PACKS=(Detroit_SEC Lake_Huron_SEC New_York_SEC Atlanta_SEC)
+
+echo "== install chart packs =="
+xcrun simctl boot "$SIM" 2>/dev/null || true
+xcrun simctl bootstatus "$SIM" -b >/dev/null
+# ⚠️ INSTALL IT FIRST. `build-for-testing` BUILDS; it does not reliably install, so the data
+# container does not exist yet and `get_app_container` fails with a bare "No such file or
+# directory". The test run would install it later — too late for charts, which have to be on disk
+# before the app launches and mounts them.
+APP="$DD/Build/Products/Debug-iphonesimulator/ATCTranscribe.app"
+[ -d "$APP" ] || die "no built app at $APP"
+xcrun simctl install "$SIM" "$APP" || die "could not install the app on $SIM"
+CONTAINER="$(xcrun simctl get_app_container "$SIM" com.flycommsight.atctranscribe data)" \
+  || die "no app container even after installing"
+CHART_DIR="$CONTAINER/Library/Application Support/charts"
+mkdir -p "$CHART_DIR"
+for pack in "${CHART_PACKS[@]}"; do             # bounded by the list above
+  src="$PACKS_DIR/$pack.mbtiles"
+  [ -f "$src" ] || die "chart pack missing: $src
+The artwork would fall back to the 9 MB bundled base, which stops at zoom 7, and every frame would
+come out blurry. Point PACKS_DIR at a directory holding $pack.mbtiles, or rebuild the packs."
+  cp "$src" "$CHART_DIR/$pack-$CHART_CYCLE.mbtiles"
+  printf "  %-20s %s MB\n" "$pack" "$(( $(stat -f%z "$src") / 1000000 ))"
+done
 
 # ⚠️ THE FRAMING COMES FROM THE AEROPLANE, so this is not optional dressing.
 # `--chart-center`/`--chart-span` look like the right tool and are read only by the CLASSIC
