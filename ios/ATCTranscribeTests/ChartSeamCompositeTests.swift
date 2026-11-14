@@ -15,7 +15,7 @@ final class ChartSeamCompositeTests: XCTestCase {
 
     func testShallowerNeighbourJoinsTheSeamBelowTheDeeperPack() {
         // Pack 0 = Chicago-like (5-11), pack 1 = St Louis-like (5-12). Request z12/1047/1546.
-        let packs = [(minZoom: 5, maxZoom: 11), (minZoom: 5, maxZoom: 12)]
+        let packs = [(minZoom: 5, maxZoom: 11, nearby: true), (minZoom: 5, maxZoom: 12, nearby: true)]
         let claims = MBTilesHTTPServer.seamClaims(packs: packs, z: 12, x: 1047, y: 1546,
             fetch: fetcher([0: ["11/523/773"], 1: ["12/1047/1546"]]))
         XCTAssertEqual(claims.count, 2, "the z11 pack's magnified parent is a claimant, not ignored")
@@ -27,7 +27,7 @@ final class ChartSeamCompositeTests: XCTestCase {
     }
 
     func testANativeOnlyTileIsNotASeam() {
-        let packs = [(minZoom: 5, maxZoom: 11), (minZoom: 5, maxZoom: 12)]
+        let packs = [(minZoom: 5, maxZoom: 11, nearby: true), (minZoom: 5, maxZoom: 12, nearby: true)]
         let claims = MBTilesHTTPServer.seamClaims(packs: packs, z: 12, x: 1047, y: 1546,
             fetch: fetcher([1: ["12/1047/1546"]]))                      // Chicago does not reach here
         XCTAssertEqual(claims.count, 1, "one claimant → the single-pack fast path keeps the tile")
@@ -35,7 +35,7 @@ final class ChartSeamCompositeTests: XCTestCase {
 
     func testTwoShallowPacksMagnifiedAtTheSameJoinStillComposite() {
         // Omaha/Chicago (both z11) asked for at z12 because a z12 pack is mounted elsewhere.
-        let packs = [(minZoom: 5, maxZoom: 11), (minZoom: 5, maxZoom: 11)]
+        let packs = [(minZoom: 5, maxZoom: 11, nearby: true), (minZoom: 5, maxZoom: 11, nearby: true)]
         let claims = MBTilesHTTPServer.seamClaims(packs: packs, z: 12, x: 1000, y: 1500,
             fetch: fetcher([0: ["11/500/750"], 1: ["11/500/750"]]))
         XCTAssertEqual(claims.count, 2)
@@ -43,10 +43,29 @@ final class ChartSeamCompositeTests: XCTestCase {
     }
 
     func testPacksBelowTheirMinZoomOrPastTheOverzoomBandDoNotClaim() {
-        let packs = [(minZoom: 6, maxZoom: 12), (minZoom: 5, maxZoom: 5)]
+        let packs = [(minZoom: 6, maxZoom: 12, nearby: true), (minZoom: 5, maxZoom: 5, nearby: true)]
         let claims = MBTilesHTTPServer.seamClaims(packs: packs, z: 5 + MBTilesTileOverlay.overzoomLevels + 1,
                                                   x: 0, y: 0, fetch: { _, _, _, _ in Data([1]) })
         XCTAssertEqual(claims.count, 1, "only the pack whose range covers the level claims")
+    }
+
+    func testADeepPackMissingTheTileJoinsWithItsAncestor() {
+        // Just past Kansas City's neatline: KC (5-12) has no z12 tile but its z11 parent exists; Omaha
+        // (5-11) has its z11 tile. Both must claim, or reader order decides whether Omaha shows at all.
+        let packs = [(minZoom: 5, maxZoom: 12, nearby: true), (minZoom: 5, maxZoom: 11, nearby: true)]
+        let claims = MBTilesHTTPServer.seamClaims(packs: packs, z: 12, x: 1001, y: 1503,
+            fetch: fetcher([0: ["11/500/751"], 1: ["11/500/751"]]))
+        XCTAssertEqual(claims.count, 2)
+        let m = try! XCTUnwrap(claims[0].magnify)
+        XCTAssertEqual(m.sub, 128); XCTAssertEqual(m.ox, 128); XCTAssertEqual(m.oy, 128)
+    }
+
+    func testAFarAwayPackDoesNotWalkItsAncestors() {
+        var reads = 0
+        let packs = [(minZoom: 5, maxZoom: 12, nearby: false)]
+        _ = MBTilesHTTPServer.seamClaims(packs: packs, z: 12, x: 1001, y: 1503,
+                                         fetch: { _, _, _, _ in reads += 1; return nil })
+        XCTAssertEqual(reads, 1, "only the native read; no ancestor walk for a pack whose bounds miss the tile")
     }
 
     func testDrawRectMagnifiesTheRightQuadrant() {

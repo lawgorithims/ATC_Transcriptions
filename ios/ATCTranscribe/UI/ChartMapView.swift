@@ -573,7 +573,10 @@ private func inflated(_ r: MKMapRect, by f: Double) -> MKMapRect {
 
     init(library: ChartLibrary) { self.library = library }
 
-    private func publish() { readers = loaded.values.map { $0.reader } }
+    /// Sorted, because `loaded` is a Dictionary and its order changes on every mutation. The tile
+    /// server's reader order decides which chart lands on top at a seam and keys its seam cache, so
+    /// an unsorted publish made both flip each time a pack mounted.
+    private func publish() { readers = loaded.values.map { $0.reader }.sorted { $0.packID < $1.packID } }
 
     /// Warm the shared catalog — usually already warm from launch, so this is a fast no-op path.
     private func ensureCatalog() async -> Bool {
@@ -595,11 +598,22 @@ private func inflated(_ r: MKMapRect, by f: Double) -> MKMapRect {
         } else {
             phase = .empty
         }
+        // …and what is ON SCREEN. The map asks for the visible packs the instant the layer flips, but
+        // that request usually lands before this Task has set `layer`, so ensureVisible refused it as
+        // the wrong layer — and nothing asked again until the pilot panned. A chart switch with no
+        // route left the whole screen on the bundled low-res base indefinitely.
+        if let rect = lastVisibleRect, layer == newLayer {
+            await load(rects: [rect], gated: true, pin: false)
+        }
     }
+
+    /// The last region the map reported, whatever layer it was asked for under (see setLayer).
+    private var lastVisibleRect: MKMapRect?
 
     /// Free-pan: ensure the packs under the visible region are loaded (gated by zoom/scope so panning
     /// around at a wide zoom doesn't mass-download), and evict packs that have drifted away.
     func ensureVisible(_ rect: MKMapRect, layer visibleLayer: ChartLayer) async {
+        lastVisibleRect = rect
         guard visibleLayer == layer, layer.isRaster, await ensureCatalog(), visibleLayer == layer else { return }
         await load(rects: [rect], gated: true, pin: false)
     }

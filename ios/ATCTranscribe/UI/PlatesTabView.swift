@@ -254,13 +254,13 @@ struct PlatesTabView: View {
                         VStack(alignment: .leading, spacing: 8) {
                             Text(key == circling ? key : "Runway \(key)")
                                 .font(.dsHeadline).foregroundStyle(p.text).padding(.horizontal, 4)
-                            thumbGrid(byRunway[key] ?? [])
+                            thumbGrid(byRunway[key] ?? [], airport: ident)
                         }
                     }
                 }
                 ForEach(otherGroups, id: \.0) { cat, heading in
                     let items = plates.filter { $0.category == cat }
-                    if !items.isEmpty { chartGroup(heading, count: items.count, items: items) }
+                    if !items.isEmpty { chartGroup(heading, count: items.count, items: items, airport: ident) }
                 }
             }
             .padding(12)
@@ -287,10 +287,11 @@ struct PlatesTabView: View {
         .accessibilityLabel("Resize plate thumbnails")
     }
 
-    @ViewBuilder private func chartGroup(_ heading: String, count: Int, items: [AirportProcedure]) -> some View {
+    @ViewBuilder private func chartGroup(_ heading: String, count: Int, items: [AirportProcedure],
+                                         airport: String) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             sectionHeader(heading, count)
-            thumbGrid(items)
+            thumbGrid(items, airport: airport)
         }
     }
 
@@ -306,13 +307,13 @@ struct PlatesTabView: View {
 
     /// A lazily-rendered grid of large plate thumbnails (only visible cells download + render, so a big
     /// binder never renders 70 PDFs at once).
-    private func thumbGrid(_ items: [AirportProcedure]) -> some View {
+    private func thumbGrid(_ items: [AirportProcedure], airport: String) -> some View {
         // ~340pt minimum → 2 columns in iPad portrait, 3 in landscape; the lower-right slider (thumbSize)
         // trades columns for size. Each thumbnail sizes itself to the plate's own aspect ratio, so there is
         // no letterbox/whitespace around the chart.
         LazyVGrid(columns: [GridItem(.adaptive(minimum: thumbSize), spacing: 12)], alignment: .leading, spacing: 12) {
             ForEach(items) { proc in
-                PlateThumb(proc: proc) { plate = proc }.environmentObject(model)
+                PlateThumb(proc: proc, airport: airport) { plate = proc }.environmentObject(model)
             }
         }
     }
@@ -417,6 +418,8 @@ private struct FlightBagButton: View {
 struct PlateThumb: View {
     @EnvironmentObject var model: AppModel
     let proc: AirportProcedure
+    /// The binder's field — what the cold-temperature badge checks the weather for.
+    var airport: String = ""
     var onTap: () -> Void
 
     @State private var image: UIImage?
@@ -449,6 +452,10 @@ struct PlateThumb: View {
                     HStack(spacing: 3) {
                         if PlateGeoref.lookup(pdf: proc.pdf) != nil { Image(systemName: "scope").foregroundStyle(p.good) }
                         if PlateStore.isCached(proc) { Image(systemName: "arrow.down.circle.fill").foregroundStyle(p.good) }
+                        if proc.category == .approach, !airport.isEmpty {
+                            ColdTemperatureBadge(procedure: proc, airport: airport, palette: p,
+                                                 store: model.coldTemperature)
+                        }
                     }
                     .font(.dsLabelS).padding(5)
                     .background(p.overlay, in: Capsule()).padding(4)   // legible over the chart, not floating on white
@@ -469,6 +476,7 @@ struct PlateThumb: View {
     private func load() async {
         image = nil; phase = .loading
         guard let url = await PlateStore.ensureOnDisk(proc) else { phase = .none; return }
+        model.coldTemperature.ensure(proc)            // the plate is on disk now: read its snowflake, if any
         // Render generously (800px) so a thumbnail stays crisp at the largest 2-column slider size without
         // re-rendering when the pilot resizes. LazyVGrid renders only visible cells, so memory stays bounded.
         let rendered = await Task.detached(priority: .utility) {

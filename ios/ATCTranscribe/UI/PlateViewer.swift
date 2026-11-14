@@ -309,6 +309,14 @@ struct PlateViewer: View {
                     offlineState
                 }
             }
+            // COLD TEMPERATURE RESTRICTED AIRPORT. An advisory above the plate when the reported
+            // temperature is at or below the snowflake figure — never a gate; the plate stays usable.
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if current.category == .approach {
+                    ColdTemperatureBannerHost(procedure: current, airport: airport, palette: palette,
+                                              plateReady: url != nil, store: model.coldTemperature)
+                }
+            }
             .navigationTitle(current.name)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

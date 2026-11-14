@@ -236,6 +236,7 @@ struct MapLibreChartView: UIViewRepresentable {
         private var faaID = "faa"
         private var faaGeneration = 0
         private var faaServedLayer: ChartLayer?
+        private var faaServedPacks: Set<String> = []     // packIDs the live generation was built for
         /// Outgoing "faa" generations, drawn ABOVE the live one until the map goes idle (see syncFAASource).
         private var retiringFAA: [String] = []
         static let maxRetiringFAA = 3
@@ -761,8 +762,13 @@ struct MapLibreChartView: UIViewRepresentable {
 
         func mapView(_ mapView: MLNMapView, didFinishLoading style: MLNStyle) {
             servedReadersSig = nil               // the faa source is freshly (re)created empty here → force a remount
-            faaID = "faa"; faaServedLayer = nil  // the new style carries its own "faa"; old generations died with
-            retiringFAA.removeAll()              // the previous style, so there is nothing left to retire
+            // A NEW style carries its own "faa" and no generations. But this callback can re-fire for the
+            // SAME style (see styleGate), and then the "faa-N" layers are still in it: forgetting their ids
+            // would leave them as permanent orphans under every later chart. Sweep them by prefix instead.
+            for l in style.layers where l.identifier.hasPrefix("faa-") { style.removeLayer(l) }   // bounded: style
+            for s in style.sources where s.identifier.hasPrefix("faa-") { style.removeSource(s) } // layers first
+            faaID = "faa"; faaServedLayer = nil; faaServedPacks = []
+            retiringFAA.removeAll()
             appliedTrackCount = -1               // the "track" source is recreated empty → force a re-apply below
             appliedRadarTemplate = nil           // wxradar source gone after reload → force updateRadar to re-add
             appliedLZSignature = nil             // ditto for the LZ raster — see updateLZ
@@ -2248,8 +2254,17 @@ struct MapLibreChartView: UIViewRepresentable {
             // until the map reports idle (every requested tile loaded) and is retired then — the eye only
             // ever sees the swap from sharp to sharp. A CHART-TYPE switch (VFR⇄IFR) still swaps at once:
             // leaving the old type drawn over the new one would show the wrong chart.
-            let keepOld = faaServedLayer == layer && style.layer(withIdentifier: faaID) != nil
+            //
+            // "Same chart type" is judged by the PACKS, not by `layer`. On a switch the coordinator's
+            // layer flips before ChartStore.setLayer has cleared the old packs, so one sync serves the
+            // previous type's packs under the new label. Comparing labels then kept that generation —
+            // sectional tiles — on top of the IFR packs until idle. A set that shares no pack with the
+            // outgoing one (a switch, the store emptying, a jump to unrelated coverage) is never kept.
+            let packs = Set(readers.map(\.packID))
+            let keepOld = faaServedLayer == layer && !faaServedPacks.isDisjoint(with: packs)
+                && style.layer(withIdentifier: faaID) != nil
             faaServedLayer = layer
+            faaServedPacks = packs
             let oldID = faaID
             if keepOld {
                 retiringFAA.append(oldID)

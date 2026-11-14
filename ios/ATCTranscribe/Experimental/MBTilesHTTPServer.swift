@@ -10,6 +10,7 @@
 import Foundation
 import Network
 import UIKit
+import MapKit
 
 /// Serves chart tiles from the currently-mounted MBTiles packs over loopback HTTP. Thread-safe: the tile
 /// lookup runs on the listener's queue; `readersProvider` is a closure so the server always serves whatever
@@ -338,14 +339,31 @@ final class MBTilesHTTPServer {
     ///
     /// Natives are always drawn ABOVE magnified layers, so a magnified pixel can only ever show
     /// through a native tile's transparent collar — the blur cannot spread over real detail.
-    static func seamClaims(packs: [(minZoom: Int, maxZoom: Int)], z: Int, x: Int, y: Int,
+    ///
+    /// A pack that is IN range but simply lacks the tile also claims, with its nearest ancestor — the
+    /// build drops wholly transparent tiles, so just past a z12 pack's neatline there can be no z12
+    /// tile while its z11 parent (transparent over that quarter) still exists. Without this claim that
+    /// tile had one claimant, the shallower neighbour, and `scan`'s sparse-pack fallback could answer
+    /// first with the deeper pack's transparent magnified parent — a hole whose presence depended on
+    /// reader order. Measured: 4 such tiles on the Kansas City / Omaha join. `nearby` gates the
+    /// ancestor walk (up to `maxAncestorSteps` reads) to packs whose bounds touch the tile, so a miss
+    /// in a pack hundreds of miles away costs nothing; native reads are never gated.
+    static func seamClaims(packs: [(minZoom: Int, maxZoom: Int, nearby: Bool)], z: Int, x: Int, y: Int,
                            fetch: (Int, Int, Int, Int) -> Data?) -> [SeamClaim] {
         assert(z >= 0 && z <= 24, "seamClaims: out-of-range zoom")
         var native: [SeamClaim] = [], magnified: [SeamClaim] = []
         for (i, p) in packs.prefix(64).enumerated() {                    // bounded (rule 2)
             guard z >= p.minZoom else { continue }
             if z <= p.maxZoom {
-                if let raw = fetch(i, z, x, y) { native.append(SeamClaim(raw: raw, magnify: nil)) }
+                if let raw = fetch(i, z, x, y) { native.append(SeamClaim(raw: raw, magnify: nil)); continue }
+                guard p.nearby else { continue }
+                for step in 1...maxAncestorSteps where z - step >= p.minZoom {   // bounded (rule 2)
+                    guard let a = MBTilesTileOverlay.ancestorSource(z: z, x: x, y: y, step: step),
+                          let raw = fetch(i, z - step, a.ax, a.ay) else { continue }
+                    let sub = 256.0 / Double(1 << step)
+                    magnified.append(SeamClaim(raw: raw, magnify: (sub, Double(a.ox) * sub, Double(a.oy) * sub)))
+                    break
+                }
             } else if z <= p.maxZoom + MBTilesTileOverlay.overzoomLevels,
                       let src = MBTilesTileOverlay.overzoomSource(z: z, x: x, y: y, maxZoom: p.maxZoom),
                       let raw = fetch(i, p.maxZoom, src.ax, src.ay) {
@@ -370,7 +388,9 @@ final class MBTilesHTTPServer {
             return hit.length == 0 ? nil : (hit as Data, "image/png")    // empty = known NOT a seam
         }
         let packs = Array(readers.prefix(64))
-        let claims = Self.seamClaims(packs: packs.map { ($0.minZoom, $0.maxZoom) }, z: z, x: x, y: y) {
+        let tileRect = MBTilesTileOverlay.tileRect(z: z, x: x, y: y)
+        let claims = Self.seamClaims(packs: packs.map { ($0.minZoom, $0.maxZoom, $0.bounds.intersects(tileRect)) },
+                                     z: z, x: x, y: y) {
             i, tz, tx, ty in packs[i].tileData(z: tz, x: tx, y: ty)
         }
         // Two claimants, at least one of them real. Two MAGNIFIED claimants (a z11/z11 join asked for at

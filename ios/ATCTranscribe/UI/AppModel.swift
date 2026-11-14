@@ -422,6 +422,8 @@ final class AppModel: ObservableObject {
     let plateBag = PlateBag()
     /// Minima read off the plates the pilot has already downloaded. Parsed once each, off the main actor.
     let minima = MinimaStore()
+    /// Cold-temperature (snowflake) figures read off downloaded approach plates — an advisory, never a gate.
+    let coldTemperature = ColdTemperatureStore()
     /// Item 28: the parsed IFR alternate-minimums booklet, per airport.
     let alternateMinima = AlternateMinimaStore()
     /// NOTAMs, per aerodrome. Needs an FAA developer key — see `NotamCredential`.
