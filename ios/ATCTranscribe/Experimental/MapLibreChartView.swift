@@ -231,6 +231,15 @@ struct MapLibreChartView: UIViewRepresentable {
         }
         private var serverPort: UInt16 = 0         // bound loopback port, delivered async by the tile server
         private var servedReadersSig: String?      // (layer + sorted mounted packIDs) last handed to the tile server
+        /// The live downloaded-pack raster's layer/source id. "faa" is the one in the style JSON; every
+        /// remount after that gets a fresh generation id so the outgoing one can stay on screen meanwhile.
+        private var faaID = "faa"
+        private var faaGeneration = 0
+        private var faaServedLayer: ChartLayer?
+        /// Outgoing "faa" generations, drawn ABOVE the live one until the map goes idle (see syncFAASource).
+        private var retiringFAA: [String] = []
+        static let maxRetiringFAA = 3
+        static let retireFallbackSeconds = 4.0
         // Bundled always-present RASTER bases for the globe (loaded once): a global Blue Marble satellite backstop
         // + a low-res whole-US chart base per layer. Appended LAST (lowest priority, first-match-wins) so the FAA
         // raster returns an OPAQUE tile at every globe zoom → it covers the vector land-fill, hiding the fill
@@ -752,6 +761,8 @@ struct MapLibreChartView: UIViewRepresentable {
 
         func mapView(_ mapView: MLNMapView, didFinishLoading style: MLNStyle) {
             servedReadersSig = nil               // the faa source is freshly (re)created empty here → force a remount
+            faaID = "faa"; faaServedLayer = nil  // the new style carries its own "faa"; old generations died with
+            retiringFAA.removeAll()              // the previous style, so there is nothing left to retire
             appliedTrackCount = -1               // the "track" source is recreated empty → force a re-apply below
             appliedRadarTemplate = nil           // wxradar source gone after reload → force updateRadar to re-add
             appliedLZSignature = nil             // ditto for the LZ raster — see updateLZ
@@ -2227,13 +2238,35 @@ struct MapLibreChartView: UIViewRepresentable {
             guard sig != servedReadersSig else { return }          // same set + layer → nothing to remount
             servedReadersSig = sig
             server.setReaders(readers)
-            // ORDER MATTERS: remove the LAYER before the SOURCE (MapLibre throws otherwise), then re-add so it
-            // re-requests tiles it 404'd while the set was empty/different. Cap maxzoom at the packs' real max.
-            if let faaLayer = style.layer(withIdentifier: "faa") { style.removeLayer(faaLayer) }
-            if let src = style.source(withIdentifier: "faa") { style.removeSource(src) }
+            // A NEW SOURCE is still required — MapLibre keeps the 404s and one-pack seam tiles it got from
+            // the previous set, and has no public reload — but tearing the old one down FIRST dropped every
+            // sharp tile on screen the moment a neighbouring pack mounted (any pan into new coverage, and
+            // each batch of six while a region fills in). The whole chart fell back to the bundled z7 base
+            // until it re-tiled, which is the chart "de-loading" under the pilot.
+            //
+            // So, same chart type: the fresh generation goes in UNDER the outgoing one, which stays drawn
+            // until the map reports idle (every requested tile loaded) and is retired then — the eye only
+            // ever sees the swap from sharp to sharp. A CHART-TYPE switch (VFR⇄IFR) still swaps at once:
+            // leaving the old type drawn over the new one would show the wrong chart.
+            let keepOld = faaServedLayer == layer && style.layer(withIdentifier: faaID) != nil
+            faaServedLayer = layer
+            let oldID = faaID
+            if keepOld {
+                retiringFAA.append(oldID)
+                // Bounded: a long fill-in can stack generations before the map ever idles. Dropping the
+                // OLDEST (topmost) one is safe — the generation below it holds the same tiles or newer.
+                while retiringFAA.count > Self.maxRetiringFAA { removeFAAGeneration(retiringFAA.removeFirst(), style) }
+            } else {
+                for id in retiringFAA { removeFAAGeneration(id, style) }   // bounded by maxRetiringFAA
+                retiringFAA.removeAll()
+                removeFAAGeneration(oldID, style)
+            }
+            assert(retiringFAA.count <= Self.maxRetiringFAA, "syncFAASource: retiring stack unbounded")
+            faaGeneration += 1
+            faaID = "faa-\(faaGeneration)"
             let faaMax = readers.map(\.maxZoom).max() ?? 16
             assert(faaMax >= 0, "syncFAASource: negative maxzoom")
-            let fresh = MLNRasterTileSource(identifier: "faa",
+            let fresh = MLNRasterTileSource(identifier: faaID,
                 tileURLTemplates: ["http://127.0.0.1:\(serverPort)/{z}/{x}/{y}"],
                 // TRUE pack maxzoom, not faaMax + overzoomLevels. Declaring the deeper band made
                 // MapLibre request levels the packs do not have, and every one of those went through
@@ -2246,8 +2279,17 @@ struct MapLibreChartView: UIViewRepresentable {
                 options: [.tileSize: Self.rasterTileSize,
                           .maximumZoomLevel: NSNumber(value: faaMax)])
             style.addSource(fresh)
-            let faaRaster = MLNRasterStyleLayer(identifier: "faa", source: fresh)   // BOTTOM (below the first vector layer)
+            let faaRaster = MLNRasterStyleLayer(identifier: faaID, source: fresh)   // BOTTOM (below the first vector layer)
             Self.applyRasterPaint(to: faaRaster, currentMapTheme)   // fresh layer must keep the theme's dim
+            if keepOld, let outgoing = style.layer(withIdentifier: oldID) {
+                // Directly beneath the outgoing generation: it inherits that slot in the stack (below the
+                // avoid/LZ/radar/plate layers, with the night veil already directly above), so the anchor
+                // ladder below is not needed and the veil must NOT be re-floated over the outgoing layer's
+                // head — it would end up under it.
+                style.insertLayer(faaRaster, below: outgoing)
+                scheduleFAARetireFallback(map)
+                return
+            }
             // Anchor the OPAQUE FAA chart BELOW the translucent radar when the radar exists — else a pack
             // remount (pan to new coverage, VFR⇄IFR switch, late download) re-inserts faa above the radar
             // (they shared the "airways-line" anchor) and the precipitation vanishes until the next ~10-min
@@ -2277,6 +2319,34 @@ struct MapLibreChartView: UIViewRepresentable {
                 style.insertLayer(veil, above: faaRaster)
             }
         }
+
+        /// Layer before source — MapLibre throws if a source is removed while a layer still uses it.
+        private func removeFAAGeneration(_ id: String, _ style: MLNStyle) {
+            assert(id.hasPrefix("faa"), "removeFAAGeneration: not an faa generation")
+            if let l = style.layer(withIdentifier: id) { style.removeLayer(l) }
+            if let s = style.source(withIdentifier: id) { style.removeSource(s) }
+        }
+
+        /// Drop the outgoing "faa" generations once the live one has every tile it asked for.
+        func retireFAAGenerations(on map: MLNMapView) {
+            guard !retiringFAA.isEmpty, let style = map.style else { return }
+            for id in retiringFAA { removeFAAGeneration(id, style) }     // bounded by maxRetiringFAA
+            retiringFAA.removeAll()
+            assert(style.layer(withIdentifier: faaID) != nil || style.source(withIdentifier: faaID) == nil,
+                   "retireFAAGenerations: live generation lost its layer")
+        }
+
+        /// Idle is the real signal, but a map that never settles (continuous camera follow, a source that
+        /// keeps erroring) would otherwise hold a stale generation over the live one indefinitely.
+        private func scheduleFAARetireFallback(_ map: MLNMapView) {
+            let gen = faaGeneration
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.retireFallbackSeconds) { [weak self, weak map] in
+                guard let self, let map, self.faaGeneration == gen else { return }   // a newer remount re-armed it
+                self.retireFAAGenerations(on: map)
+            }
+        }
+
+        func mapViewDidBecomeIdle(_ mapView: MLNMapView) { retireFAAGenerations(on: mapView) }
 
         // MARK: route line
 

@@ -313,12 +313,54 @@ final class MBTilesHTTPServer {
         "seam:\(ids.joined(separator: "+"))/\(z)/\(x)/\(y)" as NSString
     }
 
-    /// Alpha-composite the packs that all hold this tile, first pack on top.
+    /// One pack's contribution to a seam tile: its own tile (`magnify == nil`), or — for a pack that
+    /// stops shallower than the requested level — its deepest tile plus the sub-rect to magnify.
+    struct SeamClaim {
+        let raw: Data
+        let magnify: (sub: Double, ox: Double, oy: Double)?
+        var isNative: Bool { magnify == nil }
+    }
+
+    /// Which packs contribute to tile z/x/y, in draw order (TOPMOST FIRST): every pack holding the
+    /// tile natively, then every pack that can only magnify an ancestor for it. Pure apart from the
+    /// `fetch` closure (a BLOB read), so the ordering rule can be pinned by a test without SQLite.
     ///
-    /// Returns nil for the ordinary case — fewer than two packs carry the tile — so the single-pack fast
-    /// path and its WebP passthrough are untouched and this costs nothing away from a seam. Only NATIVE
-    /// tiles are composited: an upscaled tile is a guess about a pack's own interior, never the reason a
-    /// neighbouring chart is missing, and blending guesses would spread blur along the join.
+    /// The magnified claimants are the reason this exists. The sectionals do NOT share a depth: the
+    /// southern charts reach z12 and the northern ones stop at z11 (Mercator scale grows with
+    /// latitude, and the build picks the base zoom from raster resolution), and the IFR-low enroute
+    /// set is split the same way. Along every z11/z12 boundary — Omaha/Kansas City, Chicago/St Louis,
+    /// Cheyenne/Denver, Salt Lake City/Las Vegas, … — the "faa" source declares maxzoom 12, so the map
+    /// asks for z12, and only the deeper pack holds those tiles. Counting native tiles alone, that is
+    /// ONE claimant, "not a seam", and the deeper pack's neatline-trimmed tile was served by itself:
+    /// measured, St Louis z12/1047/1546 is 66 % opaque while Chicago's z11 parent over it is 100 %.
+    /// The missing third showed the bundled z7 base, magnified 32x — a strip one tile wide along the
+    /// whole join that never sharpened however long the chart sat there.
+    ///
+    /// Natives are always drawn ABOVE magnified layers, so a magnified pixel can only ever show
+    /// through a native tile's transparent collar — the blur cannot spread over real detail.
+    static func seamClaims(packs: [(minZoom: Int, maxZoom: Int)], z: Int, x: Int, y: Int,
+                           fetch: (Int, Int, Int, Int) -> Data?) -> [SeamClaim] {
+        assert(z >= 0 && z <= 24, "seamClaims: out-of-range zoom")
+        var native: [SeamClaim] = [], magnified: [SeamClaim] = []
+        for (i, p) in packs.prefix(64).enumerated() {                    // bounded (rule 2)
+            guard z >= p.minZoom else { continue }
+            if z <= p.maxZoom {
+                if let raw = fetch(i, z, x, y) { native.append(SeamClaim(raw: raw, magnify: nil)) }
+            } else if z <= p.maxZoom + MBTilesTileOverlay.overzoomLevels,
+                      let src = MBTilesTileOverlay.overzoomSource(z: z, x: x, y: y, maxZoom: p.maxZoom),
+                      let raw = fetch(i, p.maxZoom, src.ax, src.ay) {
+                magnified.append(SeamClaim(raw: raw, magnify: (src.sub, src.ox, src.oy)))
+            }
+        }
+        let all = Array((native + magnified).prefix(maxSeamLayers))
+        assert(all.count <= maxSeamLayers, "seamClaims: unbounded seam stack")
+        return all
+    }
+
+    /// Alpha-composite the packs that cover this tile, natives on top (see `seamClaims`).
+    ///
+    /// Returns nil for the ordinary case — fewer than two packs cover the tile — so the single-pack fast
+    /// path and its WebP passthrough are untouched and this costs nothing away from a seam.
     private func compositeSeam(readers: [MBTilesReader], z: Int, x: Int, y: Int) -> (Data, String)? {
         // Decided ONCE per tile and remembered, because the scan below costs a BLOB read per pack and
         // the overwhelming majority of tiles are not seams. The key covers the whole mounted set, so
@@ -327,13 +369,12 @@ final class MBTilesHTTPServer {
         if let hit = pngCache.object(forKey: decision) {
             return hit.length == 0 ? nil : (hit as Data, "image/png")    // empty = known NOT a seam
         }
-        var claims: [(reader: MBTilesReader, raw: Data)] = []
-        for r in readers.prefix(64) {                                    // bounded (rule 2)
-            guard z >= r.minZoom, z <= r.maxZoom else { continue }       // native only
-            guard let raw = r.tileData(z: z, x: x, y: y) else { continue }
-            claims.append((r, raw))
-            if claims.count >= Self.maxSeamLayers { break }
+        let packs = Array(readers.prefix(64))
+        let claims = Self.seamClaims(packs: packs.map { ($0.minZoom, $0.maxZoom) }, z: z, x: x, y: y) {
+            i, tz, tx, ty in packs[i].tileData(z: tz, x: tx, y: ty)
         }
+        // Two claimants, at least one of them real. Two MAGNIFIED claimants (a z11/z11 join asked for at
+        // z12 because a z12 pack is mounted elsewhere) is the same hole one level down, so it counts too.
         guard claims.count >= 2 else {
             pngCache.setObject(NSData(), forKey: decision, cost: 1)      // not a seam — never scan again
             return nil
@@ -343,20 +384,32 @@ final class MBTilesHTTPServer {
         let images = claims.compactMap { UIImage(data: $0.raw) }
         // A decode failure must not silently drop a chart out of the stack: fall back to the ordinary
         // single-pack path rather than serving a composite that is missing one of its layers.
-        guard images.count == claims.count, let first = images.first else { return nil }
+        guard images.count == claims.count else { return nil }
 
-        let side: CGFloat = max(first.size.width, 256)
+        // Output at the native tile's pixel size when there is one; a magnified layer never sets it.
+        let nativeWidth = zip(claims, images).first(where: { $0.0.isNative })?.1.size.width ?? 256
+        let side: CGFloat = max(nativeWidth, 256)
         let fmt = UIGraphicsImageRendererFormat.default(); fmt.scale = 1; fmt.opaque = false
         let out = UIGraphicsImageRenderer(size: CGSize(width: side, height: side), format: fmt).image { _ in
-            // Back to front: the LAST claimant is drawn first so the first pack ends up on top, which
-            // matches the order the single-pack path would have chosen.
-            for img in images.reversed().prefix(Self.maxSeamLayers) {    // bounded (rule 2)
-                img.draw(in: CGRect(x: 0, y: 0, width: side, height: side))
+            // Back to front: the LAST claimant is drawn first so the first (native) pack ends up on top.
+            for (claim, img) in zip(claims, images).reversed().prefix(Self.maxSeamLayers) {   // bounded (rule 2)
+                img.draw(in: Self.seamDrawRect(claim.magnify, side: side))
             }
         }
         guard let png = out.pngData() else { return nil }
         pngCache.setObject(png as NSData, forKey: decision, cost: png.count)
         return (png, "image/png")
+    }
+
+    /// Where to draw one seam layer into a `side`-wide output. A native tile fills it; a magnified
+    /// ancestor is placed so its (ox, oy, sub, sub) sub-rect — in the ancestor's 256-unit space, the
+    /// same convention as `overzoomSource` — fills it. Independent of the ancestor's pixel size,
+    /// because `draw(in:)` maps the whole image onto the rect.
+    static func seamDrawRect(_ magnify: (sub: Double, ox: Double, oy: Double)?, side: CGFloat) -> CGRect {
+        guard let m = magnify else { return CGRect(x: 0, y: 0, width: side, height: side) }
+        assert(m.sub > 0, "seamDrawRect: non-positive sub-tile size")
+        let k = side / CGFloat(m.sub)                                    // output points per ancestor unit
+        return CGRect(x: -CGFloat(m.ox) * k, y: -CGFloat(m.oy) * k, width: 256 * k, height: 256 * k)
     }
 
     /// Upscale the nearest available ANCESTOR of a tile that is missing from a sparse pack.
