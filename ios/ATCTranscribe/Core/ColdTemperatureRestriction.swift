@@ -47,6 +47,8 @@ enum ColdTemperatureRestriction {
     static let neighbourWindow = 25.0
     /// How far left of the notes margin the figure must start, points.
     static let marginClearance = 4.0
+    /// How far right of the `T`/`A` icons the snowflake figure may start, points.
+    static let iconOffsetMax = 8.5
     /// Plausible snowflake temperatures. Published CTA figures run roughly 0 to −40 °C.
     static let plausibleRange = -60...5
 
@@ -61,25 +63,35 @@ enum ColdTemperatureRestriction {
 
     /// The snowflake temperature from the page's laid-out lines, or nil.
     ///
-    /// THE RULE: a line that BEGINS with a temperature (`-21°C`) and starts LEFT of the notes margin.
-    /// The margin is measured from the neighbouring notes lines because it moves from plate to plate —
-    /// 53 pt at Bozeman, 46 at Jackson Hole, 37 where the icon column is narrow. The figures measured
-    /// across a 90-plate sample of cycle 2611:
-    ///   - snowflake figure: starts at x 19–32, nearly always a line of its own (`-21°C`);
-    ///   - once merged with the prose beside it (`-17°C NA at night…`, x 30 against a 54 pt margin);
-    ///   - Baro-VNAV sentences that wrap to begin `-17°C or above 54°C` start AT the margin (37–54) —
-    ///     a different rule, and rejected here.
+    /// A line that BEGINS with a temperature (`-21°C`) is the snowflake figure when either rule holds:
+    ///
+    /// 1. ICON ANCHOR. The figure sits in the icon column, directly under the `T` / `A` symbols: across
+    ///    ~2,000 plates of cycle 2611 it starts 6–8 pt right of their left edge (8.5 accepted), while a
+    ///    Baro-VNAV wrap (`-15°C or above 54°C`) starts at the notes margin, 11.1 pt or more to the
+    ///    right. The rare figure set further out (9–10 pt) is left to rule 2. This rule wins even when
+    ///    the figure is merged with prose on its baseline (`-26°C or above 54°C .` on Gambell RNAV 16,
+    ///    where the Baro-VNAV low of -20 °C is on the line above).
+    /// 2. NOTES MARGIN. It starts left of the margin measured from the neighbouring prose lines — for
+    ///    plates whose icons were not extracted. Only neighbours starting at or right of the figure
+    ///    count: a full-width first line (`DME required.` at x 22), a helicopter note beginning by the
+    ///    icons, or a line PDFKit places at negative x is not the margin, and each of those hid a real
+    ///    figure in the audit (Northway VOR-A, Alamosa VOR-B, Yankton ILS 31).
     static func restrictionC(lines: [NoteLine], pageWidth: Double, pageHeight: Double) -> Int? {
         guard pageWidth > 0, pageHeight > 0 else { return nil }
         let top = pageHeight * notesBandTop, bottom = pageHeight * notesBandBottom
         let band = lines.prefix(PlateText.maxRows).filter {                   // bounded (rule 2)
             $0.yMid >= top && $0.yMid <= bottom && $0.x0 <= pageWidth * notesColumnMaxX
         }
-        for l in band {
-            guard let t = leadingTemperatureC(l.text), !isBaroVNAVContinuation(l, in: band) else { continue }
+        let iconX = band.filter { ["T", "A"].contains($0.text.trimmingCharacters(in: .whitespacesAndNewlines))
+                                  && $0.x0 >= 0 && $0.x0 <= pageWidth * iconColumnMaxX0 }
+                        .map(\.x0).min()
+        for l in band where l.x0 >= 0 {
+            guard let t = leadingTemperatureC(l.text) else { continue }
+            if let iconX, l.x0 <= pageWidth * iconColumnMaxX0, l.x0 - iconX <= iconOffsetMax { return t }
+            guard !isBaroVNAVContinuation(l, in: band) else { continue }
             let neighbours = band.filter { n in
                 n != l && abs(n.yMid - l.yMid) <= neighbourWindow && isProse(n.text)
-                    && leadingTemperatureC(n.text) == nil
+                    && leadingTemperatureC(n.text) == nil && n.x0 >= l.x0 - 2
             }
             if neighbours.isEmpty {
                 // Nothing to measure against: accept only a lone figure well inside the icon column.
@@ -198,6 +210,12 @@ enum ColdTemperatureAdvisor {
     static let nearbyRadiusNm = 30.0
     /// A named source further than this from the field is a different place with the same name.
     static let sourceMaxNm = 75.0
+    /// An observation older than this is not "the reported temperature". METARs are hourly; two hours
+    /// allows one missed report. Older ones are treated as no report, so the chain falls through to the
+    /// next source rather than letting an afternoon +3 °C hide the alert overnight.
+    static let maxObservationAge: TimeInterval = 2 * 3600
+    /// Show the observation's age in the text once it is at least this old.
+    static let ageWorthStating: TimeInterval = 30 * 60
 
     enum Source: Equatable, Sendable {
         case field
@@ -207,8 +225,13 @@ enum ColdTemperatureAdvisor {
 
     struct Observation: Equatable, Sendable {
         let ident: String
+        /// The REPORTED temperature, whole °C as the METAR body states it (`M21`). The rule is applied
+        /// to the reported figure; the feed's tenths (`-20.6`) would read `.above` at a field reporting
+        /// exactly the limit.
         let tempC: Double
         let source: Source
+        /// Age of the observation, when known.
+        var age: TimeInterval? = nil
     }
 
     enum Status: Equatable, Sendable { case atOrBelow, above, unknown }
@@ -216,6 +239,10 @@ enum ColdTemperatureAdvisor {
     struct Advisory: Equatable, Sendable {
         let restrictionC: Int
         let observation: Observation?
+        /// Some fetch the advisory depended on FAILED (offline, server error). "Unknown" then means
+        /// "could not be checked", which is a different instruction from "nobody reports".
+        var fetchFailed = false
+
         var status: Status {
             guard let o = observation else { return .unknown }
             return o.tempC <= Double(restrictionC) ? .atOrBelow : .above
@@ -225,24 +252,29 @@ enum ColdTemperatureAdvisor {
         var headline: String {
             switch status {
             case .atOrBelow: return "Cold temperature restriction in effect"
-            case .above:     return "Cold temperature restricted airport"
-            case .unknown:   return "Cold temperature restricted airport"
+            case .above, .unknown: return "Cold temperature restricted airport"
             }
         }
 
         /// Where the temperature came from, in words a pilot can check.
         var sourceLine: String {
             guard let o = observation else {
-                return "No temperature report found at the field, from the plate's named source, or within \(Int(ColdTemperatureAdvisor.nearbyRadiusNm)) NM."
+                if fetchFailed {
+                    return "Weather could not be fetched, so the temperature is unknown."
+                }
+                return "No current temperature report (last \(Int(ColdTemperatureAdvisor.maxObservationAge / 3600)) h) at the field, from the plate's named source, or nearby within \(Int(ColdTemperatureAdvisor.nearbyRadiusNm)) NM."
             }
-            let t = "\(Int(o.tempC.rounded()))°C"
+            let t = "\(Int(o.tempC))°C"
+            var when = ""
+            if let a = o.age, a >= ColdTemperatureAdvisor.ageWorthStating { when = " \(Int(a / 60)) min ago" }
+            let verb = when.isEmpty ? "reports" : "reported"
             switch o.source {
             case .field:
-                return "\(o.ident) reports \(t)."
+                return "\(o.ident) \(verb) \(t)\(when)."
             case .plateSource(let name):
-                return "\(o.ident) reports \(t) — the field has no report; the plate names \(name) as its altimeter source."
+                return "\(o.ident) \(verb) \(t)\(when) — the field has no current report; the plate names \(name) as its altimeter source."
             case .nearby(let d):
-                return "\(o.ident) reports \(t), \(Int(d.rounded())) NM away — the field has no report. Nearby weather is an estimate."
+                return "\(o.ident) \(verb) \(t)\(when), \(Int(d.rounded())) NM away — the field has no current report. Nearby weather is an estimate."
             }
         }
 
@@ -264,52 +296,92 @@ enum ColdTemperatureAdvisor {
         let ident: String          // a 4-letter weather ident
         let name: String
         let distanceNm: Double
+        /// Reported whole-degree temperature of a CURRENT observation; nil when none.
         let tempC: Double?
+        var city: String = ""
+        var age: TimeInterval? = nil
     }
 
     /// Pure: choose the temperature and build the advisory.
     static func assess(restrictionC: Int,
-                       fieldIdent: String, fieldTempC: Double?,
+                       fieldIdent: String, fieldTempC: Double?, fieldAge: TimeInterval? = nil,
                        plateSourceName: String?, plateSource: Station?,
-                       nearby: [Station]) -> Advisory {
+                       nearby: [Station], fetchFailed: Bool = false) -> Advisory {
         if let t = fieldTempC {
             return Advisory(restrictionC: restrictionC,
-                            observation: Observation(ident: fieldIdent, tempC: t, source: .field))
+                            observation: Observation(ident: fieldIdent, tempC: t, source: .field, age: fieldAge))
         }
         if let s = plateSource, let t = s.tempC, let name = plateSourceName {
             return Advisory(restrictionC: restrictionC,
-                            observation: Observation(ident: s.ident, tempC: t, source: .plateSource(name: name)))
+                            observation: Observation(ident: s.ident, tempC: t, source: .plateSource(name: name), age: s.age))
         }
         let near = nearby.filter { $0.tempC != nil && $0.distanceNm <= nearbyRadiusNm
                                    && $0.ident.uppercased() != fieldIdent.uppercased() }
                          .min { $0.distanceNm < $1.distanceNm }
         if let s = near, let t = s.tempC {
             return Advisory(restrictionC: restrictionC,
-                            observation: Observation(ident: s.ident, tempC: t, source: .nearby(distanceNm: s.distanceNm)))
+                            observation: Observation(ident: s.ident, tempC: t, source: .nearby(distanceNm: s.distanceNm), age: s.age))
         }
-        return Advisory(restrictionC: restrictionC, observation: nil)
+        return Advisory(restrictionC: restrictionC, observation: nil, fetchFailed: fetchFailed)
+    }
+
+    /// The reported whole-degree temperature. The METAR body's group (`M21/M24`) is what is reported;
+    /// without one, the feed's tenths are rounded the way the body would be (half up).
+    static func reportedC(raw: String?, tenths: Double?) -> Double? {
+        if let r = Metar.temperatureFromRaw(raw) { return r }
+        guard let t = tenths else { return nil }
+        return (t + 0.5).rounded(.down)
+    }
+
+    /// A station's CURRENT reported temperature and the observation's age, or nil when it has no
+    /// observation within `maxObservationAge`. `MetarStore` keeps the last good observation through a
+    /// failed or empty refresh, so age is checked here rather than trusted.
+    static func current(_ m: Metar?, now: Date = Date()) -> (tempC: Double, age: TimeInterval?)? {
+        guard let m, let t = reportedC(raw: m.rawOb, tenths: m.tempC) else { return nil }
+        guard let epoch = m.obsEpoch else { return (t, nil) }
+        let age = max(0, now.timeIntervalSince1970 - Double(epoch))
+        return age <= maxObservationAge ? (t, age) : nil
     }
 
     /// Pure: which candidate airport the plate's source NAME refers to.
     ///
-    /// The plate prints either an ident (`use ORE altimeter setting`) or a name in chart abbreviations
-    /// (`Dane County Rgnl-Truax Fld`), so a name matches when its FIRST word matches and at least half
-    /// its words do, where a word matches a name word it prefixes or abbreviates (`FLD` ~ `FIELD`).
-    /// Nearest wins, and nothing beyond `sourceMaxNm` is accepted.
+    /// The plate prints an ident (`use ORE altimeter setting`), an ident pair (`use HNH/PAOH altimeter
+    /// setting`), or a name in chart abbreviations (`Dane County Rgnl-Truax Fld`), sometimes a CITY
+    /// (`use Butte altimeter setting` for Bert Mooney). So:
+    ///   - a printed token equal to a candidate's ident wins outright, the candidate matching the most
+    ///     such tokens first (`HNH/PAOH` is Hoonah, not the seaplane base nearer by name);
+    ///   - otherwise a name matches when its FIRST word and at least half its words match a word of
+    ///     the airport's name or city — equal, a prefix of it (two letters or more), or an abbreviation
+    ///     of it (`FLD` ~ `FIELD`).
+    /// Stray icon glyphs that leak into the line (`A Noatak`, `Butte NA`) are dropped first. Nothing
+    /// beyond `sourceMaxNm` is accepted.
     static func resolveSource(name: String, candidates: [Station], identAliases: [String: [String]] = [:]) -> Station? {
-        let want = tokens(name)
+        var want = tokens(name)
+        while let f = want.first, want.count > 1, isGlyphDebris(f) { want.removeFirst() }
+        while let l = want.last, want.count > 1, isGlyphDebris(l) { want.removeLast() }
         guard let first = want.first else { return nil }
-        let matches = candidates.prefix(512).filter { c in                   // bounded (rule 2)
-            guard c.distanceNm <= sourceMaxNm else { return false }
-            let ids = [c.ident.uppercased()] + (identAliases[c.ident] ?? []).map { $0.uppercased() }
-            if want.count == 1 && ids.contains(first) { return true }
-            let hay = tokens(c.name)
-            func hit(_ w: String) -> Bool { hay.contains { $0.hasPrefix(w) || abbreviates(w, $0) } }
+        let pool = candidates.prefix(512).filter { $0.distanceNm <= sourceMaxNm }    // bounded (rule 2)
+
+        let byIdent = pool.map { c -> (Station, Int) in
+            let ids = Set([c.ident.uppercased()] + (identAliases[c.ident] ?? []).map { $0.uppercased() })
+            return (c, want.filter { ids.contains($0) }.count)
+        }.filter { $0.1 > 0 }
+        if let best = byIdent.max(by: { ($0.1, -$0.0.distanceNm) < ($1.1, -$1.0.distanceNm) }) { return best.0 }
+
+        let matches = pool.filter { c in
+            let hay = tokens(c.name + " " + c.city)
+            func hit(_ w: String) -> Bool {
+                hay.contains { $0 == w || (w.count >= 2 && $0.hasPrefix(w)) || abbreviates(w, $0) }
+            }
             guard hit(first) else { return false }
             return want.filter(hit).count * 2 >= want.count
         }
         return matches.min { $0.distanceNm < $1.distanceNm }
     }
+
+    /// A single letter or `NA` — the `A`/`T` icons and the alternate-minimums `NA` that PDFKit joins
+    /// into the notes line next to them.
+    static func isGlyphDebris(_ t: String) -> Bool { t.count == 1 || t == "NA" }
 
     static func tokens(_ s: String) -> [String] {
         s.uppercased().split { !$0.isLetter && !$0.isNumber }.map(String.init).filter { !$0.isEmpty }

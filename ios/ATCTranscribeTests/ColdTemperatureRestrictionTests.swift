@@ -147,4 +147,120 @@ final class ColdTemperatureRestrictionTests: XCTestCase {
         XCTAssertEqual(a.status, .unknown)
         XCTAssertNil(a.observation)
     }
+
+    // MARK: audit regressions (adversarial audit of f4f2d78)
+
+    /// Northway VOR-A: a full-width first line `DME required.` at x 21.7 made the margin and hid -48.
+    func testFullWidthFirstLineDoesNotHideTheFigure() {
+        XCTAssertEqual(read([
+            L(text: "DME required.", x0: 21.7, yMid: 71.5),
+            L(text: "T", x0: 23.6, yMid: 81.4),
+            L(text: "-48°C", x0: 30.5, yMid: 91.2),
+        ]), -48)
+    }
+
+    /// Gambell RNAV 16: the figure shares a baseline with the Baro-VNAV wrap and merges into it.
+    func testFigureMergedIntoBaroVNAVWrapIsReadByTheIcons() {
+        XCTAssertEqual(read([
+            L(text: "T", x0: 23.0, yMid: 81.1),
+            L(text: "Circling NA east of Rwy 16-34. For uncompensated", x0: 56.7, yMid: 82.6),
+            L(text: "A", x0: 22.2, yMid: 89.9),
+            L(text: "Baro-VNAV systems, LNAV/VNAV NA below -20°C", x0: 56.7, yMid: 90.3),
+            L(text: "-26°C or above 54°C .", x0: 29.5, yMid: 98.1),
+        ]), -26)
+    }
+
+    /// Colstrip COPTER 24: a helicopter note ending "…reduction below" starts by the icons.
+    func testHelicopterNoteByTheIconsDoesNotHideTheFigure() {
+        XCTAssertEqual(read([
+            L(text: "T", x0: 22.1, yMid: 72.1),
+            L(text: "When local altimeter not received, use MLS altimeter setting.", x0: 58.2, yMid: 76.6),
+            L(text: "A", x0: 21.2, yMid: 80.8),
+            L(text: "4 Rwy 24 helicopter visibility reduction below ", x0: 34.8, yMid: 84.5),
+            L(text: "-34°C", x0: 28.9, yMid: 88.8),
+        ]), -34)
+    }
+
+    /// Yankton ILS 31: PDFKit lines at negative x and an asterisk note at x 27.
+    func testNegativeXAndAsteriskLinesDoNotHideTheFigure() {
+        XCTAssertEqual(read([
+            L(text: "T", x0: 22.7, yMid: 90.7),
+            L(text: "For inop ALS, DME use requires simultaneous reception of I-YKN and YKN DME.", x0: -109.0, yMid: 97.9),
+            L(text: "A", x0: 21.8, yMid: 99.2),
+            L(text: "d increase ZIMUK fix minimums increase S-LOC 31 Cat C/D visibility to 2 ", x0: -112.2, yMid: 105.4),
+            L(text: "-30°C", x0: 29.0, yMid: 109.1),
+            L(text: "* S-LOC 31 Cat C/D visibility to ", x0: 27.4, yMid: 114.0),
+        ]), -30)
+    }
+
+    /// The nearest Baro-VNAV wrap to the icons in ~2,000 plates (05001R1L, 11.1 pt) stays rejected.
+    func testBaroVNAVWrapNearTheIconsIsStillRejected() {
+        XCTAssertNil(read([
+            L(text: "T", x0: 22.0, yMid: 80.0),
+            L(text: "For uncompensated Baro-VNAV systems, LNAV/VNAV NA below", x0: 33.1, yMid: 82.0),
+            L(text: "A", x0: 22.0, yMid: 89.0),
+            L(text: "-25°C (-13°F) or above 54°C (130°F).", x0: 33.1, yMid: 89.5),
+        ]))
+    }
+
+    /// The rule applies to the REPORTED whole degree. Juneau, limit +1 °C, body `01/M02`, feed 1.4.
+    func testReportedWholeDegreeNotTenthsDecidesTheStatus() {
+        XCTAssertEqual(ColdTemperatureAdvisor.reportedC(raw: "PAJN 141953Z 10003KT 10SM OVC040 01/M02 A2990", tenths: 1.4), 1)
+        XCTAssertEqual(ColdTemperatureAdvisor.reportedC(raw: "KBZN 141953Z 00000KT 10SM CLR M21/M24 A3030", tenths: -20.6), -21)
+        XCTAssertEqual(ColdTemperatureAdvisor.reportedC(raw: nil, tenths: -20.6), -21)
+        let a = ColdTemperatureAdvisor.assess(restrictionC: 1, fieldIdent: "PAJN",
+                                              fieldTempC: ColdTemperatureAdvisor.reportedC(raw: "PAJN 141953Z 01/M02 A2990", tenths: 1.4),
+                                              plateSourceName: nil, plateSource: nil, nearby: [])
+        XCTAssertEqual(a.status, .atOrBelow)
+    }
+
+    private func metar(_ json: String) throws -> Metar {
+        try JSONDecoder().decode(Metar.self, from: Data(json.utf8))
+    }
+
+    /// A station that stopped reporting at +3 °C must not stand in for tonight's temperature.
+    func testStaleObservationIsNotTheReportedTemperature() throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let old = try metar(#"{"icaoId":"KAAA","temp":3,"rawOb":"KAAA 03/M01 A3000","obsTime":\#(1_800_000_000 - 3 * 3600)}"#)
+        let fresh = try metar(#"{"icaoId":"KAAA","temp":-22,"rawOb":"KAAA M22/M25 A3000","obsTime":\#(1_800_000_000 - 50 * 60)}"#)
+        XCTAssertNil(ColdTemperatureAdvisor.current(old, now: now))
+        let c = try XCTUnwrap(ColdTemperatureAdvisor.current(fresh, now: now))
+        XCTAssertEqual(c.tempC, -22)
+        let a = ColdTemperatureAdvisor.assess(restrictionC: -20, fieldIdent: "KAAA", fieldTempC: c.tempC,
+                                              fieldAge: c.age, plateSourceName: nil, plateSource: nil, nearby: [])
+        XCTAssertTrue(a.sourceLine.contains("50 min ago"), a.sourceLine)
+    }
+
+    /// Lower-48 fields with no ICAO in NASR file their METAR under K + ident (M46 → KM46); Alaska does not.
+    func testWeatherIdentForFieldsWithoutICAO() {
+        func apt(_ id: String, _ icao: String, _ lat: Double, _ lon: Double) -> AirportData.Airport {
+            AirportData.Airport(ident: id, icao: icao, name: "", coord: Coord(lat: lat, lon: lon), elevationFt: nil,
+                                ownership: "", use: "", status: "O", tower: "", fuel: "", siteType: "A", far139: "")
+        }
+        XCTAssertEqual(ColdTemperatureStore.weatherIdent(apt("M46", "", 45.85, -106.7)), "KM46")
+        XCTAssertEqual(ColdTemperatureStore.weatherIdent(apt("BZN", "KBZN", 45.78, -111.15)), "KBZN")
+        XCTAssertNil(ColdTemperatureStore.weatherIdent(apt("ENA", "", 60.57, -151.24)), "no K convention in Alaska")
+    }
+
+    /// A failed fetch is reported as a failure, not as "nobody reports".
+    func testFailedFetchSaysSo() {
+        let a = ColdTemperatureAdvisor.assess(restrictionC: -20, fieldIdent: "KAAA", fieldTempC: nil,
+                                              plateSourceName: nil, plateSource: nil, nearby: [], fetchFailed: true)
+        XCTAssertEqual(a.status, .unknown)
+        XCTAssertTrue(a.sourceLine.contains("could not be fetched"), a.sourceLine)
+    }
+
+    func testSourceResolutionAuditCases() {
+        typealias S = ColdTemperatureAdvisor.Station
+        let c = [S(ident: "POOH", name: "HOONAH", distanceNm: 1, tempC: nil),
+                 S(ident: "PAOH", name: "HOONAH", distanceNm: 2, tempC: nil),
+                 S(ident: "KBTM", name: "BERT MOONEY", distanceNm: 20, tempC: nil, city: "BUTTE"),
+                 S(ident: "PAQH", name: "QUINHAGAK", distanceNm: 5, tempC: nil),
+                 S(ident: "PAWN", name: "NOATAK", distanceNm: 30, tempC: nil)]
+        let aliases = ["PAOH": ["HNH"], "KBTM": ["BTM"], "PAWN": ["WTK"]]
+        XCTAssertEqual(ColdTemperatureAdvisor.resolveSource(name: "HNH/PAOH", candidates: c, identAliases: aliases)?.ident, "PAOH")
+        XCTAssertEqual(ColdTemperatureAdvisor.resolveSource(name: "Butte", candidates: c, identAliases: aliases)?.ident, "KBTM")
+        XCTAssertEqual(ColdTemperatureAdvisor.resolveSource(name: "Butte NA", candidates: c, identAliases: aliases)?.ident, "KBTM")
+        XCTAssertEqual(ColdTemperatureAdvisor.resolveSource(name: "A Noatak", candidates: c, identAliases: aliases)?.ident, "PAWN")
+    }
 }

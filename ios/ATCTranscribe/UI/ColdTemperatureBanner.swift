@@ -31,8 +31,15 @@ struct ColdTemperatureBannerHost: View {
         .task(id: "\(procedure.id)-\(plateReady)") { store.ensure(procedure) }
         // Re-ask as each answer lands: the plate read first, then the field's METAR, then (only if the
         // field has no temperature) the stand-in stations.
-        .onChange(of: store.info(for: procedure)) { _, _ in fetch() }
+        .onChange(of: store.info(for: procedure)) { _, new in
+            // The store can drop reads to stay bounded; read the plate on screen again if it does.
+            if new == nil { store.ensure(procedure) }
+            fetch()
+        }
         .onChange(of: metars.checked) { _, _ in fetch() }
+        // A FAILED fetch lands in `failed`, not `checked`; without this the stand-in stations were
+        // never requested when the field's fetch failed, and the banner never settled.
+        .onChange(of: metars.failed) { _, _ in fetch() }
         .onAppear { fetch() }
     }
 
@@ -90,8 +97,9 @@ struct ColdTemperatureBanner: View {
     }
 }
 
-/// The snowflake badge on a plate thumbnail: present whenever the plate carries a CTA figure, coloured
-/// when the temperature is at or below it.
+/// The snowflake badge on a plate thumbnail: present whenever the plate carries a CTA figure. Amber
+/// when the temperature is at or below it, dim when above, and dim with a `?` when it is not known —
+/// "not in effect" and "could not be checked" must not look the same.
 struct ColdTemperatureBadge: View {
     let procedure: AirportProcedure
     let airport: String
@@ -102,16 +110,33 @@ struct ColdTemperatureBadge: View {
     var body: some View {
         Group {
             if let a = store.advisory(for: procedure, airport: airport, metars: metars) {
-                Image(systemName: "thermometer.snowflake")
-                    .foregroundStyle(a.status == .atOrBelow ? palette.warn : palette.textDim)
-                    .accessibilityLabel(a.status == .atOrBelow
-                                        ? "Cold temperature restriction in effect"
-                                        : "Cold temperature restricted airport, \(a.restrictionC) degrees")
+                HStack(spacing: 1) {
+                    Image(systemName: "thermometer.snowflake")
+                    if a.status == .unknown, store.weatherSettled(for: procedure, airport: airport, metars: metars) {
+                        Text("?").font(.dsLabelS.weight(.bold))
+                    }
+                }
+                .foregroundStyle(a.status == .atOrBelow ? palette.warn : palette.textDim)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(label(a))
             }
         }
-        .onChange(of: store.info(for: procedure)) { _, _ in
-            let ids = store.weatherIdents(for: procedure, airport: airport, metars: metars)
-            if !ids.isEmpty { metars.ensure(ids) }
+        .onChange(of: store.info(for: procedure)) { _, _ in fetch() }
+        .onChange(of: metars.checked) { _, _ in fetch() }
+        .onChange(of: metars.failed) { _, _ in fetch() }
+        .onAppear { fetch() }
+    }
+
+    private func label(_ a: ColdTemperatureAdvisor.Advisory) -> String {
+        switch a.status {
+        case .atOrBelow: return "Cold temperature restriction in effect"
+        case .above:     return "Cold temperature restricted airport, \(a.restrictionC) degrees, not in effect"
+        case .unknown:   return "Cold temperature restricted airport, \(a.restrictionC) degrees, temperature unknown"
         }
+    }
+
+    private func fetch() {
+        let ids = store.weatherIdents(for: procedure, airport: airport, metars: metars)
+        if !ids.isEmpty { metars.ensure(ids) }
     }
 }

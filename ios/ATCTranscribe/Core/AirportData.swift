@@ -309,6 +309,22 @@ enum AirportData {
             .map(\.a)
     }
 
+    /// City served, by FAA ident, for every airport in the box around `center`. One query. Plates name
+    /// an altimeter source by city as often as by airport name ("use Butte altimeter setting" for Bert
+    /// Mooney), so the cold-temperature source matcher needs it. Empty on a database without the column
+    /// — the prepare fails and `query` returns nothing, which is "unknown", not an error.
+    static func cities(near center: Coord, radiusNm: Double) -> [String: String] {
+        assert(radiusNm > 0 && radiusNm <= 500, "radius in NM, bounded")
+        let dLat = radiusNm / 60.0
+        let dLon = radiusNm / (60.0 * max(0.2, cos(center.lat * .pi / 180)))
+        let box = String(format: "lat BETWEEN %.6f AND %.6f AND lon BETWEEN %.6f AND %.6f",
+                         center.lat - dLat, center.lat + dLat, center.lon - dLon, center.lon + dLon)
+        let rows = query("SELECT ident, COALESCE(city,'') FROM airport WHERE \(box)") { st in
+            (text(st, 0).uppercased(), text(st, 1))
+        }
+        return Dictionary(rows, uniquingKeysWith: { a, _ in a })
+    }
+
     struct Frequency: Equatable {
         let value: String           // "118.1"
         let use: String             // "APCH/P", "TWR", …
