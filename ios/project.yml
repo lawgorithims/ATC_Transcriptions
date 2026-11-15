@@ -76,7 +76,7 @@ settings:
     #
     # SWIFT_ACTIVE_COMPILATION_CONDITIONS: $(inherited) COMMSIGHT_CLOUDSYNC
     # =====================================================================================
-    MARKETING_VERSION: "1.0"   # build 1 shipped as 1.0; keep the same train so build N is 1.0 (N)
+    MARKETING_VERSION: "1.0.1"   # 1.0 is live on the App Store and its train is closed; bump for each App Store release
     CURRENT_PROJECT_VERSION: "1"
     SWIFT_VERSION: "5.9"
     CODE_SIGN_STYLE: Automatic

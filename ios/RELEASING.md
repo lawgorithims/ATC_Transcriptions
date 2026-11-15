@@ -131,8 +131,12 @@ Release build above is unsigned.
 ## 4. Build number
 
 `BUILD_NUMBER` must be the next unused integer; App Store Connect rejects one it has seen before.
-`MARKETING_VERSION` stays on the 1.0 train (see the note in `project.yml`), so build N ships as
-1.0 (N).
+Ask App Store Connect for the latest, not the local `build/` directory.
+
+`MARKETING_VERSION` (in `project.yml`) must be higher than the last version **approved** for the
+App Store. Once a version is approved, its TestFlight train closes and every further upload on it is
+refused at export (errors 90062 and 90186). 1.0 went live, so builds now ship as 1.0.1 (N); bump it
+again after each App Store release.
 
 ## 5. Cycle rolls are NOT app releases
 
