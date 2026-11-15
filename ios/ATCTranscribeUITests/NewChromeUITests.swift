@@ -102,6 +102,14 @@ final class NewChromeUITests: XCTestCase {
 
         XCTAssertTrue(el(app, "aircraft-picker-provenance").waitForExistence(timeout: 10),
                       "the picker opened without the provenance note above the list")
+        // Search rather than tap the row where the list puts it. The catalogue grew past a screen,
+        // and the Cessna section now sits just under iOS 26's floating search bar: the row EXISTS
+        // and counts as on screen, so XCUITest does not scroll, and its tap lands on the bar. The
+        // pick never happened and the note was blamed for it.
+        let search = app.searchFields.firstMatch
+        XCTAssertTrue(search.waitForExistence(timeout: 10), "the picker has no search field")
+        search.tap()
+        search.typeText("172")
         let c172 = el(app, "aircraft-pick-Cessna 172 Skyhawk")
         XCTAssertTrue(c172.waitForExistence(timeout: 10), "the catalogue does not offer a C172")
         c172.tap()
